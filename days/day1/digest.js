@@ -15,9 +15,16 @@ export async function loadCandidates(cache, deps = {}) {
   const cached = cache.get('feeds')
   if (cached) return { ...cached, cached: true }
 
-  const collected = await collectItems(deps)
-  cache.set('feeds', collected, FEED_TTL_MS)
-  return { ...collected, cached: false }
+  return cache.once('feeds', async () => {
+    const again = cache.get('feeds')
+    if (again) return { ...again, cached: true }
+
+    const collected = await collectItems(deps)
+    // Полный отказ не кэшируется на полчаса: короткая сетевая яма иначе
+    // превращается в тридцать минут пустого сайта.
+    cache.set('feeds', collected, collected.okCount === 0 ? 60_000 : FEED_TTL_MS)
+    return { ...collected, cached: false }
+  })
 }
 
 /**
@@ -65,29 +72,8 @@ export async function buildDigest(
     return { ...hit, cached: true }
   }
 
-  onProgress({ step: 'feeds', text: 'Читаю ленты изданий' })
-  const { items, failed, okCount, cached: feedsCached } = await loadCandidates(cache, deps)
-
-  onProgress({
-    step: 'filtered',
-    text: `Свежих материалов за неделю: ${items.length}${feedsCached ? ' (из кэша)' : ''}`,
-  })
-
-  const failureNote = describeFailures(failed, okCount)
-
-  if (items.length === 0) {
-    return {
-      sphere,
-      news: [],
-      note: ['Ни одна лента не дала свежих материалов за неделю.', failureNote]
-        .filter(Boolean)
-        .join(' '),
-      sources: okCount,
-      cached: false,
-    }
-  }
-
-  // Лимит проверяется до вызова API, а не после (I-4).
+  // Лимит проверяется до всякой работы: отказанный запрос не должен даже
+  // запускать загрузку лент. Расходуется только commit ниже (I-4).
   const allowed = limiter.check(ip)
   if (!allowed.ok) {
     const error = new Error(allowed.message)
@@ -95,40 +81,69 @@ export async function buildDigest(
     throw error
   }
 
-  const candidates = pickCandidates(items, CANDIDATE_LIMIT)
-  onProgress({ step: 'model', text: `Выбираю релевантное из ${candidates.length} материалов` })
+  // Одна работа на сферу: параллельные запросы ждут первую, а не делают
+  // каждый свой вызов API мимо кэша.
+  return cache.once(key, async () => {
+    const again = cache.get(key)
+    if (again) return { ...again, cached: true }
 
-  limiter.commit(ip)
-  const selection = await selectNews(sphere, candidates, env, deps)
+    onProgress({ step: 'feeds', text: 'Читаю ленты изданий' })
+    const { items, failed, okCount, cached: feedsCached } = await loadCandidates(cache, deps)
 
-  const news = selection.picks.map((pick) => {
-    const item = candidates[pick.n - 1]
-    return {
-      title: item.title,
-      url: item.url,
-      source: item.source,
-      region: item.region,
-      date: item.date.slice(0, 10),
-      why: pick.why,
+    onProgress({
+      step: 'filtered',
+      text: `Свежих материалов за неделю: ${items.length}${feedsCached ? ' (из кэша)' : ''}`,
+    })
+
+    const failureNote = describeFailures(failed, okCount)
+
+    if (items.length === 0) {
+      return {
+        sphere,
+        news: [],
+        note: ['Ни одна лента не дала свежих материалов за неделю.', failureNote]
+          .filter(Boolean)
+          .join(' '),
+        sources: okCount,
+        cached: false,
+      }
     }
+
+    const candidates = pickCandidates(items, CANDIDATE_LIMIT)
+    onProgress({ step: 'model', text: `Выбираю релевантное из ${candidates.length} материалов` })
+
+    limiter.commit(ip)
+    const selection = await selectNews(sphere, candidates, env, deps)
+
+    const news = selection.picks.map((pick) => {
+      const item = candidates[pick.n - 1]
+      return {
+        title: item.title,
+        url: item.url,
+        source: item.source,
+        region: item.region,
+        date: item.date.slice(0, 10),
+        why: pick.why,
+      }
+    })
+
+    const notes = []
+    if (news.length === 0)
+      notes.push('За неделю в этих изданиях не нашлось новостей по вашей сфере.')
+    else if (news.length < 3) notes.push('Релевантных материалов за неделю нашлось меньше трёх.')
+    if (selection.note) notes.push(selection.note)
+    if (failureNote) notes.push(failureNote)
+
+    const result = {
+      sphere,
+      news,
+      note: notes.join(' '),
+      sources: okCount,
+      candidates: candidates.length,
+      cached: false,
+    }
+
+    cache.set(key, result, DIGEST_TTL_MS)
+    return result
   })
-
-  const notes = []
-  if (news.length === 0) notes.push('За неделю в этих изданиях не нашлось новостей по вашей сфере.')
-  else if (news.length < 3) notes.push('Релевантных материалов за неделю нашлось меньше трёх.')
-  if (selection.note) notes.push(selection.note)
-  if (failureNote) notes.push(failureNote)
-
-  const result = {
-    sphere,
-    news,
-    note: notes.join(' '),
-    sources: okCount,
-    candidates: candidates.length,
-    usage: selection.usage,
-    cached: false,
-  }
-
-  cache.set(key, result, DIGEST_TTL_MS)
-  return result
 }

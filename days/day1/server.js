@@ -27,10 +27,18 @@ const MIME = {
   '.ico': 'image/x-icon',
 }
 
-/** Адрес за Caddy приходит в X-Forwarded-For; первый элемент — клиент. */
+/**
+ * Адрес клиента. Caddy ДОПИСЫВАЕТ реальный адрес в конец X-Forwarded-For,
+ * поэтому берём последний элемент, а не первый: первый подделывается
+ * заголовком в запросе, и тогда rate limit обходится сменой значения.
+ */
 function clientIp(req) {
   const forwarded = req.headers['x-forwarded-for']
-  if (typeof forwarded === 'string' && forwarded.length > 0) return forwarded.split(',')[0].trim()
+  if (typeof forwarded === 'string' && forwarded.length > 0) {
+    const parts = forwarded.split(',')
+    const last = parts[parts.length - 1].trim()
+    if (last) return last
+  }
   return req.socket.remoteAddress ?? 'unknown'
 }
 
@@ -102,7 +110,16 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
 
   if (url.pathname === '/healthz') {
-    return sendJson(res, 200, { ok: true, day: 1, node: process.version, feeds: FEEDS.length })
+    // Без ключа приложение поднимается, но работать не может: Caddy считал бы
+    // его живым, а пользователь получал бы 401 после загрузки восьми лент.
+    const healthy = errors.length === 0
+    return sendJson(res, healthy ? 200 : 503, {
+      ok: healthy,
+      day: 1,
+      node: process.version,
+      feeds: FEEDS.length,
+      config: healthy ? 'ok' : 'неполная',
+    })
   }
 
   if (url.pathname === '/api/digest' && req.method === 'GET') {
@@ -111,8 +128,18 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === '/api/digest' && req.method === 'POST') {
     // POST оставлен для не-SSE клиентов и тестов: тот же путь, один ответ.
+    let body
     try {
-      const body = JSON.parse((await readBody(req)) || '{}')
+      body = JSON.parse((await readBody(req)) || '{}')
+    } catch (error) {
+      // Ошибка клиента отличается от нашей: 413 на длинное тело, 400 на битый JSON.
+      const tooLarge = error.message.includes('слишком большое')
+      return sendJson(res, tooLarge ? 413 : 400, {
+        error: tooLarge ? 'Тело запроса слишком большое' : 'Тело запроса не разобрано как JSON',
+      })
+    }
+
+    try {
       const sphere = parseSphere(body.sphere)
       if (!sphere.ok) return sendJson(res, 400, { error: sphere.message })
       const digest = await buildDigest(sphere.sphere, { cache, limiter, env, ip: clientIp(req) })

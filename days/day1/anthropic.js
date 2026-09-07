@@ -43,7 +43,9 @@ export function renderCandidates(items) {
     .map((item, i) => {
       const day = item.date.slice(0, 10)
       const summary = item.summary ? ` — ${item.summary.slice(0, 200)}` : ''
-      return `${i + 1}. [${day}] [${item.source}] ${item.title}${summary}`
+      // Заголовок тоже режется: сломанная лента с гигантскими заголовками
+      // умножает входные токены и цену в пределах того же суточного лимита.
+      return `${i + 1}. [${day}] [${item.source}] ${item.title.slice(0, 200)}${summary}`
     })
     .join('\n')
 }

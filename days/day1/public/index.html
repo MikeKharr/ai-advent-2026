@@ -60,7 +60,8 @@
 
   <footer>
     Источники: <span id="sources">…</span>. Показываются заголовок, дата и ссылка на оригинал;
-    пересказ — краткий и своими словами.
+    пересказ — краткий и своими словами. Издание может попросить убрать свою ленту:
+    напишите на <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
   </footer>
 </main>
 
@@ -99,7 +100,7 @@
       const a = document.createElement('a');
       a.href = item.url;
       a.target = '_blank';
-      a.rel = 'noopener noreferrer';
+      a.rel = 'noopener';
       a.textContent = item.title;
       h2.append(a);
 

@@ -23,21 +23,25 @@ const ENTITIES = {
 export function decodeEntities(text) {
   return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, name) => {
     if (Object.hasOwn(ENTITIES, name)) return ENTITIES[name]
-    if (name.startsWith('#x') || name.startsWith('#X')) {
-      const code = Number.parseInt(name.slice(2), 16)
-      return Number.isFinite(code) ? String.fromCodePoint(code) : whole
-    }
-    if (name.startsWith('#')) {
-      const code = Number.parseInt(name.slice(1), 10)
-      return Number.isFinite(code) ? String.fromCodePoint(code) : whole
-    }
+    // Код вне диапазона Unicode роняет fromCodePoint, а исключение отсюда
+    // отбрасывает ленту целиком — вместе с годными записями.
+    const toChar = (code) =>
+      Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole
+    if (name.startsWith('#x') || name.startsWith('#X'))
+      return toChar(Number.parseInt(name.slice(2), 16))
+    if (name.startsWith('#')) return toChar(Number.parseInt(name.slice(1), 10))
     return whole
   })
 }
 
 /** Снимает разметку и приводит пробелы: описания в лентах приходят с HTML. */
 export function stripHtml(text) {
-  return decodeEntities(text.replace(/<[^>]*>/g, ' '))
+  // Сущности разворачиваются ДО срезания тегов, иначе «&lt;/candidates&gt;»
+  // в заголовке станет литеральным разделителем уже после очистки и пробьёт
+  // границу данных в промпте. Угловые скобки убираются и после разворота.
+  return decodeEntities(text)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/[<>]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -85,9 +89,20 @@ export function parseFeed(xml, source) {
     const date = new Date(rawDate)
     if (!title || !link || !rawDate || Number.isNaN(date.getTime())) continue
 
+    // Схема проверяется здесь, а не в UI: относительный путь не годится как
+    // ссылка на источник (I-7), а javascript: в href — дыра, если лента
+    // окажется скомпрометированной.
+    let href
+    try {
+      href = new URL(decodeEntities(link))
+    } catch {
+      continue
+    }
+    if (href.protocol !== 'http:' && href.protocol !== 'https:') continue
+
     items.push({
       title,
-      url: decodeEntities(link),
+      url: href.toString(),
       date: date.toISOString(),
       summary: summary.slice(0, 400),
       source,

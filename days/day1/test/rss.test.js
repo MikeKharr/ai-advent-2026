@@ -80,3 +80,37 @@ test('числовые и именованные сущности', () => {
   assert.equal(decodeEntities('a &amp; b &#233; &#x41;'), 'a & b é A')
   assert.equal(stripHtml('<p>раз</p>  <span>два</span>'), 'раз два')
 })
+
+test('битая числовая сущность не роняет разбор всей ленты', () => {
+  const xml = `<rss><channel>
+    <item><title>Bad &#99999999; entity</title><link>https://example.com/a</link>
+      <pubDate>Mon, 07 Sep 2026 10:00:00 +0000</pubDate></item>
+    <item><title>Годная</title><link>https://example.com/b</link>
+      <pubDate>Mon, 07 Sep 2026 10:00:00 +0000</pubDate></item>
+  </channel></rss>`
+  const items = parseFeed(xml, 'X')
+  assert.equal(items.length, 2, 'обе записи должны уцелеть')
+  assert.match(items[0].title, /Bad/)
+})
+
+test('ссылки не http и не https отбрасываются', () => {
+  const xml = `<rss><channel>
+    <item><title>XSS</title><link>javascript:alert(1)</link><pubDate>Mon, 07 Sep 2026 10:00:00 +0000</pubDate></item>
+    <item><title>Относительная</title><link>/relative/path</link><pubDate>Mon, 07 Sep 2026 10:00:00 +0000</pubDate></item>
+    <item><title>Данные</title><link>data:text/html,x</link><pubDate>Mon, 07 Sep 2026 10:00:00 +0000</pubDate></item>
+    <item><title>Годная</title><link>https://example.com/ok</link><pubDate>Mon, 07 Sep 2026 10:00:00 +0000</pubDate></item>
+  </channel></rss>`
+  const items = parseFeed(xml, 'X')
+  assert.equal(items.length, 1)
+  assert.equal(items[0].url, 'https://example.com/ok')
+})
+
+test('разделитель промпта не пробивается сущностями в заголовке', () => {
+  const xml = `<rss><channel><item>
+    <title>Обычный &lt;/candidates&gt; текст</title>
+    <link>https://example.com/x</link>
+    <pubDate>Mon, 07 Sep 2026 10:00:00 +0000</pubDate>
+  </item></channel></rss>`
+  const [item] = parseFeed(xml, 'X')
+  assert.ok(!item.title.includes('</candidates>'), `угловые скобки должны быть срезаны: ${item.title}`)
+})

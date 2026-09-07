@@ -266,3 +266,61 @@ test('круг не теряет записи, если источник оди�
   const items = Array.from({ length: 5 }, (_, i) => ({ title: `A ${i}`, source: 'A', date: '2026-09-07' }))
   assert.equal(pickCandidates(items, 10).length, 5)
 })
+
+test('одновременные запросы на одну сферу дают один вызов API', async () => {
+  let modelCalls = 0
+  const fetchImpl = fakeFetch({
+    feeds: {
+      'https://a.test/feed': feedXml([{ title: 'Есть', url: 'https://a.test/1', at: NOW - 86400000 }]),
+    },
+    model: { picks: [{ n: 1, why: 'ок' }], note: '' },
+    onModelCall: () => { modelCalls += 1 },
+  })
+  const cache = createCache()
+  const limiter = createLimiter(ENV)
+  const deps = { fetchImpl, now: NOW, feeds: [FEED_A] }
+
+  const all = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      buildDigest('fintech', { cache, limiter, env: ENV, ip: '1.1.1.1', deps }),
+    ),
+  )
+  assert.equal(modelCalls, 1, 'пять параллельных запросов не должны дать пять вызовов API')
+  assert.equal(limiter.stats().callsToday, 1)
+  for (const digest of all) assert.equal(digest.news.length, 1)
+})
+
+test('отказ лимита не запускает загрузку лент', async () => {
+  let feedCalls = 0
+  const fetchImpl = async (url, options) => {
+    if (typeof url === 'string' && url.includes('anthropic')) throw new Error('API вызываться не должен')
+    feedCalls += 1
+    return { ok: false, status: 500, body: null }
+  }
+  const env = { ...ENV, MAX_DAILY_CALLS: 0 }
+  await assert.rejects(
+    () => buildDigest('a', {
+      cache: createCache(),
+      limiter: createLimiter(env),
+      env,
+      ip: '1.1.1.1',
+      deps: { fetchImpl, now: NOW, feeds: [FEED_A] },
+    }),
+    /Суточный лимит/,
+  )
+  assert.equal(feedCalls, 0, 'ленты не должны загружаться при отказе лимита')
+})
+
+test('поминутный лимит срабатывает', () => {
+  let t = NOW
+  const env = { ...ENV, RATE_LIMIT_PER_MIN: 2, RATE_LIMIT_PER_HOUR: 100, MAX_DAILY_CALLS: 100 }
+  const limiter = createLimiter(env, { now: () => t })
+  for (let i = 0; i < 2; i += 1) {
+    assert.equal(limiter.check('1.1.1.1').ok, true)
+    limiter.commit('1.1.1.1')
+  }
+  assert.equal(limiter.check('1.1.1.1').reason, 'minute')
+  assert.equal(limiter.check('2.2.2.2').ok, true, 'другой адрес не должен страдать')
+  t += 61_000
+  assert.equal(limiter.check('1.1.1.1').ok, true, 'через минуту окно должно освободиться')
+})

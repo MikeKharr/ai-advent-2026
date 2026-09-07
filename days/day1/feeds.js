@@ -26,9 +26,11 @@ async function readCapped(response, maxBytes) {
   if (!reader) return ''
   const chunks = []
   let size = 0
-  while (size < maxBytes) {
+  while (true) {
     const { done, value } = await reader.read()
     if (done) break
+    // Размер проверяется до накопления: иначе лимит на деле «maxBytes плюс чанк».
+    if (size + value.length > maxBytes) break
     size += value.length
     chunks.push(value)
   }
@@ -59,12 +61,11 @@ export async function fetchFeed(feed, { fetchImpl = fetch } = {}) {
       return { ok: false, source: feed.source, reason: 'записей не разобрано', items: [] }
     return { ok: true, source: feed.source, items }
   } catch (error) {
-    return {
-      ok: false,
-      source: feed.source,
-      reason: error.name === 'TimeoutError' ? 'таймаут' : error.name,
-      items: [],
-    }
+    // Наружу уходит понятная причина, а не имя класса ошибки: устройство
+    // сбоя пользователю ничего не даёт, а в лог оно попадает целиком.
+    console.error(`лента ${feed.source}: ${error.name}: ${error.message}`)
+    const reason = error.name === 'TimeoutError' ? 'таймаут' : 'недоступна'
+    return { ok: false, source: feed.source, reason, items: [] }
   }
 }
 

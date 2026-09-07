@@ -4,8 +4,28 @@
 export function createCache({ now = () => Date.now() } = {}) {
   /** @type {Map<string, {value: unknown, expires: number}>} */
   const store = new Map()
+  /** @type {Map<string, Promise<unknown>>} Работы, уже выполняющиеся по этому ключу. */
+  const inFlight = new Map()
+
+  /** Убирает просроченное: ключи дайджестов уникальны и повторно не читаются. */
+  function evictExpired(t) {
+    for (const [key, entry] of store) if (entry.expires <= t) store.delete(key)
+  }
 
   return {
+    /**
+     * Одна работа на ключ. Без этого пять одновременных запросов на одну
+     * сферу дают пять вызовов API и пять раундов загрузки лент: между
+     * чтением кэша и записью в него стоят await.
+     */
+    async once(key, work) {
+      const running = inFlight.get(key)
+      if (running) return running
+      const promise = (async () => work())().finally(() => inFlight.delete(key))
+      inFlight.set(key, promise)
+      return promise
+    },
+
     get(key) {
       const hit = store.get(key)
       if (!hit) return undefined
@@ -16,10 +36,9 @@ export function createCache({ now = () => Date.now() } = {}) {
       return hit.value
     },
     set(key, value, ttlMs) {
-      store.set(key, { value, expires: now() + ttlMs })
-    },
-    size() {
-      return store.size
+      const t = now()
+      evictExpired(t)
+      store.set(key, { value, expires: t + ttlMs })
     },
   }
 }
