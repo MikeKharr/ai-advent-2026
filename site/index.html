@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Advent 2026</title>
+<style>
+  :root { color-scheme: light dark; --fg:#111; --bg:#fafaf9; --mut:#666; --line:#e5e5e3; --accent:#2f6f4f; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e6; --bg:#16161a; --mut:#9a9a97; --line:#2c2c31; --accent:#7fc9a2; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif; color:var(--fg); background:var(--bg); }
+  main { max-width:42rem; margin:0 auto; padding:4rem 1.5rem; }
+  h1 { font-size:1.75rem; margin:0 0 .35rem; letter-spacing:-.015em; }
+  .sub { color:var(--mut); margin:0 0 2.5rem; }
+  ul { list-style:none; padding:0; margin:0; display:grid; gap:.5rem; }
+  a.day { display:flex; align-items:baseline; gap:.75rem; padding:.9rem 1.1rem; border:1px solid var(--line); border-radius:10px; text-decoration:none; color:inherit; transition:border-color .15s; }
+  a.day:hover { border-color:var(--accent); }
+  .n { font:600 14px/1 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--accent); min-width:3.2rem; }
+  .t { font-weight:500; }
+  .d { color:var(--mut); font-size:.9rem; margin-left:auto; }
+  li.soon { opacity:.45; }
+  li.soon .day { border-style:dashed; pointer-events:none; }
+  footer { margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--mut); font-size:.875rem; }
+  footer a { color:inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Advent 2026</h1>
+  <p class="sub">Задания челленджа. Одно задание — один день — одно приложение.</p>
+
+  <ul>
+    <li>
+      <a class="day" href="/day1/">
+        <span class="n">day 1</span>
+        <span class="t">Сфера → 3 главные свежие новости стартапов</span>
+        <span class="d">07.09</span>
+      </a>
+    </li>
+    <li class="soon"><span class="day"><span class="n">day 2</span><span class="t">Ещё не опубликовано</span></span></li>
+  </ul>
+
+  <footer>
+    Исходный код: <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>
+  </footer>
+</main>
+</body>
+</html>

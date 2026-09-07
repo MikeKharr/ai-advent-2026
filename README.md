@@ -6,6 +6,8 @@
 
 Репозиторий построен на `2030ai/2030ai-project-template` с memory-слоем из `cmit-ru/cmit-starter`.
 
+**Продакшен:** `https://challenge.zpq.ai` — лендинг со списком дней, `challenge.zpq.ai/dayN` — задание дня N.
+
 ## Структура проекта
 
 ```text
@@ -17,7 +19,11 @@
 ├── .editorconfig             # Единый whitespace/EOL для всех IDE
 ├── .markdownlint.json        # Конфигурация markdownlint
 ├── .vscode/settings.json     # Видимость .env в IDE
-├── .github/workflows/        # CI: markdownlint, docs-guard
+├── .github/workflows/        # CI: markdownlint, docs-guard, ci, deploy
+├── days/                     # Одно задание — один каталог — один контейнер
+│   └── day1/                 # → challenge.zpq.ai/day1
+├── site/                     # Лендинг на корне домена
+├── deploy/                   # Caddyfile, compose.yml, bootstrap.sh
 ├── .agents/skills/           # Canonical project-local skills
 ├── .claude/agents/           # Роли агентов (10 ролей)
 ├── .claude/skills/           # Claude Code symlink mirrors to .agents

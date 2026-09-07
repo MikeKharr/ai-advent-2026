@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Обязательно: Caddy срезает префикс /day1, поэтому приложение видит "/",
+     а браузер — "/day1/". Без base все относительные ссылки уедут в корень. -->
+<base href="/day1/">
+<title>День 1 — AI Advent 2026</title>
+<style>
+  :root { color-scheme: light dark; --fg:#111; --bg:#fafaf9; --mut:#666; --line:#e5e5e3; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e6; --bg:#16161a; --mut:#9a9a97; --line:#2c2c31; } }
+  body { margin:0; font:16px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif; color:var(--fg); background:var(--bg); }
+  main { max-width:38rem; margin:0 auto; padding:4rem 1.5rem; }
+  h1 { font-size:1.6rem; margin:0 0 .5rem; letter-spacing:-.01em; }
+  p { color:var(--mut); margin:.5rem 0; }
+  code { font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:color-mix(in srgb, var(--fg) 7%, transparent); padding:.15em .4em; border-radius:4px; }
+  .status { margin-top:2rem; padding:1rem; border:1px solid var(--line); border-radius:8px; }
+  a { color:inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>День 1 — заглушка</h1>
+  <p>Конвейер работает: TLS выпущен, префикс <code>/day1</code> маршрутизируется, образ собран в Actions и запущен на VPS.</p>
+  <p>Прикладной код появится после принятия ADR о стеке.</p>
+  <div class="status">
+    <strong>Проверка здоровья:</strong> <span id="h">…</span>
+  </div>
+</main>
+<script>
+  fetch('./healthz')
+    .then(r => r.json())
+    .then(d => { document.getElementById('h').textContent = `ok · node ${d.node}`; })
+    .catch(() => { document.getElementById('h').textContent = 'недоступно'; });
+</script>
+</body>
+</html>

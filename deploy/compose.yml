@@ -1,0 +1,36 @@
+name: advent
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../site:/srv/site:ro
+      - caddy_data:/data      # сертификаты, переживают пересоздание контейнера
+      - caddy_config:/config
+    depends_on:
+      - day1
+
+  day1:
+    # Тег приходит из .env, который переписывает workflow деплоя.
+    # Откат — поставить предыдущий sha и docker compose up -d day1.
+    image: ghcr.io/mikekharr/advent-day1:${DAY1_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day1.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  caddy_data:
+  caddy_config:

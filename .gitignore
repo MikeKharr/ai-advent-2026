@@ -61,6 +61,11 @@ $RECYCLE.BIN/
 .env.*
 !.env.example
 
+# Окружение деплоя: теги образов и секреты приложений создаются на сервере
+deploy/.env
+deploy/*.env
+!deploy/.env.example
+
 # Логи
 *.log
 *.log*

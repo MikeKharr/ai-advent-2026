@@ -1,0 +1,36 @@
+{
+	# Адрес для уведомлений Let's Encrypt об истечении сертификата.
+	email admin@zpq.ai
+}
+
+challenge.zpq.ai {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# --- дни ---
+	# handle_path срезает префикс: приложение видит "/", а браузер — "/dayN/".
+	# Поэтому в HTML каждого дня обязателен <base href="/dayN/">.
+	# redir нужен, потому что handle_path /day1/* не совпадает с голым /day1.
+
+	redir /day1 /day1/ permanent
+	handle_path /day1/* {
+		reverse_proxy day1:8080 {
+			health_uri /healthz
+			health_interval 30s
+		}
+	}
+
+	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
+
+	# --- лендинг ---
+	handle {
+		root * /srv/site
+		file_server
+	}
+}
