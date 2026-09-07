@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day2 -> /day2/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Параметры модели — AI Advent 2026, день 2</title>
+<style>
+  :root { color-scheme: light dark; --fg:#111; --bg:#fafaf9; --mut:#666; --line:#e5e5e3; --acc:#2f6f4f; --card:#ffffff; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e6; --bg:#16161a; --mut:#9a9a97; --line:#2c2c31; --acc:#7fc7a4; --card:#1d1d22; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif; color:var(--fg); background:var(--bg); }
+  .layout { display:grid; grid-template-columns: 1fr 18rem 24rem; gap:2rem; max-width:80rem;
+            margin:0 auto; padding:2.5rem 1.25rem 4rem; align-items:start; }
+  @media (max-width: 64rem) { .layout { grid-template-columns: 1fr; } }
+  h1 { font-size:1.5rem; margin:0 0 .35rem; letter-spacing:-.02em; }
+  h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); margin:0 0 .9rem; }
+  .sub { color:var(--mut); margin:0 0 1.75rem; }
+  form { display:flex; gap:.5rem; flex-wrap:wrap; }
+  input[type=text] { flex:1 1 12rem; min-width:0; }
+  input, textarea { padding:.6rem .8rem; font:inherit; color:var(--fg); background:transparent;
+                    border:1px solid var(--line); border-radius:8px; width:100%; }
+  input:focus, textarea:focus { outline:2px solid var(--acc); outline-offset:1px; }
+  textarea { resize:vertical; }
+  button { padding:.6rem 1.1rem; font:inherit; font-weight:600; color:var(--bg); background:var(--fg);
+           border:0; border-radius:8px; cursor:pointer; }
+  button[disabled] { opacity:.5; cursor:default; }
+  .chips { margin:.7rem 0 0; display:flex; gap:.4rem; flex-wrap:wrap; }
+  .chip { padding:.22rem .6rem; font-size:.85rem; color:var(--mut); border:1px solid var(--line);
+          border-radius:999px; background:transparent; cursor:pointer; width:auto; }
+  .progress { margin:1.5rem 0 0; padding:0; color:var(--mut); font-size:.92rem; }
+  .progress li { list-style:none; margin:.15rem 0; }
+  .progress li::before { content:"· "; }
+  .note { margin:1.25rem 0 0; padding:.8rem 1rem; border:1px solid var(--line); border-radius:8px;
+          color:var(--mut); font-size:.92rem; }
+  .params label { display:block; margin:0 0 1rem; font-size:.9rem; }
+  .params .name { display:block; margin-bottom:.3rem; }
+  .params .hint { display:block; color:var(--mut); font-size:.8rem; margin-top:.25rem; }
+  .feed { margin:0; padding:0; }
+  .entry { list-style:none; padding:1rem; margin:0 0 1rem; border:1px solid var(--line);
+           border-radius:10px; background:var(--card); }
+  .entry .head { display:flex; justify-content:space-between; gap:.6rem; flex-wrap:wrap;
+                 font-size:.85rem; color:var(--mut); margin-bottom:.4rem; }
+  .entry .sphere { font-weight:600; color:var(--fg); }
+  .entry .tags { display:flex; gap:.35rem; flex-wrap:wrap; margin:.35rem 0 .6rem; }
+  .tag { font-size:.75rem; color:var(--mut); border:1px solid var(--line); border-radius:999px;
+         padding:.1rem .5rem; }
+  .tag.tokens { color:var(--acc); border-color:var(--acc); }
+  .answer { white-space:pre-wrap; overflow-wrap:anywhere; font-size:.92rem; margin:0; }
+  .entry .enote { color:var(--mut); font-size:.85rem; margin:.6rem 0 0; }
+  .empty { color:var(--mut); font-size:.92rem; }
+  .feedhead { display:flex; align-items:baseline; justify-content:space-between; gap:.6rem; }
+  .clear { width:auto; padding:.2rem .6rem; font-size:.8rem; font-weight:400; color:var(--mut);
+           background:transparent; border:1px solid var(--line); border-radius:999px; }
+  footer { grid-column:1 / -1; margin-top:1.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
+           color:var(--mut); font-size:.85rem; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <main>
+    <h1>Параметры модели</h1>
+    <p class="sub">Тот же дайджест новостей стартапов, что в дне&nbsp;1, — но параметрами
+    обработки запроса управляете вы, а расход токенов виден в ленте справа.</p>
+
+    <form id="f">
+      <input id="q" type="text" name="sphere" maxlength="60" placeholder="fintech, climate tech, robotics…"
+             autocomplete="off" aria-label="Сфера" required>
+      <button id="go" type="submit">Спросить</button>
+    </form>
+    <div class="chips" id="chips"></div>
+
+    <ul class="progress" id="progress" aria-live="polite"></ul>
+    <div class="note" id="note" hidden></div>
+  </main>
+
+  <aside class="params" aria-label="Панель параметров">
+    <h2>Параметры</h2>
+    <label>
+      <span class="name">Формат ответа</span>
+      <textarea id="p-format" rows="4" maxlength="500"
+        placeholder="например: маркированный список, к каждому пункту — дата и ссылка"></textarea>
+      <span class="hint">Свободное описание; уходит в промпт. Пусто — формат по умолчанию.</span>
+    </label>
+    <label>
+      <span class="name">Статей с источника</span>
+      <input id="p-per-source" type="number" min="1" max="50" value="30" inputmode="numeric">
+      <span class="hint">Сколько статей каждого издания попадёт в анализ (1–50).</span>
+    </label>
+    <label>
+      <span class="name">Условие завершения ответа</span>
+      <textarea id="p-stop" rows="2" maxlength="400"
+        placeholder="слово или фраза; при появлении в ответе генерация остановится"></textarea>
+      <span class="hint">До 4 стоп-последовательностей, по одной на строку (stop_sequences).</span>
+    </label>
+    <label>
+      <span class="name">Останов по токенам</span>
+      <input id="p-max-tokens" type="number" min="1" max="2048" value="200" inputmode="numeric">
+      <span class="hint">Максимум токенов ответа (max_tokens), 1–2048.</span>
+    </label>
+  </aside>
+
+  <section aria-label="Лента запросов">
+    <div class="feedhead">
+      <h2>Лента</h2>
+      <button class="clear" id="clear" type="button" hidden>очистить</button>
+    </div>
+    <p class="empty" id="empty">Пока пусто. Задайте сферу и параметры — запрос и ответ появятся здесь.</p>
+    <ul class="feed" id="feed"></ul>
+  </section>
+
+  <footer>
+    Источники: <span id="sources">…</span>. Ссылки в ответах — только из лент изданий; ссылка,
+    которой нет в списке источников, вырезается. Лента запросов хранится в вашем браузере и
+    никуда не отправляется. Издание может попросить убрать свою ленту:
+    <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
+  </footer>
+
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const form = $('f'), input = $('q'), button = $('go');
+  const progress = $('progress'), note = $('note'), feed = $('feed'), empty = $('empty');
+
+  for (const s of ['fintech', 'climate tech', 'robotics', 'AI infrastructure']) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = s;
+    chip.onclick = () => { input.value = s; form.requestSubmit(); };
+    $('chips').append(chip);
+  }
+
+  fetch('./api/sources')
+    .then((r) => r.json())
+    .then((d) => { $('sources').textContent = d.feeds.map((f) => f.source).join(', '); })
+    .catch(() => { $('sources').textContent = 'недоступны'; });
+
+  const step = (text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    progress.append(li);
+  };
+
+  // Лента живёт в localStorage: сервер запросы пользователей не хранит.
+  const STORE = 'day2-feed';
+  const MAX_ENTRIES = 50;
+
+  const loadFeed = () => {
+    // Хранилище — внешние данные: валидный JSON не обязан быть массивом записей.
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORE));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  };
+  const saveFeed = (entries) => {
+    try { localStorage.setItem(STORE, JSON.stringify(entries.slice(0, MAX_ENTRIES))); } catch {}
+  };
+
+  const stopLabel = (entry) => {
+    if (entry.stopReason === 'stop_sequence')
+      return `останов: встретилось «${entry.stopSequence ?? ''}»`;
+    if (entry.stopReason === 'max_tokens')
+      return `останов: лимит ${entry.params.maxTokens} токенов`;
+    if (entry.stopReason === 'end_turn') return 'останов: модель закончила сама';
+    return null;
+  };
+
+  const renderEntry = (entry) => {
+    const li = document.createElement('li');
+    li.className = 'entry';
+
+    const head = document.createElement('div');
+    head.className = 'head';
+    const sphere = document.createElement('span');
+    sphere.className = 'sphere';
+    sphere.textContent = entry.sphere;
+    const when = document.createElement('time');
+    when.dateTime = entry.at;
+    when.textContent = new Date(entry.at).toLocaleString('ru-RU');
+    head.append(sphere, when);
+
+    const tags = document.createElement('div');
+    tags.className = 'tags';
+    const tag = (text, cls) => {
+      const t = document.createElement('span');
+      t.className = cls ? `tag ${cls}` : 'tag';
+      t.textContent = text;
+      tags.append(t);
+    };
+    if (entry.usage && entry.usage.inputTokens !== null)
+      tag(`токены: ${entry.usage.inputTokens} → ${entry.usage.outputTokens}`, 'tokens');
+    tag(`max_tokens: ${entry.params.maxTokens}`);
+    tag(`статей/источник: ${entry.params.perSource}`);
+    if (entry.params.stopSequences.length)
+      tag(`стоп: ${entry.params.stopSequences.join(' | ')}`);
+    if (entry.params.format) {
+      const f = entry.params.format;
+      tag(`формат: ${f.length > 40 ? `${f.slice(0, 40)}…` : f}`);
+    }
+    const stop = stopLabel(entry);
+    if (stop) tag(stop);
+    if (entry.candidates) tag(`кандидатов: ${entry.candidates}`);
+
+    const answer = document.createElement('p');
+    answer.className = 'answer';
+    answer.textContent = entry.answer || '(пустой ответ)';
+
+    li.append(head, tags, answer);
+
+    if (entry.note) {
+      const n = document.createElement('p');
+      n.className = 'enote';
+      n.textContent = entry.note;
+      li.append(n);
+    }
+    return li;
+  };
+
+  const renderFeed = () => {
+    // Одна битая запись (например, старого формата) не должна ломать страницу:
+    // она пропускается, остальные рисуются.
+    const entries = loadFeed();
+    const nodes = [];
+    for (const entry of entries) {
+      try { nodes.push(renderEntry(entry)); } catch {}
+    }
+    feed.replaceChildren(...nodes);
+    empty.hidden = nodes.length > 0;
+    $('clear').hidden = entries.length === 0;
+  };
+
+  $('clear').onclick = () => { saveFeed([]); renderFeed(); };
+  renderFeed();
+
+  const readParams = () => ({
+    format: $('p-format').value,
+    stop: $('p-stop').value,
+    maxTokens: $('p-max-tokens').value,
+    perSource: $('p-per-source').value,
+  });
+
+  let stream = null;
+
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    const sphere = input.value.trim();
+    if (!sphere) return;
+
+    // Числа проверяются до запроса: EventSource не покажет текст ошибки 400.
+    const invalid = [$('p-per-source'), $('p-max-tokens')].find((el) => !el.checkValidity());
+    if (invalid) { invalid.reportValidity(); return; }
+
+    stream?.close();
+    progress.replaceChildren();
+    note.hidden = true;
+    note.textContent = '';
+    button.disabled = true;
+
+    const p = readParams();
+    const qs = new URLSearchParams({
+      sphere,
+      format: p.format,
+      stop: p.stop,
+      max_tokens: p.maxTokens,
+      per_source: p.perSource,
+    });
+    stream = new EventSource(`./api/answer?${qs}`);
+
+    stream.addEventListener('progress', (e) => step(JSON.parse(e.data).text));
+
+    stream.addEventListener('result', (e) => {
+      const entry = JSON.parse(e.data);
+      step('Готово');
+      saveFeed([entry, ...loadFeed()]);
+      renderFeed();
+      button.disabled = false;
+      stream.close();
+    });
+
+    stream.addEventListener('error', (e) => {
+      // Отличаем ошибку приложения от обрыва соединения: у первой есть data.
+      if (e.data) {
+        note.textContent = JSON.parse(e.data).message;
+        note.hidden = false;
+      } else if (!note.textContent) {
+        note.textContent = 'Соединение прервано. Попробуйте ещё раз.';
+        note.hidden = false;
+      }
+      button.disabled = false;
+      stream.close();
+    });
+  };
+</script>
+</body>
+</html>

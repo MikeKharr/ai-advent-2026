@@ -14,6 +14,7 @@ services:
       - caddy_config:/config
     depends_on:
       - day1
+      - day2
 
   day1:
     # Тег приходит из .env, который переписывает workflow деплоя.
@@ -28,6 +29,22 @@ services:
         required: false
       # Только то, что специфично для этого дня. Переопределяет secrets.env.
       - path: ./day1.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  day2:
+    image: ghcr.io/mikekharr/advent-day2:${DAY2_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./secrets.env
+        required: false
+      - path: ./day2.env
         required: false
     environment:
       - NODE_ENV=production
