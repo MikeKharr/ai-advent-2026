@@ -4,36 +4,164 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Никакого <base>. Caddy делает redir /day1 -> /day1/, поэтому в браузере
-     адрес всегда с завершающим слэшем, и относительный "./healthz" превращается
-     в "/day1/healthz" в проде и в "/healthz" при локальном запуске. Оба случая
-     верны. Жёстко прописанный <base href="/day1/"> ломал бы локальный запуск. -->
-<title>День 1 — AI Advent 2026</title>
+     адрес всегда с завершающим слэшем, и относительный "./api/digest"
+     превращается в "/day1/api/digest" в проде и в "/api/digest" при локальном
+     запуске. Оба случая верны. Жёсткий <base href="/day1/"> ломал бы локальный. -->
+<title>Новости стартапов — AI Advent 2026, день 1</title>
 <style>
-  :root { color-scheme: light dark; --fg:#111; --bg:#fafaf9; --mut:#666; --line:#e5e5e3; }
-  @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e6; --bg:#16161a; --mut:#9a9a97; --line:#2c2c31; } }
+  :root { color-scheme: light dark; --fg:#111; --bg:#fafaf9; --mut:#666; --line:#e5e5e3; --acc:#2f6f4f; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e6; --bg:#16161a; --mut:#9a9a97; --line:#2c2c31; --acc:#7fc7a4; } }
+  * { box-sizing: border-box; }
   body { margin:0; font:16px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif; color:var(--fg); background:var(--bg); }
-  main { max-width:38rem; margin:0 auto; padding:4rem 1.5rem; }
-  h1 { font-size:1.6rem; margin:0 0 .5rem; letter-spacing:-.01em; }
-  p { color:var(--mut); margin:.5rem 0; }
-  code { font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:color-mix(in srgb, var(--fg) 7%, transparent); padding:.15em .4em; border-radius:4px; }
-  .status { margin-top:2rem; padding:1rem; border:1px solid var(--line); border-radius:8px; }
-  a { color:inherit; }
+  main { max-width:44rem; margin:0 auto; padding:3rem 1.25rem 4rem; }
+  h1 { font-size:1.7rem; margin:0 0 .35rem; letter-spacing:-.02em; }
+  .sub { color:var(--mut); margin:0 0 2rem; }
+  form { display:flex; gap:.5rem; flex-wrap:wrap; }
+  input { flex:1 1 16rem; min-width:0; padding:.7rem .9rem; font:inherit; color:var(--fg);
+          background:transparent; border:1px solid var(--line); border-radius:8px; }
+  input:focus { outline:2px solid var(--acc); outline-offset:1px; }
+  button { padding:.7rem 1.2rem; font:inherit; font-weight:600; color:var(--bg); background:var(--fg);
+           border:0; border-radius:8px; cursor:pointer; }
+  button[disabled] { opacity:.5; cursor:default; }
+  .chips { margin:.75rem 0 0; display:flex; gap:.4rem; flex-wrap:wrap; }
+  .chip { padding:.25rem .6rem; font-size:.85rem; color:var(--mut); border:1px solid var(--line);
+          border-radius:999px; background:transparent; cursor:pointer; }
+  .progress { margin:1.75rem 0 0; padding:0; color:var(--mut); font-size:.95rem; min-height:1.6rem; }
+  .progress li { list-style:none; margin:.15rem 0; }
+  .progress li::before { content:"· "; }
+  .cards { margin:1.5rem 0 0; padding:0; }
+  .card { list-style:none; padding:1.1rem 0; border-top:1px solid var(--line); }
+  .card h2 { font-size:1.05rem; margin:0 0 .3rem; line-height:1.4; }
+  .card a { color:inherit; text-decoration:none; }
+  .card a:hover { text-decoration:underline; text-decoration-color:var(--acc); }
+  .meta { font-size:.85rem; color:var(--mut); margin:0; }
+  .why { margin:.4rem 0 0; }
+  .note { margin:1.25rem 0 0; padding:.9rem 1rem; border:1px solid var(--line); border-radius:8px;
+          color:var(--mut); font-size:.95rem; }
+  footer { margin-top:3rem; padding-top:1.25rem; border-top:1px solid var(--line);
+           color:var(--mut); font-size:.85rem; }
 </style>
 </head>
 <body>
 <main>
-  <h1>День 1 — заглушка</h1>
-  <p>Конвейер работает: TLS выпущен, префикс <code>/day1</code> маршрутизируется, образ собран в Actions и запущен на VPS.</p>
-  <p>Прикладной код появится после принятия ADR о стеке.</p>
-  <div class="status">
-    <strong>Проверка здоровья:</strong> <span id="h">…</span>
-  </div>
+  <h1>Новости стартапов</h1>
+  <p class="sub">Три главные новости за неделю в вашей сфере — из изданий США, Европы, Индии и Китая.</p>
+
+  <form id="f">
+    <input id="q" name="sphere" maxlength="60" placeholder="fintech, climate tech, robotics…"
+           autocomplete="off" aria-label="Сфера" required>
+    <button id="go" type="submit">Найти</button>
+  </form>
+  <div class="chips" id="chips"></div>
+
+  <ul class="progress" id="progress" aria-live="polite"></ul>
+  <ul class="cards" id="cards"></ul>
+  <div class="note" id="note" hidden></div>
+
+  <footer>
+    Источники: <span id="sources">…</span>. Показываются заголовок, дата и ссылка на оригинал;
+    пересказ — краткий и своими словами.
+  </footer>
 </main>
+
 <script>
-  fetch('./healthz')
-    .then(r => r.json())
-    .then(d => { document.getElementById('h').textContent = `ok · node ${d.node}`; })
-    .catch(() => { document.getElementById('h').textContent = 'недоступно'; });
+  const $ = (id) => document.getElementById(id);
+  const form = $('f'), input = $('q'), button = $('go');
+  const progress = $('progress'), cards = $('cards'), note = $('note');
+
+  for (const s of ['fintech', 'climate tech', 'robotics', 'AI infrastructure']) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = s;
+    chip.onclick = () => { input.value = s; form.requestSubmit(); };
+    $('chips').append(chip);
+  }
+
+  fetch('./api/sources')
+    .then((r) => r.json())
+    .then((d) => { $('sources').textContent = d.feeds.map((f) => f.source).join(', '); })
+    .catch(() => { $('sources').textContent = 'недоступны'; });
+
+  const step = (text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    progress.append(li);
+  };
+
+  const render = (digest) => {
+    cards.replaceChildren();
+    for (const item of digest.news ?? []) {
+      const li = document.createElement('li');
+      li.className = 'card';
+
+      const h2 = document.createElement('h2');
+      const a = document.createElement('a');
+      a.href = item.url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = item.title;
+      h2.append(a);
+
+      const meta = document.createElement('p');
+      meta.className = 'meta';
+      meta.textContent = `${item.date} · ${item.source} · ${item.region}`;
+
+      const why = document.createElement('p');
+      why.className = 'why';
+      why.textContent = item.why ?? '';
+
+      li.append(h2, meta, why);
+      cards.append(li);
+    }
+
+    if (digest.note) {
+      note.textContent = digest.note;
+      note.hidden = false;
+    } else {
+      note.hidden = true;
+    }
+  };
+
+  let stream = null;
+
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    const sphere = input.value.trim();
+    if (!sphere) return;
+
+    stream?.close();
+    progress.replaceChildren();
+    cards.replaceChildren();
+    note.hidden = true;
+    note.textContent = '';
+    button.disabled = true;
+
+    stream = new EventSource(`./api/digest?sphere=${encodeURIComponent(sphere)}`);
+
+    stream.addEventListener('progress', (e) => step(JSON.parse(e.data).text));
+
+    stream.addEventListener('result', (e) => {
+      const digest = JSON.parse(e.data);
+      step(digest.cached ? 'Готово (из кэша)' : 'Готово');
+      render(digest);
+      button.disabled = false;
+      stream.close();
+    });
+
+    stream.addEventListener('error', (e) => {
+      // Отличаем ошибку приложения от обрыва соединения: у первой есть data.
+      if (e.data) {
+        note.textContent = JSON.parse(e.data).message;
+        note.hidden = false;
+      } else if (!cards.children.length && !note.textContent) {
+        note.textContent = 'Соединение прервано. Попробуйте ещё раз.';
+        note.hidden = false;
+      }
+      button.disabled = false;
+      stream.close();
+    });
+  };
 </script>
 </body>
 </html>
