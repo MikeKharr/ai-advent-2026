@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Первичная настройка свежего Ubuntu 24.04 на Vultr. Запускать от root ОДИН раз.
+# Первичная настройка свежего Ubuntu 24.04. Запускать от root ОДИН раз.
 # Идемпотентен: повторный запуск ничего не ломает.
 #
-#   ssh root@<IP> 'bash -s' < deploy/bootstrap.sh
+#   scp deploy/bootstrap.sh root@<IP>:/tmp/
+#   ssh root@<IP> 'bash /tmp/bootstrap.sh'
+#
+# ВАЖНО: запускать именно файлом. Вариант `ssh ... 'bash -s' < bootstrap.sh`
+# ломается: apt при conffile-вопросе читает stdin и съедает остаток скрипта.
+# Проверено на практике 2026-09-07, см. development-history.
 #
 # Что делает: пользователь без root, жёсткий SSH, файрвол, fail2ban,
 # автообновления безопасности, Docker, клон репозитория.
@@ -17,17 +22,22 @@ log() { printf '\n\033[1;32m==>\033[0m %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || { echo "Запускать от root"; exit 1; }
 
+# Защита от того же класса ошибок: apt никогда не должен читать stdin,
+# а conffile-вопросы решаются без участия человека — оставляем текущий файл.
+APT_OPTS=(-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef)
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+
 log "Обновление пакетов"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get upgrade -y -qq
+apt-get update -qq </dev/null
+apt-get upgrade -y -qq "${APT_OPTS[@]}" </dev/null
 
 log "Пакеты: ufw, fail2ban, автообновления, git, ca-certificates"
-apt-get install -y -qq ufw fail2ban unattended-upgrades git ca-certificates curl gnupg
+apt-get install -y -qq "${APT_OPTS[@]}" </dev/null \
+  ufw fail2ban unattended-upgrades git ca-certificates curl gnupg
 
 log "Пользователь ${APP_USER}"
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
-  adduser --disabled-password --gecos "" "$APP_USER"
+  adduser --disabled-password --gecos "" "$APP_USER" </dev/null
   usermod -aG sudo "$APP_USER"
 fi
 # Перенос authorized_keys от root — иначе после запрета root-логина вход потеряется.
@@ -73,7 +83,7 @@ systemctl enable --now fail2ban
 systemctl restart fail2ban
 
 log "Автообновления безопасности"
-dpkg-reconfigure -f noninteractive unattended-upgrades
+dpkg-reconfigure -f noninteractive unattended-upgrades </dev/null
 
 log "Docker"
 if ! command -v docker >/dev/null 2>&1; then
@@ -83,8 +93,9 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
 https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
     > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt-get update -qq </dev/null
+  apt-get install -y -qq "${APT_OPTS[@]}" </dev/null \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 usermod -aG docker "$APP_USER"
 systemctl enable --now docker
