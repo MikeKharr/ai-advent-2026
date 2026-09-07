@@ -51,7 +51,7 @@ else
   { echo '# Общие секреты и лимиты для всех дней. Только на сервере, chmod 600.'
     echo '# Создан deploy/put-secrets.sh. Специфичное для дня — в deploy/dayN.env.'
     printf 'ANTHROPIC_API_KEY=%s\n' "\$key"
-    echo 'ANTHROPIC_MODEL=claude-sonnet-5'
+    echo 'ANTHROPIC_MODEL=claude-haiku-4-5'
     echo ''
     echo '# Контроль расхода (инварианты I-4..I-6)'
     echo 'MAX_SEARCH_USES=4'
