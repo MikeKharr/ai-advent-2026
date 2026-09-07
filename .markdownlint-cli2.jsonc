@@ -1,0 +1,12 @@
+{
+  // .agents/ — vendored-набор скиллов addyosmani/agent-skills (ADR 2026-09-08-0005).
+  // Чужой материал не правим под свой линт: правки сломали бы обновление набора.
+  // Зеркала .claude/.codex/.cursor — симлинки на .agents, но glob обходит их как файлы.
+  "ignores": [
+    ".agents/**",
+    ".claude/skills/**",
+    ".codex/skills/**",
+    ".cursor/skills/**",
+    "node_modules/**"
+  ]
+}

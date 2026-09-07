@@ -93,6 +93,15 @@
 - Skill metadata должна показывать ту же slash-команду, которую вызывает пользователь: `name: <command>`, description начинается с `/<command>`, первый H1 — `# /<command>`, `agents/openai.yaml display_name: "/<command>"`.
 - Не создавать новые slash-command файлы; полезные workflows оформлять как skills.
 - Manifest всегда называется `SKILL.md`.
+- В `.agents/skills/` установлен набор `addyosmani/agent-skills` (ADR `2026-09-07-2350`).
+  Использовать эти skills в первую очередь внутри фаз работы: спецификация
+  (`spec-driven-development`, `planning-and-task-breakdown`), кодинг
+  (`incremental-implementation`, `test-driven-development`), тестирование, ревью
+  (`code-review-and-quality`). Верхнеуровневый процесс — этот файл и `agent_docs/`
+  (ADR, dev-history, snapshot, инварианты, роли); при конфликте инструкций skill
+  с правилами проекта приоритет за правилами проекта.
+- Набор vendored: файлы под `.agents/` не редактировать (обновление —
+  `npx skills update`); они исключены из markdownlint.
 
 ## При начале работы
 
