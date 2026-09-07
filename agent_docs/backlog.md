@@ -5,7 +5,7 @@
 ## Next
 
 - [ ] Владельцу: создать публичный репозиторий `MikeKharr/ai-advent-2026`, запушить каркас, включить branch protection на `main`.
-- [ ] Владельцу: проверить на сервере `systemd-detect-virt` (ожидается `kvm`) и `cat /etc/os-release`. Блокирует всё остальное.
+- [ ] Владельцу: установить публичный SSH-ключ в `/root/.ssh/authorized_keys` и проверить вход по ключу. Блокирует `bootstrap.sh`.
 - [ ] Владельцу: A-запись `challenge.zpq.ai` на адрес сервера.
 - [ ] Владельцу: выполнить `deploy/bootstrap.sh`.
 - [ ] Владельцу: A-запись `challenge.zpq.ai` → IP инстанса.
