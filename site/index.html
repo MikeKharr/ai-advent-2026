@@ -13,13 +13,14 @@
   h1 { font-size:1.75rem; margin:0 0 .35rem; letter-spacing:-.015em; }
   .sub { color:var(--mut); margin:0 0 2.5rem; }
   ul { list-style:none; padding:0; margin:0; display:grid; gap:.5rem; }
-  a.day { display:flex; align-items:baseline; gap:.75rem; padding:.9rem 1.1rem; border:1px solid var(--line); border-radius:10px; text-decoration:none; color:inherit; transition:border-color .15s; }
+  .day { display:flex; align-items:baseline; gap:.75rem; padding:.9rem 1.1rem; border:1px solid var(--line); border-radius:10px; text-decoration:none; color:inherit; transition:border-color .15s; }
   a.day:hover { border-color:var(--accent); }
   .n { font:600 14px/1 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--accent); min-width:3.2rem; }
   .t { font-weight:500; }
   .d { color:var(--mut); font-size:.9rem; margin-left:auto; }
   li.soon { opacity:.45; }
   li.soon .day { border-style:dashed; pointer-events:none; }
+  li.soon .t { font-weight:400; }
   footer { margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--mut); font-size:.875rem; }
   footer a { color:inherit; }
 </style>

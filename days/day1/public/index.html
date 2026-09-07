@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Обязательно: Caddy срезает префикс /day1, поэтому приложение видит "/",
-     а браузер — "/day1/". Без base все относительные ссылки уедут в корень. -->
-<base href="/day1/">
+<!-- Никакого <base>. Caddy делает redir /day1 -> /day1/, поэтому в браузере
+     адрес всегда с завершающим слэшем, и относительный "./healthz" превращается
+     в "/day1/healthz" в проде и в "/healthz" при локальном запуске. Оба случая
+     верны. Жёстко прописанный <base href="/day1/"> ломал бы локальный запуск. -->
 <title>День 1 — AI Advent 2026</title>
 <style>
   :root { color-scheme: light dark; --fg:#111; --bg:#fafaf9; --mut:#666; --line:#e5e5e3; }
