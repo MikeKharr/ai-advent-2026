@@ -41,10 +41,12 @@
    }
    ```
 
-   `Caddyfile` смонтирован `:ro`, и Caddy сам его не перечитывает. Новые маршруты доезжают
-   только потому, что шаг 3 меняет определение сервиса `caddy` и `docker compose up -d`
-   пересоздаёт контейнер. Правка одного лишь `Caddyfile` требует явного
-   `docker compose restart caddy`.
+   `Caddyfile` смонтирован `:ro`, и Caddy сам его не перечитывает. **Проверено на дне 2:
+   добавление дня в `depends_on` сервиса `caddy` НЕ заставляет `docker compose up -d`
+   пересоздать контейнер** — новый маршрут не доезжает, и проверка живого адреса в
+   workflow деплоя падает. После первого деплоя нового дня выполнить на сервере
+   `docker compose restart caddy` и перезапустить упавшую проверку
+   (`gh run rerun <id> --failed`).
 
 3. **`deploy/compose.yml`** — сервис по образцу `day1`: образ
    `ghcr.io/mikekharr/advent-dayN:${DAYN_TAG:-latest}`, оба `env_file`
@@ -59,11 +61,13 @@
 публикует `ghcr.io/mikekharr/advent-dayN:<sha>`, пинит `DAYN_TAG` в `deploy/.env` на сервере,
 делает `pull` пересобранных дней и `docker compose up -d` для всех сервисов.
 
-**Ручной шаг ровно один раз на каждый новый день:** пакет `advent-dayN` создаётся в GHCR
-приватным, а сервер тянет образы анонимно — `docker login` на нём нет. Сборка и деплой идут
-одним прогоном, поэтому первый деплой нового дня ожидаемо падает на `docker compose pull`.
-После падения сделать пакет публичным и перезапустить деплой вручную: workflow `deploy`
-принимает `workflow_dispatch` с input `day: dayN`.
+Пакет `advent-dayN` в GHCR, созданный workflow этого публичного репозитория, доступен
+анонимно сразу — проверено на дне 2, `docker compose pull` прошёл с первого раза.
+Если pull всё же упадёт с ошибкой доступа: сделать пакет публичным в UI GitHub и
+перезапустить деплой (`workflow_dispatch` с input `day: dayN`).
+
+**Реальный ручной шаг первого деплоя — Caddy** (см. шаг 2): после выкатки выполнить
+`docker compose restart caddy` на сервере и перезапустить упавшую проверку живого адреса.
 
 Проверка: `curl -s https://challenge.zpq.ai/dayN/healthz` → 200.
 Откат: предыдущий sha в `DAYN_TAG` и `docker compose up -d dayN`, пересборка не нужна.
