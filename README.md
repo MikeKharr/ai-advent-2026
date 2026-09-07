@@ -26,7 +26,7 @@
 │   └── day1/                 # → challenge.zpq.ai/day1
 ├── site/                     # Лендинг на корне домена
 ├── deploy/                   # Caddyfile, compose.yml, bootstrap.sh
-├── .agents/skills/           # Canonical skills: addyosmani/agent-skills (25) + свои
+├── .agents/skills/           # Canonical skills: addyosmani (25) + NVIDIA skill-inspector + свои
 ├── .agents/references/       # Общие чек-листы vendored-набора
 ├── .claude/agents/           # Роли агентов (10 ролей)
 ├── .claude/skills/           # Claude Code symlink mirrors to .agents
