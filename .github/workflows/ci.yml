@@ -63,15 +63,19 @@ jobs:
 
       - name: Контейнер поднимается и отвечает на /healthz
         run: |
-          docker run -d --name c -p 8080:8080 ci-check:${{ matrix.day }}
+          # Имя из одного символа docker больше не принимает.
+          # Ключ фиктивный: проверяем, что контейнер поднимается и отвечает,
+          # а не что конфигурация полна — /healthz отдаёт 503 без ключа.
+          docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
+            -p 8080:8080 ci-check:${{ matrix.day }}
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
-              echo "healthz ok"; docker rm -f c; exit 0
+              echo "healthz ok"; docker rm -f ci-day; exit 0
             fi
             sleep 1
           done
           echo "::error::контейнер не ответил на /healthz за 20 с"
-          docker logs c; docker rm -f c; exit 1
+          docker logs ci-day; docker rm -f ci-day; exit 1
 
   caddyfile:
     runs-on: ubuntu-latest
