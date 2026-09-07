@@ -23,6 +23,10 @@ services:
     expose:
       - "8080"
     env_file:
+      # Общее для всех дней: ключ Anthropic и лимиты. Кладётся на сервер один раз.
+      - path: ./secrets.env
+        required: false
+      # Только то, что специфично для этого дня. Переопределяет secrets.env.
       - path: ./day1.env
         required: false
     environment:

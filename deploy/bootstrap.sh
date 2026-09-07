@@ -117,9 +117,12 @@ cat <<EOF
 ────────────────────────────────────────────────────────
 Готово. Осталось сделать вручную:
 
-1. Секреты приложения (ключ Anthropic и лимиты):
-     sudo -u ${APP_USER} nano ${APP_DIR}/deploy/day1.env
-     sudo -u ${APP_USER} chmod 600 ${APP_DIR}/deploy/day1.env
+1. Секреты приложений (ключ Anthropic и лимиты) — один файл на все дни,
+   кладётся один раз. С локальной машины из репозитория:
+     bash deploy/put-secrets.sh
+   Либо вручную на сервере:
+     sudo -u ${APP_USER} nano ${APP_DIR}/deploy/secrets.env
+     sudo -u ${APP_USER} chmod 600 ${APP_DIR}/deploy/secrets.env
 
 2. A-запись challenge.zpq.ai → $(curl -s -4 ifconfig.me 2>/dev/null || echo '<IP этого сервера>')
    Дождаться, пока dig +short challenge.zpq.ai отдаёт этот адрес.
