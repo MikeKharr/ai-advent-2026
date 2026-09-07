@@ -5,7 +5,8 @@
 ## Next
 
 - [ ] Владельцу: создать публичный репозиторий `MikeKharr/ai-advent-2026`, запушить каркас, включить branch protection на `main`.
-- [ ] Владельцу: создать инстанс Vultr (Singapore, High Frequency, Ubuntu 24.04), выполнить `deploy/bootstrap.sh`.
+- [ ] Владельцу: задать ReadyIDC четыре предпродажных вопроса (Ubuntu 24.04 / KVM или LXC / документы для иностранца / PromptPay). Блокирует покупку.
+- [ ] Владельцу: оплатить ReadyIDC Cloud Server XS через PromptPay или переводом, выполнить `deploy/bootstrap.sh`.
 - [ ] Владельцу: A-запись `challenge.zpq.ai` → IP инстанса.
 - [ ] Владельцу: секреты репозитория `SSH_HOST`, `SSH_USER`, `SSH_KEY`; сделать пакет GHCR публичным после первой публикации.
 - [ ] Прогнать конвейер на заглушке дня 1: деплой, TLS, `/day1/healthz` отвечает 200.
