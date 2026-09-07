@@ -33,12 +33,35 @@ export function renderCandidates(items) {
  * свободный, поэтому то же свойство держится проверкой по белому списку.
  */
 export function stripUnknownLinks(text, items) {
-  const allowed = new Set(items.map((item) => item.url))
-  return text.replace(/https?:\/\/[^\s<>"')\]]+/g, (raw) => {
-    // Хвостовая пунктуация прилипает к URL в тексте: "…ссылка." или "(…)"
-    const url = raw.replace(/[.,;:!?]+$/, '')
-    const tail = raw.slice(url.length)
-    return allowed.has(url) ? raw : `[ссылка не из списка источников]${tail}`
+  // Сравнение по нормализованному URL: `HTTPS://EVIL.COM` не должен пройти
+  // сменой регистра, а `https://TechCrunch.com/…` — ложно вырезаться.
+  const allowed = new Set()
+  for (const item of items) {
+    allowed.add(item.url)
+    try {
+      allowed.add(new URL(item.url).href)
+    } catch {}
+  }
+  const known = (candidate) => {
+    if (allowed.has(candidate)) return true
+    try {
+      return allowed.has(new URL(candidate).href)
+    } catch {
+      return false
+    }
+  }
+
+  return text.replace(/https?:\/\/[^\s<>"']+/gi, (raw) => {
+    // Хвостовая пунктуация отрезается посимвольно с проверкой на каждом шаге:
+    // скобка бывает и частью URL ("…/a_(b)"), и текстом вокруг ("(см. …)").
+    let url = raw
+    while (true) {
+      if (known(url)) return url + raw.slice(url.length)
+      if (url.length === 0 || !/[.,;:!?)\]]$/.test(url)) break
+      url = url.slice(0, -1)
+    }
+    const trimmed = raw.replace(/[.,;:!?)\]]+$/, '')
+    return `[ссылка не из списка источников]${raw.slice(trimmed.length)}`
   })
 }
 

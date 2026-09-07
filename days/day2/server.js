@@ -63,11 +63,28 @@ async function readBody(req, limit = 8192) {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-/** Сфера и параметры: из query для SSE, из тела для POST. Ошибка — отказ. */
+/**
+ * Сфера и параметры: из query для SSE, из тела для POST. Ошибка — отказ.
+ * Тело — только объект: JSON.parse('null') и массивы не должны доходить до
+ * чтения полей. Падение процесса на границе обнуляло бы счётчики лимитов (I-5).
+ */
 function parseRequest(source) {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) {
+    return { ok: false, message: 'Тело запроса должно быть JSON-объектом' }
+  }
   const sphere = parseSphere(source.sphere ?? '')
   if (!sphere.ok) return { ok: false, message: sphere.message }
-  const params = parseParams(source, env)
+  // Оба написания ключей: camelCase из README и snake_case как в query SSE —
+  // молчаливо игнорировать «не то» написание нельзя (иначе тихий дефолт).
+  const params = parseParams(
+    {
+      format: source.format,
+      stop: source.stop,
+      maxTokens: source.maxTokens ?? source.max_tokens,
+      perSource: source.perSource ?? source.per_source,
+    },
+    env,
+  )
   if (!params.ok) return { ok: false, message: params.message }
   return { ok: true, sphere: sphere.sphere, params: params.params }
 }
@@ -123,7 +140,19 @@ async function handleAnswer(req, res, url) {
   }
 }
 
-const server = createServer(async (req, res) => {
+/**
+ * Недосмотр на границе не должен ронять процесс: счётчики лимитов живут
+ * в памяти, и рестарт контейнера обнулял бы их (I-5). Ошибка — 500 и лог.
+ */
+const server = createServer((req, res) => {
+  handle(req, res).catch((error) => {
+    console.error('server:', error.message)
+    if (res.headersSent) res.end()
+    else sendJson(res, 500, { error: 'Внутренняя ошибка. Попробуйте позже.' })
+  })
+})
+
+async function handle(req, res) {
   const url = new URL(req.url ?? '/', 'http://localhost')
 
   if (url.pathname === '/healthz') {
@@ -156,10 +185,12 @@ const server = createServer(async (req, res) => {
       })
     }
 
-    const parsed = parseRequest(body)
-    if (!parsed.ok) return sendJson(res, 400, { error: parsed.message })
-
     try {
+      // Разбор внутри try, как в дне 1: граница не должна полагаться на то,
+      // что дальше по коду ничего не бросает.
+      const parsed = parseRequest(body)
+      if (!parsed.ok) return sendJson(res, 400, { error: parsed.message })
+
       const answer = await buildAnswer(parsed.sphere, parsed.params, {
         cache,
         limiter,
@@ -194,7 +225,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     res.end('not found')
   }
-})
+}
 
 server.listen(PORT, () => console.log(`day2 слушает :${PORT}, лент: ${FEEDS.length}`))
 

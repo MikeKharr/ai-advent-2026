@@ -317,6 +317,109 @@ test('сфера валидируется на границе', () => {
   assert.equal(parseSphere(42).ok, false)
 })
 
+test('параметры чужого типа — отказ, а не приведение и не падение', () => {
+  // Объект без toString ронял String() и вместе с ним процесс (ревью, Б-1).
+  const evil = { toString: null, valueOf: null }
+  assert.equal(parseParams({ format: evil }, ENV).ok, false)
+  assert.equal(parseParams({ format: ['a', 'b'] }, ENV).ok, false)
+  assert.equal(parseParams({ stop: 42 }, ENV).ok, false)
+  assert.equal(parseParams({ stop: {} }, ENV).ok, false)
+  assert.equal(parseParams({ maxTokens: evil }, ENV).ok, false)
+  assert.equal(parseParams({ perSource: [30] }, ENV).ok, false)
+})
+
+test('параллельный залп не проходит мимо суточного лимита', async () => {
+  let modelCalls = 0
+  const fetchImpl = fakeFetch({
+    feeds: {
+      'https://a.test/feed': feedXml([
+        { title: 'Есть', url: 'https://a.test/1', at: NOW - 86400000 },
+      ]),
+    },
+    onModelCall: () => {
+      modelCalls += 1
+    },
+  })
+  const env = { ...ENV, MAX_DAILY_CALLS: 1, RATE_LIMIT_PER_MIN: 10, RATE_LIMIT_PER_HOUR: 10 }
+  const limiter = createLimiter(env)
+  const cache = createCache()
+  const deps = { fetchImpl, now: NOW, feeds: [FEED_A] }
+
+  const results = await Promise.allSettled(
+    Array.from({ length: 5 }, (_, i) =>
+      buildAnswer(`сфера ${i}`, DEFAULTS, { cache, limiter, env, ip: '1.1.1.1', deps }),
+    ),
+  )
+  assert.equal(modelCalls, 1, 'пять одновременных запросов при лимите 1 — один вызов API')
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1)
+  assert.equal(limiter.stats().callsToday, 1)
+})
+
+test('пустые ленты возвращают зарезервированный слот', async () => {
+  const fetchImpl = fakeFetch({ feeds: {} })
+  const env = { ...ENV, MAX_DAILY_CALLS: 1, RATE_LIMIT_PER_MIN: 10 }
+  const limiter = createLimiter(env)
+  const cache = createCache()
+  const deps = { fetchImpl, now: NOW, feeds: [FEED_A] }
+
+  await buildAnswer('a', DEFAULTS, { cache, limiter, env, ip: '1.1.1.1', deps })
+  assert.equal(limiter.stats().callsToday, 0, 'вызова API не было — слот не потрачен')
+})
+
+test('поминутный лимит срабатывает и отпускает через минуту', () => {
+  let t = NOW
+  const env = { ...ENV, RATE_LIMIT_PER_MIN: 2, RATE_LIMIT_PER_HOUR: 100, MAX_DAILY_CALLS: 100 }
+  const limiter = createLimiter(env, { now: () => t })
+  for (let i = 0; i < 2; i += 1) assert.equal(limiter.reserve('1.1.1.1').ok, true)
+  assert.equal(limiter.reserve('1.1.1.1').reason, 'minute')
+  assert.equal(limiter.reserve('2.2.2.2').ok, true, 'другой адрес не должен страдать')
+  t += 61_000
+  assert.equal(limiter.reserve('1.1.1.1').ok, true, 'через минуту окно должно освободиться')
+})
+
+test('чужая ссылка не проходит сменой регистра схемы или хоста', () => {
+  const items = [{ url: 'https://a.test/real' }]
+  const clean = stripUnknownLinks('см. HTTPS://EVIL.TEST/x и httpS://evil.test/y', items)
+  assert.ok(!/evil/i.test(clean.replace(/\[ссылка не из списка источников\]/g, '')))
+})
+
+test('своя ссылка с иным регистром хоста не вырезается', () => {
+  const items = [{ url: 'https://a.test/real' }]
+  const clean = stripUnknownLinks('см. https://A.TEST/real', items)
+  assert.ok(!clean.includes('не из списка'))
+})
+
+test('ссылка из списка со скобками сохраняется целиком', () => {
+  const items = [{ url: 'https://a.test/a_(b)' }]
+  assert.equal(
+    stripUnknownLinks('ок https://a.test/a_(b) конец', items),
+    'ок https://a.test/a_(b) конец',
+  )
+  // А скобка, не входящая в URL, остаётся в тексте.
+  assert.equal(stripUnknownLinks('(см. https://a.test/a_(b))', items), '(см. https://a.test/a_(b))')
+})
+
+test('одновременные запросы одной сферы читают ленты один раз', async () => {
+  let feedFetches = 0
+  const xml = feedXml([{ title: 'Есть', url: 'https://a.test/1', at: NOW - 86400000 }])
+  const base = fakeFetch({ feeds: { 'https://a.test/feed': xml } })
+  const fetchImpl = async (url, options) => {
+    if (typeof url === 'string' && url.includes('a.test/feed')) feedFetches += 1
+    return base(url, options)
+  }
+  const env = { ...ENV, MAX_DAILY_CALLS: 10, RATE_LIMIT_PER_MIN: 10, RATE_LIMIT_PER_HOUR: 10 }
+  const cache = createCache()
+  const limiter = createLimiter(env)
+  const deps = { fetchImpl, now: NOW, feeds: [FEED_A] }
+
+  await Promise.all(
+    Array.from({ length: 5 }, () =>
+      buildAnswer('fintech', DEFAULTS, { cache, limiter, env, ip: '1.1.1.1', deps }),
+    ),
+  )
+  assert.equal(feedFetches, 1, 'кэш лент и once должны схлопывать параллельную загрузку')
+})
+
 test('окружение разбирается, ошибки собираются, а не глотаются', () => {
   const { env, errors } = parseEnv({ MAX_DAILY_CALLS: 'много', PORT: '9090' })
   assert.equal(env.PORT, 9090)

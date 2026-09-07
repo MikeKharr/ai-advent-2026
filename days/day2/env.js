@@ -50,10 +50,17 @@ export function parseSphere(value) {
 
 /** Управляющие символы, кроме перевода строки: он значим в format и stop. */
 function cleanText(value) {
-  return String(value ?? '')
-    .replace(/\r\n/g, '\n')
-    .replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '')
-    .trim()
+  // Тип проверяется, а не приводится: String() на объекте без toString
+  // бросает, а «[object Object]» — молчаливый мусор вместо отказа.
+  if (value === undefined || value === null) return { ok: true, text: '' }
+  if (typeof value !== 'string') return { ok: false }
+  return {
+    ok: true,
+    text: value
+      .replace(/\r\n/g, '\n')
+      .replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '')
+      .trim(),
+  }
 }
 
 export const PARAM_DEFAULTS = {
@@ -75,12 +82,16 @@ const PARAM_LIMITS = {
  * не применился, а смысл дня 2 — именно видеть эффект параметров.
  */
 export function parseParams(source, env) {
-  const format = cleanText(source.format)
+  const formatParsed = cleanText(source.format)
+  if (!formatParsed.ok) return { ok: false, message: 'Формат ответа должен быть строкой' }
+  const format = formatParsed.text
   if (format.length > PARAM_LIMITS.format) {
     return { ok: false, message: `Формат ответа: не больше ${PARAM_LIMITS.format} символов` }
   }
 
-  const stop = cleanText(source.stop)
+  const stopParsed = cleanText(source.stop)
+  if (!stopParsed.ok) return { ok: false, message: 'Условие останова должно быть строкой' }
+  const stop = stopParsed.text
   if (stop.length > PARAM_LIMITS.stop) {
     return { ok: false, message: `Условие останова: не больше ${PARAM_LIMITS.stop} символов` }
   }
@@ -122,9 +133,11 @@ export function parseParams(source, env) {
   }
 }
 
-/** Пустое значение — «возьми дефолт», мусор — ошибка, а не молчаливый дефолт. */
+/** Пустое значение — «возьми дефолт», мусор и чужой тип — ошибка, а не молчаливый дефолт. */
 function parseBoundedInt(raw, min, max) {
-  if (raw === undefined || raw === null || String(raw).trim() === '') return { ok: true }
+  if (raw === undefined || raw === null) return { ok: true }
+  if (typeof raw !== 'string' && typeof raw !== 'number') return { ok: false }
+  if (String(raw).trim() === '') return { ok: true }
   const value = Number(raw)
   if (!Number.isInteger(value) || value < min || value > max) return { ok: false }
   return { ok: true, value }

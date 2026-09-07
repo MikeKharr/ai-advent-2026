@@ -56,9 +56,10 @@ export async function buildAnswer(
   params,
   { cache, limiter, env, ip, onProgress = () => {}, deps = {} },
 ) {
-  // Лимит проверяется до всякой работы: отказанный запрос не должен даже
-  // запускать загрузку лент (I-4).
-  const allowed = limiter.check(ip)
+  // Слот резервируется до всякой работы: отказанный запрос не должен даже
+  // запускать загрузку лент (I-4). Резерв атомарный — параллельный залп
+  // не проходит мимо суточного предела (I-5).
+  const allowed = limiter.reserve(ip)
   if (!allowed.ok) {
     const error = new Error(allowed.message)
     error.code = allowed.reason
@@ -77,6 +78,8 @@ export async function buildAnswer(
   const at = new Date().toISOString()
 
   if (items.length === 0) {
+    // Вызова API не будет — зарезервированный слот возвращается.
+    limiter.release(ip)
     return {
       sphere,
       params,
@@ -102,7 +105,6 @@ export async function buildAnswer(
     text: `Спрашиваю модель: ${candidates.length} материалов, максимум ${params.maxTokens} токенов ответа`,
   })
 
-  limiter.commit(ip)
   const result = await askModel(sphere, params, candidates, env, deps)
 
   return {

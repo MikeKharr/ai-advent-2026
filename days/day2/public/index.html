@@ -48,7 +48,6 @@
          padding:.1rem .5rem; }
   .tag.tokens { color:var(--acc); border-color:var(--acc); }
   .answer { white-space:pre-wrap; overflow-wrap:anywhere; font-size:.92rem; margin:0; }
-  .answer a { color:var(--acc); }
   .entry .enote { color:var(--mut); font-size:.85rem; margin:.6rem 0 0; }
   .empty { color:var(--mut); font-size:.92rem; }
   .feedhead { display:flex; align-items:baseline; justify-content:space-between; gap:.6rem; }
@@ -151,7 +150,11 @@
   const MAX_ENTRIES = 50;
 
   const loadFeed = () => {
-    try { return JSON.parse(localStorage.getItem(STORE)) ?? []; } catch { return []; }
+    // Хранилище — внешние данные: валидный JSON не обязан быть массивом записей.
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORE));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
   };
   const saveFeed = (entries) => {
     try { localStorage.setItem(STORE, JSON.stringify(entries.slice(0, MAX_ENTRIES))); } catch {}
@@ -218,9 +221,15 @@
   };
 
   const renderFeed = () => {
+    // Одна битая запись (например, старого формата) не должна ломать страницу:
+    // она пропускается, остальные рисуются.
     const entries = loadFeed();
-    feed.replaceChildren(...entries.map(renderEntry));
-    empty.hidden = entries.length > 0;
+    const nodes = [];
+    for (const entry of entries) {
+      try { nodes.push(renderEntry(entry)); } catch {}
+    }
+    feed.replaceChildren(...nodes);
+    empty.hidden = nodes.length > 0;
     $('clear').hidden = entries.length === 0;
   };
 
