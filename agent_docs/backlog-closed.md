@@ -4,6 +4,12 @@
 
 ## 2026-09
 
+- [x] 2026-09-07 — Публичный репозиторий `MikeKharr/ai-advent-2026` создан, каркас запушен (branch protection не включена — вынесена отдельным пунктом в Next). → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
+- [x] 2026-09-07 — SSH-ключ установлен, вход по ключу под `advent` работает; `bootstrap.sh` выполнен, сервер провиженен. → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
+- [x] 2026-09-07 — A-запись `challenge.zpq.ai` → IP сервера назначена, TLS выдан. → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
+- [x] 2026-09-07 — Секреты репозитория `SSH_HOST`, `SSH_USER`, `SSH_KEY` заведены; пакет GHCR публичен (анонимный pull — 200). → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
+- [x] 2026-09-07 — Конвейер прогнан на заглушке дня 1: деплой прошёл, TLS работает, `/day1/healthz` отвечает 200 (`node v22.23.2`), образ запинен на тег коммита. → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
+- [x] 2026-09-07 — ADR `2026-09-07-1525-zero-dependency-node.md` принят владельцем: Node 22 без runtime-зависимостей. → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
 - [x] 2026-09-07 — Исследование: прайсинг web_search и моделей, выбор VPS, ограничения песочницы. → `development-history/2026-09-07-1520-project-bootstrap.md`
 - [x] 2026-09-07 — Каркас репозитория на 2030ai-шаблоне + memory-слой. → `development-history/2026-09-07-1520-project-bootstrap.md`
 - [x] 2026-09-07 — Выбран и куплен сервер: ReadyIDC VPS-LXS+, 2 ядра / 4 ГБ / 100 ГБ, оплачено до марта 2027. → `development-history/2026-09-07-1805-server-provisioned.md`
