@@ -4,6 +4,9 @@
 
 ## 2026-09
 
+- [x] 2026-09-07 — Спайк `web_search` + строгая структура: связка одним вызовом работает, цена измерена ($0.10–0.11), вывод из документации про 400 опровергнут. → `adr/2026-09-07-1954-web-search-strict-json.md`
+- [x] 2026-09-07 — Владелец выпустил `ANTHROPIC_API_KEY` и положил на сервер, поставил биллинг-алерт, включил branch protection на `main`. → `development-history/2026-09-07-1954-spike-web-search-json.md`
+
 - [x] 2026-09-07 — Публичный репозиторий `MikeKharr/ai-advent-2026` создан, каркас запушен (branch protection не включена — вынесена отдельным пунктом в Next). → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
 - [x] 2026-09-07 — SSH-ключ установлен, вход по ключу под `advent` работает; `bootstrap.sh` выполнен, сервер провиженен. → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
 - [x] 2026-09-07 — A-запись `challenge.zpq.ai` → IP сервера назначена, TLS выдан. → `development-history/2026-09-07-1835-pipeline-live-adr-accepted.md`
