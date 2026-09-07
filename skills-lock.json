@@ -127,6 +127,12 @@
       "skillPath": "skills/shipping-and-launch/SKILL.md",
       "computedHash": "cc891846d7f0dcc084bba982b5c71d023ae96ebeb763f456cff71210c0eaf0f4"
     },
+    "skill-inspector": {
+      "source": "NVIDIA/SkillSpector",
+      "sourceType": "github",
+      "skillPath": "skills/skill-inspector/SKILL.md",
+      "computedHash": "26e8cdf95215de34f9f832ff3b897649dcef118da318886d2665a7fcd026f91d"
+    },
     "source-driven-development": {
       "source": "addyosmani/agent-skills",
       "sourceType": "github",
