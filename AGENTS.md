@@ -90,9 +90,11 @@
 
 - Если проекту нужны локальные skills, источник истины: `.agents/skills/<name>/SKILL.md`.
 - Platform mirrors: `.claude/skills/<name>`, `.codex/skills/<name>`, `.cursor/skills/<name>` должны быть symlink на `../../.agents/skills/<name>`.
-- Skill metadata должна показывать ту же slash-команду, которую вызывает пользователь: `name: <command>`, description начинается с `/<command>`, первый H1 — `# /<command>`, `agents/openai.yaml display_name: "/<command>"`.
+- Skill metadata собственных скиллов проекта должна показывать ту же slash-команду, которую вызывает пользователь: `name: <command>`, description начинается с `/<command>`, первый H1 — `# /<command>`, `agents/openai.yaml display_name: "/<command>"`. На vendored-набор ниже это правило не распространяется.
 - Не создавать новые slash-command файлы; полезные workflows оформлять как skills.
 - Manifest всегда называется `SKILL.md`.
+- В `.agents/skills/` установлен набор `addyosmani/agent-skills` (ADR `2026-09-07-2350`). Использовать эти skills в первую очередь внутри фаз работы: спецификация (`spec-driven-development`, `planning-and-task-breakdown`), кодинг (`incremental-implementation`, `test-driven-development`), тестирование, ревью (`code-review-and-quality`). Верхнеуровневый процесс — этот файл и `agent_docs/` (ADR, dev-history, snapshot, инварианты, роли); при конфликте инструкций skill с правилами проекта приоритет за правилами проекта.
+- Набор vendored: файлы под `.agents/` не редактировать; они исключены из markdownlint. Обновление — `npx skills update` плюс ручное копирование общих чек-листов и допфайлов скиллов, которые установщик не переносит (процедура — в ADR `2026-09-07-2350`).
 
 ## При начале работы
 
