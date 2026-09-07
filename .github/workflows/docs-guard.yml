@@ -1,0 +1,53 @@
+name: docs-guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Лимит длины файлов состояния (300 строк)
+        run: |
+          fail=0
+          for f in agent_docs/snapshot.md agent_docs/backlog.md; do
+            [ -f "$f" ] || { echo "::error::отсутствует $f"; fail=1; continue; }
+            n=$(wc -l < "$f")
+            if [ "$n" -gt 300 ]; then
+              echo "::error file=$f::$f содержит $n строк, лимит 300. Перенесите закрытое в backlog-closed.md"
+              fail=1
+            else
+              echo "ok: $f — $n строк"
+            fi
+          done
+          exit $fail
+
+      - name: Имена атомарных документов
+        run: |
+          fail=0
+          for dir in agent_docs/adr agent_docs/development-history; do
+            for f in "$dir"/*.md; do
+              base=$(basename "$f")
+              [ "$base" = "README.md" ] && continue
+              if ! echo "$base" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}-[a-z0-9-]+\.md$'; then
+                echo "::error file=$f::имя должно быть YYYY-MM-DD-HHMM-slug.md, slug латиницей в kebab-case"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
+      - name: Секреты не попали в репозиторий
+        run: |
+          if grep -rIn --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}' . ; then
+            echo "::error::в репозитории найден похожий на реальный API-ключ"
+            exit 1
+          fi
+          echo "ok: ключей не найдено"

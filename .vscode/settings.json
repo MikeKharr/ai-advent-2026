@@ -1,0 +1,11 @@
+{
+  "explorer.excludeGitIgnore": false,
+  "files.exclude": {
+    "**/.env": false
+  },
+  "editor.formatOnSave": true,
+  "files.eol": "\n",
+  "[markdown]": {
+    "editor.wordWrap": "on"
+  }
+}
