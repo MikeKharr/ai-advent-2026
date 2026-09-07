@@ -18,13 +18,16 @@
 ├── .env.example              # Безопасный шаблон переменных окружения
 ├── .editorconfig             # Единый whitespace/EOL для всех IDE
 ├── .markdownlint.json        # Конфигурация markdownlint
+├── .markdownlint-cli2.jsonc  # Исключения линта для vendored-скиллов
+├── skills-lock.json          # Хэши установленных skills (npx skills)
 ├── .vscode/settings.json     # Видимость .env в IDE
 ├── .github/workflows/        # CI: markdownlint, docs-guard, ci, deploy
 ├── days/                     # Одно задание — один каталог — один контейнер
 │   └── day1/                 # → challenge.zpq.ai/day1
 ├── site/                     # Лендинг на корне домена
 ├── deploy/                   # Caddyfile, compose.yml, bootstrap.sh
-├── .agents/skills/           # Canonical project-local skills
+├── .agents/skills/           # Canonical skills: addyosmani/agent-skills (25) + свои
+├── .agents/references/       # Общие чек-листы vendored-набора
 ├── .claude/agents/           # Роли агентов (10 ролей)
 ├── .claude/skills/           # Claude Code symlink mirrors to .agents
 ├── .codex/skills/            # Codex symlink mirrors to .agents

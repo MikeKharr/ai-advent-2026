@@ -7,7 +7,7 @@
 - По поручению владельца установлены все 25 скиллов `addyosmani/agent-skills`
   (коммит источника `48cb116`) в `.agents/skills/` с симлинками-зеркалами в
   `.claude/skills`, `.codex/skills`, `.cursor/skills` — по проектной конвенции;
-  версии зафиксированы в `skills-lock.json`.
+  содержимое зафиксировано хэшами в `skills-lock.json`, пин коммита — в ADR.
 - Скопированы общие чек-листы источника в `.agents/references/` (установщик их не
   переносит — скиллы ссылаются на `../../references/*.md`) и локальные допфайлы
   скиллов `constraint-driven-development` (`references/floor-guard.md`) и
@@ -25,11 +25,14 @@
 шаблон 2030ai — артефакты и роли; слои дополняют друг друга. Установка в репозиторий —
 для версионирования, воспроизводимости и переноса практик в HBK.SG.
 
-## Проверено
+## Обновлено
 
-- 25 каталогов в `.agents/skills/`, по 25 симлинков в трёх зеркалах.
-- `markdownlint-cli2 "**/*.md"` — 0 ошибок (58 файлов).
-- Ссылки скиллов на `../../references/*.md` разрешаются.
+- [x] .agents/skills/ — 25 скиллов; по 25 симлинков в .claude/.codex/.cursor
+- [x] .agents/references/ — общие чек-листы источника; ссылки `../../references/*.md` разрешаются
+- [x] skills-lock.json, .markdownlint-cli2.jsonc
+- [x] AGENTS.md (раздел Project-Local Skills), README.md (структура)
+- [x] agent_docs/adr/2026-09-07-2350-adopt-addyosmani-agent-skills.md, agent_docs/snapshot.md
+- [x] `markdownlint-cli2 "**/*.md"` — 0 ошибок
 
 ## Следующие шаги
 
