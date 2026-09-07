@@ -40,7 +40,10 @@ f="${REMOTE_PATH}"
 read -r key
 if [ -f "\$f" ]; then
   tmp="\$(mktemp "\$(dirname "\$f")/.secrets.XXXXXX")"
-  grep -v '^ANTHROPIC_API_KEY=' "\$f" > "\$tmp" || true
+  trap 'rm -f "\$tmp"' EXIT
+  # Код 1 у grep — «нет совпадений», это норма. Код 2 — настоящая ошибка,
+  # и тогда падаем, а не кладём на место пустой файл.
+  grep -v '^ANTHROPIC_API_KEY=' "\$f" > "\$tmp" || [ \$? -eq 1 ]
   printf 'ANTHROPIC_API_KEY=%s\n' "\$key" >> "\$tmp"
   mv "\$tmp" "\$f"
   echo "Обновлён ANTHROPIC_API_KEY, остальные значения файла сохранены."
@@ -58,7 +61,7 @@ else
     echo 'RATE_LIMIT_PER_HOUR=30'
     echo 'CACHE_TTL_HOURS=6'
   } > "\$f"
-  echo "Файл создан со значениями по умолчанию из .env.example."
+  echo "Файл создан со значениями по умолчанию из корневого .env.example."
 fi
 chmod 600 "\$f"
 ls -l "\$f"
