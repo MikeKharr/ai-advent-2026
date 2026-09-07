@@ -58,8 +58,9 @@
 ### 3. Инструменты разработчика (не runtime)
 
 - `skillspector` — сканер безопасности скиллов, обязателен для гейта установки
-  скиллов (AGENTS.md, ADR `2026-09-08-0205`). Установка:
-  `uv tool install git+https://github.com/NVIDIA/skillspector.git`
+  скиллов (AGENTS.md, ADR `2026-09-08-0205`). Установка с пином на коммит скилла
+  `skill-inspector`:
+  `uv tool install 'git+https://github.com/NVIDIA/skillspector.git@704bc95'`
   (uv — `brew install uv`; кладёт бинарь в `~/.local/bin`).
   Использование: `skillspector scan <источник> --no-llm` — LLM-стадию не включать,
   ключ API живёт только на сервере (I-1).
