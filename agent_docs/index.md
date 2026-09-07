@@ -24,6 +24,7 @@
 
 - `agent_docs/guides/agent-roles.md` — роли агентов и протокол передачи работы.
 - `agent_docs/guides/dod.md` — критерии завершенности (DoD).
+- `agent_docs/guides/new-day.md` — как добавить новый день челленджа; читать перед началом задания.
 - `agent_docs/guides/environment-setup.md` — настройка окружения; применять при инициализации проекта.
 - `agent_docs/guides/drive-sync.md` — публикация решений в Google Drive.
 - `agent_docs/guides/logging.md` — логирование скриптов/интеграций.

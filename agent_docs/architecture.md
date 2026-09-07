@@ -50,6 +50,8 @@ deploy/        Caddyfile, compose.yml, bootstrap.sh
 ```
 
 Новый день = каталог + две строки в `Caddyfile` + сервис в `compose.yml` + ссылка на лендинге.
+Порядок и детали — `agent_docs/guides/new-day.md`. Ключ Anthropic общий для всех дней
+(`deploy/secrets.env` на сервере), заводить его для нового дня не нужно.
 
 - Project-local skills source: `.agents/skills/<name>/SKILL.md`.
 - Platform skill mirrors: `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`.
@@ -93,7 +95,7 @@ deploy/        Caddyfile, compose.yml, bootstrap.sh
 - Стоимость: ≈ $0.085 за некэшированный запрос. Суточный предел по умолчанию 50 вызовов.
 - Отклик: до 15 с при промахе кэша — поэтому SSE-прогресс обязателен, иначе ожидание выглядит как зависание.
 - Доступность: один инстанс, без резервирования. Простой допустим.
-- Секреты: только в `.env` на сервере и в GitHub Secrets.
+- Секреты: только на сервере (`deploy/secrets.env` — общий для всех дней) и в GitHub Secrets.
 
 ## Roadmap
 
