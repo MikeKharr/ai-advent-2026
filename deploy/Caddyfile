@@ -6,11 +6,18 @@
 challenge.zpq.ai {
 	encode gzip zstd
 
+	# Блок применяется ко всем ответам сайта, включая проксируемые в контейнеры
+	# дней, — проверено на проде: заголовки видны и на лендинге, и на /dayN/.
 	header {
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
 		-Server
+
+		# Домен намеренно не индексируется: это витрина учебного челленджа.
+		# Заголовок, а не только meta: он накрывает и JSON-ответы API, и
+		# страницы дней, которые мы не редактируем.
+		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex"
 	}
 
 	# --- дни ---

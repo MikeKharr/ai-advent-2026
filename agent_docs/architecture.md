@@ -49,6 +49,8 @@ site/          лендинг на корне домена
 deploy/        Caddyfile, compose.yml, bootstrap.sh
 ```
 
+Заголовки задаются один раз на весь сайт в блоке `header` — они доходят и до проксируемых дней. Там же `X-Robots-Tag: noindex`: домен намеренно закрыт от индексации (`development-history/2026-09-08-1245`).
+
 Новый день = каталог + две строки в `Caddyfile` + сервис в `compose.yml` + ссылка на лендинге.
 Порядок и детали — `agent_docs/guides/new-day.md`. Ключ Anthropic общий для всех дней
 (`deploy/secrets.env` на сервере), заводить его для нового дня не нужно.
