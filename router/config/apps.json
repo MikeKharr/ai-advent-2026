@@ -6,13 +6,7 @@
     {
       "id": "smoke",
       "secretEnv": "APP_KEY_SMOKE",
-      "classes": [
-        "summarize",
-        "translate",
-        "extract_json",
-        "guard_prompt",
-        "other"
-      ],
+      "classes": ["summarize", "translate", "extract_json", "guard_prompt", "other"],
       "limits": {
         "dailyTokens": 50000,
         "dailyCostUsd": 0.5

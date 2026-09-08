@@ -111,7 +111,7 @@ export const PROVIDERS = [
     model: 'meta-llama/llama-prompt-guard-2-22m',
     profile: 'cloud',
     capabilities: ['prompt_guard'],
-    contextWindow: 512,
+    contextWindow: 384,
     jurisdiction: 'us',
     dataClasses: ['public'],
     maxConcurrency: 4,
@@ -135,7 +135,12 @@ export const GROQ_CHAT = {
   jurisdiction: 'us',
   dataClasses: ['public'],
   maxConcurrency: 4,
-  thinking: { none: true, low: 'low', medium: 'medium', high: 'high' },
+  // У GPT-OSS нет уровня none: он отображён на low, рассуждения прячутся
+  // через include_reasoning, потолок выхода поднимается на floor.
+  thinking: { none: 'low', low: 'low', medium: 'medium', high: 'high' },
+  reasoningControl: 'include',
+  reasoningFloorTokens: 1024,
+  strictSchema: true,
   secretEnv: 'GROQ_API_KEY',
   price: { inputPerMTok: 0.075, outputPerMTok: 0.3 },
 }

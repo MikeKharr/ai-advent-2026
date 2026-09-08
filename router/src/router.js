@@ -337,22 +337,42 @@ export function createRouter({
     }
   }
 
-  /** Оценка стоимости запроса в токенах до вызова: вход плюс потолок выхода. */
-  function estimateRequestTokens(req) {
+  /**
+   * Во что запрос может обойтись в худшем случае — до вызова: вход плюс
+   * потолок выхода, умноженные на число возможных вызовов, и та же величина
+   * в деньгах по самой дорогой ставке **среди способных** провайдеров.
+   * Возможных — значит способных: у класса с единственным кандидатом
+   * фолбэка не бывает, и резервировать за два вызова нельзя, иначе лимит
+   * приложения уполовинится. Считать по самому дорогому провайдеру вообще
+   * тоже нельзя: запрос к грошовому классификатору упирался бы в цену
+   * фронтир-модели, которая его никогда не обслужит.
+   */
+  function estimateRequest(req) {
     const cls = config.classes[resolveClass(req.taskClass)]
     const level = resolveThinking(cls, req.thinking).level ?? cls.thinking
-    return (
-      estimateTokens(req.input) +
-      estimateTokens(req.system ?? '') +
-      cls.answerTokens +
-      THINKING_TOKENS[level]
+    const inputTokens = estimateTokens(req.input) + estimateTokens(req.system ?? '')
+    const outputTokens = cls.answerTokens + THINKING_TOKENS[level]
+    const dataClass = req.dataClass ?? cls.dataClass
+    const extraRequires = [...(req.requires ?? []), ...(req.schema ? ['json_schema'] : [])]
+    const capable = orderedCandidates(cls, registry.list()).filter(
+      (p) => capabilityFit(p, cls, level, dataClass, inputTokens, extraRequires).ok,
     )
+    const calls = Math.min(MAX_CALLS, Math.max(1, capable.length))
+    const worst = Math.max(
+      0,
+      ...capable.map(
+        (p) =>
+          (inputTokens / 1e6) * (p.price?.inputPerMTok ?? 0) +
+          (outputTokens / 1e6) * (p.price?.outputPerMTok ?? 0),
+      ),
+    )
+    return { tokens: (inputTokens + outputTokens) * calls, costUsd: worst * calls }
   }
 
   return {
     route,
     resolveClass,
-    estimateRequestTokens,
+    estimateRequest,
     providers: () => registry.list(),
     health,
     /** Счётчики по провайдерам и снимок здоровья — для /v1/metrics. */

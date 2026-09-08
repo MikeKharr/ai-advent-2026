@@ -1,8 +1,20 @@
 // Транспорт к GroqCloud: OpenAI-совместимый /openai/v1/chat/completions.
-// Формы сверены с console.groq.com 2026-09-08: ключ в заголовке
-// Authorization, потолок выхода — `max_completion_tokens` (не `max_tokens`),
-// схема — `response_format.json_schema` с обязательным `name`,
-// уровень размышлений — `reasoning_effort`.
+// Формы сверены с console.groq.com 2026-09-08.
+//
+// Диалект размышлений у Groq зависит от семейства модели, поэтому он описан
+// в конфигурации провайдера, а не зашит здесь (ADR п. 3, поле `thinking` —
+// «имена уровней в диалекте провайдера»):
+//
+//   thinking[уровень]  — значение `reasoning_effort`; `true` означает
+//                        «уровень поддерживается, параметр не отправлять»
+//                        (модели без размышлений, например классификатор).
+//   reasoningControl   — как спрятать рассуждения из ответа:
+//                        "format"  → reasoning_format: hidden (Qwen, MiniMax);
+//                        "include" → include_reasoning: false (GPT-OSS).
+//   reasoningFloorTokens — сколько токенов добавить к потолку выхода, когда
+//                        уровень none отображён на реальное усилие: у GPT-OSS
+//                        значения none нет вовсе, рассуждения неизбежны и
+//                        съели бы весь бюджет ответа.
 //
 // Один ключ обслуживает любое число моделей: каждая модель — своя запись
 // провайдера с тем же `secretEnv`, различаются `id` и `model`.
@@ -10,20 +22,50 @@
 import { readJson } from './http.js'
 
 export async function call(
-  { provider, model, prompt, system, schema, thinking, maxOutputTokens, temperature, signal },
+  {
+    provider,
+    model,
+    prompt,
+    system,
+    schema,
+    tools = [],
+    thinking,
+    maxOutputTokens,
+    temperature,
+    signal,
+  },
   { fetchImpl, env },
 ) {
+  // Возможность, которую роутер потребовал, обязана уйти в запрос. Серверных
+  // инструментов у этого адаптера нет, поэтому падаем громко, а не отвечаем
+  // из памяти модели.
+  if (tools.length > 0)
+    throw new Error(`groq: инструмент ${tools.join(', ')} не поддерживается адаптером`)
+
   const messages = []
   if (system) messages.push({ role: 'system', content: system })
   messages.push({ role: 'user', content: prompt })
 
   const body = { model, messages, stream: false, max_completion_tokens: maxOutputTokens }
   if (temperature !== undefined) body.temperature = temperature
-  // `reasoning_effort` принимают не все модели, поэтому при уровне none
-  // параметр не отправляется вовсе — иначе классификатор ответит 400.
-  if (thinking.level !== 'none') body.reasoning_effort = thinking.value
-  if (schema)
-    body.response_format = { type: 'json_schema', json_schema: { name: 'response', schema } }
+
+  const effort = thinking.value
+  if (typeof effort === 'string') {
+    body.reasoning_effort = effort
+    if (provider.reasoningControl === 'format') body.reasoning_format = 'hidden'
+    if (provider.reasoningControl === 'include') body.include_reasoning = false
+    // Уровень none, отображённый на реальное усилие: роутер бюджета на
+    // размышления не заложил, добавляем объявленный провайдером.
+    if (thinking.level === 'none') body.max_completion_tokens += provider.reasoningFloorTokens ?? 0
+  }
+
+  if (schema) {
+    const json_schema = { name: 'response', schema }
+    // Без strict Groq обещает схему «по возможности»: JSON вернётся, но может
+    // не соответствовать схеме. Включается там, где модель это поддерживает.
+    if (provider.strictSchema) json_schema.strict = true
+    body.response_format = { type: 'json_schema', json_schema }
+  }
 
   const response = await fetchImpl(`${provider.baseUrl}/openai/v1/chat/completions`, {
     method: 'POST',

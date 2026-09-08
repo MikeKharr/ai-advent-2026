@@ -20,12 +20,6 @@ export function createService({
   // Провайдеры — из реестра роутера (тот же шов), а не из статической
   // конфигурации: провайдер, которого учёт не знает, — ошибка, а не цена ноль.
   const providerOf = (id) => router.providers().find((p) => `${p.id}#${p.revision}` === id)
-  const priceCeiling = Math.max(
-    0,
-    ...router
-      .providers()
-      .map((p) => Math.max(p.price?.inputPerMTok ?? 0, p.price?.outputPerMTok ?? 0)),
-  )
   const apps = config.apps.apps
   const adminKey = env[config.apps.admin.secretEnv]
 
@@ -47,24 +41,22 @@ export function createService({
     }
   }
 
-  // Больше одного вызова на запрос не бывает, если провайдер один.
-  const maxCalls = Math.min(2, router.providers().length)
-
   /**
-   * Лимит сверяется с остатком заранее, по оценке запроса (вход плюс потолок
-   * выхода на каждый возможный вызов): один большой запрос не перекрывает
-   * суточный потолок кратно. Резервирования нет — параллельные запросы одного
-   * приложения могут превысить лимит на размер одного запроса.
+   * Лимит сверяется с остатком заранее, по оценке запроса от роутера: вход
+   * плюс потолок выхода на каждый возможный вызов, и то же в деньгах по
+   * самой дорогой ставке среди способных провайдеров. Один большой запрос
+   * не перекрывает суточный потолок кратно. Резервирования нет —
+   * параллельные запросы одного приложения могут превысить лимит на размер
+   * одного запроса.
    */
-  function exhausted(app, at, estimateTokens) {
+  function exhausted(app, at, need) {
     const s = ledger.spent(app.id, at)
     const l = app.limits
-    const need = estimateTokens * maxCalls
-    if (l.dailyTokens && s.tokens + need > l.dailyTokens)
+    if (l.dailyTokens && s.tokens + need.tokens > l.dailyTokens)
       return s.tokens >= l.dailyTokens
         ? `суточный лимит токенов ${l.dailyTokens} исчерпан`
-        : `запрос (~${need} токенов) не помещается в остаток суточного лимита ${l.dailyTokens - s.tokens}`
-    if (l.dailyCostUsd && s.costUsd + (need / 1e6) * priceCeiling > l.dailyCostUsd)
+        : `запрос (~${need.tokens} токенов) не помещается в остаток суточного лимита ${l.dailyTokens - s.tokens}`
+    if (l.dailyCostUsd && s.costUsd + need.costUsd > l.dailyCostUsd)
       return s.costUsd >= l.dailyCostUsd
         ? `суточный лимит расхода $${l.dailyCostUsd} исчерпан`
         : `запрос не помещается в остаток суточного лимита расхода $${round(l.dailyCostUsd - s.costUsd)}`
@@ -101,7 +93,7 @@ export function createService({
       })
 
     const at = now()
-    const why = exhausted(app, at, router.estimateRequestTokens(body))
+    const why = exhausted(app, at, router.estimateRequest(body))
     if (why) {
       log({ event: 'budget_exceeded', app: app.id, taskClass, reason: why })
       return send(res, 429, {

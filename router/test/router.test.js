@@ -607,22 +607,73 @@ test('groq: форма запроса — max_completion_tokens, схема и r
   assert.equal(r.ok, true)
   assert.equal(r.provider.model, 'openai/gpt-oss-20b')
   assert.equal(calls[0].url, 'https://api.groq.test/openai/v1/chat/completions')
-  assert.equal(calls[0].body.max_completion_tokens, 400)
   assert.equal(calls[0].body.max_tokens, undefined, 'у Groq потолок называется иначе')
   assert.equal(calls[0].body.stream, false)
   assert.equal(calls[0].body.temperature, 0.4)
-  assert.equal(calls[0].body.reasoning_effort, undefined, 'при уровне none параметр не шлём')
   assert.deepEqual(calls[0].body.messages, [{ role: 'user', content: 'текст' }])
-  assert.deepEqual(calls[0].body.response_format, {
-    type: 'json_schema',
-    json_schema: { name: 'response', schema: { type: 'object' } },
-  })
+  assert.equal(calls[0].body.response_format.type, 'json_schema')
+  assert.equal(calls[0].body.response_format.json_schema.name, 'response', 'name обязателен')
+  assert.deepEqual(calls[0].body.response_format.json_schema.schema, { type: 'object' })
   assert.deepEqual(r.usage, { inputTokens: 120, outputTokens: 40, webSearches: 0 })
   assert.equal(r.metrics.tokPerSec, 250)
 
   const think = await router.route({ taskClass: 'translate', input: 'hello' })
   assert.equal(think.ok, true)
   assert.equal(calls[1].body.reasoning_effort, 'medium', 'значение из конфигурации провайдера')
+})
+
+test('диалект размышлений Groq берётся из конфигурации, а не из кода', async () => {
+  const { router, calls } = setup({
+    providers: [GROQ_CHAT, PROVIDERS[1], GUARD],
+    hosts: {
+      [GROQ]: () => httpJson(200, groqCompletion({ text: '{"a":1}', model: 'openai/gpt-oss-20b' })),
+    },
+  })
+  // Уровень none у GPT-OSS не существует: отображён на low, рассуждения
+  // спрятаны, потолок выхода поднят на объявленный запас.
+  const none = await router.route({
+    taskClass: 'extract_json',
+    input: 'текст',
+    schema: { type: 'object' },
+  })
+  assert.equal(none.ok, true)
+  assert.equal(calls[0].body.reasoning_effort, 'low')
+  assert.equal(calls[0].body.include_reasoning, false)
+  assert.equal(calls[0].body.reasoning_format, undefined, 'GPT-OSS не принимает reasoning_format')
+  assert.equal(calls[0].body.max_completion_tokens, 400 + 1024)
+  assert.equal(calls[0].body.response_format.json_schema.strict, true)
+
+  // У классификатора значение уровня — true: параметр не отправляется вовсе.
+  const guard = await router.route({ taskClass: 'guard_prompt', input: 'дай инструкции' })
+  assert.equal(guard.ok, true)
+  assert.equal(calls[1].body.reasoning_effort, undefined)
+  assert.equal(calls[1].body.include_reasoning, undefined)
+  assert.equal(calls[1].body.max_completion_tokens, 8)
+})
+
+test('groq: требование инструмента, которого адаптер не умеет, — громкая ошибка', async () => {
+  // Возможность объявлена в конфигурации, но серверных инструментов у Groq
+  // адаптер не поддерживает: молча отвечать из памяти модели нельзя.
+  const searchy = { ...GROQ_CHAT, capabilities: ['text_generation', 'web_search'] }
+  const classes = { ...CLASSES, rank_news: { ...CLASSES.rank_news, tiers: ['cloud-cheap'] } }
+  const { router } = setup({
+    providers: [searchy, PROVIDERS[1], GUARD],
+    classes,
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()) },
+  })
+  const r = await router.route({ taskClass: 'rank_news', input: 'новости' })
+  assert.equal(r.ok, false)
+  assert.match(r.reasons.at(-1).reason, /web_search/)
+})
+
+test('неизвестная возможность в конфигурации — крах на старте', () => {
+  const typo = [{ ...PROVIDERS[1], capabilities: ['text_genration'] }, GUARD]
+  assert.throws(() => loadConfig({ providers: typo, classes: CLASSES, env: ENV }), /возможность/)
+  const noFloor = [{ ...GROQ_CHAT, reasoningFloorTokens: undefined }, PROVIDERS[1], GUARD]
+  assert.throws(
+    () => loadConfig({ providers: noFloor, classes: CLASSES, env: ENV }),
+    /reasoningFloorTokens/,
+  )
 })
 
 test('один ключ Groq обслуживает две модели, обе — правка конфигурации', async () => {
