@@ -11,6 +11,15 @@
         "dailyTokens": 50000,
         "dailyCostUsd": 0.5
       }
+    },
+    {
+      "id": "day5",
+      "secretEnv": "APP_KEY_DAY5",
+      "classes": ["news_answer"],
+      "limits": {
+        "dailyTokens": 2000000,
+        "dailyCostUsd": 2
+      }
     }
   ]
 }

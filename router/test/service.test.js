@@ -248,6 +248,34 @@ test('денежный резерв считается по способным �
   }
 })
 
+test('сервис принимает выбор модели и потолок ответа, отвергает мусор', async () => {
+  const apps = {
+    ...APPS,
+    apps: [{ ...APPS.apps[0], classes: ['news_answer', 'summarize', 'other'] }],
+  }
+  const s = await start({ apps, hosts: { [LAPTOP]: laptopOk, [CLOUD]: cloudOk } })
+  try {
+    const picked = await (
+      await s.post({ taskClass: 'news_answer', input: 'текст', provider: 'anthropic-haiku' })
+    ).json()
+    assert.equal(picked.ok, true)
+    assert.equal(picked.provider.id, 'anthropic-haiku')
+
+    assert.equal((await s.post({ taskClass: 'news_answer', input: 'x', provider: 7 })).status, 400)
+    assert.equal(
+      (await s.post({ taskClass: 'news_answer', input: 'x', answerTokens: 0 })).status,
+      400,
+    )
+    assert.equal(
+      (await s.post({ taskClass: 'news_answer', input: 'x', stop: ['a', 'b', 'c', 'd', 'e'] }))
+        .status,
+      400,
+    )
+  } finally {
+    await s.close()
+  }
+})
+
 test('приложение с неизвестным классом — крах на старте', () => {
   const apps = { ...APPS, apps: [{ ...APPS.apps[0], classes: ['summarise'] }] }
   assert.throws(

@@ -7,8 +7,16 @@
     "answerTokens": 400,
     "dataClass": "public"
   },
-  "extract_json": {
+  "news_answer": {
     "tiers": ["self-hosted", "cloud-cheap", "cloud-frontier"],
+    "requires": ["text_generation"],
+    "thinking": "none",
+    "answerTokens": 600,
+    "maxAnswerTokens": 2048,
+    "dataClass": "public"
+  },
+  "extract_json": {
+    "tiers": ["self-hosted", "cloud-frontier"],
     "requires": ["text_generation", "json_schema"],
     "thinking": "none",
     "locked": true,
@@ -16,14 +24,14 @@
     "dataClass": "public"
   },
   "summarize": {
-    "tiers": ["self-hosted", "cloud-cheap", "cloud-frontier"],
+    "tiers": ["self-hosted", "cloud-frontier"],
     "requires": ["text_generation"],
     "thinking": "none",
     "answerTokens": 500,
     "dataClass": "public"
   },
   "translate": {
-    "tiers": ["self-hosted", "cloud-cheap", "cloud-frontier"],
+    "tiers": ["self-hosted", "cloud-frontier"],
     "requires": ["text_generation"],
     "thinking": "medium",
     "answerTokens": 800,

@@ -103,7 +103,11 @@ export function validateProviders(providers, env) {
       fail(`${where}: reasoningFloorTokens — целое ≥ 0`)
     // Уровень none, отображённый на реальное усилие, без запаса токенов
     // означает, что рассуждения съедят весь ответ.
-    if (typeof p.thinking.none === 'string' && !p.reasoningFloorTokens)
+    if (
+      typeof p.thinking.none === 'string' &&
+      p.thinking.none !== 'none' &&
+      !p.reasoningFloorTokens
+    )
       fail(`${where}: при none = "${p.thinking.none}" нужен reasoningFloorTokens`)
     if (p.strictSchema !== undefined && typeof p.strictSchema !== 'boolean')
       fail(`${where}: strictSchema — булево`)
@@ -150,6 +154,11 @@ export function validateClasses(classes, providers) {
       fail(`${where}: thinking должен быть одним из ${LEVELS.join('|')}`)
     if (!Number.isInteger(c.answerTokens) || c.answerTokens < 1)
       fail(`${where}: answerTokens — целое ≥ 1`)
+    // Потолок, до которого вызывающий вправе поднять ответ.
+    if (c.maxAnswerTokens !== undefined) {
+      if (!Number.isInteger(c.maxAnswerTokens) || c.maxAnswerTokens < c.answerTokens)
+        fail(`${where}: maxAnswerTokens — целое ≥ answerTokens (${c.answerTokens})`)
+    }
     requireString(c, 'dataClass', where)
     // Статическая проверка возможности: класс без единого способного кандидата —
     // ошибка старта, а не отказ в рантайме.

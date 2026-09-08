@@ -49,5 +49,61 @@
       "outputPerMTok": 0.03
     },
     "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если в консоли не включён Zero Data Retention."
+  },
+  {
+    "_": "Генеративная модель Groq для явного выбора пользователем (день 5). У GPT-OSS нет уровня none (только low|medium|high) и нет reasoning_format: none отображён на low, рассуждения прячутся через include_reasoning, reasoningFloorTokens не даёт им съесть ответ.",
+    "id": "groq-gpt-oss-20b",
+    "revision": 1,
+    "kind": "groq",
+    "tier": "cloud-cheap",
+    "baseUrl": "https://api.groq.com",
+    "model": "openai/gpt-oss-20b",
+    "profile": "cloud",
+    "capabilities": ["text_generation", "json_schema"],
+    "contextWindow": 131072,
+    "jurisdiction": "us",
+    "dataClasses": ["public"],
+    "maxConcurrency": 4,
+    "thinking": {
+      "none": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
+    "reasoningControl": "include",
+    "reasoningFloorTokens": 1024,
+    "strictSchema": true,
+    "secretEnv": "GROQ_API_KEY",
+    "price": {
+      "inputPerMTok": 0.075,
+      "outputPerMTok": 0.3
+    },
+    "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если не включён Zero Data Retention."
+  },
+  {
+    "_": "Генеративная модель Groq для явного выбора пользователем (день 5). У Qwen 3.6 из уровней есть только none и default, поэтому low|medium|high не объявлены; рассуждения прячутся через reasoning_format: hidden.",
+    "id": "groq-qwen3.6-27b",
+    "revision": 1,
+    "kind": "groq",
+    "tier": "cloud-cheap",
+    "baseUrl": "https://api.groq.com",
+    "model": "qwen/qwen3.6-27b",
+    "profile": "cloud",
+    "capabilities": ["text_generation", "json_schema"],
+    "contextWindow": 131072,
+    "jurisdiction": "us",
+    "dataClasses": ["public"],
+    "maxConcurrency": 4,
+    "thinking": {
+      "none": "none"
+    },
+    "reasoningControl": "format",
+    "strictSchema": true,
+    "secretEnv": "GROQ_API_KEY",
+    "price": {
+      "inputPerMTok": 0.6,
+      "outputPerMTok": 3.0
+    },
+    "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если не включён Zero Data Retention."
   }
 ]

@@ -7,7 +7,18 @@ import { readJson } from './http.js'
 const NS_PER_MS = 1_000_000
 
 export async function call(
-  { provider, model, prompt, system, schema, thinking, maxOutputTokens, temperature, signal },
+  {
+    provider,
+    model,
+    prompt,
+    system,
+    schema,
+    stop = [],
+    thinking,
+    maxOutputTokens,
+    temperature,
+    signal,
+  },
   { fetchImpl },
 ) {
   const body = {
@@ -20,6 +31,7 @@ export async function call(
   }
   if (system) body.system = system
   if (temperature !== undefined) body.options.temperature = temperature
+  if (stop.length > 0) body.options.stop = stop
   // Значение `think` берётся из конфигурации провайдера: у qwen3 это
   // булево, у gpt-oss — строка low|medium|high. Роутер этого не знает.
   body.think = thinking.level === 'none' ? false : thinking.value
