@@ -46,7 +46,10 @@
       grid-template-columns: minmax(0,1fr) 18rem 24rem;
       height:100dvh; padding:var(--s-6) var(--s-5);
     }
-    .col { min-height:0; overflow-y:auto; }
+    /* Правый отступ обязателен: колонка со своим скроллом обрезает всё, что
+       касается её края, — бегунок ползунка в крайних положениях, кольцо
+       фокуса (outline-offset 2px) и содержимое под полосой прокрутки. */
+    .col { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
     main.col { display:flex; flex-direction:column; }
     main.col footer { margin-top:auto; }
   }
@@ -111,7 +114,12 @@
   }
   .num { font-variant-numeric:tabular-nums; }
   .params .name .num { color:var(--fg-mut); }
-  input[type=range] { accent-color:var(--acc); padding:0; border:0; background:transparent; }
+  /* Собственная высота, а не авто: у авто-высоты бегунок выше бокса и
+     срезается сверху и снизу. display:block убирает щель под базовой линией. */
+  input[type=range] {
+    display:block; width:100%; height:var(--s-5); margin:0; cursor:pointer;
+    accent-color:var(--acc); padding:0; border:0; background:transparent;
+  }
   input[type=range]:hover { border:0; filter:brightness(1.08); }
 
   .feed-col { display:flex; flex-direction:column; gap:var(--s-4); min-height:0; }
@@ -250,12 +258,27 @@
   const form = $('f'), input = $('q'), button = $('go');
   const progress = $('progress'), note = $('note'), feed = $('feed'), empty = $('empty');
 
-  for (const s of ['fintech', 'climate tech', 'robotics', 'AI infrastructure']) {
+  // Сфера — свободный текст на любом языке: ленты индийские и китайские тоже.
+  // lang нужен браузеру для выбора шрифта, а скринридеру — для произношения.
+  const SPHERES = [
+    { text: 'финтех' },
+    { text: 'климатические технологии' },
+    { text: 'робототехника' },
+    { text: 'кибербезопасность' },
+    { text: 'AI infrastructure', lang: 'en' },
+    { text: '人工智能', lang: 'zh' },
+    { text: '电动汽车', lang: 'zh' },
+    { text: 'फिनटेक', lang: 'hi' },
+    { text: 'ई-कॉमर्स', lang: 'hi' },
+  ];
+
+  for (const { text, lang } of SPHERES) {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'chip';
-    chip.textContent = s;
-    chip.onclick = () => { input.value = s; form.requestSubmit(); };
+    chip.textContent = text;
+    if (lang) chip.lang = lang;
+    chip.onclick = () => { input.value = text; form.requestSubmit(); };
     $('chips').append(chip);
   }
 
