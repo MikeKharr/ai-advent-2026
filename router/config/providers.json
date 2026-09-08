@@ -14,6 +14,6 @@
     "maxConcurrency": 8,
     "thinking": { "none": true, "low": 1024, "medium": 4096, "high": 16384 },
     "secretEnv": "ANTHROPIC_API_KEY",
-    "price": { "inputPerMTok": 1, "outputPerMTok": 5 }
+    "price": { "inputPerMTok": 1, "outputPerMTok": 5, "perWebSearch": 0.01 }
   }
 ]

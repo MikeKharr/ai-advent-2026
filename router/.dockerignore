@@ -1,0 +1,7 @@
+# В образ идёт только код и конфигурация: без локальных секретов, журнала и тестов.
+.env
+*.env
+data/
+config/providers.local.json
+test/
+node_modules/
