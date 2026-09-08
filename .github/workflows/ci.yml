@@ -75,6 +75,7 @@ jobs:
           # а не что конфигурация полна — /healthz отдаёт 503 без ключа.
           # Роутеру для старта нужны ключи приложений — тоже фиктивные.
           docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
+            -e GROQ_API_KEY=ci-dummy \
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
             -p ${{ steps.unit.outputs.port }}:${{ steps.unit.outputs.port }} ci-check:${{ matrix.day }}
           for i in $(seq 1 20); do
