@@ -1,0 +1,382 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	xmlns:sy="http://purl.org/rss/1.0/modules/syndication/"
+	xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+	>
+
+<channel>
+	<title>TechCrunch</title>
+	<atom:link href="https://techcrunch.com/feed/" rel="self" type="application/rss+xml" />
+	<link>https://techcrunch.com/</link>
+	<description>Startup and Technology News</description>
+	<lastBuildDate>Sun, 06 Sep 2026 21:51:22 +0000</lastBuildDate>
+	<language>en-US</language>
+	<sy:updatePeriod>
+	hourly	</sy:updatePeriod>
+	<sy:updateFrequency>
+	1	</sy:updateFrequency>
+	<generator>https://wordpress.org/?v=6.9.7</generator>
+
+<image>
+	<url>https://techcrunch.com/wp-content/uploads/2015/02/cropped-cropped-favicon-gradient.png?w=32</url>
+	<title>TechCrunch</title>
+	<link>https://techcrunch.com/</link>
+	<width>32</width>
+	<height>32</height>
+</image> 
+	<item>
+		<title>Phil Schiller’s App Store exit reportedly driven by wariness over future plans</title>
+		<link>https://techcrunch.com/2026/09/06/phil-schillers-app-store-exit-reportedly-driven-by-wariness-over-future-plans/</link>
+		
+		<dc:creator><![CDATA[Anthony Ha]]></dc:creator>
+		<pubDate>Sun, 06 Sep 2026 21:41:06 +0000</pubDate>
+				<category><![CDATA[Apps]]></category>
+		<category><![CDATA[app store]]></category>
+		<category><![CDATA[Apple]]></category>
+		<category><![CDATA[John Ternus]]></category>
+		<category><![CDATA[phil schiller]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3161062</guid>
+
+					<description><![CDATA[Schiller reportedly had reservations about new CEO John Ternus' goal of bringing in more recurring revenue from the App Store.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Authors push back as publishers and agents make claims on Anthropic settlement</title>
+		<link>https://techcrunch.com/2026/09/06/authors-push-back-as-publishers-and-agents-seek-share-of-anthropic-settlement/</link>
+		
+		<dc:creator><![CDATA[Anthony Ha]]></dc:creator>
+		<pubDate>Sun, 06 Sep 2026 20:47:37 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[Media & Entertainment]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3161058</guid>
+
+					<description><![CDATA[Authors say publishers seem to be claiming more than their fair share of settlement payments.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Travis Kalanick’s Atoms might be getting into the robotaxi business</title>
+		<link>https://techcrunch.com/2026/09/06/travis-kalanicks-atoms-might-be-getting-into-the-robotaxi-business/</link>
+		
+		<dc:creator><![CDATA[Anthony Ha]]></dc:creator>
+		<pubDate>Sun, 06 Sep 2026 16:45:00 +0000</pubDate>
+				<category><![CDATA[Startups]]></category>
+		<category><![CDATA[Transportation]]></category>
+		<category><![CDATA[AI]]></category>
+		<category><![CDATA[Travis Kalanick]]></category>
+		<category><![CDATA[Uber]]></category>
+		<category><![CDATA[atoms]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3161054</guid>
+
+					<description><![CDATA[The Uber founder has said that Atoms will allow him to complete "unfinished business."]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>TechCrunch Mobility: Tesla Cybercab hits the road — and a snag</title>
+		<link>https://techcrunch.com/2026/09/06/techcrunch-mobility-tesla-cybercab-hits-the-road-and-a-snag/</link>
+		
+		<dc:creator><![CDATA[Kirsten Korosec]]></dc:creator>
+		<pubDate>Sun, 06 Sep 2026 16:08:00 +0000</pubDate>
+				<category><![CDATA[Transportation]]></category>
+		<category><![CDATA[Tesla]]></category>
+		<category><![CDATA[robotaxi]]></category>
+		<category><![CDATA[techcrunch mobility]]></category>
+		<category><![CDATA[cybercab]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160993</guid>
+
+					<description><![CDATA[Welcome back to TechCrunch Mobility, your hub for the future of transportation and now, more than ever, the role AI is playing in it. ]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Seattle Times and Newsday are the latest publications to sue OpenAI and Microsoft</title>
+		<link>https://techcrunch.com/2026/09/05/seattle-times-and-newsday-are-the-latest-publications-to-sue-openai-and-microsoft/</link>
+		
+		<dc:creator><![CDATA[Anthony Ha]]></dc:creator>
+		<pubDate>Sat, 05 Sep 2026 22:49:55 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[Media & Entertainment]]></category>
+		<category><![CDATA[Microsoft]]></category>
+		<category><![CDATA[Newsday]]></category>
+		<category><![CDATA[OpenAI]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3161049</guid>
+
+					<description><![CDATA[Two more news organizations are suing OpenAI and Microsoft over the supposed use of their journalism to train AI.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Hikers rescued after using Google Gemini for planning</title>
+		<link>https://techcrunch.com/2026/09/05/hikers-rescued-after-using-google-gemini-for-planning/</link>
+		
+		<dc:creator><![CDATA[Anthony Ha]]></dc:creator>
+		<pubDate>Sat, 05 Sep 2026 19:35:24 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[gemini]]></category>
+		<category><![CDATA[Google]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3161045</guid>
+
+					<description><![CDATA[The sheriff’s office said the hikers “were advised by Gemini to bring far less food and water than their group required."]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>OpenAI confirms ‘wiki incident,’ says it’s ‘working on a framework’ for more disclosure</title>
+		<link>https://techcrunch.com/2026/09/05/openai-confirms-wiki-incident-says-its-working-on-a-framework-for-more-disclosure/</link>
+		
+		<dc:creator><![CDATA[Anthony Ha]]></dc:creator>
+		<pubDate>Sat, 05 Sep 2026 18:05:27 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[Security]]></category>
+		<category><![CDATA[OpenAI]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3161042</guid>
+
+					<description><![CDATA[OpenAI acknowledged its role in a recently reported incident where AI agents took over a German wiki forum.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Clucky&#8217;s new alarm app wakes you up with a crowing rooster</title>
+		<link>https://techcrunch.com/2026/09/05/cluckys-new-alarm-app-wakes-you-up-with-a-crowing-rooster/</link>
+		
+		<dc:creator><![CDATA[Lauren Forristal]]></dc:creator>
+		<pubDate>Sat, 05 Sep 2026 17:00:00 +0000</pubDate>
+				<category><![CDATA[Apps]]></category>
+		<category><![CDATA[Alarm]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3157241</guid>
+
+					<description><![CDATA[Clucky's new alarm app has an option where users are woken up to the sound of a rooster. They then complete a mission to turn it off. ]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Oura is going public, but these smart ring companies are coming for its crown</title>
+		<link>https://techcrunch.com/2026/09/05/oura-is-going-public-but-these-smart-ring-companies-are-coming-for-its-crown/</link>
+		
+		<dc:creator><![CDATA[Aisha Malik]]></dc:creator>
+		<pubDate>Sat, 05 Sep 2026 15:00:00 +0000</pubDate>
+				<category><![CDATA[Gadgets]]></category>
+		<category><![CDATA[Hardware]]></category>
+		<category><![CDATA[circular]]></category>
+		<category><![CDATA[oura]]></category>
+		<category><![CDATA[ringconn]]></category>
+		<category><![CDATA[smart rings]]></category>
+		<category><![CDATA[ultrahuman]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160959</guid>
+
+					<description><![CDATA[While Oura has largely dominated the smart ring market for years, a growing number of rivals are now racing to dethrone it by trying all sorts of approaches to get an edge over it.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>XDOF, just three months out of stealth, is in talks for a Series B at a $1.2B valuation</title>
+		<link>https://techcrunch.com/2026/09/04/xdof-just-three-months-out-of-stealth-is-in-talks-for-a-series-b-at-a-1-2b-valuation/</link>
+		
+		<dc:creator><![CDATA[Marina Temkin]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 23:36:14 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[Robotics]]></category>
+		<category><![CDATA[Startups]]></category>
+		<category><![CDATA[8VC]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3161014</guid>
+
+					<description><![CDATA[The round is being raised just months after the robot data startup exited from stealth. ]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>OpenAI&#8217;s rogue agents keep escaping, with no formal process to investigate them</title>
+		<link>https://techcrunch.com/2026/09/04/openais-rogue-agents-keep-escaping-with-no-formal-process-to-investigate-them/</link>
+		
+		<dc:creator><![CDATA[Rebecca Bellan]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 23:15:11 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[breach]]></category>
+		<category><![CDATA[OpenAI]]></category>
+		<category><![CDATA[Hugging Face]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160997</guid>
+
+					<description><![CDATA[OpenAI’s latest agent swarm incident adds urgency to calls for independent investigations as researchers and lawmakers question whether AI labs should control the scope of their own safety reviews.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>AI compute provider Nscale is looking for $3.5B in pre-IPO financing</title>
+		<link>https://techcrunch.com/2026/09/04/ai-compute-provider-nscale-is-looking-for-3-5b-in-pre-ipo-financing/</link>
+		
+		<dc:creator><![CDATA[Lucas Ropek]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 21:12:11 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[nvidia]]></category>
+		<category><![CDATA[In Brief]]></category>
+		<category><![CDATA[compute]]></category>
+		<category><![CDATA[nscale]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160981</guid>
+
+					<description><![CDATA[Nscale, which recently struck a $45 billion deal with Anthropic, is in talks to raise additional funds in anticipation of an upcoming IPO. ]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Judge blocks X rival from using Twitter name, but allows &#8216;Tweet&#8217; for now</title>
+		<link>https://techcrunch.com/2026/09/04/judge-blocks-x-rival-from-using-twitter-name-but-allows-tweet-for-now/</link>
+		
+		<dc:creator><![CDATA[Sarah Perez]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 17:52:05 +0000</pubDate>
+				<category><![CDATA[Apps]]></category>
+		<category><![CDATA[Social]]></category>
+		<category><![CDATA[Twitter]]></category>
+		<category><![CDATA[X]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160903</guid>
+
+					<description><![CDATA[A federal judge temporarily barred an X rival from using the Twitter name, but found that X was likely to have abandoned the “Tweet” trademark and bird logo. The startup has since relaunched as Tweet.app.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>What will Apple&#8217;s John Ternus era look like?</title>
+		<link>https://techcrunch.com/video/what-will-apples-john-ternus-era-look-like/</link>
+		
+		<dc:creator><![CDATA[Theresa Loconsolo]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 17:18:00 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[Apple]]></category>
+		<category><![CDATA[John Ternus]]></category>
+		<category><![CDATA[nvidia]]></category>
+		<category><![CDATA[Tesla]]></category>
+		<category><![CDATA[Tim Cook]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?post_type=tc_video&#038;p=3160884</guid>
+
+					<description><![CDATA[It&#8217;s&#160;officially the Ternus era at Apple.&#160;&#160; Tim Cook stepped down&#160;as CEO this week, handing the company to former hardware chief John Ternus, whose first memo&#160;promised a “huge launch next week”&#160;— timing that puts Apple&#8217;s next iPhone event on his desk before&#160;he&#8217;s&#160;even settled in. Cook&#160;isn&#8217;t&#160;going far, though:&#160;he&#8217;s&#160;staying on as Executive&#160;Chairman, focused on the kind of policy [&#8230;]]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>No little kids allowed, and other new info about Tesla&#8217;s Cybercab</title>
+		<link>https://techcrunch.com/2026/09/04/no-little-kids-allowed-and-other-new-info-about-teslas-cybercab/</link>
+		
+		<dc:creator><![CDATA[Sean O'Kane]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 16:51:23 +0000</pubDate>
+				<category><![CDATA[Transportation]]></category>
+		<category><![CDATA[autonomous vehicles]]></category>
+		<category><![CDATA[avs]]></category>
+		<category><![CDATA[cybercab]]></category>
+		<category><![CDATA[robotaxis]]></category>
+		<category><![CDATA[Tesla]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160917</guid>
+
+					<description><![CDATA[The company says no children under 13 can ride -- even with a parent. That's more restrictive than the Model Y SUVs it's using as robotaxis.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Another swarm of OpenAI agents reached the open internet without the frontier lab&#8217;s knowledge</title>
+		<link>https://techcrunch.com/2026/09/04/another-swarm-of-openai-agents-reached-the-open-internet-without-the-frontier-labs-knowledge/</link>
+		
+		<dc:creator><![CDATA[Tim Fernholz]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 16:21:11 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[OpenAI]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160899</guid>
+
+					<description><![CDATA[It's the latest failure of OpenAI's internal monitoring and security systems.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>CD sales are making an unexpected comeback amid a retro tech boom</title>
+		<link>https://techcrunch.com/2026/09/04/cd-sales-are-making-an-unexpected-comeback-amid-a-retro-tech-boom/</link>
+		
+		<dc:creator><![CDATA[Sarah Perez]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 15:00:00 +0000</pubDate>
+				<category><![CDATA[Hardware]]></category>
+		<category><![CDATA[Media & Entertainment]]></category>
+		<category><![CDATA[Compact Disc]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160646</guid>
+
+					<description><![CDATA[U.S. CD revenue jumped 58.6% in the first half of 2026, reversing last year’s decline as interest in retro tech and physical media continues to grow.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Krafton doubles down on India with another $250M bet beyond gaming</title>
+		<link>https://techcrunch.com/2026/09/04/krafton-doubles-down-on-india-with-another-250m-bet-beyond-gaming/</link>
+		
+		<dc:creator><![CDATA[Jagmeet Singh]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 14:47:20 +0000</pubDate>
+				<category><![CDATA[Gaming]]></category>
+		<category><![CDATA[Startups]]></category>
+		<category><![CDATA[BGMI]]></category>
+		<category><![CDATA[Krafton]]></category>
+		<category><![CDATA[pubg]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160869</guid>
+
+					<description><![CDATA[Krafton's planned investment in India is set to surpass $500 million with its latest commitment.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Google&#8217;s Gemini Spark can now manage your Google Photos library</title>
+		<link>https://techcrunch.com/2026/09/04/googles-gemini-spark-can-now-manage-your-google-photos-library/</link>
+		
+		<dc:creator><![CDATA[Sarah Perez]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 14:47:11 +0000</pubDate>
+				<category><![CDATA[AI]]></category>
+		<category><![CDATA[Apps]]></category>
+		<category><![CDATA[gemini]]></category>
+		<category><![CDATA[Google Photos]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160870</guid>
+
+					<description><![CDATA[Gemini Spark can edit and curate photo albums, create shared collections, turn photos into calendar events, and handle other Google Photos tasks for AI Pro and Ultra subscribers.]]></description>
+		
+		
+		
+			</item>
+		<item>
+		<title>Less than 24 hours to apply for your TechCrunch Disrupt 2026 Side Event</title>
+		<link>https://techcrunch.com/2026/09/04/less-than-24-hours-to-apply-for-your-techcrunch-disrupt-2026-side-event/</link>
+		
+		<dc:creator><![CDATA[TechCrunch Events]]></dc:creator>
+		<pubDate>Fri, 04 Sep 2026 14:00:00 +0000</pubDate>
+				<category><![CDATA[Startups]]></category>
+		<category><![CDATA[Fintech]]></category>
+		<category><![CDATA[Biotech & Health]]></category>
+		<category><![CDATA[Venture]]></category>
+		<category><![CDATA[Media & Entertainment]]></category>
+		<category><![CDATA[AI]]></category>
+		<category><![CDATA[Apps]]></category>
+		<category><![CDATA[Robotics]]></category>
+		<category><![CDATA[Fundraising]]></category>
+		<category><![CDATA[TechCrunch Disrupt]]></category>
+		<guid isPermaLink="false">https://techcrunch.com/?p=3160690</guid>
+
+					<description><![CDATA[Less than 24 hours left to apply to host a Side Event during TechCrunch Disrupt 2026 and make your mark in the Silicon Valley scene. Apply before the application closes tonight at midnight PT.]]></description>
+		
+		
+		
+			</item>
+	</channel>
+</rss>
