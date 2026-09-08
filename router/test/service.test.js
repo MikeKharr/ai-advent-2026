@@ -192,7 +192,8 @@ test('неудачный вызов без usage списывается по о�
     assert.equal(res.status, 503)
     const spend = await (await s.get('/v1/spend')).json()
     assert.equal(spend.apps.smoke.calls, 2, 'обе неудачные попытки в журнале')
-    assert.equal(spend.apps.smoke.tokens, 200, 'по 100 токенов оценки входа на попытку')
+    // Недоступный ноутбук вход не принял — ноль; 500 от облака — по оценке.
+    assert.equal(spend.apps.smoke.tokens, 100, 'оценка входа только за дошедший вызов')
   } finally {
     await s.close()
   }

@@ -405,6 +405,7 @@ test('потолок вызывающего budgetMs прерывает вызо
       budgetMs: 20,
     })
     assert.equal(r.ok, false)
+    assert.equal(r.code, 'aborted')
     assert.equal(r.attempts[0].outcome, 'aborted')
   }
   assert.equal(calls.length, 3)
@@ -518,6 +519,64 @@ test('429 с не-JSON телом — «занят», а не поломка', a
   const r = await router.route({ taskClass: 'other', input: 'x' })
   assert.equal(r.attempts[0].outcome, 'busy')
   assert.equal(router.health.snapshot(PROVIDERS[1]).failures, 0)
+})
+
+test('4xx кроме 429 — отказ вызывающему, в предохранитель не идёт', async () => {
+  const { router } = setup({
+    providers: [PROVIDERS[1]],
+    hosts: {
+      [CLOUD]: () =>
+        httpJson(400, { error: { type: 'invalid_request_error', message: 'bad schema' } }),
+    },
+  })
+  for (let i = 0; i < 3; i++) {
+    const r = await router.route({ taskClass: 'other', input: 'x' })
+    assert.equal(r.attempts[0].outcome, 'rejected')
+  }
+  assert.equal(router.health.unavailableReason(PROVIDERS[1]), null)
+})
+
+test('явная schema требует возможности json_schema у провайдера', async () => {
+  // Первый облачный провайдер без json_schema, второй — с ней: запрос со
+  // схемой должен миновать первого на этапе возможности, а не звать его.
+  const noSchema = { ...PROVIDERS[1], id: 'cloud-plain', capabilities: ['web_search'] }
+  const { router, calls } = setup({
+    providers: [noSchema, PROVIDERS[1]],
+    hosts: { [CLOUD]: () => httpJson(200, anthropicMessage({ text: '{"ok":true}' })) },
+  })
+  const r = await router.route({ taskClass: 'other', input: 'x', schema: { type: 'object' } })
+  assert.equal(r.ok, true)
+  assert.equal(r.provider.id, 'anthropic-haiku')
+  assert.equal(calls.length, 1)
+  assert.equal(r.reasons, undefined)
+  assert.equal(r.fallback, null, 'пропуск по возможности — не фолбэк')
+})
+
+test('битые price и timeouts — крах на старте', () => {
+  const broken = (patch) => [{ ...PROVIDERS[1], ...patch }]
+  assert.throws(
+    () =>
+      loadConfig({ providers: broken({ price: { inputPerMTok: 1 } }), classes: CLASSES, env: ENV }),
+    /price/,
+  )
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: broken({ timeouts: { genTpsFloor: 0 } }),
+        classes: CLASSES,
+        env: ENV,
+      }),
+    /timeouts/,
+  )
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: broken({ timeouts: { minMs: 'много' } }),
+        classes: CLASSES,
+        env: ENV,
+      }),
+    /timeouts/,
+  )
 })
 
 test('добавление провайдера — только правка конфигурации', async () => {

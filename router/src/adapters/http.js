@@ -12,7 +12,12 @@ export async function readJson(response, who) {
     json = null
   }
   if (!response.ok) {
-    const detail = json?.error?.type ?? json?.error ?? (raw ? raw.slice(0, 80) : 'пустое тело')
+    const err = json?.error
+    const detail =
+      err?.type ??
+      err?.message ??
+      (typeof err === 'string' ? err : null) ??
+      (raw ? raw.slice(0, 80) : 'пустое тело')
     const error = new Error(`${who} ${response.status}: ${detail}`)
     error.status = response.status
     error.retryAfterMs = retryAfterMs(response)

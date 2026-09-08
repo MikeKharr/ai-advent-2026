@@ -84,8 +84,10 @@ export function createRouter({
         [],
       )
 
-    const requires = [...(cls.requires ?? []), ...(req.requires ?? [])]
     const schema = req.schema ?? null
+    // Явная схема в запросе — это требование возможности json_schema.
+    const extraRequires = [...(req.requires ?? []), ...(schema ? ['json_schema'] : [])]
+    const requires = [...(cls.requires ?? []), ...extraRequires]
     const strict = schema !== null || requires.includes('json_schema')
     // Класс со схемой без схемы — граница, а не тихий свободный текст.
     if (strict && schema === null)
@@ -104,7 +106,7 @@ export function createRouter({
     // 1. Возможность: статичная, несоответствие — отказ.
     const capable = []
     for (const p of candidates) {
-      const fit = capabilityFit(p, cls, thinking, dataClass, inputTokens, req.requires ?? [])
+      const fit = capabilityFit(p, cls, thinking, dataClass, inputTokens, extraRequires)
       if (fit.ok) capable.push(p)
       else
         reasons.push({
@@ -210,7 +212,8 @@ export function createRouter({
           }),
         }
       }
-      bump(p, 'failed')
+      // Прерывание по потолку вызывающего — не неудача провайдера и в метриках.
+      if (attempt.outcome !== 'aborted') bump(p, 'failed')
       reasons.push({
         provider: attempt.provider,
         stage: 'call',
@@ -221,11 +224,11 @@ export function createRouter({
       // но негодный; второй вызов с тем же лимитом даст то же (ADR §7).
       if (attempt.outcome === 'aborted' || attempt.outcome === 'truncated') break
     }
-    const result = refuse(
-      'all_failed',
-      `все провайдеры класса ${taskClass} недоступны или отказали`,
-      reasons,
-    )
+    // Свой потолок вызывающего — отдельный код: это не инцидент провайдера.
+    const aborted = attempts.at(-1)?.outcome === 'aborted'
+    const result = aborted
+      ? refuse('aborted', `потолок вызывающего ${req.budgetMs} мс истёк`, reasons)
+      : refuse('all_failed', `все провайдеры класса ${taskClass} недоступны или отказали`, reasons)
     result.attempts = attempts
     result.thinking = thinking
     return result
@@ -323,6 +326,9 @@ export function createRouter({
         health.failure(p)
         return done('timeout', `дедлайн ${deadline} мс истёк`)
       }
+      // 4xx кроме 429 — ошибка вызывающего (кривая схема, параметры), а не
+      // поломка провайдера: в предохранитель не идёт, общий ресурс не гасит.
+      if (error.status >= 400 && error.status < 500) return done('rejected', error.message)
       health.failure(p)
       return done('error', error.message)
     } finally {

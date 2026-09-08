@@ -6,6 +6,8 @@ import { timingSafeEqual } from 'node:crypto'
 import { costUsd, resetAt } from './ledger.js'
 
 const MAX_BODY = 512 * 1024
+const NOT_REACHED = new Set(['unreachable', 'busy', 'rejected'])
+const STATUS = { all_failed: 503, aborted: 504 }
 
 export function createService({
   config,
@@ -45,16 +47,19 @@ export function createService({
     }
   }
 
+  // Больше одного вызова на запрос не бывает, если провайдер один.
+  const maxCalls = Math.min(2, router.providers().length)
+
   /**
    * Лимит сверяется с остатком заранее, по оценке запроса (вход плюс потолок
-   * выхода на два вызова): один большой запрос не перекрывает суточный потолок
-   * кратно. Резервирования нет — параллельные запросы одного приложения могут
-   * превысить лимит на размер одного запроса.
+   * выхода на каждый возможный вызов): один большой запрос не перекрывает
+   * суточный потолок кратно. Резервирования нет — параллельные запросы одного
+   * приложения могут превысить лимит на размер одного запроса.
    */
   function exhausted(app, at, estimateTokens) {
     const s = ledger.spent(app.id, at)
     const l = app.limits
-    const need = estimateTokens * 2
+    const need = estimateTokens * maxCalls
     if (l.dailyTokens && s.tokens + need > l.dailyTokens)
       return s.tokens >= l.dailyTokens
         ? `суточный лимит токенов ${l.dailyTokens} исчерпан`
@@ -109,13 +114,17 @@ export function createService({
     }
 
     const result = await router.route(body)
-    // Учитывается каждый вызов провайдера, включая неудачный: вход провайдер
-    // принял независимо от исхода. Без usage — по оценке, с пометкой.
+    // Учитывается каждый вызов провайдера, включая неудачный. Без usage —
+    // по оценке входа, с пометкой; кроме исходов, где вход до модели не дошёл
+    // (транспорт, 429, 4xx): они в журнале с нулём.
     for (const attempt of result.attempts ?? []) {
       const p = providerOf(attempt.provider)
-      if (!p) throw new Error(`учёт: провайдер ${attempt.provider} неизвестен реестру`)
+      if (!p) {
+        log({ event: 'error', message: `учёт: провайдер ${attempt.provider} неизвестен реестру` })
+        continue
+      }
       const usage = attempt.usage ?? {
-        inputTokens: attempt.estimatedInputTokens,
+        inputTokens: NOT_REACHED.has(attempt.outcome) ? 0 : attempt.estimatedInputTokens,
         outputTokens: 0,
         webSearches: 0,
       }
@@ -134,7 +143,7 @@ export function createService({
         estimated: attempt.usage == null,
       })
     }
-    const status = result.ok ? 200 : result.code === 'all_failed' ? 503 : 422
+    const status = result.ok ? 200 : (STATUS[result.code] ?? 422)
     return send(res, status, {
       ...result,
       app: app.id,
@@ -183,7 +192,10 @@ function parseBody(raw) {
     throw new Error('input — непустая строка')
   if (body.system !== undefined && typeof body.system !== 'string')
     throw new Error('system — строка')
-  if (body.schema !== undefined && (typeof body.schema !== 'object' || body.schema === null))
+  if (
+    body.schema !== undefined &&
+    (typeof body.schema !== 'object' || body.schema === null || Array.isArray(body.schema))
+  )
     throw new Error('schema — объект')
   if (body.requires !== undefined && !Array.isArray(body.requires))
     throw new Error('requires — массив')

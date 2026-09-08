@@ -76,6 +76,24 @@ export function validateProviders(providers, env) {
     if (!Number.isInteger(p.revision ?? 1)) fail(`${where}: revision — целое`)
     if (p.secretEnv && !env[p.secretEnv])
       fail(`${where}: переменная секрета ${p.secretEnv} не задана`)
+    if (p.price !== undefined) {
+      for (const f of ['inputPerMTok', 'outputPerMTok'])
+        if (!(typeof p.price[f] === 'number' && p.price[f] >= 0))
+          fail(`${where}: price.${f} — число ≥ 0`)
+      if (
+        p.price.perWebSearch !== undefined &&
+        !(typeof p.price.perWebSearch === 'number' && p.price.perWebSearch >= 0)
+      )
+        fail(`${where}: price.perWebSearch — число ≥ 0`)
+    }
+    if (p.timeouts !== undefined) {
+      for (const [f, v] of Object.entries(p.timeouts)) {
+        if (!(f in PROFILE_DEFAULTS.laptop)) fail(`${where}: неизвестное поле timeouts.${f}`)
+        const positive = ['promptEvalTps', 'genTpsFloor', 'margin'].includes(f)
+        if (!(typeof v === 'number' && Number.isFinite(v) && (positive ? v > 0 : v >= 0)))
+          fail(`${where}: timeouts.${f} — конечное число${positive ? ' > 0' : ' ≥ 0'}`)
+      }
+    }
     const host = p.hostId ?? new URL(p.baseUrl).host
     if (hostCapacity.has(host) && hostCapacity.get(host) !== p.maxConcurrency)
       fail(`${where}: у хоста ${host} уже другая ёмкость (${hostCapacity.get(host)})`)
