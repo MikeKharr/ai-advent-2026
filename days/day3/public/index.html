@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day3 -> /day3/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Бот новостей стартапов — AI Advent 2026, день 3</title>
+<style>
+  /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
+     Значения вне этих шкал — дефект, а не нюанс. */
+  :root {
+    color-scheme: light dark;
+    --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+    --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+    --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-xl:1.5rem;
+    --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+    --line:#e6e6e3; --line-ctl:#8f8f8a;
+    --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+    --r-sm:6px; --r-md:10px; --r-full:999px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+      --line:#2a2a30; --line-ctl:#6a6a73;
+      --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Раскладка «работа / параметры / результат». На широком экране каждая
+     колонка скроллится сама, поэтому форма и параметры остаются на местах,
+     пока листаешь ленту. На узком — обычный поток страницы. */
+  .layout {
+    display:grid; grid-template-columns:1fr; gap:var(--s-6);
+    max-width:80rem; margin:0 auto; padding:var(--s-6) var(--s-4);
+  }
+  @media (min-width: 73rem) {
+    html, body { height:100%; }
+    body { overflow:hidden; }
+    .layout {
+      grid-template-columns: minmax(0,1fr) 18rem 24rem;
+      height:100dvh; padding:var(--s-6) var(--s-5);
+    }
+    .col { min-height:0; overflow-y:auto; }
+    main.col { display:flex; flex-direction:column; }
+    main.col footer { margin-top:auto; }
+  }
+
+  h1 { font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; margin:0 0 var(--s-2); }
+  h2 {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); margin:0;
+  }
+  .sub { color:var(--fg-mut); margin:0 0 var(--s-5); max-width:60ch; }
+
+  /* Пять состояний у каждого интерактивного элемента: покой, наведение,
+     нажатие, :focus-visible, [disabled]. Фокус — на всех, а не только у полей. */
+  :where(button, input, textarea, a):focus-visible {
+    outline:2px solid var(--acc); outline-offset:2px;
+  }
+  input, textarea {
+    width:100%; padding:var(--s-2) var(--s-3); font:inherit; color:var(--fg);
+    background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  }
+  input:hover, textarea:hover { border-color:var(--fg-mut); }
+  textarea { resize:vertical; }
+
+  form { display:flex; gap:var(--s-2); flex-wrap:wrap; }
+  #q { flex:1 1 12rem; min-width:0; }
+  button {
+    font:inherit; font-weight:600; border-radius:var(--r-sm); cursor:pointer;
+    padding:var(--s-2) var(--s-4); color:var(--acc-fg); background:var(--acc);
+    border:1px solid var(--acc);
+  }
+  button:hover { filter:brightness(1.08); }
+  button:active { transform:translateY(1px); }
+  button[disabled] { opacity:.5; cursor:default; filter:none; transform:none; }
+
+  .chips { display:flex; gap:var(--s-2); flex-wrap:wrap; margin-top:var(--s-3); }
+  .chip {
+    padding:var(--s-1) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .chip:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
+
+  .progress { margin:var(--s-5) 0 0; padding:0; color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5; }
+  .progress li { list-style:none; margin:var(--s-1) 0; }
+  .progress li::before { content:"· "; }
+  .note {
+    margin-top:var(--s-5); padding:var(--s-3) var(--s-4); border:1px solid var(--line);
+    border-radius:var(--r-md); background:var(--surface);
+    color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5;
+  }
+  .note.is-error { border-color:var(--danger); color:var(--fg); }
+
+  .params h2 + .field { margin-top:var(--s-5); }
+  .params .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
+  .params .name {
+    display:flex; justify-content:space-between; align-items:baseline;
+    gap:var(--s-2); margin-bottom:var(--s-2);
+  }
+  .params .hint {
+    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
+    margin-top:var(--s-1); max-width:52ch;
+  }
+  .num { font-variant-numeric:tabular-nums; }
+  .params .name .num { color:var(--fg-mut); }
+  input[type=range] { accent-color:var(--acc); padding:0; border:0; background:transparent; }
+  input[type=range]:hover { border:0; filter:brightness(1.08); }
+
+  .feed-col { display:flex; flex-direction:column; gap:var(--s-4); min-height:0; }
+  .feed-head { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2); }
+  .feed-list { list-style:none; margin:0; padding:0; }
+  @media (min-width: 73rem) {
+    .feed-list { overflow-y:auto; min-height:0; flex:1; padding-right:var(--s-2); }
+  }
+  .clear {
+    padding:var(--s-1) var(--s-3); font-size:var(--t-xs); line-height:1.4; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .clear:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
+
+  .entry {
+    padding:var(--s-4); margin-bottom:var(--s-5);
+    border:1px solid var(--line); border-radius:var(--r-md); background:var(--surface);
+  }
+  .entry .head {
+    display:flex; justify-content:space-between; gap:var(--s-2); flex-wrap:wrap;
+    font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); margin-bottom:var(--s-2);
+  }
+  .entry .sphere { font-weight:600; color:var(--fg); }
+  .entry time { font-variant-numeric:tabular-nums; }
+  .tags { display:flex; gap:var(--s-2); flex-wrap:wrap; margin-bottom:var(--s-3); }
+  .tag {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:var(--s-1) var(--s-2);
+    font-variant-numeric:tabular-nums;
+    max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .tag.is-tokens { color:var(--fg); border-color:var(--line-ctl); }
+  .answer {
+    margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch;
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .entry .enote { margin:var(--s-3) 0 0; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; }
+  .empty { color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5; margin:0; }
+
+  footer {
+    margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
+    color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; max-width:52ch;
+  }
+  footer a { color:var(--acc); }
+  footer a:hover { color:var(--fg); }
+  footer a:active { opacity:.7; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation:none !important; transition:none !important; }
+    button:active { transform:none; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <main class="col">
+    <h1>Бот новостей стартапов</h1>
+    <p class="sub">Читает восемь изданий о стартапах (США, Европа, Индия, Китай)
+    за последнюю неделю и отвечает по вашей сфере — в заданном вами формате и с
+    вашими параметрами модели. Каждый ответ попадает в ленту вместе с расходом
+    токенов.</p>
+
+    <form id="f">
+      <input id="q" type="text" name="sphere" maxlength="60" placeholder="fintech, climate tech, robotics…"
+             autocomplete="off" aria-label="Сфера" required>
+      <button id="go" type="submit">Спросить</button>
+    </form>
+    <div class="chips" id="chips"></div>
+
+    <ul class="progress" id="progress" aria-live="polite"></ul>
+    <div class="note" id="note" role="alert" hidden></div>
+
+    <footer>
+      Источники: <span id="sources">…</span>. Ссылки в ответах — только из лент
+      изданий; ссылка, которой нет в списке источников, вырезается. Лента запросов
+      хранится в вашем браузере и никуда не отправляется. Издание может попросить
+      убрать свою ленту: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
+    </footer>
+  </main>
+
+  <aside class="col params" aria-label="Параметры модели">
+    <h2>Параметры</h2>
+
+    <label class="field">
+      <span class="name">Формат ответа</span>
+      <textarea id="p-format" rows="4" maxlength="500"
+        placeholder="например: маркированный список, к каждому пункту — дата и ссылка"></textarea>
+      <span class="hint">Свободное описание; уходит в промпт. Пусто — формат по умолчанию.</span>
+    </label>
+
+    <label class="field">
+      <!-- aria-label на самом ползунке: <label> без for связался бы с первым
+           labelable-потомком, то есть с <output>, и слайдер остался бы без
+           имени. Значение скринридер объявляет сам, поэтому <output> скрыт
+           от него — иначе каждый шаг перечитывал бы всю строку. -->
+      <span class="name">Температура <output class="num" id="p-temp-out" aria-hidden="true">1.0</output></span>
+      <input id="p-temp" type="range" min="0" max="1" step="0.1" value="1" aria-label="Температура">
+      <span class="hint">0 — предсказуемо и сухо, 1 — свободнее и разнообразнее. Шаг 0.1.</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Статей с источника</span>
+      <input id="p-per-source" class="num" type="number" min="1" max="50" value="30" inputmode="numeric">
+      <span class="hint">Сколько статей каждого издания попадёт в анализ (1–50).</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Условие завершения ответа</span>
+      <textarea id="p-stop" rows="2" maxlength="400"
+        placeholder="слово или фраза; при появлении в ответе генерация остановится"></textarea>
+      <span class="hint">До 4 стоп-последовательностей, по одной на строку.</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Останов по токенам</span>
+      <input id="p-max-tokens" class="num" type="number" min="1" max="2048" value="200" inputmode="numeric">
+      <span class="hint">Максимум токенов ответа (max_tokens), 1–2048.</span>
+    </label>
+  </aside>
+
+  <section class="col feed-col" aria-label="Лента ответов">
+    <div class="feed-head">
+      <h2>Лента</h2>
+      <button class="clear" id="clear" type="button" hidden>очистить</button>
+    </div>
+    <p class="empty" id="empty">Пока пусто. Задайте сферу и параметры — запрос и ответ появятся здесь.</p>
+    <ul class="feed-list" id="feed"></ul>
+  </section>
+
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const form = $('f'), input = $('q'), button = $('go');
+  const progress = $('progress'), note = $('note'), feed = $('feed'), empty = $('empty');
+
+  for (const s of ['fintech', 'climate tech', 'robotics', 'AI infrastructure']) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = s;
+    chip.onclick = () => { input.value = s; form.requestSubmit(); };
+    $('chips').append(chip);
+  }
+
+  fetch('./api/sources')
+    .then((r) => r.json())
+    .then((d) => { $('sources').textContent = d.feeds.map((f) => f.source).join(', '); })
+    .catch(() => { $('sources').textContent = 'недоступны'; });
+
+  // Значение ползунка показывается всегда: параметром без видимого значения
+  // управляешь вслепую.
+  const temp = $('p-temp'), tempOut = $('p-temp-out');
+  const showTemp = () => { tempOut.textContent = Number(temp.value).toFixed(1); };
+  temp.addEventListener('input', showTemp);
+  showTemp();
+
+  const step = (text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    progress.append(li);
+  };
+
+  const showNote = (text, isError) => {
+    note.textContent = text;
+    note.classList.toggle('is-error', Boolean(isError));
+    note.hidden = false;
+  };
+
+  // Лента живёт в localStorage: сервер запросы пользователей не хранит.
+  const STORE = 'day3-feed';
+  const MAX_ENTRIES = 50;
+
+  const loadFeed = () => {
+    // Хранилище — внешние данные: валидный JSON не обязан быть массивом записей.
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORE));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  };
+  const saveFeed = (entries) => {
+    try { localStorage.setItem(STORE, JSON.stringify(entries.slice(0, MAX_ENTRIES))); } catch {}
+  };
+
+  const stopLabel = (entry) => {
+    if (entry.stopReason === 'stop_sequence')
+      return `останов: встретилось «${entry.stopSequence ?? ''}»`;
+    if (entry.stopReason === 'max_tokens')
+      return `останов: лимит ${entry.params.maxTokens} токенов`;
+    if (entry.stopReason === 'end_turn') return 'останов: модель закончила сама';
+    return null;
+  };
+
+  const renderEntry = (entry) => {
+    const li = document.createElement('li');
+    li.className = 'entry';
+
+    const head = document.createElement('div');
+    head.className = 'head';
+    const sphere = document.createElement('span');
+    sphere.className = 'sphere';
+    sphere.textContent = entry.sphere;
+    const when = document.createElement('time');
+    when.dateTime = entry.at;
+    when.textContent = new Date(entry.at).toLocaleString('ru-RU');
+    head.append(sphere, when);
+
+    const tags = document.createElement('div');
+    tags.className = 'tags';
+    const tag = (text, cls) => {
+      const t = document.createElement('span');
+      t.className = cls ? `tag ${cls}` : 'tag';
+      t.textContent = text;
+      tags.append(t);
+    };
+    if (entry.usage && entry.usage.inputTokens !== null)
+      tag(`токены: ${entry.usage.inputTokens} → ${entry.usage.outputTokens}`, 'is-tokens');
+    tag(`темп.: ${Number(entry.params.temperature).toFixed(1)}`);
+    tag(`max_tokens: ${entry.params.maxTokens}`);
+    tag(`статей/источник: ${entry.params.perSource}`);
+    if (entry.params.stopSequences.length)
+      tag(`стоп: ${entry.params.stopSequences.join(' | ')}`);
+    if (entry.params.format) {
+      const f = entry.params.format;
+      tag(`формат: ${f.length > 40 ? `${f.slice(0, 40)}…` : f}`);
+    }
+    const stop = stopLabel(entry);
+    if (stop) tag(stop);
+    if (entry.candidates) tag(`кандидатов: ${entry.candidates}`);
+
+    const answer = document.createElement('p');
+    answer.className = 'answer';
+    answer.textContent = entry.answer || '(пустой ответ)';
+
+    li.append(head, tags, answer);
+
+    if (entry.note) {
+      const n = document.createElement('p');
+      n.className = 'enote';
+      n.textContent = entry.note;
+      li.append(n);
+    }
+    return li;
+  };
+
+  const renderFeed = () => {
+    // Одна битая запись не должна ломать страницу: она пропускается.
+    const entries = loadFeed();
+    const nodes = [];
+    for (const entry of entries) {
+      try { nodes.push(renderEntry(entry)); } catch {}
+    }
+    feed.replaceChildren(...nodes);
+    empty.hidden = nodes.length > 0;
+    $('clear').hidden = entries.length === 0;
+  };
+
+  $('clear').onclick = () => { saveFeed([]); renderFeed(); };
+  renderFeed();
+
+  let stream = null;
+
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    const sphere = input.value.trim();
+    if (!sphere) return;
+
+    // Числа проверяются до запроса: EventSource не покажет текст ошибки 400.
+    const invalid = [$('p-per-source'), $('p-max-tokens')].find((el) => !el.checkValidity());
+    if (invalid) { invalid.reportValidity(); return; }
+
+    stream?.close();
+    progress.replaceChildren();
+    note.hidden = true;
+    note.textContent = '';
+    button.disabled = true;
+    feed.setAttribute('aria-busy', 'true');
+
+    const qs = new URLSearchParams({
+      sphere,
+      format: $('p-format').value,
+      stop: $('p-stop').value,
+      max_tokens: $('p-max-tokens').value,
+      per_source: $('p-per-source').value,
+      temperature: temp.value,
+    });
+    stream = new EventSource(`./api/answer?${qs}`);
+
+    const finish = () => {
+      button.disabled = false;
+      feed.removeAttribute('aria-busy');
+      stream.close();
+    };
+
+    stream.addEventListener('progress', (e) => step(JSON.parse(e.data).text));
+
+    stream.addEventListener('result', (e) => {
+      const entry = JSON.parse(e.data);
+      step('Готово');
+      saveFeed([entry, ...loadFeed()]);
+      renderFeed();
+      finish();
+    });
+
+    stream.addEventListener('error', (e) => {
+      // Отличаем ошибку приложения от обрыва соединения: у первой есть data.
+      if (e.data) showNote(JSON.parse(e.data).message, true);
+      else if (!note.textContent) showNote('Соединение прервано. Попробуйте ещё раз.', true);
+      finish();
+    });
+  };
+</script>
+</body>
+</html>
