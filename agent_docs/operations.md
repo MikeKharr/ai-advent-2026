@@ -38,8 +38,16 @@
 ## Первый запуск на сервере
 
 1. Создать `deploy/router.env` (права 600), заполнив переменные из таблицы выше.
-   Ключи приложений и админа — длинные случайные строки, например
-   `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`.
+   Ключ Anthropic берётся из `secrets.env`; ключи приложений и админа — случайные
+   строки. На сервере Node нет, генерировать через `openssl`:
+
+   ```sh
+   cd ~/ai-advent-2026/deploy && umask 077
+   grep '^ANTHROPIC_API_KEY=' secrets.env > router.env
+   echo "ROUTER_ADMIN_KEY=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')" >> router.env
+   echo "APP_KEY_SMOKE=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')" >> router.env
+   chmod 600 router.env
+   ```
 2. Смерж в `main` изменений в `router/` собирает образ и выкатывает сервис;
    workflow ждёт `healthy` по healthcheck контейнера (публичного адреса нет).
 3. Проверка изнутри сервера:
