@@ -29,22 +29,31 @@
                 │                      │
                 ▼                      ▼
      ┌────────────────────┐   ┌──────────────────┐
-     │ контейнер day1     │   │ site/ (статика)  │
+     │ контейнер dayN     │   │ site/ (статика)  │
      │ ghcr.io/mikekharr/ │   │ список дней      │
-     │   advent-day1:<sha>│   └──────────────────┘
+     │   advent-dayN:<sha>│   └──────────────────┘
      │ :8080  /healthz    │
-     └─────────┬──────────┘
-               │ HTTPS
-               ▼
-     api.anthropic.com /v1/messages
-       model: claude-haiku-4-5
-       tools: web_search + publish_digest
+     └──┬──────────┬──────┘
+        │ дни 1–4  │ день 5+ (http://router:8081, ключ приложения)
+        │ напрямую ▼
+        │   ┌────────────────────────────────────────┐
+        │   │ контейнер router (без публичного адреса)│
+        │   │ классы задач → провайдер; здоровье;     │
+        │   │ ключи провайдеров, лимиты и журнал      │
+        │   │ расхода по приложениям (deploy/router.env│
+        │   │ + том router_data)                       │
+        │   └───────┬──────────────────┬──────────────┘
+        │           │ HTTPS            │ (после tailnet)
+        ▼           ▼                  ▼
+     api.anthropic.com /v1/messages   Ollama /api/generate
+       model: claude-haiku-4-5          на ноутбуке владельца
 ```
 
 Каталоги:
 
 ```text
 days/dayN/     приложение дня: Dockerfile, код, public/
+router/        сервис роутера LLM-провайдеров (ADR 2026-09-08-1748)
 site/          лендинг на корне домена
 deploy/        Caddyfile, compose.yml, bootstrap.sh
 ```
@@ -63,10 +72,10 @@ deploy/        Caddyfile, compose.yml, bootstrap.sh
 ### Деплой
 
 1. Ветка `dayN` → PR → CI (синтаксис, тесты, сборка образа, `/healthz`) → мерж в `main`.
-2. Workflow определяет изменённые дни по diff.
+2. Workflow определяет изменённые единицы по diff: `days/dayN` или `router`.
 3. Сборка и публикация `ghcr.io/mikekharr/advent-dayN:<sha>`.
 4. На сервере: `git pull`, пин `DAYN_TAG=<sha>` в `deploy/.env`, `docker compose pull`, `up -d`.
-5. Проверка живого адреса: лендинг 200, `/dayN/healthz` 200.
+5. Проверка живого адреса: лендинг 200, `/dayN/healthz` 200. У роутера публичного адреса нет — ждём `healthy` по healthcheck контейнера (`operations.md`).
 
 Откат — подстановка предыдущего sha в `deploy/.env` и `docker compose up -d dayN`. Пересборка не нужна.
 
