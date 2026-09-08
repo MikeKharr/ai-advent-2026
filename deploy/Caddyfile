@@ -43,9 +43,9 @@ challenge.zpq.ai {
 		}
 	}
 
-	redir /day3 /day3/ permanent
-	handle_path /day3/* {
-		reverse_proxy day3:8080 {
+	redir /day4 /day4/ permanent
+	handle_path /day4/* {
+		reverse_proxy day4:8080 {
 			health_uri /healthz
 			health_interval 30s
 		}

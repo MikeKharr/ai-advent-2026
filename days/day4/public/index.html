@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Никакого <base>: redir /day3 -> /day3/ на Caddy делает относительные
+<!-- Никакого <base>: redir /day4 -> /day4/ на Caddy делает относительные
      пути верными и в проде, и при локальном запуске (см. README дня 1). -->
-<title>Бот новостей стартапов — AI Advent 2026, день 3</title>
+<title>Бот новостей стартапов — AI Advent 2026, день 4</title>
 <style>
   /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
      Значения вне этих шкал — дефект, а не нюанс. */
@@ -307,8 +307,19 @@
   };
 
   // Лента живёт в localStorage: сервер запросы пользователей не хранит.
-  const STORE = 'day3-feed';
+  const STORE = 'day4-feed';
   const MAX_ENTRIES = 50;
+
+  // Разовый перенос: день был выкачен как day3 и переименован в day4
+  // (2026-09-08). Без переноса лента, накопленная под старым ключом, просто
+  // исчезла бы у тех, кто пользовался днём до переименования.
+  try {
+    const old = localStorage.getItem('day3-feed');
+    if (old !== null && localStorage.getItem(STORE) === null) {
+      localStorage.setItem(STORE, old);
+      localStorage.removeItem('day3-feed');
+    }
+  } catch {}
 
   const loadFeed = () => {
     // Хранилище — внешние данные: валидный JSON не обязан быть массивом записей.

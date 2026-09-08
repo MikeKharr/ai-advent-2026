@@ -1,13 +1,13 @@
 # День 3 — бот новостей стартапов: температура и параметры модели
 
-**URL:** `https://challenge.zpq.ai/day3`
+**URL:** `https://challenge.zpq.ai/day4`
 **Порт в контейнере:** 8080
-**Образ:** `ghcr.io/mikekharr/advent-day3`
+**Образ:** `ghcr.io/mikekharr/advent-day4`
 
 ## Состояние
 
 Работает. Функционально это день 2 плюс температура; экран переделан по
-дизайн-корпусу (`agent_docs/design/corpus.md`) — день 3 первый, к кому корпус
+дизайн-корпусу (`agent_docs/design/corpus.md`) — день 4 первый, к кому корпус
 применяется.
 
 Параметры:
@@ -88,12 +88,12 @@
 ## Локальный запуск
 
 ```bash
-node days/day3/server.js       # http://localhost:8080
+node days/day4/server.js       # http://localhost:8080
 ```
 
 ## Важно про префикс
 
-Как в дне 1: Caddy срезает `/day3` через `handle_path`, все ссылки и `fetch` —
+Как в дне 1: Caddy срезает `/day4` через `handle_path`, все ссылки и `fetch` —
 относительные, `<base>` не нужен и вреден (подробно — `days/day1/README.md`).
 
 ## Переменные окружения

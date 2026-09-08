@@ -163,7 +163,7 @@ async function handle(req, res) {
     const healthy = errors.length === 0
     return sendJson(res, healthy ? 200 : 503, {
       ok: healthy,
-      day: 3,
+      day: 4,
       node: process.version,
       feeds: FEEDS.length,
       config: healthy ? 'ok' : 'неполная',
@@ -229,7 +229,7 @@ async function handle(req, res) {
   }
 }
 
-server.listen(PORT, () => console.log(`day3 слушает :${PORT}, лент: ${FEEDS.length}`))
+server.listen(PORT, () => console.log(`day4 слушает :${PORT}, лент: ${FEEDS.length}`))
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => server.close(() => process.exit(0)))
