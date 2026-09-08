@@ -18,6 +18,7 @@
 - `agent_docs/architecture.md` — архитектура, топология дней и конвейер деплоя; актуально при изменениях системы.
 - `agent_docs/adr/` — атомарный журнал значимых решений (по файлу на решение). Правила: `agent_docs/adr/README.md`.
 - `agent_docs/development-history/` — атомарный журнал итераций (по файлу на итерацию). Правила: `agent_docs/development-history/README.md`.
+- `agent_docs/design/corpus.md` — дизайн-корпус: шкалы, палитра, обязательные состояния. Читать перед любой работой с UI; ревью — скилл `/design-review`.
 - `agent_docs/backlog-closed.md` — архив закрытых пунктов бэклога.
 
 ## Правила и гайды
