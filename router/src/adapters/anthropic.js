@@ -4,10 +4,10 @@
 // структурированный вывод — `output_config.format` без beta-заголовка,
 // поиск — серверный инструмент `web_search_20250305`.
 
-import { readJson } from "./http.js";
+import { readJson } from './http.js'
 
-const API_VERSION = "2023-06-01";
-const WEB_SEARCH_MAX_USES = 3;
+const API_VERSION = '2023-06-01'
+const WEB_SEARCH_MAX_USES = 3
 
 export async function call(
   {
@@ -25,49 +25,49 @@ export async function call(
   },
   { fetchImpl, env },
 ) {
-  const body = { model, messages: [{ role: "user", content: prompt }] };
-  if (system) body.system = system;
-  let maxTokens = maxOutputTokens;
-  if (thinking.level !== "none") {
+  const body = { model, messages: [{ role: 'user', content: prompt }] }
+  if (system) body.system = system
+  let maxTokens = maxOutputTokens
+  if (thinking.level !== 'none') {
     // Модели до 4.6 принимают только явный бюджет; он берётся из конфигурации
     // провайдера, а max_tokens обязан его превышать.
-    const budget = thinking.value;
-    body.thinking = { type: "enabled", budget_tokens: budget };
-    maxTokens = Math.max(maxOutputTokens, answerTokens + budget);
+    const budget = thinking.value
+    body.thinking = { type: 'enabled', budget_tokens: budget }
+    maxTokens = Math.max(maxOutputTokens, answerTokens + budget)
   } else if (temperature !== undefined) {
     // С включёнными размышлениями API не принимает temperature.
-    body.temperature = temperature;
+    body.temperature = temperature
   }
-  body.max_tokens = maxTokens;
-  if (schema) body.output_config = { format: { type: "json_schema", schema } };
+  body.max_tokens = maxTokens
+  if (schema) body.output_config = { format: { type: 'json_schema', schema } }
   // Возможность, которую роутер потребовал от провайдера, должна реально
   // уйти в запрос — иначе класс rank_news получит ответ из памяти модели.
-  if (tools.includes("web_search"))
+  if (tools.includes('web_search'))
     body.tools = [
       {
-        type: "web_search_20250305",
-        name: "web_search",
+        type: 'web_search_20250305',
+        name: 'web_search',
         max_uses: WEB_SEARCH_MAX_USES,
       },
-    ];
+    ]
 
   const response = await fetchImpl(`${provider.baseUrl}/v1/messages`, {
-    method: "POST",
+    method: 'POST',
     headers: {
-      "content-type": "application/json",
-      "x-api-key": env[provider.secretEnv],
-      "anthropic-version": API_VERSION,
+      'content-type': 'application/json',
+      'x-api-key': env[provider.secretEnv],
+      'anthropic-version': API_VERSION,
     },
     body: JSON.stringify(body),
     signal,
-  });
+  })
 
-  const json = await readJson(response, `anthropic`);
+  const json = await readJson(response, `anthropic`)
 
   const text = (json.content ?? [])
-    .filter((block) => block.type === "text")
+    .filter((block) => block.type === 'text')
     .map((block) => block.text)
-    .join("");
+    .join('')
 
   return {
     text,
@@ -82,9 +82,6 @@ export async function call(
       evalMs: null,
       tokPerSec: null,
     },
-    stopReason:
-      json.stop_reason === "max_tokens"
-        ? "length"
-        : (json.stop_reason ?? "stop"),
-  };
+    stopReason: json.stop_reason === 'max_tokens' ? 'length' : (json.stop_reason ?? 'stop'),
+  }
 }

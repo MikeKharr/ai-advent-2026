@@ -80,7 +80,7 @@
    `dataClasses` шире облачных — данные не покидают периметр. Образец —
    `router/config/providers.local.example.json`.
 4. Профиль задаёт дедлайн по формуле ADR (загрузка 20 с, генерация не ниже 6.4 ток/с
-   для `laptop`); переопределить можно полем `timing: { loadMs, promptEvalTps, genTpsFloor }`.
+   для `laptop`); переопределить можно полем `timeouts: { loadMs, promptEvalTps, genTpsFloor }`.
 5. Локальный запуск роутера с ноутбучным провайдером:
 
    ```sh

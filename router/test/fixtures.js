@@ -2,32 +2,27 @@
 // тестам. Anthropic Messages API и родной /api/generate Ollama.
 
 export function anthropicMessage({
-  text = "ответ",
-  stop = "end_turn",
+  text = 'ответ',
+  stop = 'end_turn',
   input = 120,
   output = 40,
 } = {}) {
   return {
-    id: "msg_01XFDUDYJgAACzvnptvVoYEL",
-    type: "message",
-    role: "assistant",
-    model: "claude-haiku-4-5",
-    content: text === "" ? [] : [{ type: "text", text }],
+    id: 'msg_01XFDUDYJgAACzvnptvVoYEL',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: text === '' ? [] : [{ type: 'text', text }],
     stop_reason: stop,
     stop_sequence: null,
     usage: { input_tokens: input, output_tokens: output },
-  };
+  }
 }
 
-export function ollamaGenerate({
-  text = "ответ",
-  done = "stop",
-  input = 120,
-  output = 40,
-} = {}) {
+export function ollamaGenerate({ text = 'ответ', done = 'stop', input = 120, output = 40 } = {}) {
   return {
-    model: "qwen3.8:27b",
-    created_at: "2026-09-08T10:00:00.000Z",
+    model: 'qwen3.8:27b',
+    created_at: '2026-09-08T10:00:00.000Z',
     response: text,
     done: true,
     done_reason: done,
@@ -37,54 +32,54 @@ export function ollamaGenerate({
     prompt_eval_duration: 600_000_000,
     eval_count: output,
     eval_duration: 6_250_000_000,
-  };
+  }
 }
 
 export const PROVIDERS = [
   {
-    id: "mac-qwen3",
+    id: 'mac-qwen3',
     revision: 1,
-    kind: "ollama",
-    tier: "self-hosted",
-    baseUrl: "http://laptop.test:11434",
-    model: "qwen3.8:27b",
-    profile: "laptop",
-    capabilities: ["json_schema"],
+    kind: 'ollama',
+    tier: 'self-hosted',
+    baseUrl: 'http://laptop.test:11434',
+    model: 'qwen3.8:27b',
+    profile: 'laptop',
+    capabilities: ['json_schema'],
     contextWindow: 131072,
-    jurisdiction: "local",
-    dataClasses: ["public", "internal", "personal"],
+    jurisdiction: 'local',
+    dataClasses: ['public', 'internal', 'personal'],
     maxConcurrency: 1,
     thinking: { none: true, low: true, medium: true, high: true },
     price: { inputPerMTok: 0, outputPerMTok: 0 },
   },
   {
-    id: "anthropic-haiku",
+    id: 'anthropic-haiku',
     revision: 1,
-    kind: "anthropic",
-    tier: "cloud-frontier",
-    baseUrl: "https://api.anthropic.test",
-    model: "claude-haiku-4-5",
-    profile: "cloud",
-    capabilities: ["json_schema", "web_search", "tools"],
+    kind: 'anthropic',
+    tier: 'cloud-frontier',
+    baseUrl: 'https://api.anthropic.test',
+    model: 'claude-haiku-4-5',
+    profile: 'cloud',
+    capabilities: ['json_schema', 'web_search', 'tools'],
     contextWindow: 200000,
-    jurisdiction: "us",
-    dataClasses: ["public"],
+    jurisdiction: 'us',
+    dataClasses: ['public'],
     maxConcurrency: 8,
     thinking: { none: true, low: 1024, medium: 4096, high: 16384 },
-    secretEnv: "ANTHROPIC_API_KEY",
+    secretEnv: 'ANTHROPIC_API_KEY',
     price: { inputPerMTok: 1, outputPerMTok: 5, perWebSearch: 0.01 },
   },
-];
+]
 
 export const ENV = {
-  ANTHROPIC_API_KEY: "sk-test",
-  ROUTER_ADMIN_KEY: "admin-test",
-  APP_KEY_SMOKE: "app-smoke",
-};
+  ANTHROPIC_API_KEY: 'sk-test',
+  ROUTER_ADMIN_KEY: 'admin-test',
+  APP_KEY_SMOKE: 'app-smoke',
+}
 
 /** Ответ на HTTP-уровне, как его видит адаптер через fetch. */
 export function httpJson(status, json, headers = {}) {
-  return httpText(status, JSON.stringify(json), headers);
+  return httpText(status, JSON.stringify(json), headers)
 }
 
 export function httpText(status, text, headers = {}) {
@@ -93,7 +88,7 @@ export function httpText(status, text, headers = {}) {
     status,
     headers: { get: (k) => headers[k.toLowerCase()] ?? null },
     text: async () => text,
-  };
+  }
 }
 
 /**
@@ -102,40 +97,40 @@ export function httpText(status, text, headers = {}) {
  */
 export function scriptedFetch(byHost, { calls = [] } = {}) {
   return async (url, options) => {
-    const host = new URL(url).host;
-    const body = JSON.parse(options.body);
-    calls.push({ host, body, url });
-    const handler = byHost[host];
-    if (!handler) throw unreachable("ENOTFOUND");
+    const host = new URL(url).host
+    const body = JSON.parse(options.body)
+    calls.push({ host, body, url })
+    const handler = byHost[host]
+    if (!handler) throw unreachable('ENOTFOUND')
     const step =
-      typeof handler === "function"
+      typeof handler === 'function'
         ? handler
         : handler.shift
           ? () => {
-              const next = handler.shift();
-              if (!next) throw new Error(`сценарий для ${host} исчерпан`);
-              return next;
+              const next = handler.shift()
+              if (!next) throw new Error(`сценарий для ${host} исчерпан`)
+              return next
             }
-          : () => handler;
+          : () => handler
     // Как настоящий fetch: прерывание по сигналу отклоняет промис.
     const aborted = new Promise((_, reject) => {
       const fail = () =>
         reject(
-          Object.assign(new Error("This operation was aborted"), {
-            name: "AbortError",
+          Object.assign(new Error('This operation was aborted'), {
+            name: 'AbortError',
           }),
-        );
-      if (options.signal?.aborted) fail();
-      else options.signal?.addEventListener("abort", fail, { once: true });
-    });
-    const out = await Promise.race([step(body, options), aborted]);
-    if (out instanceof Error) throw out;
-    return out;
-  };
+        )
+      if (options.signal?.aborted) fail()
+      else options.signal?.addEventListener('abort', fail, { once: true })
+    })
+    const out = await Promise.race([step(body, options), aborted])
+    if (out instanceof Error) throw out
+    return out
+  }
 }
 
 export function unreachable(code) {
-  const error = new TypeError("fetch failed");
-  error.cause = Object.assign(new Error(code), { code });
-  return error;
+  const error = new TypeError('fetch failed')
+  error.cause = Object.assign(new Error(code), { code })
+  return error
 }

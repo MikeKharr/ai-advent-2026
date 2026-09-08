@@ -5,11 +5,11 @@
 // здоровье всегда считает роутер.
 
 export function createStaticRegistry(providers) {
-  const snapshot = providers.map((p) => ({ ...p, revision: p.revision ?? 1 }));
+  const snapshot = providers.map((p) => ({ ...p, revision: p.revision ?? 1 }))
   return {
     /** Синхронный снимок: на пути запроса ввода-вывода нет. */
     list() {
-      return snapshot;
+      return snapshot
     },
-  };
+  }
 }
