@@ -28,6 +28,7 @@ export async function call(
     prompt,
     system,
     schema,
+    stop = [],
     tools = [],
     thinking,
     maxOutputTokens,
@@ -48,6 +49,7 @@ export async function call(
 
   const body = { model, messages, stream: false, max_completion_tokens: maxOutputTokens }
   if (temperature !== undefined) body.temperature = temperature
+  if (stop.length > 0) body.stop = stop
 
   const effort = thinking.value
   if (typeof effort === 'string') {

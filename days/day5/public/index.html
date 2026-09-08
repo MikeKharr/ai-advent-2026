@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day5 -> /day5/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Архив новостей стартапов — AI Advent 2026, день 5</title>
+<style>
+  /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
+     Значения вне этих шкал — дефект, а не нюанс. */
+  :root {
+    color-scheme: light dark;
+    --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+    --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+    --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-xl:1.5rem;
+    --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+    --line:#e6e6e3; --line-ctl:#8f8f8a;
+    --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+    --r-sm:6px; --r-md:10px; --r-full:999px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+      --line:#2a2a30; --line-ctl:#6a6a73;
+      --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Раскладка «работа / параметры / результат». На широком экране каждая
+     колонка скроллится сама, поэтому форма и параметры остаются на местах,
+     пока листаешь ленту. На узком — обычный поток страницы. */
+  .layout {
+    display:grid; grid-template-columns:1fr; gap:var(--s-6);
+    max-width:80rem; margin:0 auto; padding:var(--s-6) var(--s-4);
+  }
+  @media (min-width: 73rem) {
+    html, body { height:100%; }
+    body { overflow:hidden; }
+    .layout {
+      grid-template-columns: minmax(0,1fr) 18rem 24rem;
+      height:100dvh; padding:var(--s-6) var(--s-5);
+    }
+    /* Правый отступ обязателен: колонка со своим скроллом обрезает всё, что
+       касается её края, — бегунок ползунка в крайних положениях, кольцо
+       фокуса (outline-offset 2px) и содержимое под полосой прокрутки. */
+    .col { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+    main.col { display:flex; flex-direction:column; }
+    main.col footer { margin-top:auto; }
+  }
+
+  h1 { font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; margin:0 0 var(--s-2); }
+  h2 {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); margin:0;
+  }
+  .sub { color:var(--fg-mut); margin:0 0 var(--s-5); max-width:60ch; }
+
+  /* Пять состояний у каждого интерактивного элемента: покой, наведение,
+     нажатие, :focus-visible, [disabled]. Фокус — на всех, а не только у полей. */
+  :where(button, input, textarea, a):focus-visible {
+    outline:2px solid var(--acc); outline-offset:2px;
+  }
+  input, textarea {
+    width:100%; padding:var(--s-2) var(--s-3); font:inherit; color:var(--fg);
+    background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  }
+  input:hover, textarea:hover { border-color:var(--fg-mut); }
+  textarea { resize:vertical; }
+
+  form { display:block; }
+  .ask { display:block; margin-bottom:var(--s-4); font-size:var(--t-sm); line-height:1.5; }
+  .ask-name { display:block; margin-bottom:var(--s-2); }
+  .submit { margin-top:var(--s-5); }
+  .ask .hint, form > .hint {
+    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
+    margin:calc(-1 * var(--s-3)) 0 var(--s-4); max-width:52ch;
+  }
+  button {
+    font:inherit; font-weight:600; border-radius:var(--r-sm); cursor:pointer;
+    padding:var(--s-2) var(--s-4); color:var(--acc-fg); background:var(--acc);
+    border:1px solid var(--acc);
+  }
+  button:hover { filter:brightness(1.08); }
+  button:active { transform:translateY(1px); }
+  button[disabled] { opacity:.5; cursor:default; filter:none; transform:none; }
+
+  .chips { display:flex; gap:var(--s-2); flex-wrap:wrap;
+           margin:calc(-1 * var(--s-2)) 0 var(--s-4); }
+  .chip {
+    padding:var(--s-1) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .chip:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
+
+  .progress { margin:0; padding:0; color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5; }
+  .progress:empty { display:none; }
+  .progress li { list-style:none; margin:var(--s-1) 0; }
+  .progress li::before { content:"· "; }
+  .note {
+    margin:0; padding:var(--s-3) var(--s-4); max-width:52ch; border:1px solid var(--line);
+    border-radius:var(--r-md); background:var(--surface);
+    color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5;
+  }
+  .note.is-error { border-color:var(--danger); color:var(--fg); }
+
+  .params h2 + .field { margin-top:var(--s-5); }
+  .params .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
+  .params .name {
+    display:flex; justify-content:space-between; align-items:baseline;
+    gap:var(--s-2); margin-bottom:var(--s-2);
+  }
+  .params .hint {
+    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
+    margin-top:var(--s-1); max-width:52ch;
+  }
+  .num { font-variant-numeric:tabular-nums; }
+  .params .name .num { color:var(--fg-mut); }
+  /* Собственная высота, а не авто: у авто-высоты бегунок выше бокса и
+     срезается сверху и снизу. display:block убирает щель под базовой линией. */
+  input[type=range] {
+    display:block; width:100%; height:var(--s-5); margin:0; cursor:pointer;
+    accent-color:var(--acc); padding:0; border:0; background:transparent;
+  }
+  input[type=range]:hover { border:0; filter:brightness(1.08); }
+
+  .feed-col { display:flex; flex-direction:column; gap:var(--s-4); min-height:0; }
+  .feed-head { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2); }
+  .feed-list { list-style:none; margin:0; padding:0; }
+  @media (min-width: 73rem) {
+    .feed-list { overflow-y:auto; min-height:0; flex:1; padding-right:var(--s-2); }
+  }
+  .clear {
+    padding:var(--s-1) var(--s-3); font-size:var(--t-xs); line-height:1.4; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .clear:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
+
+  .entry {
+    padding:var(--s-4); margin-bottom:var(--s-5);
+    border:1px solid var(--line); border-radius:var(--r-md); background:var(--surface);
+  }
+  .entry .head {
+    display:flex; justify-content:space-between; gap:var(--s-2); flex-wrap:wrap;
+    font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); margin-bottom:var(--s-2);
+  }
+  .entry .sphere { font-weight:600; color:var(--fg); }
+  .entry time { font-variant-numeric:tabular-nums; }
+  .tags { display:flex; gap:var(--s-2); flex-wrap:wrap; margin-bottom:var(--s-3); }
+  .tag {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:var(--s-1) var(--s-2);
+    font-variant-numeric:tabular-nums;
+    max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .tag.is-tokens { color:var(--fg); border-color:var(--line-ctl); }
+  .entry .ask-echo {
+    margin:0 0 var(--s-3); padding:var(--s-1) 0 var(--s-1) var(--s-3);
+    border-left:2px solid var(--line-ctl);
+  }
+  .ask-echo-label {
+    display:block; font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); margin-bottom:var(--s-1);
+  }
+  .ask-echo-text {
+    margin:0; color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5;
+    max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .answer {
+    margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch;
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .entry .enote { margin:var(--s-3) 0 0; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; }
+  .empty { color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5; margin:0; }
+
+  footer {
+    margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
+    color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; max-width:52ch;
+  }
+  footer a { color:var(--acc); }
+  footer a:hover { color:var(--fg); }
+  footer a:active { opacity:.7; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation:none !important; transition:none !important; }
+    button:active { transform:none; }
+  }
+</style>
+<style>
+  /* Выбор модели: радиогруппа, а не выпадающий список — вариантов три,
+     и все должны быть видны сразу, вместе с пометкой поставщика. */
+  .models { display:flex; flex-direction:column; gap:var(--s-2); margin:var(--s-2) 0 0; }
+  .model {
+    display:flex; align-items:baseline; gap:var(--s-2);
+    padding:var(--s-2) var(--s-3); border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm); background:var(--surface); cursor:pointer;
+  }
+  .model:hover { border-color:var(--fg-mut); }
+  .model:has(input:focus-visible) { outline:2px solid var(--acc); outline-offset:2px; }
+  .model:has(input:checked) { border-color:var(--acc); }
+  .model input { width:auto; margin:0; accent-color:var(--acc); }
+  .model-name { font-size:var(--t-sm); line-height:1.5; }
+  .model-note {
+    margin-left:auto; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:0 var(--s-2);
+  }
+  .archive { margin:0 0 var(--s-5); font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+  .archive .num { color:var(--fg); }
+</style>
+
+</head>
+<body>
+<div class="layout">
+
+  <main class="col">
+    <h1>Архив новостей стартапов</h1>
+    <p class="sub">Приложение копит статьи восьми изданий (США, Европа, Индия, Китай)
+    в архиве на сервере — с полными текстами там, где издание их отдаёт. Поиском в
+    интернете модель не пользуется: под ваш запрос статьи отбираются алгоритмически
+    из архива. Модель выбирается до запуска и отвечает целиком сама.</p>
+
+    <form id="f">
+      <label class="ask">
+        <span class="ask-name">Тематика</span>
+        <input id="q" type="text" name="sphere" maxlength="60"
+               placeholder="fintech, climate tech, robotics…"
+               autocomplete="off" required>
+      </label>
+      <div class="chips" id="chips"></div>
+
+      <label class="ask">
+        <span class="ask-name">Запрос и формат ответа</span>
+        <textarea id="p-prompt" rows="4" maxlength="2000" aria-describedby="p-prompt-hint"
+          placeholder="например: какие раунды и на какие суммы подняли компании — таблицей, с датой и ссылкой"></textarea>
+      </label>
+      <p class="hint" id="p-prompt-hint">Это промпт для модели: и что спросить, и в каком
+      виде ответить. Слова запроса участвуют в отборе статей из архива.</p>
+
+      <button id="go" type="submit" class="submit">Спросить</button>
+    </form>
+
+    <footer>
+      Источники: <span id="sources">…</span>. Ссылки в ответах — только из лент
+      изданий; ссылка, которой нет в списке источников, вырезается. Лента запросов
+      хранится в вашем браузере и никуда не отправляется. Издание может попросить
+      убрать свою ленту: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
+    </footer>
+  </main>
+
+  <aside class="col params" aria-label="Параметры">
+    <h2>Параметры</h2>
+
+    <fieldset class="field" style="border:0;padding:0;margin:var(--s-5) 0;">
+      <legend class="name" style="padding:0;">Модель</legend>
+      <div class="models" id="models"></div>
+      <span class="hint">Выбирается до запуска. Все инструкции запроса выполняет
+      выбранная модель; подмены на другую при отказе не будет.</span>
+    </fieldset>
+
+    <label class="field">
+      <span class="name">Статей в подборке</span>
+      <input id="p-articles" class="num" type="number" min="1" max="60" value="30" inputmode="numeric">
+      <span class="hint">Сколько статей архива уйдёт в модель (1–60). Сначала подходящие
+      по запросу, затем самые свежие.</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Статей с источника</span>
+      <input id="p-per-source" class="num" type="number" min="1" max="15" value="5" inputmode="numeric">
+      <span class="hint">Потолок на издание (1–15), чтобы плодовитые не вытесняли регионы.</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Условие завершения ответа</span>
+      <textarea id="p-stop" rows="2" maxlength="400"
+        placeholder="слово или фраза; при появлении в ответе генерация остановится"></textarea>
+      <span class="hint">До 4 стоп-последовательностей, по одной на строку.</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Останов по токенам</span>
+      <input id="p-max-tokens" class="num" type="number" min="1" max="2048" value="600" inputmode="numeric">
+      <span class="hint">Максимум токенов ответа, 1–2048.</span>
+    </label>
+  </aside>
+
+  <section class="col feed-col" aria-label="Лента ответов">
+    <div class="feed-head">
+      <h2>Лента</h2>
+      <button class="clear" id="clear" type="button" hidden>очистить</button>
+    </div>
+
+    <p class="archive" id="archive"></p>
+    <ul class="progress" id="progress" aria-live="polite"></ul>
+    <div class="note" id="note" role="alert" hidden></div>
+    <p class="empty" id="empty">Пока пусто. Задайте тематику, при желании — запрос, и ответ появится здесь.</p>
+    <ul class="feed-list" id="feed"></ul>
+  </section>
+
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const form = $('f'), input = $('q'), button = $('go');
+  const progress = $('progress'), note = $('note'), feed = $('feed'), empty = $('empty');
+
+  const SPHERES = [
+    { text: 'финтех' },
+    { text: 'климатические технологии' },
+    { text: 'робототехника' },
+    { text: 'кибербезопасность' },
+    { text: 'AI infrastructure', lang: 'en' },
+    { text: '人工智能', lang: 'zh' },
+    { text: 'फिनटेक', lang: 'hi' },
+  ];
+
+  for (const { text, lang } of SPHERES) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = text;
+    if (lang) chip.lang = lang;
+    chip.onclick = () => { input.value = text; $('p-prompt').focus(); };
+    $('chips').append(chip);
+  }
+
+  // Список моделей и состояние архива приходят с сервера: держать их
+  // в двух местах — способ разойтись.
+  let models = [];
+  const renderModels = () => {
+    const box = $('models');
+    box.replaceChildren();
+    models.forEach((m, i) => {
+      const label = document.createElement('label');
+      label.className = 'model';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'model';
+      radio.value = m.id;
+      radio.checked = i === 0;
+      const name = document.createElement('span');
+      name.className = 'model-name';
+      name.textContent = m.label;
+      const note = document.createElement('span');
+      note.className = 'model-note';
+      note.textContent = m.note;
+      label.append(radio, name, note);
+      box.append(label);
+    });
+  };
+  const chosenModel = () =>
+    document.querySelector('input[name=model]:checked')?.value ?? models[0]?.id;
+
+  const showArchive = (a) => {
+    if (!a) return;
+    const when = a.lastRefresh
+      ? new Date(a.lastRefresh).toLocaleString('ru-RU')
+      : 'ещё не обновлялся';
+    $('archive').innerHTML =
+      `В архиве <span class="num">${a.total}</span> из ${a.capacity} статей, ` +
+      `квота на издание ${a.quota}. Проверка лент: ${when}.`;
+  };
+
+  fetch('./api/state')
+    .then((r) => r.json())
+    .then((d) => {
+      models = d.models ?? [];
+      renderModels();
+      showArchive(d.archive);
+      $('sources').textContent = (d.sources ?? []).map((f) => f.source).join(', ');
+    })
+    .catch(() => { $('sources').textContent = 'недоступны'; });
+
+  const step = (text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    progress.append(li);
+  };
+
+  const showNote = (text, isError) => {
+    note.textContent = text;
+    note.classList.toggle('is-error', Boolean(isError));
+    note.hidden = false;
+  };
+
+  const STORE = 'day5-archive-feed';
+  const MAX_ENTRIES = 50;
+
+  const loadFeed = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORE));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  };
+  const saveFeed = (entries) => {
+    try { localStorage.setItem(STORE, JSON.stringify(entries.slice(0, MAX_ENTRIES))); } catch {}
+  };
+
+  const renderEntry = (entry) => {
+    const li = document.createElement('li');
+    li.className = 'entry';
+
+    const head = document.createElement('div');
+    head.className = 'head';
+    const sphere = document.createElement('span');
+    sphere.className = 'sphere';
+    sphere.textContent = entry.sphere;
+    const when = document.createElement('time');
+    when.dateTime = entry.at;
+    when.textContent = new Date(entry.at).toLocaleString('ru-RU');
+    head.append(sphere, when);
+
+    const tags = document.createElement('div');
+    tags.className = 'tags';
+    const tag = (text, cls) => {
+      const t = document.createElement('span');
+      t.className = cls ? `tag ${cls}` : 'tag';
+      t.textContent = text;
+      tags.append(t);
+    };
+    // Модель — первый тег: в дне 5 ответы разных моделей лежат вперемешку,
+    // и без неё числа токенов несопоставимы.
+    if (entry.model) tag(`модель: ${entry.model.model}`, 'is-tokens');
+    if (entry.usage && entry.usage.inputTokens !== null)
+      tag(`токены: ${entry.usage.inputTokens} → ${entry.usage.outputTokens}`, 'is-tokens');
+    tag(`max_tokens: ${entry.params.maxTokens}`);
+    tag(`статей: ${entry.selection.used}, по запросу ${entry.selection.matched}`);
+    tag(`с текстом: ${entry.selection.withText}`);
+    if (entry.params.stopSequences.length)
+      tag(`стоп: ${entry.params.stopSequences.join(' | ')}`);
+    if (entry.truncated) tag('ответ обрезан лимитом токенов');
+
+    const answer = document.createElement('p');
+    answer.className = 'answer';
+    answer.textContent = entry.answer || '(пустой ответ)';
+
+    li.append(head);
+
+    if (entry.params.prompt) {
+      const ask = document.createElement('div');
+      ask.className = 'ask-echo';
+      const label = document.createElement('span');
+      label.className = 'ask-echo-label';
+      label.textContent = 'Запрос';
+      const askText = document.createElement('p');
+      askText.className = 'ask-echo-text';
+      askText.textContent = entry.params.prompt;
+      ask.append(label, askText);
+      li.append(ask);
+    }
+    li.append(tags, answer);
+    return li;
+  };
+
+  const renderFeed = () => {
+    const entries = loadFeed();
+    const nodes = [];
+    for (const entry of entries) {
+      try { nodes.push(renderEntry(entry)); } catch {}
+    }
+    feed.replaceChildren(...nodes);
+    empty.hidden = nodes.length > 0;
+    $('clear').hidden = entries.length === 0;
+  };
+
+  $('clear').onclick = () => { saveFeed([]); renderFeed(); };
+  renderFeed();
+
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const sphere = input.value.trim();
+    if (!sphere) return;
+
+    const invalid = [$('p-per-source'), $('p-max-tokens'), $('p-articles')]
+      .find((el) => !el.checkValidity());
+    if (invalid) { invalid.reportValidity(); return; }
+
+    progress.replaceChildren();
+    note.hidden = true;
+    note.textContent = '';
+    button.disabled = true;
+    feed.setAttribute('aria-busy', 'true');
+    step('Отбираю статьи из архива и спрашиваю модель…');
+
+    const params = {
+      sphere,
+      prompt: $('p-prompt').value,
+      model: chosenModel(),
+      maxTokens: Number($('p-max-tokens').value),
+      perSource: Number($('p-per-source').value),
+      articles: Number($('p-articles').value),
+      stopSequences: $('p-stop').value.split('\n').map((s) => s.trim()).filter(Boolean),
+    };
+
+    try {
+      const response = await fetch('./api/answer', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      const data = await response.json();
+      if (!response.ok) { showNote(data.error ?? 'Не получилось', true); return; }
+
+      showArchive({ ...data.archive, capacity: data.archive.capacity ?? '—' });
+      if (data.archive.added) step(`Архив пополнен: +${data.archive.added}`);
+      step('Готово');
+      saveFeed([{
+        at: new Date().toISOString(),
+        sphere,
+        params,
+        answer: data.answer,
+        model: data.model,
+        usage: data.usage,
+        truncated: data.truncated,
+        selection: data.selection,
+      }, ...loadFeed()]);
+      renderFeed();
+    } catch {
+      showNote('Соединение прервано. Попробуйте ещё раз.', true);
+    } finally {
+      button.disabled = false;
+      feed.removeAttribute('aria-busy');
+    }
+  };
+</script>
+</body>
+</html>

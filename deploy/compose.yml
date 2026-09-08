@@ -17,6 +17,7 @@ services:
       - day2
       - day3
       - day4
+      - day5
 
   day1:
     # Тег приходит из .env, который переписывает workflow деплоя.
@@ -86,6 +87,26 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  day5:
+    image: ghcr.io/mikekharr/advent-day5:${DAY5_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # Ключей к моделям у дня нет: он ходит в роутер по ключу приложения
+      # (ROUTER_APP_KEY в day5.env, то же значение — APP_KEY_DAY5 в router.env).
+      - path: ./day5.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - day5_data:/data   # архив статей, переживает пересоздание контейнера
+    depends_on:
+      - router
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Роутер LLM-провайдеров (ADR 2026-09-08-1748). Публичного адреса нет:
   # к нему ходят только контейнеры дней по сети compose, http://router:8081.
   router:
@@ -111,3 +132,4 @@ volumes:
   caddy_data:
   caddy_config:
   router_data:
+  day5_data:

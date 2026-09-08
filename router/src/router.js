@@ -93,9 +93,47 @@ export function createRouter({
     if (strict && schema === null)
       return refuse('refused', `класс ${taskClass} требует schema в запросе`, [])
 
+    // Потолок ответа: по умолчанию из реестра классов, вызывающий может
+    // сдвинуть его в пределах объявленного классом максимума.
+    const answerTokens = cls.answerTokens
+    let requestedAnswerTokens = answerTokens
+    if (req.answerTokens !== undefined) {
+      const max = cls.maxAnswerTokens ?? answerTokens
+      if (!Number.isInteger(req.answerTokens) || req.answerTokens < 1 || req.answerTokens > max)
+        return refuse('refused', `answerTokens: целое от 1 до ${max} для класса ${taskClass}`, [])
+      requestedAnswerTokens = req.answerTokens
+    }
+
     const inputTokens = estimateTokens(req.input) + estimateTokens(req.system ?? '')
     const providers = registry.list()
-    const candidates = orderedCandidates(cls, providers)
+    // Явный выбор вызывающего (день 5: пользователь выбирает модель до
+    // запуска). Политика тогда не решает — но возможность, класс данных и
+    // здоровье проверяются как обычно, и фолбэка нет: ответ обязан прийти
+    // от той модели, которую выбрали, либо не прийти вовсе.
+    const explicit = req.provider ?? null
+    let candidates
+    if (explicit) {
+      candidates = providers.filter(
+        (p) => p.id === explicit || `${p.id}#${p.revision}` === explicit,
+      )
+      if (candidates.length === 0)
+        return refuse('no_provider', `провайдер ${explicit} не найден в реестре`, [])
+      const allowed = orderedCandidates(cls, providers).some((p) => p.id === candidates[0].id)
+      if (!allowed)
+        return refuse(
+          'refused',
+          `провайдер ${explicit} вне ярусов класса ${taskClass}: ${cls.tiers.join(',')}`,
+          [
+            {
+              provider: explicit,
+              stage: 'policy',
+              reason: `ярус ${candidates[0].tier} не разрешён классу`,
+            },
+          ],
+        )
+    } else {
+      candidates = orderedCandidates(cls, providers)
+    }
     if (candidates.length === 0)
       return refuse(
         'no_provider',
@@ -129,8 +167,9 @@ export function createRouter({
     const attempts = []
     let fallback = null
     let calls = 0
+    const maxCalls = explicit ? 1 : MAX_CALLS
     for (const p of capable) {
-      if (calls >= MAX_CALLS) break
+      if (calls >= maxCalls) break
       const skip = health.unavailableReason(p)
       if (skip) {
         reasons.push({
@@ -165,6 +204,7 @@ export function createRouter({
       const attempt = await tryProvider(p, {
         cls,
         req,
+        answerTokens: requestedAnswerTokens,
         thinking,
         inputTokens,
         schema,
@@ -236,10 +276,9 @@ export function createRouter({
 
   async function tryProvider(
     p,
-    { cls, req, thinking, inputTokens, schema, strict, requires, budgetUntil },
+    { req, answerTokens, thinking, inputTokens, schema, strict, requires, budgetUntil },
   ) {
     const providerId = `${p.id}#${p.revision}`
-    const answerTokens = cls.answerTokens
     const maxOutputTokens = answerTokens + THINKING_TOKENS[thinking]
     const deadline = deadlineMs(p, { inputTokens, answerTokens, thinking })
     const started = now()
@@ -271,6 +310,7 @@ export function createRouter({
           prompt: req.input,
           system: req.system,
           schema,
+          stop: req.stop ?? [],
           tools: requires.filter((r) => r === 'web_search'),
           thinking: { level: thinking, value: p.thinking[thinking] },
           answerTokens,
@@ -351,13 +391,24 @@ export function createRouter({
     const cls = config.classes[resolveClass(req.taskClass)]
     const level = resolveThinking(cls, req.thinking).level ?? cls.thinking
     const inputTokens = estimateTokens(req.input) + estimateTokens(req.system ?? '')
-    const outputTokens = cls.answerTokens + THINKING_TOKENS[level]
+    const answerTokens = Math.min(
+      req.answerTokens ?? cls.answerTokens,
+      cls.maxAnswerTokens ?? cls.answerTokens,
+    )
+    const outputTokens = answerTokens + THINKING_TOKENS[level]
     const dataClass = req.dataClass ?? cls.dataClass
     const extraRequires = [...(req.requires ?? []), ...(req.schema ? ['json_schema'] : [])]
-    const capable = orderedCandidates(cls, registry.list()).filter(
+    // При явном выборе способный кандидат ровно один — по нему и считаем,
+    // иначе запрос к дешёвой модели резервируется по ставке дорогой.
+    const pool = req.provider
+      ? registry
+          .list()
+          .filter((p) => p.id === req.provider || `${p.id}#${p.revision}` === req.provider)
+      : registry.list()
+    const capable = orderedCandidates(cls, pool).filter(
       (p) => capabilityFit(p, cls, level, dataClass, inputTokens, extraRequires).ok,
     )
-    const calls = Math.min(MAX_CALLS, Math.max(1, capable.length))
+    const calls = req.provider ? 1 : Math.min(MAX_CALLS, Math.max(1, capable.length))
     const worst = Math.max(
       0,
       ...capable.map(

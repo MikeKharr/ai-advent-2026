@@ -195,6 +195,21 @@ function parseBody(raw) {
     throw new Error('dataClass — строка')
   if (body.thinking !== undefined && typeof body.thinking !== 'string')
     throw new Error('thinking — строка')
+  // Явный выбор модели вызывающим: id провайдера, с ревизией или без.
+  if (body.provider !== undefined && (typeof body.provider !== 'string' || !body.provider))
+    throw new Error('provider — непустая строка')
+  if (
+    body.answerTokens !== undefined &&
+    !(Number.isInteger(body.answerTokens) && body.answerTokens > 0)
+  )
+    throw new Error('answerTokens — целое > 0')
+  if (body.stop !== undefined) {
+    if (!Array.isArray(body.stop) || body.stop.length > 4)
+      throw new Error('stop — массив не длиннее 4')
+    for (const x of body.stop)
+      if (typeof x !== 'string' || x.length === 0 || x.length > 40)
+        throw new Error('stop: строки от 1 до 40 символов')
+  }
   if (body.budgetMs !== undefined && !(Number.isInteger(body.budgetMs) && body.budgetMs >= 1000))
     throw new Error('budgetMs — целое ≥ 1000')
   if (

@@ -16,6 +16,7 @@ export async function call(
     prompt,
     system,
     schema,
+    stop = [],
     tools = [],
     thinking,
     answerTokens,
@@ -39,6 +40,7 @@ export async function call(
     body.temperature = temperature
   }
   body.max_tokens = maxTokens
+  if (stop.length > 0) body.stop_sequences = stop
   if (schema) body.output_config = { format: { type: 'json_schema', schema } }
   // Возможность, которую роутер потребовал от провайдера, должна реально
   // уйти в запрос — иначе класс rank_news получит ответ из памяти модели.
