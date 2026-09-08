@@ -1,0 +1,36 @@
+[
+  {
+    "id": "mac-qwen3",
+    "revision": 1,
+    "kind": "ollama",
+    "tier": "self-hosted",
+    "baseUrl": "http://127.0.0.1:11434",
+    "model": "qwen3.8:27b",
+    "profile": "laptop",
+    "capabilities": ["json_schema"],
+    "contextWindow": 131072,
+    "jurisdiction": "local",
+    "dataClasses": ["public", "internal", "personal"],
+    "maxConcurrency": 1,
+    "thinking": { "none": true, "low": "low", "medium": "medium", "high": "high" },
+    "keepAlive": "5m",
+    "price": { "inputPerMTok": 0, "outputPerMTok": 0 }
+  },
+  {
+    "id": "anthropic-haiku",
+    "revision": 1,
+    "kind": "anthropic",
+    "tier": "cloud-frontier",
+    "baseUrl": "https://api.anthropic.com",
+    "model": "claude-haiku-4-5",
+    "profile": "cloud",
+    "capabilities": ["json_schema", "web_search", "tools"],
+    "contextWindow": 200000,
+    "jurisdiction": "us",
+    "dataClasses": ["public"],
+    "maxConcurrency": 8,
+    "thinking": { "none": true, "low": 1024, "medium": 4096, "high": 16384 },
+    "secretEnv": "ANTHROPIC_API_KEY",
+    "price": { "inputPerMTok": 1, "outputPerMTok": 5, "perWebSearch": 0.01 }
+  }
+]

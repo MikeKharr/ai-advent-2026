@@ -86,6 +86,28 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Роутер LLM-провайдеров (ADR 2026-09-08-1748). Публичного адреса нет:
+  # к нему ходят только контейнеры дней по сети compose, http://router:8081.
+  router:
+    image: ghcr.io/mikekharr/advent-router:${ROUTER_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8081"
+    env_file:
+      # Ключи провайдеров и ключи приложений живут у роутера, не у дней.
+      # Не обязателен для compose: без файла роутер сам падает на старте
+      # (нет секретов), а дни продолжают подниматься.
+      - path: ./router.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - router_data:/data   # журнал расхода, переживает пересоздание контейнера
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
 volumes:
   caddy_data:
   caddy_config:
+  router_data:

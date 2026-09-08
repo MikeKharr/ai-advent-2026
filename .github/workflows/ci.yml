@@ -2,10 +2,10 @@ name: ci
 
 on:
   pull_request:
-    paths: ['days/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
+    paths: ['days/**', 'router/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
   push:
     branches: [main]
-    paths: ['days/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
+    paths: ['days/**', 'router/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
 
 permissions:
   contents: read
@@ -27,7 +27,8 @@ jobs:
             base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
           fi
           changed=$(git diff --name-only "$base" HEAD || true)
-          days=$(printf '%s\n' "$changed" | grep -oE '^days/[^/]+' | cut -d/ -f2 | sort -u | jq -R . | jq -sc .)
+          # Единица сборки — день (days/dayN) или сервис роутера (router).
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^router/' | cut -d/ -f1; } | sort -u | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -45,12 +46,18 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
 
+      - id: unit
+        name: Каталог единицы
+        run: |
+          if [ "${{ matrix.day }}" = router ]; then echo "dir=router" >> "$GITHUB_OUTPUT"; echo "port=8081" >> "$GITHUB_OUTPUT"
+          else echo "dir=days/${{ matrix.day }}" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT"; fi
+
       - name: Синтаксис
-        working-directory: days/${{ matrix.day }}
+        working-directory: ${{ steps.unit.outputs.dir }}
         run: for f in $(find . -name '*.js' -not -path './node_modules/*'); do node --check "$f"; done
 
       - name: Тесты
-        working-directory: days/${{ matrix.day }}
+        working-directory: ${{ steps.unit.outputs.dir }}
         run: |
           if ls test/*.test.js >/dev/null 2>&1 || ls *.test.js >/dev/null 2>&1; then
             node --test
@@ -59,17 +66,19 @@ jobs:
           fi
 
       - name: Сборка образа (без публикации)
-        run: docker build -t ci-check:${{ matrix.day }} days/${{ matrix.day }}
+        run: docker build -t ci-check:${{ matrix.day }} ${{ steps.unit.outputs.dir }}
 
       - name: Контейнер поднимается и отвечает на /healthz
         run: |
           # Имя из одного символа docker больше не принимает.
           # Ключ фиктивный: проверяем, что контейнер поднимается и отвечает,
           # а не что конфигурация полна — /healthz отдаёт 503 без ключа.
+          # Роутеру для старта нужны ключи приложений — тоже фиктивные.
           docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
-            -p 8080:8080 ci-check:${{ matrix.day }}
+            -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
+            -p ${{ steps.unit.outputs.port }}:${{ steps.unit.outputs.port }} ci-check:${{ matrix.day }}
           for i in $(seq 1 20); do
-            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+            if curl -fsS http://127.0.0.1:${{ steps.unit.outputs.port }}/healthz >/dev/null 2>&1; then
               echo "healthz ok"; docker rm -f ci-day; exit 0
             fi
             sleep 1

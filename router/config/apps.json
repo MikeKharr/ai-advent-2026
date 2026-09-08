@@ -1,0 +1,11 @@
+{
+  "admin": { "secretEnv": "ROUTER_ADMIN_KEY" },
+  "apps": [
+    {
+      "id": "smoke",
+      "secretEnv": "APP_KEY_SMOKE",
+      "classes": ["summarize", "translate", "extract_json", "other"],
+      "limits": { "dailyTokens": 50000, "dailyCostUsd": 0.5 }
+    }
+  ]
+}

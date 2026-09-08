@@ -3,11 +3,11 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths: ['days/**', 'site/**', 'deploy/**', '.github/workflows/deploy.yml']
+    paths: ['days/**', 'router/**', 'site/**', 'deploy/**', '.github/workflows/deploy.yml']
   workflow_dispatch:
     inputs:
       day:
-        description: 'Один день для передеплоя, например day1. Пусто — все изменённые.'
+        description: 'Одна единица для передеплоя: day1 … или router. Пусто — все изменённые.'
         required: false
         type: string
 
@@ -33,7 +33,8 @@ jobs:
             days=$(printf '%s' '${{ inputs.day }}' | jq -R . | jq -sc .)
           else
             base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
-            days=$(git diff --name-only "$base" HEAD | grep -oE '^days/[^/]+' | cut -d/ -f2 | sort -u | jq -R . | jq -sc .)
+            changed=$(git diff --name-only "$base" HEAD)
+            days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^router/' | cut -d/ -f1; } | sort -u | jq -R . | jq -sc .)
             [ -z "$days" ] && days='[]'
           fi
           echo "days=$days" >> "$GITHUB_OUTPUT"
@@ -61,7 +62,7 @@ jobs:
       - name: Сборка и публикация
         uses: docker/build-push-action@v6
         with:
-          context: days/${{ matrix.day }}
+          context: ${{ matrix.day == 'router' && 'router' || format('days/{0}', matrix.day) }}
           push: true
           # Владелец в GHCR должен быть в нижнем регистре.
           tags: |
@@ -120,6 +121,18 @@ jobs:
           docker compose up -d --remove-orphans
           docker image prune -f --filter "until=168h" || true
 
+          # У роутера нет публичного адреса — его здоровье проверяется здесь,
+          # по healthcheck контейнера.
+          if printf '%s' "$DAYS" | grep -q router; then
+            echo "==> ожидание router: healthy"
+            for i in $(seq 1 20); do
+              state=$(docker inspect --format '{{.State.Health.Status}}' advent-router-1 2>/dev/null || echo none)
+              [ "$state" = healthy ] && break
+              sleep 3
+            done
+            [ "$state" = healthy ] || { docker compose logs --tail 50 router; echo "router не стал healthy: $state"; exit 1; }
+          fi
+
           echo "==> состояние"
           docker compose ps
           REMOTE
@@ -136,7 +149,7 @@ jobs:
           echo "лендинг ok"
 
           for day in $(printf '%s' '${{ needs.detect.outputs.days }}' | tr -d '[]"' | tr ',' ' '); do
-            [ -z "$day" ] && continue
+            [ -z "$day" ] || [ "$day" = router ] && continue
             code=$(curl -sS -o /dev/null -w '%{http_code}' "https://challenge.zpq.ai/${day}/healthz" || echo 000)
             echo "${day}/healthz: ${code}"
             [ "$code" = "200" ] || { echo "::error::${day} не отвечает на /healthz"; exit 1; }
