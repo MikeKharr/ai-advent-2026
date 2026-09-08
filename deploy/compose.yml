@@ -15,7 +15,7 @@ services:
     depends_on:
       - day1
       - day2
-      - day3
+      - day4
 
   day1:
     # Тег приходит из .env, который переписывает workflow деплоя.
@@ -53,15 +53,15 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  day3:
-    image: ghcr.io/mikekharr/advent-day3:${DAY3_TAG:-latest}
+  day4:
+    image: ghcr.io/mikekharr/advent-day4:${DAY4_TAG:-latest}
     restart: unless-stopped
     expose:
       - "8080"
     env_file:
       - path: ./secrets.env
         required: false
-      - path: ./day3.env
+      - path: ./day4.env
         required: false
     environment:
       - NODE_ENV=production
