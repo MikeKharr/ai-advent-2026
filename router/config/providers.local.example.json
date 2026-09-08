@@ -12,12 +12,20 @@
     "jurisdiction": "local",
     "dataClasses": ["public", "internal", "personal"],
     "maxConcurrency": 1,
-    "thinking": { "none": true, "low": "low", "medium": "medium", "high": "high" },
+    "thinking": {
+      "none": true,
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
     "keepAlive": "5m",
-    "price": { "inputPerMTok": 0, "outputPerMTok": 0 }
+    "price": {
+      "inputPerMTok": 0,
+      "outputPerMTok": 0
+    }
   },
   {
-    "_": "Один ключ GROQ_API_KEY обслуживает обе записи Groq: различаются только id и model. Ёмкость у записей одного хоста должна совпадать.",
+    "_": "Классификатор инъекций, а не чат-модель: возможности text_generation у него нет, поэтому генеративные классы к нему не уходят. Реальное окно модели 512 токенов, здесь 384 — запас на грубость оценки токенов у роутера. Цена — официальная ставка GroqCloud, без запаса.",
     "id": "groq-prompt-guard",
     "revision": 1,
     "kind": "groq",
@@ -26,16 +34,21 @@
     "model": "meta-llama/llama-prompt-guard-2-22m",
     "profile": "cloud",
     "capabilities": ["prompt_guard"],
-    "contextWindow": 512,
+    "contextWindow": 384,
     "jurisdiction": "us",
     "dataClasses": ["public"],
     "maxConcurrency": 4,
-    "thinking": { "none": true },
+    "thinking": {
+      "none": true
+    },
     "secretEnv": "GROQ_API_KEY",
-    "price": { "inputPerMTok": 0.03, "outputPerMTok": 0.03 }
+    "price": {
+      "inputPerMTok": 0.03,
+      "outputPerMTok": 0.03
+    }
   },
   {
-    "_": "Вторая модель на том же ключе: генеративная, поэтому у неё text_generation и json_schema. Включение её в продовую конфигурацию уводит summarize, translate и extract_json с Haiku на этот ярус — решение владельца.",
+    "_": "Вторая модель на том же ключе: генеративная. У GPT-OSS нет уровня none (только low|medium|high) и нет reasoning_format, поэтому none отображён на low, рассуждения прячутся через include_reasoning, а reasoningFloorTokens поднимает потолок выхода — иначе рассуждения съедят весь ответ. Включение записи в прод уводит summarize, translate и extract_json с Haiku на этот ярус — решение владельца.",
     "id": "groq-gpt-oss-20b",
     "revision": 1,
     "kind": "groq",
@@ -48,9 +61,20 @@
     "jurisdiction": "us",
     "dataClasses": ["public"],
     "maxConcurrency": 4,
-    "thinking": { "none": true, "low": "low", "medium": "medium", "high": "high" },
+    "thinking": {
+      "none": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
     "secretEnv": "GROQ_API_KEY",
-    "price": { "inputPerMTok": 0.075, "outputPerMTok": 0.3 }
+    "price": {
+      "inputPerMTok": 0.075,
+      "outputPerMTok": 0.3
+    },
+    "reasoningControl": "include",
+    "reasoningFloorTokens": 1024,
+    "strictSchema": true
   },
   {
     "id": "anthropic-haiku",
@@ -65,8 +89,17 @@
     "jurisdiction": "us",
     "dataClasses": ["public"],
     "maxConcurrency": 8,
-    "thinking": { "none": true, "low": 1024, "medium": 4096, "high": 16384 },
+    "thinking": {
+      "none": true,
+      "low": 1024,
+      "medium": 4096,
+      "high": 16384
+    },
     "secretEnv": "ANTHROPIC_API_KEY",
-    "price": { "inputPerMTok": 1, "outputPerMTok": 5, "perWebSearch": 0.01 }
+    "price": {
+      "inputPerMTok": 1,
+      "outputPerMTok": 5,
+      "perWebSearch": 0.01
+    }
   }
 ]
