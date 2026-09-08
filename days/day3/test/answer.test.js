@@ -393,6 +393,14 @@ test('отказ одной ленты не роняет сборку, а поп
   assert.match(result.note, /Недоступны ленты: B/)
 })
 
+test('сфера принимается на любом языке, не только латиницей', () => {
+  // Подсказки в UI есть на русском, китайском и хинди — граница не должна
+  // резать не-латиницу: ленты индийские и китайские тоже.
+  assert.equal(parseSphere('人工智能').sphere, '人工智能')
+  assert.equal(parseSphere('  फिनटेक  ').sphere, 'फिनटेक')
+  assert.equal(parseSphere('климатические технологии').ok, true)
+})
+
 test('сфера валидируется на границе', () => {
   assert.equal(parseSphere('  fintech  ').sphere, 'fintech')
   assert.equal(parseSphere('').ok, false)
