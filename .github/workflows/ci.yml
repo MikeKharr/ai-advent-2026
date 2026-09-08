@@ -77,6 +77,7 @@ jobs:
           docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
             -e GROQ_API_KEY=ci-dummy \
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
+            -e ROUTER_APP_KEY=ci-dummy \
             -p ${{ steps.unit.outputs.port }}:${{ steps.unit.outputs.port }} ci-check:${{ matrix.day }}
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:${{ steps.unit.outputs.port }}/healthz >/dev/null 2>&1; then

@@ -38,23 +38,35 @@ export function renderCandidates(items) {
  * свойство держится проверкой по белому списку, а не доверием к модели.
  */
 export function stripUnknownLinks(text, items) {
-  const allowed = new Set()
-  for (const item of items) {
-    allowed.add(item.url)
+  /**
+   * Ключ сравнения: схема и «www.» отбрасываются. Издание даёт ссылку без
+   * www, модель может написать с ним — это один и тот же адрес, и вырезать
+   * его было бы неправдой.
+   */
+  const normalize = (raw) => {
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
     try {
-      allowed.add(new URL(item.url).href)
-    } catch {}
-  }
-  const known = (candidate) => {
-    if (allowed.has(candidate)) return true
-    try {
-      return allowed.has(new URL(candidate).href)
+      const u = new URL(withScheme)
+      return `${u.hostname.replace(/^www\./i, '')}${u.pathname.replace(/\/+$/, '')}${u.search}`
     } catch {
-      return false
+      return null
     }
   }
 
-  return text.replace(/https?:\/\/[^\s<>"']+/gi, (raw) => {
+  const allowed = new Set()
+  for (const item of items) {
+    const key = normalize(item.url)
+    if (key) allowed.add(key)
+  }
+  const known = (candidate) => {
+    const key = normalize(candidate)
+    return key !== null && allowed.has(key)
+  }
+
+  // Ссылки без схемы модель тоже пишет («www.example.com/x»), и они должны
+  // проходить ту же проверку. Голый домен без www остаётся вне охвата:
+  // отличить его от обычного слова с точкой нельзя без ложных срабатываний.
+  return text.replace(/(?:https?:\/\/|www\.)[^\s<>"']+/gi, (raw) => {
     let url = raw
     while (true) {
       if (known(url)) return url + raw.slice(url.length)

@@ -711,6 +711,41 @@ test('классификатор не берётся за генеративны
   assert.equal(calls.filter((c) => c.host === GROQ).length, 0)
 })
 
+test('классификатор отсеивается возможностью и в классе, где его ярус разрешён', async () => {
+  // news_answer включает ярус cloud-cheap, где живёт классификатор.
+  // Значит здесь отсев идёт именно по возможности text_generation,
+  // а не потому, что ярус не подходит.
+  const { router, calls } = setup({
+    providers: [GUARD, PROVIDERS[1]],
+    hosts: { [CLOUD]: cloudOk, [GROQ]: () => httpJson(200, groqCompletion()) },
+  })
+  const r = await router.route({ taskClass: 'news_answer', input: 'текст' })
+  assert.equal(r.ok, true)
+  assert.equal(r.provider.id, 'anthropic-haiku')
+  assert.equal(calls.filter((c) => c.host === GROQ).length, 0)
+})
+
+test('оценка расхода при явном выборе считает по выбранной модели', async () => {
+  // Дешёвая модель не должна резервироваться по ставке дорогой: иначе
+  // на ней ложно срабатывает лимит расхода.
+  const cheap = { ...GROQ_CHAT, price: { inputPerMTok: 0.075, outputPerMTok: 0.3 } }
+  const pricey = {
+    ...GROQ_CHAT,
+    id: 'groq-pricey',
+    model: 'qwen/qwen3.6-27b',
+    price: { inputPerMTok: 0.6, outputPerMTok: 3 },
+  }
+  const { router } = setup({
+    providers: [cheap, pricey, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const req = { taskClass: 'news_answer', input: 'x'.repeat(4000) }
+  const auto = router.estimateRequest(req)
+  const picked = router.estimateRequest({ ...req, provider: 'groq-gpt-oss-20b' })
+  assert.ok(picked.costUsd < auto.costUsd, 'по выбранной, а не по самой дорогой')
+  assert.ok(picked.tokens < auto.tokens, 'и один вызов вместо двух')
+})
+
 test('явный выбор модели: зовём только её, без фолбэка', async () => {
   const { router, calls } = setup({
     providers: [GROQ_CHAT, PROVIDERS[1], GUARD],

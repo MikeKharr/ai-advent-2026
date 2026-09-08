@@ -63,6 +63,84 @@ test('окно переживает перезапуск, битый файл н
   assert.equal(broken.size(), 0, 'начинаем с пустого окна, а не падаем')
 })
 
+test('издание, убранное из списка лент, исчезает из архива', () => {
+  // Футер обещает изданию убрать его ленту по просьбе. Обещание должно
+  // распространяться и на уже сохранённые тексты, а не только на приём.
+  const store = createStore({
+    file: join(dir(), 'store.json'),
+    capacity: 100,
+    sources: 8,
+    knownSources: ['TechCrunch'],
+  })
+  store.add([item(1, { source: 'TechCrunch' }), item(2, { source: 'Pandaily' })])
+  assert.equal(store.size(), 2)
+  assert.equal(store.prune(), 1)
+  assert.deepEqual(Object.keys(store.bySource()), ['TechCrunch'])
+})
+
+test('записи старше срока хранения уходят, даже если место в окне есть', () => {
+  const now = Date.parse('2026-09-09T12:00:00Z')
+  const store = createStore({
+    file: join(dir(), 'store.json'),
+    capacity: 100,
+    sources: 8,
+    maxAgeDays: 30,
+    now: () => now,
+  })
+  store.add([
+    { ...item(1), date: '2026-09-01T10:00:00.000Z' },
+    { ...item(2), date: '2026-01-01T10:00:00.000Z' },
+  ])
+  assert.equal(store.size(), 2, 'малотиражное издание под вытеснение по квоте не попадает')
+  assert.equal(store.prune(now), 1)
+  assert.equal(store.size(), 1)
+  assert.equal(store.all()[0].date.slice(0, 7), '2026-09')
+})
+
+test('одинаковый заголовок в разные недели — рубрика, а не дубликат', () => {
+  const now = Date.parse('2026-09-09T12:00:00Z')
+  const store = createStore({
+    file: join(dir(), 'store.json'),
+    capacity: 100,
+    sources: 8,
+    now: () => now,
+  })
+  const roundup = (url, date) => ({ ...item(1), url, title: 'Startup funding roundup', date })
+  store.add([roundup('https://e.test/w1', '2026-09-09T10:00:00.000Z')])
+  // Тот же заголовок неделей раньше — следующий выпуск рубрики.
+  assert.equal(store.add([roundup('https://e.test/w0', '2026-09-01T10:00:00.000Z')]).added, 1)
+  // А вот тот же заголовок сегодня под другой ссылкой — перепечатка.
+  assert.equal(store.add([roundup('https://mirror.test/x', '2026-09-09T09:00:00.000Z')]).added, 0)
+})
+
+test('запись с неразбираемой датой не принимается и не грузится', () => {
+  const file = join(dir(), 'store.json')
+  const store = createStore({ file, capacity: 100, sources: 8, log: () => {} })
+  assert.equal(store.add([{ ...item(1), date: 'позавчера' }]).added, 0)
+
+  writeFileSync(
+    file,
+    JSON.stringify({ version: 1, lastRefresh: 0, items: [item(2), { ...item(3), date: 'вчера' }] }),
+  )
+  const loaded = createStore({ file, capacity: 100, sources: 8, log: () => {} })
+  loaded.load()
+  assert.equal(loaded.size(), 1)
+  assert.equal(loaded.skippedOnLoad(), 1)
+})
+
+test('пакет изменений пишет файл один раз', () => {
+  const file = join(dir(), 'store.json')
+  const store = createStore({ file, capacity: 100, sources: 8 })
+  store.batch(() => {
+    store.add([item(1)])
+    store.add([item(2)])
+    store.markRefreshed()
+  })
+  const raw = JSON.parse(readFileSync(file, 'utf8'))
+  assert.equal(raw.items.length, 2)
+  assert.ok(raw.lastRefresh > 0)
+})
+
 test('запись атомарна: на диске всегда цельный JSON', () => {
   const file = join(dir(), 'store.json')
   const store = createStore({ file, capacity: 100, sources: 8 })

@@ -21,7 +21,8 @@ STORE_FILE=./data/store.json \
 node server.js
 ```
 
-Тесты: `node --test test/*.test.js` (23).
+Тесты: `node --test test/*.test.js` (35), включая интеграционные — они
+поднимают сервер и проверяют лимитер целиком.
 
 ## Модули
 
@@ -47,6 +48,9 @@ server.js  HTTP: /api/answer, /api/state, /healthz
 | `REFRESH_MIN_MINUTES` | 15 | не чаще этого опрашиваем ленты |
 | `MAX_OUTPUT_TOKENS` | 2048 | потолок пользовательского max_tokens |
 | `MAX_DAILY_CALLS` | 50 | суточный предел вызовов на процесс |
+| `RATE_LIMIT_PER_MIN` | 5 | окно на адрес: запросов в минуту |
+| `RATE_LIMIT_PER_HOUR` | 30 | окно на адрес: запросов в час |
+| `MAX_AGE_DAYS` | 180 | дольше этого статьи в архиве не хранятся |
 
 ## Чем отличается от дня 3
 

@@ -398,7 +398,14 @@ export function createRouter({
     const outputTokens = answerTokens + THINKING_TOKENS[level]
     const dataClass = req.dataClass ?? cls.dataClass
     const extraRequires = [...(req.requires ?? []), ...(req.schema ? ['json_schema'] : [])]
-    const capable = orderedCandidates(cls, registry.list()).filter(
+    // При явном выборе способный кандидат ровно один — по нему и считаем,
+    // иначе запрос к дешёвой модели резервируется по ставке дорогой.
+    const pool = req.provider
+      ? registry
+          .list()
+          .filter((p) => p.id === req.provider || `${p.id}#${p.revision}` === req.provider)
+      : registry.list()
+    const capable = orderedCandidates(cls, pool).filter(
       (p) => capabilityFit(p, cls, level, dataClass, inputTokens, extraRequires).ok,
     )
     const calls = req.provider ? 1 : Math.min(MAX_CALLS, Math.max(1, capable.length))

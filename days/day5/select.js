@@ -63,6 +63,13 @@ export function stem(word) {
   return word.length > 4 ? word.slice(0, word.length - 1) : word
 }
 
+const LETTER = /\p{L}|\p{N}/u
+
+/**
+ * Совпадения считаются только с начала слова: основа «банк» не должна
+ * находиться в «урбанистика», а «инди» — в «индивидуальный». Конец слова
+ * свободен намеренно — там и живут окончания, ради которых основа берётся.
+ */
 function countOccurrences(haystack, needle) {
   if (!haystack) return 0
   let count = 0
@@ -70,7 +77,8 @@ function countOccurrences(haystack, needle) {
   while (true) {
     const at = haystack.indexOf(needle, from)
     if (at === -1) break
-    count += 1
+    const before = at === 0 ? '' : haystack[at - 1]
+    if (before === '' || !LETTER.test(before)) count += 1
     from = at + needle.length
   }
   return count
@@ -105,9 +113,13 @@ export function score(item, queryTerms, { now = Date.now() } = {}) {
   return hits + freshness
 }
 
-/** Не больше `limit` записей с источника; порядок входа сохраняется. */
-export function capPerSource(items, limit) {
-  const counts = new Map()
+/**
+ * Не больше `limit` записей с источника; порядок входа сохраняется.
+ * Счётчики можно передать снаружи, чтобы потолок был сквозным для
+ * нескольких проходов: иначе добор свежими начинает счёт заново и
+ * приносит с одного издания вдвое больше обещанного.
+ */
+export function capPerSource(items, limit, counts = new Map()) {
   const out = []
   for (const item of items) {
     const n = counts.get(item.source) ?? 0
@@ -159,10 +171,16 @@ export function selectForQuery(
       (a.item.url < b.item.url ? -1 : 1),
   )
 
+  const counts = new Map()
   const chosen = capPerSource(
     scored.map((s) => s.item),
     perSource,
+    counts,
   ).slice(0, limit)
+  // Счётчики после среза: `slice` мог отбросить хвост, и эти статьи
+  // источникам возвращаются, иначе потолок занижается.
+  counts.clear()
+  for (const item of chosen) counts.set(item.source, (counts.get(item.source) ?? 0) + 1)
 
   // Добор свежими: русский запрос по английским текстам может не дать ни
   // одного совпадения, и пустой ответ был бы хуже, чем лента дня 3.
@@ -170,7 +188,7 @@ export function selectForQuery(
   if (chosen.length < limit) {
     const taken = new Set(chosen.map((i) => i.url))
     const rest = all.filter((i) => !taken.has(i.url))
-    for (const item of capPerSource(rest, perSource)) {
+    for (const item of capPerSource(rest, perSource, counts)) {
       if (chosen.length >= limit) break
       chosen.push(item)
     }

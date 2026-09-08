@@ -18,10 +18,20 @@ import { dedupeKey } from './rss.js'
  */
 const keyOf = (item) => dedupeKey(item).url
 
+/**
+ * Окно, в пределах которого совпадение заголовков считается перепечаткой.
+ * Шире брать нельзя: у изданий есть регулярные рубрики («Startup funding
+ * roundup» раз в неделю), и на длинном окне все выпуски, кроме первого,
+ * молча отбрасывались бы как дубликаты.
+ */
+const TITLE_DEDUPE_DAYS = 3
+
 export function createStore({
   file,
   capacity = 1000,
   sources = 8,
+  maxAgeDays = 180,
+  knownSources = null,
   now = Date.now,
   log = console.error,
 }) {
@@ -38,7 +48,10 @@ export function createStore({
       const raw = JSON.parse(readFileSync(file, 'utf8'))
       lastRefresh = Number.isFinite(raw.lastRefresh) ? raw.lastRefresh : 0
       for (const item of raw.items ?? []) {
-        if (!item?.url || !item?.date || !item?.title) {
+        // Дата проверяется на разбираемость, а не на наличие: `NaN` в
+        // компараторе делает порядок неопределённым, а от порядка зависят
+        // и вытеснение, и отбор.
+        if (!item?.url || !item?.title || !Number.isFinite(Date.parse(item?.date))) {
           skipped += 1
           continue
         }
@@ -52,8 +65,9 @@ export function createStore({
     }
   }
 
+  let batching = false
   function save() {
-    if (!file) return
+    if (!file || batching) return
     mkdirSync(dirname(file), { recursive: true })
     const payload = JSON.stringify({ version: 1, lastRefresh, items: all() })
     // Запись через временный файл: обрыв на середине не оставит битый JSON,
@@ -102,6 +116,20 @@ export function createStore({
     load,
     save,
     all,
+
+    /**
+     * Несколько изменений — одна запись на диск. Полный архив это 6 МБ
+     * JSON, и переписывать его трижды за одно обновление лент незачем.
+     */
+    batch(fn) {
+      batching = true
+      try {
+        return fn()
+      } finally {
+        batching = false
+        save()
+      }
+    },
     size: () => items.size,
     lastRefresh: () => lastRefresh,
     skippedOnLoad: () => skipped,
@@ -113,24 +141,50 @@ export function createStore({
      */
     add(incoming) {
       let added = 0
-      // Заголовки проверяются наравне со ссылками: одна и та же новость
-      // приходит под разными URL у агрегаторов (та же логика, что в dedupe).
+      // Заголовки проверяются наравне со ссылками — но только у свежих
+      // записей: одна новость приходит под разными URL, а вот одинаковый
+      // заголовок месячной давности означает рубрику, а не дубликат.
+      const titleCutoff = now() - TITLE_DEDUPE_DAYS * 86_400_000
       const titles = new Set()
       for (const item of items.values()) {
+        if (Date.parse(item.date) < titleCutoff) continue
         const t = dedupeKey(item).title
         if (t) titles.add(t)
       }
       for (const item of incoming) {
+        if (!Number.isFinite(Date.parse(item?.date))) continue
         const key = keyOf(item)
         const title = dedupeKey(item).title
-        if (items.has(key) || (title && titles.has(title))) continue
+        const fresh = Date.parse(item.date) >= titleCutoff
+        if (items.has(key) || (fresh && title && titles.has(title))) continue
         items.set(key, item)
-        if (title) titles.add(title)
+        if (fresh && title) titles.add(title)
         added += 1
       }
       const dropped = evict()
       if (added > 0 || dropped.length > 0) save()
       return { added, dropped: dropped.length }
+    },
+
+    /**
+     * Убирает то, чего в архиве быть не должно: статьи изданий, которых
+     * больше нет в списке лент, и записи старше срока хранения. Срок —
+     * граница, а не оптимизация: чужие тексты не должны лежать бессрочно
+     * только потому, что издание малотиражное и под вытеснение не попадает.
+     */
+    prune(at = now()) {
+      const cutoff = at - maxAgeDays * 86_400_000
+      const dropped = []
+      for (const [key, item] of items) {
+        const tooOld = Date.parse(item.date) < cutoff
+        const unknown = knownSources !== null && !knownSources.includes(item.source)
+        if (tooOld || unknown) {
+          items.delete(key)
+          dropped.push(item)
+        }
+      }
+      if (dropped.length > 0) save()
+      return dropped.length
     },
 
     markRefreshed() {

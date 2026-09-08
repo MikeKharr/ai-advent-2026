@@ -117,6 +117,13 @@ test('в список для модели идут тексты, а урезан
   assert.ok(rendered.includes('https://techcrunch.com/a'))
 })
 
+test('ссылка без схемы проходит ту же проверку белого списка', () => {
+  const text = 'Смотри www.techcrunch.com/a и www.evil.example/phish'
+  const out = stripUnknownLinks(text, ITEMS)
+  assert.ok(out.includes('www.techcrunch.com/a'), 'известная ссылка без схемы уцелела')
+  assert.ok(!out.includes('evil.example'), 'неизвестная вырезана, хоть и без схемы')
+})
+
 test('окружение без ключа приложения — ошибка конфигурации, а не тихий старт', () => {
   const { errors } = parseEnv({})
   assert.ok(errors.some((e) => e.includes('ROUTER_APP_KEY')))

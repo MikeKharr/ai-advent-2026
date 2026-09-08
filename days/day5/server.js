@@ -4,7 +4,7 @@
 
 import { readFile } from 'node:fs/promises'
 import http from 'node:http'
-import { dirname, join, normalize } from 'node:path'
+import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MODELS, PARAM_DEFAULTS, PARAM_LIMITS, parseEnv, parseParams, parseSphere } from './env.js'
 import { collectItems, FEEDS } from './feeds.js'
@@ -26,8 +26,15 @@ const store = createStore({
   file: env.STORE_FILE,
   capacity: env.WINDOW_SIZE,
   sources: FEEDS.length,
+  maxAgeDays: env.MAX_AGE_DAYS,
+  // Источник, убранный из списка лент, перестаёт существовать для приложения
+  // целиком: его статьи уходят из архива, а не лежат там навсегда. Иначе
+  // обещание в футере «издание может попросить убрать ленту» ничем не
+  // подкреплено.
+  knownSources: FEEDS.map((f) => f.source),
 })
 store.load()
+store.prune()
 console.log(
   JSON.stringify({
     event: 'start',
@@ -38,11 +45,7 @@ console.log(
   }),
 )
 
-const limiter = createLimiter({
-  maxDaily: env.MAX_DAILY_CALLS,
-  perMinute: env.RATE_LIMIT_PER_MIN,
-  perHour: env.RATE_LIMIT_PER_HOUR,
-})
+const limiter = createLimiter(env)
 
 /** Одно обновление лент на процесс: параллельные запросы ждут первое. */
 let refreshing = null
@@ -60,10 +63,15 @@ export async function refreshIfStale({ now = Date.now(), fetchImpl = fetch } = {
   refreshing = (async () => {
     try {
       const collected = await collectItems({ now, fetchImpl })
-      const { added, dropped } = store.add(collected.items)
-      // Отметка ставится и при неудаче части лент: иначе сломанная лента
-      // заставляла бы ходить в сеть на каждый запрос.
-      store.markRefreshed()
+      // Чистка, пополнение и отметка — одна запись файла, а не три.
+      const { added, dropped } = store.batch(() => {
+        store.prune(now)
+        const result = store.add(collected.items)
+        // Отметка ставится и при неудаче части лент: иначе сломанная лента
+        // заставляла бы ходить в сеть на каждый запрос.
+        store.markRefreshed()
+        return result
+      })
       console.log(
         JSON.stringify({
           event: 'refresh',
@@ -111,10 +119,20 @@ function readBody(req) {
   })
 }
 
-const clientIp = (req) =>
-  (req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() ||
-  req.socket.remoteAddress ||
-  'unknown'
+/**
+ * Адрес клиента. Caddy ДОПИСЫВАЕТ реальный адрес в конец X-Forwarded-For,
+ * поэтому берём последний элемент, а не первый: первый подделывается
+ * заголовком в запросе, и тогда окна на адрес обходятся сменой значения.
+ */
+function clientIp(req) {
+  const forwarded = req.headers['x-forwarded-for']
+  if (typeof forwarded === 'string' && forwarded.length > 0) {
+    const parts = forwarded.split(',')
+    const last = parts[parts.length - 1].trim()
+    if (last) return last
+  }
+  return req.socket.remoteAddress ?? 'unknown'
+}
 
 async function handleAnswer(req, res) {
   let body
@@ -132,14 +150,15 @@ async function handleAnswer(req, res) {
   if (!parsed.ok) return send(res, 400, { error: parsed.message })
   const params = parsed.params
 
-  const slot = limiter.reserve(clientIp(req))
+  const ip = clientIp(req)
+  const slot = limiter.reserve(ip)
   if (!slot.ok) return send(res, 429, { error: slot.message })
 
   try {
     const refresh = await refreshIfStale()
     const all = store.all()
     if (all.length === 0) {
-      limiter.release(clientIp(req))
+      limiter.release(ip)
       return send(res, 503, {
         error: 'Архив пуст: ни одна лента пока не отдала статей. Попробуйте позже.',
       })
@@ -175,14 +194,27 @@ async function handleAnswer(req, res) {
       })),
     })
   } catch (error) {
-    // Слот не возвращается: вызов мог дойти до модели и стоить денег.
     console.error(`ответ: ${error.code ?? ''} ${error.message}`)
-    const status = error.status === 429 ? 429 : 502
-    return send(res, status, {
-      error:
-        error.code === 'budget_exceeded'
-          ? 'Суточный лимит расхода приложения исчерпан, попробуйте завтра.'
-          : `Модель не ответила: ${error.message}`,
+    // Отказ роутера, не дошедший до провайдера, денег не стоил, поэтому слот
+    // возвращается: иначе поток таких отказов выест суточный предел дня зря.
+    const paidNothing =
+      error.code === 'budget_exceeded' ||
+      error.code === 'refused' ||
+      error.code === 'no_provider' ||
+      (error.status >= 400 && error.status < 500 && error.status !== 429)
+    if (paidNothing) limiter.release(ip)
+    if (error.code === 'budget_exceeded') {
+      // Роутер отвечает так и когда остаток есть, но запрос в него не влез:
+      // «попробуйте завтра» было бы неправдой — хватит меньшей подборки.
+      const tooBig = /не помещается/.test(error.message)
+      return send(res, 429, {
+        error: tooBig
+          ? 'Запрос слишком большой для остатка суточного лимита. Уменьшите число статей.'
+          : 'Суточный лимит расхода приложения исчерпан, попробуйте завтра.',
+      })
+    }
+    return send(res, error.status === 429 ? 429 : 502, {
+      error: `Модель не ответила: ${error.message}`,
     })
   }
 }
@@ -221,7 +253,7 @@ const server = http.createServer(async (req, res) => {
 
   const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
   const file = normalize(join(PUBLIC, rel))
-  if (!file.startsWith(PUBLIC)) {
+  if (file !== PUBLIC && !file.startsWith(PUBLIC + sep)) {
     res.writeHead(403)
     return res.end()
   }

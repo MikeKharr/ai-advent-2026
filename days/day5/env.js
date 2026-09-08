@@ -8,6 +8,7 @@ const NUMBERS = {
   RATE_LIMIT_PER_HOUR: 30,
   WINDOW_SIZE: 1000, // сколько статей держим в окне
   REFRESH_MIN_MINUTES: 15, // не чаще, чем раз в столько минут, опрашиваем ленты
+  MAX_AGE_DAYS: 180, // дольше этого чужие тексты в архиве не хранятся
   ROUTER_TIMEOUT_MS: 90_000,
   PORT: 8080,
 }
