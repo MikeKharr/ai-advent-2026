@@ -1,5 +1,6 @@
 // Формы ответов провайдеров — как их отдают реальные API, а не как удобно
-// тестам. Anthropic Messages API и родной /api/generate Ollama.
+// тестам: Anthropic Messages API, родной /api/generate Ollama и
+// OpenAI-совместимый /openai/v1/chat/completions Groq.
 
 export function anthropicMessage({
   text = 'ответ',
@@ -35,6 +36,38 @@ export function ollamaGenerate({ text = 'ответ', done = 'stop', input = 120
   }
 }
 
+export function groqCompletion({
+  text = 'ответ',
+  finish = 'stop',
+  input = 120,
+  output = 40,
+  model = 'meta-llama/llama-prompt-guard-2-22m',
+} = {}) {
+  return {
+    id: 'chatcmpl-3f6a2b1c',
+    object: 'chat.completion',
+    created: 1_788_000_000,
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: 'assistant', content: text },
+        logprobs: null,
+        finish_reason: finish,
+      },
+    ],
+    usage: {
+      queue_time: 0.021,
+      prompt_tokens: input,
+      prompt_time: 0.008,
+      completion_tokens: output,
+      completion_time: 0.16,
+      total_tokens: input + output,
+      total_time: 0.168,
+    },
+  }
+}
+
 export const PROVIDERS = [
   {
     id: 'mac-qwen3',
@@ -44,7 +77,7 @@ export const PROVIDERS = [
     baseUrl: 'http://laptop.test:11434',
     model: 'qwen3.8:27b',
     profile: 'laptop',
-    capabilities: ['json_schema'],
+    capabilities: ['text_generation', 'json_schema'],
     contextWindow: 131072,
     jurisdiction: 'local',
     dataClasses: ['public', 'internal', 'personal'],
@@ -60,7 +93,7 @@ export const PROVIDERS = [
     baseUrl: 'https://api.anthropic.test',
     model: 'claude-haiku-4-5',
     profile: 'cloud',
-    capabilities: ['json_schema', 'web_search', 'tools'],
+    capabilities: ['text_generation', 'json_schema', 'web_search', 'tools'],
     contextWindow: 200000,
     jurisdiction: 'us',
     dataClasses: ['public'],
@@ -69,10 +102,52 @@ export const PROVIDERS = [
     secretEnv: 'ANTHROPIC_API_KEY',
     price: { inputPerMTok: 1, outputPerMTok: 5, perWebSearch: 0.01 },
   },
+  {
+    id: 'groq-prompt-guard',
+    revision: 1,
+    kind: 'groq',
+    tier: 'cloud-cheap',
+    baseUrl: 'https://api.groq.test',
+    model: 'meta-llama/llama-prompt-guard-2-22m',
+    profile: 'cloud',
+    capabilities: ['prompt_guard'],
+    contextWindow: 384,
+    jurisdiction: 'us',
+    dataClasses: ['public'],
+    maxConcurrency: 4,
+    thinking: { none: true },
+    secretEnv: 'GROQ_API_KEY',
+    price: { inputPerMTok: 0.03, outputPerMTok: 0.03 },
+  },
 ]
+
+/** Вторая модель Groq на том же ключе — генеративная. */
+export const GROQ_CHAT = {
+  id: 'groq-gpt-oss-20b',
+  revision: 1,
+  kind: 'groq',
+  tier: 'cloud-cheap',
+  baseUrl: 'https://api.groq.test',
+  model: 'openai/gpt-oss-20b',
+  profile: 'cloud',
+  capabilities: ['text_generation', 'json_schema'],
+  contextWindow: 131072,
+  jurisdiction: 'us',
+  dataClasses: ['public'],
+  maxConcurrency: 4,
+  // У GPT-OSS нет уровня none: он отображён на low, рассуждения прячутся
+  // через include_reasoning, потолок выхода поднимается на floor.
+  thinking: { none: 'low', low: 'low', medium: 'medium', high: 'high' },
+  reasoningControl: 'include',
+  reasoningFloorTokens: 1024,
+  strictSchema: true,
+  secretEnv: 'GROQ_API_KEY',
+  price: { inputPerMTok: 0.075, outputPerMTok: 0.3 },
+}
 
 export const ENV = {
   ANTHROPIC_API_KEY: 'sk-test',
+  GROQ_API_KEY: 'gsk-test',
   ROUTER_ADMIN_KEY: 'admin-test',
   APP_KEY_SMOKE: 'app-smoke',
 }
@@ -99,7 +174,7 @@ export function scriptedFetch(byHost, { calls = [] } = {}) {
   return async (url, options) => {
     const host = new URL(url).host
     const body = JSON.parse(options.body)
-    calls.push({ host, body, url })
+    calls.push({ host, body, url, headers: options.headers })
     const handler = byHost[host]
     if (!handler) throw unreachable('ENOTFOUND')
     const step =

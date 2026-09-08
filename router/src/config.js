@@ -4,7 +4,21 @@
 export const TIERS = ['self-hosted', 'cloud-cheap', 'cloud-frontier']
 export const LEVELS = ['none', 'low', 'medium', 'high']
 export const PROFILES = ['laptop', 'server', 'cloud']
-export const KINDS = ['anthropic', 'ollama']
+export const KINDS = ['anthropic', 'groq', 'ollama']
+export const REASONING_CONTROLS = ['format', 'include']
+
+/**
+ * Закрытый список возможностей. Он закрыт намеренно: `text_generation`
+ * удерживает классификаторы вне генеративных классов, и опечатка в нём
+ * должна падать на старте, а не тихо менять маршрутизацию.
+ */
+export const CAPABILITIES = [
+  'text_generation',
+  'json_schema',
+  'web_search',
+  'tools',
+  'prompt_guard',
+]
 
 /** Умолчания профилей для вывода дедлайна («Таймауты» ADR). */
 export const PROFILE_DEFAULTS = {
@@ -67,12 +81,32 @@ export function validateProviders(providers, env) {
     if (!Number.isInteger(p.maxConcurrency) || p.maxConcurrency < 1)
       fail(`${where}: maxConcurrency должен быть целым ≥ 1`)
     if (!Array.isArray(p.capabilities)) fail(`${where}: capabilities — массив`)
+    for (const c of p.capabilities)
+      if (!CAPABILITIES.includes(c))
+        fail(`${where}: неизвестная возможность ${c}; допустимы ${CAPABILITIES.join(', ')}`)
     if (!Array.isArray(p.dataClasses) || p.dataClasses.length === 0)
       fail(`${where}: dataClasses — непустой массив`)
     if (!Number.isInteger(p.contextWindow) || p.contextWindow < 1)
       fail(`${where}: contextWindow — целое ≥ 1`)
-    if (!p.thinking || typeof p.thinking !== 'object' || p.thinking.none !== true)
+    // Уровень none обязателен; значение — либо `true` («параметр не слать»),
+    // либо имя усилия в диалекте провайдера.
+    if (!p.thinking || typeof p.thinking !== 'object' || !p.thinking.none)
       fail(`${where}: thinking должен поддерживать уровень none`)
+    for (const level of Object.keys(p.thinking))
+      if (!LEVELS.includes(level)) fail(`${where}: неизвестный уровень размышлений ${level}`)
+    if (p.reasoningControl !== undefined && !REASONING_CONTROLS.includes(p.reasoningControl))
+      fail(`${where}: reasoningControl — один из ${REASONING_CONTROLS.join(', ')}`)
+    if (
+      p.reasoningFloorTokens !== undefined &&
+      !(Number.isInteger(p.reasoningFloorTokens) && p.reasoningFloorTokens >= 0)
+    )
+      fail(`${where}: reasoningFloorTokens — целое ≥ 0`)
+    // Уровень none, отображённый на реальное усилие, без запаса токенов
+    // означает, что рассуждения съедят весь ответ.
+    if (typeof p.thinking.none === 'string' && !p.reasoningFloorTokens)
+      fail(`${where}: при none = "${p.thinking.none}" нужен reasoningFloorTokens`)
+    if (p.strictSchema !== undefined && typeof p.strictSchema !== 'boolean')
+      fail(`${where}: strictSchema — булево`)
     if (!Number.isInteger(p.revision ?? 1)) fail(`${where}: revision — целое`)
     if (p.secretEnv && !env[p.secretEnv])
       fail(`${where}: переменная секрета ${p.secretEnv} не задана`)
@@ -108,6 +142,8 @@ export function validateClasses(classes, providers) {
     const where = `класс ${name}`
     if (!Array.isArray(c.tiers) || c.tiers.length === 0) fail(`${where}: tiers — непустой массив`)
     for (const t of c.tiers) if (!TIERS.includes(t)) fail(`${where}: неизвестный tier ${t}`)
+    for (const cap of c.requires ?? [])
+      if (!CAPABILITIES.includes(cap)) fail(`${where}: неизвестная возможность ${cap}`)
     for (const t of c.deny ?? [])
       if (!TIERS.includes(t)) fail(`${where}: неизвестный tier в deny ${t}`)
     if (!LEVELS.includes(c.thinking))

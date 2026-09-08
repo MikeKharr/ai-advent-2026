@@ -75,6 +75,7 @@ jobs:
           # а не что конфигурация полна — /healthz отдаёт 503 без ключа.
           # Роутеру для старта нужны ключи приложений — тоже фиктивные.
           docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
+            -e GROQ_API_KEY=ci-dummy \
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
             -p ${{ steps.unit.outputs.port }}:${{ steps.unit.outputs.port }} ci-check:${{ matrix.day }}
           for i in $(seq 1 20); do
@@ -84,7 +85,11 @@ jobs:
             sleep 1
           done
           echo "::error::контейнер не ответил на /healthz за 20 с"
-          docker logs ci-day; docker rm -f ci-day; exit 1
+          # Пустой лог сам по себе ничего не говорит: печатаем и состояние.
+          docker ps -a --filter name=ci-day
+          docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} err={{.State.Error}}' ci-day || true
+          docker logs ci-day 2>&1 | tail -40
+          docker rm -f ci-day; exit 1
 
   caddyfile:
     runs-on: ubuntu-latest
