@@ -35,17 +35,24 @@ description: /design-review — ревью экрана против дизай�
 
 ```bash
 F=days/dayN/public/index.html
-grep -oE '(margin|padding|gap)[^;]*;' "$F" | grep -oE '[0-9]*\.?[0-9]+rem' | sort -u   # шкала отступов
-grep -oE 'font-size:[^;]*;' "$F" | sort -u                                             # размеры шрифта
-grep -oE 'border-radius:[^;]*;' "$F" | sort -u                                         # радиусы
-grep -cE ':hover|:active|:focus|\[disabled\]' "$F"                                     # правил состояний всего
-grep -c 'focus-visible' "$F"                                                           # из них focus-visible
-grep -nE 'prefers-color-scheme|prefers-reduced-motion' "$F"                            # темы и движение
-grep -c 'tabular-nums' "$F"                                                            # числа в колонках
+# шкала отступов: rem, px и em вместе — иначе экран на px покажет «ноль нарушений»
+grep -oE '(margin|padding|gap)[^;]*;' "$F" | grep -oE '[0-9]*\.?[0-9]+(rem|px|em)' | sort -u
+grep -oE 'font-size:[^;]*;' "$F" | sort -u                                    # размеры шрифта
+grep -oE 'border-radius:[^;]*;' "$F" | sort -u                                # радиусы
+# состояния по типам: считать вхождения, а не строки — в одной строке бывает
+# несколько селекторов, и голый :focus нужно отличать от :focus-visible
+grep -oE ':hover|:active|:focus-visible|:focus|\[disabled\]' "$F" | sort | uniq -c
+grep -nE 'prefers-color-scheme|prefers-reduced-motion' "$F"                   # темы и движение
+grep -c 'tabular-nums' "$F"                                                   # числа в колонках
 ```
 
 Зафиксировать числа. «Много разных отступов» — не факт; «21 уникальное значение при
 шкале из 8» — факт.
+
+Счётчики дают порядок величины и наличие типов состояний, а не соответствие правилу
+«пять состояний на элемент»: это проверяется по списку интерактивных элементов
+глазами. Отсутствие типа в выдаче — уже дефект (`:hover` нет вовсе, `:focus-visible`
+нет вовсе).
 
 ### 3. Проверить по списку
 

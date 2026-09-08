@@ -28,7 +28,7 @@
 ├── deploy/                   # Caddyfile, compose.yml, bootstrap.sh
 ├── .agents/skills/           # Canonical skills: addyosmani (25) + NVIDIA skill-inspector + /design-review
 ├── .agents/references/       # Общие чек-листы vendored-набора
-├── .claude/agents/           # Роли агентов (10 ролей)
+├── .claude/agents/           # Роли агентов (11 ролей)
 ├── .claude/skills/           # Claude Code symlink mirrors to .agents
 ├── .codex/skills/            # Codex symlink mirrors to .agents
 ├── .cursor/skills/           # Cursor symlink mirrors to .agents
