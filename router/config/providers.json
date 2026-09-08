@@ -7,7 +7,7 @@
     "baseUrl": "https://api.anthropic.com",
     "model": "claude-haiku-4-5",
     "profile": "cloud",
-    "capabilities": ["json_schema", "web_search", "tools"],
+    "capabilities": ["text_generation", "json_schema", "web_search", "tools"],
     "contextWindow": 200000,
     "jurisdiction": "us",
     "dataClasses": ["public"],
@@ -15,5 +15,23 @@
     "thinking": { "none": true, "low": 1024, "medium": 4096, "high": 16384 },
     "secretEnv": "ANTHROPIC_API_KEY",
     "price": { "inputPerMTok": 1, "outputPerMTok": 5, "perWebSearch": 0.01 }
+  },
+  {
+    "_": "Классификатор инъекций, а не чат-модель: возможности text_generation у него нет, поэтому генеративные классы к нему не уходят. Окно 512 токенов. Цена задана с запасом вверх — на странице модели она указана только для превью.",
+    "id": "groq-prompt-guard",
+    "revision": 1,
+    "kind": "groq",
+    "tier": "cloud-cheap",
+    "baseUrl": "https://api.groq.com",
+    "model": "meta-llama/llama-prompt-guard-2-22m",
+    "profile": "cloud",
+    "capabilities": ["prompt_guard"],
+    "contextWindow": 512,
+    "jurisdiction": "us",
+    "dataClasses": ["public"],
+    "maxConcurrency": 4,
+    "thinking": { "none": true },
+    "secretEnv": "GROQ_API_KEY",
+    "price": { "inputPerMTok": 0.03, "outputPerMTok": 0.03 }
   }
 ]

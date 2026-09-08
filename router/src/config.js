@@ -4,7 +4,7 @@
 export const TIERS = ['self-hosted', 'cloud-cheap', 'cloud-frontier']
 export const LEVELS = ['none', 'low', 'medium', 'high']
 export const PROFILES = ['laptop', 'server', 'cloud']
-export const KINDS = ['anthropic', 'ollama']
+export const KINDS = ['anthropic', 'groq', 'ollama']
 
 /** Умолчания профилей для вывода дедлайна («Таймауты» ADR). */
 export const PROFILE_DEFAULTS = {
