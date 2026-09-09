@@ -9,6 +9,7 @@ import {
   ENV,
   GROQ_CHAT,
   groqCompletion,
+  groqWithQuota,
   httpJson,
   httpText,
   ollamaGenerate,
@@ -744,6 +745,96 @@ test('оценка расхода при явном выборе считает 
   const picked = router.estimateRequest({ ...req, provider: 'groq-gpt-oss-20b' })
   assert.ok(picked.costUsd < auto.costUsd, 'по выбранной, а не по самой дорогой')
   assert.ok(picked.tokens < auto.tokens, 'и один вызов вместо двух')
+})
+
+test('остаток квоты из заголовков: провайдер пропускается, пока не сбросится', async () => {
+  const start = Date.parse('2026-09-08T10:00:00Z')
+  const { router, calls, tick } = setup({
+    providers: [GROQ_CHAT, PROVIDERS[1], GUARD],
+    start,
+    hosts: {
+      // Первый ответ сообщает, что осталось всего 200 токенов на 30 секунд.
+      [GROQ]: () => groqWithQuota(groqCompletion(), { remaining: 200, reset: '30s' }),
+      [CLOUD]: cloudOk,
+    },
+  })
+
+  const first = await router.route({ taskClass: 'news_answer', input: 'коротко' })
+  assert.equal(first.provider.id, 'groq-gpt-oss-20b')
+
+  // Следующий запрос крупнее остатка — до провайдера не идём.
+  const second = await router.route({ taskClass: 'news_answer', input: 'a'.repeat(4000) })
+  assert.equal(second.provider.id, 'anthropic-haiku', 'ушли на другого провайдера')
+  assert.equal(calls.filter((c) => c.host === GROQ).length, 1)
+
+  // После сброса окно начинается заново, и провайдер снова в игре.
+  tick(31_000)
+  const third = await router.route({ taskClass: 'news_answer', input: 'a'.repeat(4000) })
+  assert.equal(third.provider.id, 'groq-gpt-oss-20b')
+})
+
+test('когда заменить некем, отказ называет остаток и время сброса', async () => {
+  const { router } = setup({
+    providers: [GROQ_CHAT, GUARD, PROVIDERS[1]],
+    classes: { ...CLASSES, news_answer: { ...CLASSES.news_answer, tiers: ['cloud-cheap'] } },
+    hosts: { [GROQ]: () => groqWithQuota(groqCompletion(), { remaining: 150, reset: '30s' }) },
+  })
+  await router.route({ taskClass: 'news_answer', input: 'коротко' })
+  const refused = await router.route({ taskClass: 'news_answer', input: 'a'.repeat(4000) })
+  assert.equal(refused.ok, false)
+  assert.match(
+    refused.reasons.find((r) => r.provider === 'groq-gpt-oss-20b#1').reason,
+    /остаток квоты 150 токенов меньше входа/,
+  )
+})
+
+test('квота запоминается и с отказа 413, а не только с успеха', async () => {
+  const { router } = setup({
+    providers: [GROQ_CHAT, PROVIDERS[1], GUARD],
+    hosts: {
+      [GROQ]: () =>
+        httpJson(
+          413,
+          { error: { message: 'Request too large', type: 'tokens' } },
+          {
+            'x-ratelimit-limit-tokens': '8000',
+            'x-ratelimit-remaining-tokens': '100',
+            'x-ratelimit-reset-tokens': '20s',
+          },
+        ),
+      [CLOUD]: cloudOk,
+    },
+  })
+  await router.route({
+    taskClass: 'news_answer',
+    input: 'a'.repeat(4000),
+    provider: 'groq-gpt-oss-20b',
+  })
+  const limits = router.providerLimits('news_answer')
+  const groq = limits.find((l) => l.id === 'groq-gpt-oss-20b')
+  assert.equal(groq.quota.remainingTokens, 100)
+  assert.equal(groq.quota.limitTokens, 8000)
+})
+
+test('пределы моделей доступны приложению до запроса', async () => {
+  const { router } = setup({
+    providers: [GROQ_CHAT, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => groqWithQuota(groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const before = router.providerLimits('news_answer')
+  assert.deepEqual(
+    before.map((l) => l.id),
+    ['groq-gpt-oss-20b', 'anthropic-haiku'],
+    'классификатор отсеян: у него нет text_generation',
+  )
+  assert.equal(before[0].quota, null, 'до первого вызова остаток неизвестен')
+  assert.equal(before[0].maxRequestTokens, GROQ_CHAT.contextWindow)
+
+  await router.route({ taskClass: 'news_answer', input: 'коротко' })
+  const after = router.providerLimits('news_answer')
+  assert.equal(after[0].quota.remainingTokens, 7900)
+  assert.equal(after[0].quota.limitTokens, 8000)
+  assert.ok(after[0].available)
 })
 
 test('предел провайдера на запрос жёстче окна: отказ до вызова', async () => {

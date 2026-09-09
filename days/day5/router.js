@@ -123,6 +123,21 @@ export function fitToBudget(sphere, params, items, maxInputTokens) {
   return list
 }
 
+/**
+ * Пределы моделей у роутера: статический потолок на запрос и последний
+ * известный остаток квоты провайдера. Нужны, чтобы подгонять размер
+ * подборки заранее, а не узнавать о пределе отказом.
+ */
+export async function fetchLimits(env, { fetchImpl = fetch } = {}) {
+  const response = await fetchImpl(`${env.ROUTER_URL}/v1/models?taskClass=news_answer`, {
+    headers: { authorization: `Bearer ${env.ROUTER_APP_KEY}` },
+    signal: AbortSignal.timeout(10_000),
+  })
+  const json = await response.json().catch(() => null)
+  if (!response.ok || !json) return { providers: [], budgetLeft: null }
+  return { providers: json.providers ?? [], budgetLeft: json.budgetLeft ?? null }
+}
+
 /** Запрос к роутеру. Возвращает ответ модели и то, чем именно он получен. */
 export async function askRouter(sphere, params, items, env, { fetchImpl = fetch } = {}) {
   const body = {

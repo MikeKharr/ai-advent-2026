@@ -261,8 +261,9 @@
       <legend class="name" style="padding:0;">Модель</legend>
       <div class="models" id="models"></div>
       <span class="hint">Выбирается до запуска. Все инструкции запроса выполняет
-      выбранная модель; подмены на другую при отказе не будет. Модели Groq
-      принимают меньше текста за запрос, поэтому подборка для них короче.</span>
+      выбранная модель; подмены на другую при отказе не будет. Рядом с моделью —
+      сколько статей она примет сейчас: у Groq предел считается за минуту,
+      поэтому число меняется.</span>
     </fieldset>
 
     <label class="field">
@@ -353,10 +354,17 @@
       note.className = 'model-note';
       // Предел подборки виден рядом с моделью: у моделей Groq он вчетверо
       // меньше, и без подписи разница в ответах выглядит необъяснимой.
-      const budget = m.maxChars >= 100000
-        ? `${m.note} · ${Math.round(m.maxChars / 1000)}K символов`
-        : `${m.note} · до ${Math.round(m.maxChars / 1000)}K символов`;
-      note.textContent = budget;
+      // Рядом с моделью — сколько статей она примет прямо сейчас. Число
+      // живое: у Groq предел считается за минуту и меняется от запроса
+      // к запросу, а постоянная цифра здесь обманывала бы.
+      note.textContent = m.articlesFit
+        ? `${m.note} · сейчас ~${m.articlesFit} статей`
+        : `${m.note} · ${Math.round(m.budgetTokens / 1000)}K токенов`;
+      if (m.available === false) {
+        label.style.opacity = '.55';
+        note.textContent = `${m.note} · сейчас недоступна`;
+      }
+      label.title = `Предел входа: ${m.budgetTokens} токенов (${m.budgetSource})`;
       label.append(radio, name, note);
       box.append(label);
     });
@@ -442,7 +450,8 @@
     tag(sel.selected && sel.selected !== sel.used
       ? `статей: ${sel.used} из ${sel.selected} отобранных, по запросу ${sel.matched}`
       : `статей: ${sel.used}, по запросу ${sel.matched}`);
-    if (sel.budgetTokens) tag(`предел входа: ${sel.budgetTokens} токенов`);
+    if (sel.budgetTokens)
+      tag(`предел входа: ${sel.budgetTokens} токенов${sel.budgetSource === 'остаток квоты' ? ' (остаток квоты)' : ''}`);
     tag(`с текстом: ${entry.selection.withText}`);
     if (entry.params.stopSequences.length)
       tag(`стоп: ${entry.params.stopSequences.join(' | ')}`);

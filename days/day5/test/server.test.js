@@ -7,6 +7,7 @@ import { budgetFor, inputBudgetFor, parseEnv, parseParams } from '../env.js'
 import {
   askRouter,
   buildInput,
+  fetchLimits,
   estimateTokens,
   fitToBudget,
   renderCandidates,
@@ -169,6 +170,58 @@ test('для модели с большим пределом подборка н
   ]
   const { params } = parseParams({ model: 'anthropic-haiku' }, ENV)
   assert.equal(fitToBudget('тема', params, few, inputBudgetFor('anthropic-haiku')).length, 1)
+})
+
+test('когда остатка не хватает даже на статью, подборка всё равно не пустая', () => {
+  // fitToBudget оставляет хотя бы одну статью: пустой список — не ответ.
+  // Решение «не звать модель» принимает сервер, сравнив нужное с остатком.
+  const items = [
+    {
+      url: 'https://example.com/1',
+      title: 'Very long headline about fintech funding rounds',
+      source: 'TechCrunch',
+      date: '2026-09-09T10:00:00.000Z',
+      text: 'x'.repeat(4000),
+    },
+  ]
+  const { params } = parseParams({ model: 'groq-qwen3.6-27b' }, ENV)
+  const fitted = fitToBudget('тема', params, items, 50)
+  assert.equal(fitted.length, 1)
+  assert.ok(estimateTokens(buildInput('тема', params, fitted)) > 50, 'нужное больше остатка')
+})
+
+test('пределы моделей запрашиваются у роутера', async () => {
+  let asked = null
+  const fetchImpl = async (url, options) => {
+    asked = { url, headers: options.headers }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        taskClass: 'news_answer',
+        providers: [
+          {
+            id: 'groq-gpt-oss-20b',
+            maxRequestTokens: 6000,
+            quota: { limitTokens: 8000, remainingTokens: 1500, resetAt: null, stale: false },
+            available: true,
+          },
+        ],
+      }),
+    }
+  }
+  const limits = await fetchLimits(ENV, { fetchImpl })
+  assert.match(asked.url, /\/v1\/models\?taskClass=news_answer/)
+  assert.equal(asked.headers.authorization, 'Bearer app-day5')
+  assert.equal(limits.providers[0].quota.remainingTokens, 1500)
+})
+
+test('роутер недоступен — день работает по своим пределам, а не падает', async () => {
+  const failing = async () => {
+    throw new Error('сеть')
+  }
+  await assert.rejects(() => fetchLimits(ENV, { fetchImpl: failing }))
+  // Сервер оборачивает вызов в catch: см. handleAnswer и /api/state.
 })
 
 test('бюджет подборки зависит от выбранной модели', () => {

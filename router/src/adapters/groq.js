@@ -20,6 +20,7 @@
 // провайдера с тем же `secretEnv`, различаются `id` и `model`.
 
 import { readJson } from './http.js'
+import { readQuota } from './quota.js'
 
 export async function call(
   {
@@ -35,7 +36,7 @@ export async function call(
     temperature,
     signal,
   },
-  { fetchImpl, env },
+  { fetchImpl, env, now = Date.now },
 ) {
   // Возможность, которую роутер потребовал, обязана уйти в запрос. Серверных
   // инструментов у этого адаптера нет, поэтому падаем громко, а не отвечаем
@@ -79,7 +80,8 @@ export async function call(
     signal,
   })
 
-  const json = await readJson(response, 'groq')
+  const quota = readQuota(response.headers, 'groq', now())
+  const json = await readJson(response, 'groq', quota)
   const choice = json.choices?.[0] ?? {}
   const usage = json.usage ?? {}
   const completionSec = usage.completion_time ?? 0
@@ -102,6 +104,7 @@ export async function call(
           ? Math.round(((usage.completion_tokens ?? 0) / completionSec) * 10) / 10
           : null,
     },
+    quota,
     stopReason: choice.finish_reason === 'length' ? 'length' : (choice.finish_reason ?? 'stop'),
   }
 }
