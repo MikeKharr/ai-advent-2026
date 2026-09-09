@@ -1,4 +1,6 @@
-FROM node:22-alpine
+# Node 24, а не 22: здесь встроенный node:sqlite работает без флага
+# (ADR 2026-09-12-0930). Дни остаются на 22 — их образы это не трогает.
+FROM node:24-alpine
 
 # Сервис работает не от root; архив статей — на томе /data.
 RUN addgroup -S app && adduser -S app -G app && mkdir -p /data && chown app:app /data

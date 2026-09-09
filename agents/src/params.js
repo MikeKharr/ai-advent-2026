@@ -138,10 +138,24 @@ export const PARAM_LIMITS = {
   // Свой системный промпт целиком уходит во вход модели и считается в её
   // пределе, поэтому потолок здесь — защита не от длины текста, а от расхода.
   systemChars: 4000,
+  // Сколько токенов диалога пользователь может попросить взять в контекст.
+  // Действующий размер меньше, если предел входа модели не позволяет
+  // (ADR 2026-09-12-0930).
+  contextTokens: 8000,
   stopSequences: 4,
   stopChars: 40,
   perSource: 15,
   articles: 60,
+}
+
+/**
+ * Идентификатор сессии приходит из cookie дня. Проверяется по форме, а не
+ * по содержимому: угадать чужой — то же, что угадать номер запуска.
+ */
+const SESSION_ID = /^[0-9a-f-]{36}$/
+
+export function isSessionId(value) {
+  return typeof value === 'string' && SESSION_ID.test(value)
 }
 
 /** Тема от пользователя: длина и управляющие символы отсекаются до всего остального. */
@@ -243,6 +257,12 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
     return { ok: false, message: `Статей в подборке: целое от 1 до ${PARAM_LIMITS.articles}` }
   }
 
+  // Ноль — законное значение: «отвечай без памяти о разговоре».
+  const contextTokens = parseBoundedInt(source.contextTokens, 0, PARAM_LIMITS.contextTokens)
+  if (!contextTokens.ok) {
+    return { ok: false, message: `Размер контекста: целое от 0 до ${PARAM_LIMITS.contextTokens}` }
+  }
+
   const temperature = parseTemperature(source.temperature)
   if (!temperature.ok) {
     return { ok: false, message: 'Температура: число от 0 до 1 с шагом 0.1' }
@@ -276,6 +296,7 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
       maxTokens: maxTokens.value ?? defaults.maxTokens,
       perSource: perSource.value ?? defaults.perSource,
       articles: articles.value ?? defaults.articles,
+      contextTokens: contextTokens.value ?? defaults.contextTokens ?? 3000,
       temperature: temperature.value ?? defaults.temperature,
       stopSequences,
     },

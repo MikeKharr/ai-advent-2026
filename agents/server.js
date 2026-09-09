@@ -10,6 +10,7 @@ import { parseEnv } from './src/env.js'
 import { loadRegistry } from './src/registry.js'
 import { createRuns } from './src/runs.js'
 import { createService } from './src/service.js'
+import { createSessions } from './src/sessions.js'
 import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -24,17 +25,29 @@ const log = (entry) => console.log(typeof entry === 'string' ? entry : JSON.stri
 const registry = loadRegistry(JSON.parse(readFileSync(join(here, 'config', 'agents.json'), 'utf8')))
 const archive = createArchiveTool({ env, log })
 const runs = createRuns({ ttlMs: env.RUN_TTL_MINUTES * 60_000 })
+// Диалоги переживают перезапуск: они на томе, а не в памяти процесса.
+const sessions = createSessions({
+  file: env.SESSIONS_FILE,
+  ttlMs: env.SESSION_TTL_HOURS * 3600_000,
+  log,
+})
+const sweptOnStart = sessions.sweep()
 
 /** Реестр агентов → исполнители. Сегодня один; следующий добавляется по образцу. */
 const agents = new Map()
 for (const entry of registry.values()) {
-  agents.set(entry.id, createNewsAnalyst({ agent: entry, archive, runs, env, log }))
+  agents.set(entry.id, createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log }))
 }
 
 // Готовые запуски удаляются по TTL; незавершённые живут до терминального события.
 setInterval(() => runs.sweep(), 60_000).unref()
+// Срок хранения диалогов проверяется реже: он измеряется часами.
+setInterval(() => {
+  const removed = sessions.sweep()
+  if (removed > 0) log({ event: 'sessions_swept', removed })
+}, 10 * 60_000).unref()
 
-const handler = createService({ agents, archive, runs, env, log })
+const handler = createService({ agents, archive, runs, sessions, env, log })
 http.createServer(handler).listen(env.PORT, () => {
   log({
     event: 'start',
@@ -43,5 +56,6 @@ http.createServer(handler).listen(env.PORT, () => {
     store: env.STORE_FILE,
     archive: archive.size(),
     skipped: archive.skippedOnLoad(),
+    sessions: { ...sessions.stats(), ttlHours: env.SESSION_TTL_HOURS, sweptOnStart },
   })
 })

@@ -12,6 +12,9 @@ const NUMBERS = {
   // укладываются с огромным запасом.
   ROUTER_TIMEOUT_MS: 240_000,
   RUN_TTL_MINUTES: 10, // готовый запуск живёт в памяти столько
+  // Диалог без активности живёт столько часов, потом удаляется целиком
+  // (решение владельца 2026-09-12, ADR 2026-09-12-0930).
+  SESSION_TTL_HOURS: 30,
   PORT: 8082,
 }
 
@@ -20,6 +23,7 @@ export function parseEnv(source = process.env) {
   const env = {
     ROUTER_URL: source.ROUTER_URL || 'http://router:8081',
     STORE_FILE: source.STORE_FILE || '/data/store.json',
+    SESSIONS_FILE: source.SESSIONS_FILE || '/data/sessions.db',
   }
 
   for (const name of ['AGENT_KEY', 'ROUTER_APP_KEY']) {

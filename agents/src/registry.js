@@ -43,6 +43,9 @@ export function loadRegistry(raw) {
     }
     if (!Number.isFinite(d.temperature) || d.temperature < 0 || d.temperature > 1)
       fail(id, 'defaults.temperature: число от 0 до 1')
+    // Ноль законен: агент без памяти о разговоре.
+    if (!Number.isInteger(d.contextTokens) || d.contextTokens < 0)
+      fail(id, 'defaults.contextTokens: ожидалось целое не меньше нуля')
 
     agents.set(id, {
       id,
