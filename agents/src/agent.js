@@ -12,19 +12,19 @@ import {
   askRouter,
   effectiveBudget,
   effectiveContext,
-  estimateTokens,
   fetchLimits,
   fitToBudget,
   guardLinks,
+  estimateTokens,
   requestTokens,
 } from './llm.js'
 import {
   budgetFor,
   inputBudgetFor,
-  isSessionId,
   MODELS,
   PARAM_LIMITS,
   PROMPT_PRESETS,
+  isSessionId,
   parseParams,
   parseSphere,
   parseSystem,
@@ -285,9 +285,7 @@ export function createNewsAnalyst({
               title: 'Вспомнил разговор',
               detail:
                 `${tail.messages.length} реплик, ${tail.tokens} из ${effective} токенов контекста` +
-                (effective < params.contextTokens
-                  ? ` (модель даёт меньше ${params.contextTokens})`
-                  : ''),
+                (effective < params.contextTokens ? ` (модель даёт меньше ${params.contextTokens})` : ''),
               data: { ...context },
             })
           }

@@ -7,9 +7,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-
 export { isSessionId } from './params.js'
-
 import { DatabaseSync } from 'node:sqlite'
 
 const SCHEMA = `
