@@ -187,6 +187,10 @@ export async function askRouter(sphere, params, items, env, { fetchImpl = fetch 
     input: buildInput(sphere, params, items),
   }
   if (params.stopSequences.length > 0) body.stop = params.stopSequences
+  // Несдвинутую температуру не отправляем вовсе: часть моделей принимает
+  // только своё умолчание, и день ломался бы на них при полном ползунке.
+  if (params.temperature !== undefined && params.temperature !== 1)
+    body.temperature = params.temperature
 
   const response = await fetchImpl(`${env.ROUTER_URL}/v1/route`, {
     method: 'POST',
