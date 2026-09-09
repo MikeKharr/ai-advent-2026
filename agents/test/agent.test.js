@@ -278,3 +278,70 @@ test('неожиданная ошибка после ответа модели �
   assert.equal(snap.error.code, 'internal')
   assert.equal(snap.error.paidNothing, false, 'модель уже вызвана — слот не возвращается')
 })
+
+test('свой системный промпт уходит в модель вместо промпта из реестра', async () => {
+  const mine = 'Отвечай одним предложением и только по этим материалам.'
+  const { events, end, fetchImpl } = await runOnce({ input: { sphere: 'финтех', system: mine } })
+  assert.equal(fetchImpl.calls[0].body.system, mine, 'в роутер ушёл промпт запуска')
+  assert.equal(end.status, 'succeeded')
+  assert.equal(end.result.systemOverridden, true)
+
+  // Монитор говорит о подмене фактом и длиной, но не текстом промпта.
+  const said = events.find((e) => e.title === 'Взял ваш системный промпт')
+  assert.equal(said.data.systemChars, mine.length)
+  assert.equal(events[0].data.systemOverridden, true)
+  assert.equal(JSON.stringify(events).includes('одним предложением'), false, 'текста в событиях нет')
+})
+
+test('без своего промпта работает промпт из реестра, признак снят', async () => {
+  const { events, end, fetchImpl } = await runOnce()
+  assert.equal(fetchImpl.calls[0].body.system, NEWS.systemPrompt)
+  assert.equal(end.result.systemOverridden, false)
+  assert.equal(events[0].data.systemOverridden, false)
+  assert.equal(events.some((e) => e.title === 'Взял ваш системный промпт'), false)
+})
+
+test('размер запроса считается по своему промпту, а не по реестровому', async () => {
+  // Иначе агент пообещает, что подборка влезает, по чужой мерке, и получит
+  // отказ провайдера на пределе входа.
+  const long = 'Правило. '.repeat(300)
+  const { events } = await runOnce({ input: { sphere: 'финтех', system: long } })
+  const planning = events.filter((e) => e.stage === 'planning').at(-1)
+  const base = await runOnce()
+  const basePlanning = base.events.filter((e) => e.stage === 'planning').at(-1)
+  assert.ok(
+    planning.data.requestTokens > basePlanning.data.requestTokens + 500,
+    `длинный промпт должен утяжелить запрос: ${planning.data.requestTokens} против ${basePlanning.data.requestTokens}`,
+  )
+})
+
+test('свой промпт: пустой отвергается, длинный отвергается, чужой тип отвергается', () => {
+  const runs = createRuns()
+  const agent = createNewsAnalyst({ agent: NEWS, archive: fakeArchive(), runs, env: ENV })
+  assert.equal(
+    agent.parseInput({ sphere: 'x', system: '   ' }).message,
+    'Системный промпт не может быть пустым',
+    'пустой промпт — видимая ошибка, а не молчаливый откат к исходному',
+  )
+  assert.match(agent.parseInput({ sphere: 'x', system: 'я'.repeat(4001) }).message, /длиннее 4000/)
+  assert.match(agent.parseInput({ sphere: 'x', system: 42 }).message, /должно быть строкой/)
+  assert.equal(agent.parseInput({ sphere: 'x' }).input.system, null, 'без поля — промпт реестра')
+  assert.equal(agent.parseInput({ sphere: 'x', system: ' мой  ' }).input.system, 'мой')
+})
+
+test('реестр отдаёт исходный промпт даже после запуска со своим', async () => {
+  // Окно передачи показывает промпт агента, а не последнюю чужую правку.
+  const runs = createRuns()
+  const archive = fakeArchive()
+  const agent = createNewsAnalyst({
+    agent: NEWS,
+    archive,
+    runs,
+    env: ENV,
+    fetchImpl: fakeRouter(),
+    log: () => {},
+  })
+  const run = runs.create({ agent, input: agent.parseInput({ sphere: 'x', system: 'чужое' }).input })
+  await agent.execute(run)
+  assert.equal((await agent.describe()).systemPrompt, NEWS.systemPrompt)
+})

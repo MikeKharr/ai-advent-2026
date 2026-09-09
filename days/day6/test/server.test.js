@@ -106,7 +106,8 @@ test('/healthz отвечает и не раскрывает ключ', async ()
 })
 
 test('запрос уходит агенту с ключом дня и именем агента; страница получает runId', async () => {
-  const r = await ask({ sphere: 'финтех', articles: 3 })
+  const mine = 'Отвечай одним предложением.'
+  const r = await ask({ sphere: 'финтех', articles: 3, system: mine })
   assert.equal(r.status, 202)
   const { runId } = await r.json()
   assert.match(runId, /^[0-9a-f-]{36}$/)
@@ -116,8 +117,8 @@ test('запрос уходит агенту с ключом дня и имен�
   assert.equal(body.agent, 'news-analyst')
   assert.deepEqual(
     body.input,
-    { sphere: 'финтех', articles: 3 },
-    'вход уходит как есть — проверяет агент',
+    { sphere: 'финтех', articles: 3, system: mine },
+    'вход уходит как есть, включая свой системный промпт, — проверяет его агент',
   )
 })
 

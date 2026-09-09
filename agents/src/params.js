@@ -135,6 +135,9 @@ export function inputBudgetFor(modelId) {
 export const PARAM_LIMITS = {
   sphereChars: 60,
   promptChars: 2000,
+  // Свой системный промпт целиком уходит во вход модели и считается в её
+  // пределе, поэтому потолок здесь — защита не от длины текста, а от расхода.
+  systemChars: 4000,
   stopSequences: 4,
   stopChars: 40,
   perSource: 15,
@@ -144,12 +147,38 @@ export const PARAM_LIMITS = {
 /** Тема от пользователя: длина и управляющие символы отсекаются до всего остального. */
 export function parseSphere(value) {
   if (typeof value !== 'string') return { ok: false, message: 'Поле sphere должно быть строкой' }
-  const sphere = value.replace(/[\u0000-\u001F\u007F]/g, '').replace(/\s+/g, ' ').trim()
+  const sphere = value
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
   if (sphere.length === 0) return { ok: false, message: 'Укажите тему' }
   if (sphere.length > PARAM_LIMITS.sphereChars) {
     return { ok: false, message: `Слишком длинно: не больше ${PARAM_LIMITS.sphereChars} символов` }
   }
   return { ok: true, sphere }
+}
+
+/**
+ * Свой системный промпт вместо промпта из реестра. Правка живёт в браузере
+ * пользователя и приходит с каждым запуском: реестр на сервере она не меняет
+ * и чужие запуски не затрагивает (решение владельца 2026-09-11).
+ *
+ * `null` означает «промпт из реестра». Пустая строка — ошибка, а не молчаливый
+ * откат к исходному: агент без системного промпта ведёт себя иначе, и человек
+ * должен об этом узнать, а не гадать.
+ */
+export function parseSystem(value) {
+  if (value === undefined || value === null) return { ok: true, system: null }
+  if (typeof value !== 'string') return { ok: false, message: 'Поле system должно быть строкой' }
+  const cleaned = cleanText(value)
+  if (!cleaned.ok) return { ok: false, message: 'Поле system должно быть строкой' }
+  if (cleaned.text.length === 0) {
+    return { ok: false, message: 'Системный промпт не может быть пустым' }
+  }
+  if (cleaned.text.length > PARAM_LIMITS.systemChars) {
+    return { ok: false, message: `Системный промпт длиннее ${PARAM_LIMITS.systemChars} символов` }
+  }
+  return { ok: true, system: cleaned.text }
 }
 
 /** Управляющие символы, кроме перевода строки: он значим в prompt и stop. */
@@ -158,7 +187,10 @@ function cleanText(value) {
   if (typeof value !== 'string') return { ok: false }
   return {
     ok: true,
-    text: value.replace(/\r\n/g, '\n').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim(),
+    text: value
+      .replace(/\r\n/g, '\n')
+      .replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '')
+      .trim(),
   }
 }
 
