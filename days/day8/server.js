@@ -76,14 +76,56 @@ function clientIp(req) {
 // переписке, — а метка, выведенная из него необратимо (ADR 2026-09-13-0930).
 // Словарь конечен, поэтому имена могут совпадать: это метка, а не ключ.
 const ADJECTIVES = [
-  'синий', 'красный', 'зелёный', 'жёлтый', 'белый', 'чёрный', 'быстрый', 'тихий',
-  'смелый', 'дальний', 'ранний', 'поздний', 'тёплый', 'ясный', 'острый', 'мягкий',
-  'лёгкий', 'важный', 'дикий', 'вольный', 'верный', 'первый', 'южный', 'северный',
+  'синий',
+  'красный',
+  'зелёный',
+  'жёлтый',
+  'белый',
+  'чёрный',
+  'быстрый',
+  'тихий',
+  'смелый',
+  'дальний',
+  'ранний',
+  'поздний',
+  'тёплый',
+  'ясный',
+  'острый',
+  'мягкий',
+  'лёгкий',
+  'важный',
+  'дикий',
+  'вольный',
+  'верный',
+  'первый',
+  'южный',
+  'северный',
 ]
 const NOUNS = [
-  'кит', 'сокол', 'барс', 'ёж', 'лис', 'бобр', 'филин', 'олень',
-  'краб', 'стриж', 'заяц', 'шмель', 'окунь', 'ворон', 'тюлень', 'сурок',
-  'рысь', 'аист', 'марал', 'нерпа', 'кабан', 'дрозд', 'налим', 'выдра',
+  'кит',
+  'сокол',
+  'барс',
+  'ёж',
+  'лис',
+  'бобр',
+  'филин',
+  'олень',
+  'краб',
+  'стриж',
+  'заяц',
+  'шмель',
+  'окунь',
+  'ворон',
+  'тюлень',
+  'сурок',
+  'рысь',
+  'аист',
+  'марал',
+  'нерпа',
+  'кабан',
+  'дрозд',
+  'налим',
+  'выдра',
 ]
 
 function sessionName(sessionId) {
@@ -343,9 +385,12 @@ async function proxyEvents(req, res, runId) {
 async function handleState(req, res) {
   const session = ensureSession(req)
   try {
-    const [agentsRes, archiveRes] = await Promise.all([
+    const [agentsRes, archiveRes, healthRes] = await Promise.all([
       callAgent('/v1/agents'),
       callAgent(`/v1/agents/${env.AGENT_ID}/tools/archive`),
+      // Срок хранения берётся у того, кто удаляет: переменная дня и
+      // переменная агента независимы, и расходятся молча.
+      callAgent('/healthz'),
     ])
     const agent = agentsRes.json?.agents?.find((a) => a.id === env.AGENT_ID)
     const archive = archiveRes.response.ok ? archiveRes.json : null
@@ -371,7 +416,10 @@ async function handleState(req, res) {
         limits: agent.limits,
         archive: archiveState,
         sources,
-        session: { ttlHours: env.SESSION_TTL_HOURS, name: sessionName(session.sessionId) },
+        session: {
+          ttlHours: healthRes.json?.sessionTtlHours ?? env.SESSION_TTL_HOURS,
+          name: sessionName(session.sessionId),
+        },
       },
       session.headers,
     )

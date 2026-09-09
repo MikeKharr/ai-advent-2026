@@ -56,7 +56,14 @@ function sse(res, name, payload, id) {
   res.write(`${lines.join('\n')}\n\n`)
 }
 
-export function createService({ agents, archive, runs, sessions = null, env, log = console.error }) {
+export function createService({
+  agents,
+  archive,
+  runs,
+  sessions = null,
+  env,
+  log = console.error,
+}) {
   /**
    * Счётчики сессий для /healthz: их отказ не должен валить проверку, но и
    * выглядеть как «памяти нет по настройке» тоже не должен — оператор идёт
@@ -170,6 +177,9 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         archive: state.total,
         lastRefresh: state.lastRefresh,
         sessions: sessionStats(),
+        // Срок хранения отдаёт тот, кто его исполняет: у дня своя переменная
+        // окружения, и обещать страницей чужое число нельзя.
+        sessionTtlHours: sessions ? env.SESSION_TTL_HOURS : null,
       })
     }
 

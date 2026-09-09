@@ -7,7 +7,9 @@
 
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+
 export { isSessionId } from './params.js'
+
 import { DatabaseSync } from 'node:sqlite'
 
 const SCHEMA = `
@@ -171,7 +173,10 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
           const meta = JSON.parse(row.meta)
           if (meta.error === true) continue
           if (Number.isFinite(meta.totalTokens)) total += meta.totalTokens
-        } catch {}
+        } catch {
+          // Порченая сводка занижает сумму молча — пусть хотя бы останется след.
+          log(`сводка сообщения ${row.id} не разобрана, сумма занижена`)
+        }
       }
       return total
     },

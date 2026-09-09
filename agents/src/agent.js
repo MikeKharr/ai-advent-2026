@@ -12,19 +12,19 @@ import {
   askRouter,
   effectiveBudget,
   effectiveContext,
+  estimateTokens,
   fetchLimits,
   fitToBudget,
   guardLinks,
-  estimateTokens,
   requestTokens,
 } from './llm.js'
 import {
   budgetFor,
   inputBudgetFor,
+  isSessionId,
   MODELS,
   PARAM_LIMITS,
   PROMPT_PRESETS,
-  isSessionId,
   parseParams,
   parseSphere,
   parseSystem,
@@ -71,7 +71,7 @@ function explainRouterError(error) {
     // Роутер отвечает так и когда остаток есть, но запрос в него не влез:
     // «попробуйте завтра» было бы неправдой — хватит меньшей подборки.
     return /не помещается/.test(error.message)
-      ? 'Запрос слишком большой для остатка суточного лимита. Уменьшите число статей.'
+      ? 'Запрос слишком большой для остатка суточного лимита. Уменьшите статей на издание или контекст.'
       : 'Суточный лимит расхода приложения исчерпан, попробуйте завтра.'
   }
   return `Модель не ответила: ${error.message}`
@@ -232,7 +232,10 @@ export function createNewsAnalyst({
         emit({
           stage: 'received',
           title: 'Получил запрос',
-          detail: `модель ${params.model}, статей до ${params.articles}`,
+          detail:
+            params.articles === null
+              ? `модель ${params.model}, подборка под предел модели`
+              : `модель ${params.model}, статей до ${params.articles}`,
           data: {
             model: params.model,
             articles: params.articles,
@@ -259,7 +262,6 @@ export function createNewsAnalyst({
         // Пределы модели и память поднимаются до архива: с дня 8 отбор идёт
         // по словам разговора, значит хвост диалога нужен раньше подборки
         // (ADR 2026-09-13-0930).
-        const planStarted = now()
         const limits = await limitsOf()
         const budget = effectiveBudget(params.model, inputBudgetFor(params.model), limits)
 
@@ -283,20 +285,15 @@ export function createNewsAnalyst({
               title: 'Вспомнил разговор',
               detail:
                 `${tail.messages.length} реплик, ${tail.tokens} из ${effective} токенов контекста` +
-                (effective < params.contextTokens ? ` (модель даёт меньше ${params.contextTokens})` : ''),
+                (effective < params.contextTokens
+                  ? ` (модель даёт меньше ${params.contextTokens})`
+                  : ''),
               data: { ...context },
             })
           }
         } else {
           context = { used: 0, effective, requested: params.contextTokens, messages: 0, dropped: 0 }
         }
-
-        // Реплика пользователя записывается до вызова модели: вопрос задан,
-        // и неудачный запуск не должен делать вид, что его не было.
-        remember('user', params.prompt || sphere, estimateTokens(params.prompt || sphere), {
-          sphere,
-        })
-        asked = true
 
         // Инструмент: архив. Аргументы без текстов — тема и запрос в событие
         // не идут, только пределы отбора.
@@ -305,11 +302,19 @@ export function createNewsAnalyst({
         // про первое» само по себе не содержит ни одной зацепки, а тема живёт
         // в предыдущих репликах (ADR 2026-09-13-0930). Хвост диалога уже
         // поднят для модели, поэтому лишних чтений базы это не добавляет.
-        const recentUser = transcript
-          .filter((m) => m.role === 'user')
-          .slice(-RECENT_USER_MESSAGES)
-          .map((m) => m.text)
-        const query = [...recentUser, params.prompt].filter(Boolean).join(' ')
+        // Только когда темы нет: дни 6 и 7 её присылают, и отбор у них
+        // остаётся прежним — ADR обещает, что они не меняются.
+        const query = sphere
+          ? params.prompt
+          : [
+              ...transcript
+                .filter((m) => m.role === 'user')
+                .slice(-RECENT_USER_MESSAGES)
+                .map((m) => m.text),
+              params.prompt,
+            ]
+              .filter(Boolean)
+              .join(' ')
         const toolArgs = {
           sphere,
           prompt: query,
@@ -379,6 +384,15 @@ export function createNewsAnalyst({
           })
         }
 
+        // Реплика пользователя записывается до вызова модели: вопрос задан,
+        // и неудачный запуск не должен делать вид, что его не было. Но после
+        // проверки архива: пустой архив не оставлял следа и в дне 7.
+        remember('user', params.prompt || sphere, estimateTokens(params.prompt || sphere), {
+          sphere,
+        })
+        asked = true
+
+        const fitStarted = now()
         const items = fitToBudget(system, sphere, params, found.items, budget.tokens, transcript)
         const needed = requestTokens(system, sphere, params, items, transcript)
         emit({
@@ -394,7 +408,7 @@ export function createNewsAnalyst({
             selected: found.items.length,
             withText: items.filter((i) => i.text).length,
           },
-          durationMs: now() - planStarted,
+          durationMs: now() - fitStarted,
         })
         if (needed > budget.tokens) {
           // Если не помещается даже одна статья, звать модель незачем:
@@ -490,8 +504,11 @@ export function createNewsAnalyst({
         })
 
         const totalMs = now() - startedAt
+        // Своя оценка, когда провайдер не сказал: Ollama `usage` не присылает,
+        // а нулём такая итерация обнулила бы и сумму по всей переписке.
         const totalTokens =
-          (answer.usage.inputTokens ?? 0) + (answer.usage.outputTokens ?? 0)
+          (answer.usage.inputTokens ?? needed) +
+          (answer.usage.outputTokens ?? estimateTokens(answer.text))
         // Сводка переживает перезапуск вместе с перепиской: события монитора
         // живут до перезагрузки страницы, а «что было в этой итерации»
         // должно читаться и завтра (ADR 2026-09-12-0930).

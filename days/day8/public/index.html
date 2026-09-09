@@ -95,13 +95,7 @@
   textarea { resize:vertical; }
 
   form { display:block; }
-  .ask { display:block; margin-bottom:var(--s-4); font-size:var(--t-sm); line-height:1.5; }
-  .ask-name { display:block; margin-bottom:var(--s-2); }
   .submit { margin-top:var(--s-5); }
-  .ask .hint, form > .hint {
-    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
-    margin:calc(-1 * var(--s-3)) 0 var(--s-4); max-width:52ch;
-  }
   button {
     font:inherit; font-weight:600; border-radius:var(--r-sm); cursor:pointer;
     padding:var(--s-2) var(--s-4); color:var(--acc-fg); background:var(--acc);
@@ -121,15 +115,6 @@
   .about:hover { filter:none; text-decoration-color:var(--fg); }
   .about:active { transform:none; opacity:.7; }
   .about[disabled] { opacity:.5; text-decoration-color:var(--line-ctl); }
-
-  .chips { display:flex; gap:var(--s-2); flex-wrap:wrap;
-           margin:calc(-1 * var(--s-2)) 0 var(--s-4); }
-  .chip {
-    padding:var(--s-1) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
-    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
-    border-radius:var(--r-full);
-  }
-  .chip:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
 
   .params h2 + .field { margin-top:var(--s-5); }
   .params .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
@@ -182,6 +167,12 @@
     /* Нижний предел нужен при открытых настройках: в дне 7 лог сжимался
        до двух пикселей, а композитор уезжал за нижний край окна. */
     min-height:calc(2 * var(--s-8));
+  }
+  /* На узком экране потолки лога и настроек складываются, и открытая панель
+     уводила композитор на полтора экрана вниз. Открытые настройки забирают
+     высоту у лога — вместе они остаются в пределах одного экрана. */
+  @media (max-width: 72.99rem) {
+    main.col:has(.params-box[open]) .log { max-height:30dvh; }
   }
   @media (min-width: 73rem) {
     .right { min-height:0; }
@@ -260,6 +251,9 @@
   .params-box > summary::-webkit-details-marker { display:none; }
   .params-box > summary::after {
     content:"Показать ▸"; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    /* Место в сетке задаётся явно: `.params-values` занимает всю ширину,
+       и автораскладка иначе уносит маркер в третий ряд слева. */
+    grid-row:1; grid-column:2; justify-self:end;
   }
   .params-box[open] > summary::after { content:"Скрыть ▾"; }
   .params-box > summary:hover { border-color:var(--fg-mut); }
@@ -272,14 +266,15 @@
     grid-column:1 / -1; font-size:var(--t-sm); line-height:1.5; color:var(--fg);
     font-variant-numeric:tabular-nums;
   }
-  .params-body { padding-top:var(--s-3); min-height:0; overflow-y:auto; max-height:60dvh; }
+  /* Потолок телу задаётся явно, а не через flex: содержимое `details`
+     браузер заворачивает в свой контейнер и растяжению не поддаётся,
+     из-за чего колонка начинала прокручиваться целиком. Ровно столько же
+     на узком экране забирают у лога — открытие настроек не меняет высоту
+     страницы ни там, ни там. */
+  .params-body { padding-top:var(--s-3); min-height:0; overflow-y:auto; max-height:30dvh; }
   @media (min-width: 73rem) {
-    /* Высоту блок берёт только раскрытым: закрытая панель — одна строка.
-       Потолок телу задаётся явно, а не через flex: содержимое `details`
-       браузер заворачивает в свой контейнер и растяжению не поддаётся,
-       из-за чего колонка начинала прокручиваться целиком. */
+    /* Высоту блок берёт только раскрытым: закрытая панель — одна строка. */
     .params-box { flex:0 0 auto; }
-    .params-body { max-height:30dvh; }
   }
   .params-body .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
   .params-body .name {
@@ -546,8 +541,8 @@
       <p class="restored" id="restored" hidden></p>
 
       <ol class="log" id="log">
-        <li class="empty" id="empty">Переписки пока нет. Задайте тему, напишите
-        сообщение — агент ответит по архиву статей.</li>
+        <li class="empty" id="empty">Переписки пока нет. Напишите сообщение —
+        агент ответит по архиву статей.</li>
       </ol>
 
       <details class="params-box" id="params-box">
@@ -1247,8 +1242,11 @@
       spentTokens = Number.isFinite(d.totalTokens) ? d.totalTokens : null;
       showSpent();
       showSessionName(d.session?.name);
-      renderLog();
+      // Сводка параметров — до отрисовки лога: она добавляет строку в панель
+      // настроек, а значит меняет высоту лога. Прокрутка вниз должна считаться
+      // по уже сложившейся раскладке.
       showParamsSummary();
+      renderLog();
     })
     .catch(() => {
       // Придумывать за сервер «переписки нет» нельзя — как и сумму токенов.

@@ -1,90 +1,53 @@
 {
   "rank_news": {
-    "tiers": [
-      "cloud-frontier"
-    ],
-    "deny": [
-      "self-hosted"
-    ],
-    "requires": [
-      "text_generation",
-      "web_search"
-    ],
+    "tiers": ["cloud-frontier"],
+    "deny": ["self-hosted"],
+    "requires": ["text_generation", "web_search"],
     "thinking": "none",
     "answerTokens": 400,
     "dataClass": "public"
   },
   "news_answer": {
-    "tiers": [
-      "self-hosted",
-      "cloud-cheap",
-      "cloud-frontier"
-    ],
-    "requires": [
-      "text_generation"
-    ],
+    "tiers": ["self-hosted", "cloud-cheap", "cloud-frontier"],
+    "requires": ["text_generation"],
     "thinking": "none",
     "answerTokens": 600,
     "maxAnswerTokens": 4096,
     "dataClass": "public"
   },
   "extract_json": {
-    "tiers": [
-      "self-hosted",
-      "cloud-frontier"
-    ],
-    "requires": [
-      "text_generation",
-      "json_schema"
-    ],
+    "tiers": ["self-hosted", "cloud-frontier"],
+    "requires": ["text_generation", "json_schema"],
     "thinking": "none",
     "locked": true,
     "answerTokens": 400,
     "dataClass": "public"
   },
   "summarize": {
-    "tiers": [
-      "self-hosted",
-      "cloud-frontier"
-    ],
-    "requires": [
-      "text_generation"
-    ],
+    "tiers": ["self-hosted", "cloud-frontier"],
+    "requires": ["text_generation"],
     "thinking": "none",
     "answerTokens": 500,
     "dataClass": "public"
   },
   "translate": {
-    "tiers": [
-      "self-hosted",
-      "cloud-frontier"
-    ],
-    "requires": [
-      "text_generation"
-    ],
+    "tiers": ["self-hosted", "cloud-frontier"],
+    "requires": ["text_generation"],
     "thinking": "medium",
     "answerTokens": 800,
     "dataClass": "public"
   },
   "guard_prompt": {
-    "tiers": [
-      "cloud-cheap"
-    ],
-    "requires": [
-      "prompt_guard"
-    ],
+    "tiers": ["cloud-cheap"],
+    "requires": ["prompt_guard"],
     "thinking": "none",
     "locked": true,
     "answerTokens": 8,
     "dataClass": "public"
   },
   "other": {
-    "tiers": [
-      "cloud-frontier"
-    ],
-    "requires": [
-      "text_generation"
-    ],
+    "tiers": ["cloud-frontier"],
+    "requires": ["text_generation"],
     "thinking": "none",
     "answerTokens": 1024,
     "dataClass": "public"

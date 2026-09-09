@@ -26,7 +26,8 @@ const agent = http.createServer(async (req, res) => {
   }
   if (req.url === '/v1/runs') {
     const input = JSON.parse(body).input
-    if (!input.prompt) return json(400, { ok: false, code: 'bad_input', message: 'Напишите сообщение' })
+    if (!input.prompt)
+      return json(400, { ok: false, code: 'bad_input', message: 'Напишите сообщение' })
     const list = stored.get(input.sessionId) ?? []
     list.push({ role: 'user', text: input.prompt, meta: {} })
     stored.set(input.sessionId, list)
@@ -78,6 +79,9 @@ const agent = http.createServer(async (req, res) => {
   if (req.url === '/v1/agents/news-analyst/tools/archive') {
     return json(200, { ok: true, total: 5, capacity: 1000, sources: [{ source: 'TechCrunch' }] })
   }
+  // Срок хранения у агента намеренно не 30: страница обещает то число,
+  // по которому переписка действительно удаляется.
+  if (req.url === '/healthz') return json(200, { ok: true, sessionTtlHours: 42 })
   json(404, { ok: false })
 })
 
@@ -150,19 +154,13 @@ test('идентификатор сессии добавляет сервер, �
   assert.equal(agentLog.at(-1).auth, 'Bearer agent-key')
 
   // Со второй попытки та же cookie — та же сессия.
-  const second = await ask(
-    { prompt: 'ещё' },
-    { ip: '10.0.0.3', cookie: `day8_sid=${sid}` },
-  )
+  const second = await ask({ prompt: 'ещё' }, { ip: '10.0.0.3', cookie: `day8_sid=${sid}` })
   assert.equal(JSON.parse(agentLog.at(-1).body).input.sessionId, sid)
   assert.equal(second.status, 202)
 })
 
 test('подделанная cookie не принимается: заводится новая сессия', async () => {
-  const r = await ask(
-    { prompt: 'x' },
-    { ip: '10.0.0.4', cookie: 'day8_sid=../../etc/passwd' },
-  )
+  const r = await ask({ prompt: 'x' }, { ip: '10.0.0.4', cookie: 'day8_sid=../../etc/passwd' })
   assert.equal(r.status, 202)
   const sid = JSON.parse(agentLog.at(-1).body).input.sessionId
   assert.match(sid, /^[0-9a-f-]{36}$/)
@@ -196,18 +194,20 @@ test('переписка читается по своей cookie и удаляе
 })
 
 test('поток событий проксируется как есть', async () => {
-  const { runId } = await (
-    await ask({ prompt: 'вопрос' }, { ip: '10.0.0.6' })
-  ).json()
+  const { runId } = await (await ask({ prompt: 'вопрос' }, { ip: '10.0.0.6' })).json()
   const r = await fetch(`${base}/api/runs/${runId}/events`)
   assert.equal(r.status, 200)
   const text = await r.text()
   assert.match(text, /event: end\ndata: \{"status":"succeeded"/)
 })
 
-test('состояние несёт срок хранения переписки', async () => {
+test('состояние несёт срок хранения переписки — тот, что у агента', async () => {
   const s = await (await fetch(`${base}/api/state`)).json()
-  assert.equal(s.session.ttlHours, 30)
+  assert.equal(
+    s.session.ttlHours,
+    42,
+    'число берётся у того, кто удаляет, а не из своего окружения',
+  )
   assert.equal(s.defaults.contextTokens, 3000)
   assert.equal(JSON.stringify(s).includes('agent-key'), false)
 })
