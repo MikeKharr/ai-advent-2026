@@ -158,6 +158,27 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       return stale.length
     },
 
+    /**
+     * Во что обошлась переписка целиком: сумма токенов по ответам, где
+     * модель ответила. Записи об отказах ничего не стоили и в сумму не
+     * входят (ADR 2026-09-13-0930).
+     */
+    totalTokens(sessionId) {
+      let total = 0
+      for (const row of stmt.tail.all(sessionId)) {
+        if (row.role !== 'agent' || !row.meta) continue
+        try {
+          const meta = JSON.parse(row.meta)
+          if (meta.error === true) continue
+          if (Number.isFinite(meta.totalTokens)) total += meta.totalTokens
+        } catch {
+          // Порченая сводка занижает сумму молча — пусть хотя бы останется след.
+          log(`сводка сообщения ${row.id} не разобрана, сумма занижена`)
+        }
+      }
+      return total
+    },
+
     stats() {
       return stmt.counts.get()
     },

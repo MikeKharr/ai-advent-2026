@@ -158,11 +158,16 @@ export function isSessionId(value) {
   return typeof value === 'string' && SESSION_ID.test(value)
 }
 
-/** Тема от пользователя: длина и управляющие символы отсекаются до всего остального. */
+/**
+ * Тема от пользователя. С дня 8 поле необязательно: релевантность считается
+ * по репликам разговора (ADR 2026-09-13-0930). Дни 6 и 7 продолжают его
+ * присылать, поэтому проверка остаётся прежней.
+ */
 export function parseSphere(value) {
+  if (value === undefined || value === null || value === '') return { ok: true, sphere: '' }
   if (typeof value !== 'string') return { ok: false, message: 'Поле sphere должно быть строкой' }
   const sphere = value.replace(/[\u0000-\u001F\u007F]/g, '').replace(/\s+/g, ' ').trim()
-  if (sphere.length === 0) return { ok: false, message: 'Укажите тему' }
+  if (sphere.length === 0) return { ok: true, sphere: '' }
   if (sphere.length > PARAM_LIMITS.sphereChars) {
     return { ok: false, message: `Слишком длинно: не больше ${PARAM_LIMITS.sphereChars} символов` }
   }
@@ -295,7 +300,9 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
       model,
       maxTokens: maxTokens.value ?? defaults.maxTokens,
       perSource: perSource.value ?? defaults.perSource,
-      articles: articles.value ?? defaults.articles,
+      // Число статей необязательно: без него подборку набирает агент под
+      // предел входа модели (ADR 2026-09-13-0930).
+      articles: articles.value ?? defaults.articles ?? null,
       contextTokens: contextTokens.value ?? defaults.contextTokens ?? 3000,
       temperature: temperature.value ?? defaults.temperature,
       stopSequences,

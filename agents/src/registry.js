@@ -37,12 +37,16 @@ export function loadRegistry(raw) {
     const d = entry.defaults
     if (!d || typeof d !== 'object') fail(id, 'defaults: ожидался объект')
     if (!MODELS.some((m) => m.id === d.model)) fail(id, `defaults.model: неизвестная модель`)
-    for (const field of ['maxTokens', 'perSource', 'articles']) {
+    for (const field of ['maxTokens', 'perSource']) {
       if (!Number.isInteger(d[field]) || d[field] <= 0)
         fail(id, `defaults.${field}: ожидалось положительное целое`)
     }
     if (!Number.isFinite(d.temperature) || d.temperature < 0 || d.temperature > 1)
       fail(id, 'defaults.temperature: число от 0 до 1')
+    // Число статей в умолчаниях необязательно: без него подборку набирает
+    // агент под предел входа модели.
+    if (d.articles !== undefined && (!Number.isInteger(d.articles) || d.articles <= 0))
+      fail(id, 'defaults.articles: ожидалось положительное целое или отсутствие')
     // Ноль законен: агент без памяти о разговоре.
     if (!Number.isInteger(d.contextTokens) || d.contextTokens < 0)
       fail(id, 'defaults.contextTokens: ожидалось целое не меньше нуля')

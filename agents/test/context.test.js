@@ -2,8 +2,8 @@
 // при параллельных сообщениях. Требует Node 24 или флага --experimental-sqlite.
 
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
 import { createServer } from 'node:http'
+import { test } from 'node:test'
 import { createNewsAnalyst } from '../src/agent.js'
 import { CONTEXT_SHARE, effectiveContext } from '../src/llm.js'
 import { createRuns } from '../src/runs.js'
@@ -18,9 +18,10 @@ function setup({ router, archive } = {}) {
   const sessions = createSessions({ file: ':memory:', ttlMs: 30 * 3600_000, log: () => {} })
   const runs = createRuns()
   const fetchImpl = router ?? fakeRouter()
+  const tool = archive ?? fakeArchive()
   const agent = createNewsAnalyst({
     agent: NEWS,
-    archive: archive ?? fakeArchive(),
+    archive: tool,
     runs,
     sessions,
     env: ENV,
@@ -35,7 +36,7 @@ function setup({ router, archive } = {}) {
     await agent.execute(run)
     return { run, snapshot: runs.snapshot(run.id) }
   }
-  return { agent, runs, sessions, fetchImpl, ask }
+  return { agent, runs, sessions, fetchImpl, tool, ask }
 }
 
 test('второе сообщение уходит модели вместе с первым разговором', async () => {
@@ -231,7 +232,13 @@ test('в событиях монитора нет текстов диалога'
 test('через сервис переписка читается и удаляется по идентификатору', async () => {
   const { agent, runs, sessions } = setup()
   sessions.append({ sessionId: SID, role: 'user', text: 'привет', tokens: 5 })
-  sessions.append({ sessionId: SID, role: 'agent', text: 'здравствуйте', tokens: 7, meta: { totalTokens: 12 } })
+  sessions.append({
+    sessionId: SID,
+    role: 'agent',
+    text: 'здравствуйте',
+    tokens: 7,
+    meta: { totalTokens: 12 },
+  })
 
   const agents = new Map([[agent.id, agent]])
   const server = createServer(
@@ -246,14 +253,23 @@ test('через сервис переписка читается и удаля�
     read.messages.map((m) => m.text),
     ['привет', 'здравствуйте'],
   )
-  assert.equal(read.messages[1].meta.totalTokens, 12, 'сводка переживает перезапуск вместе с текстом')
+  assert.equal(
+    read.messages[1].meta.totalTokens,
+    12,
+    'сводка переживает перезапуск вместе с текстом',
+  )
 
   const health = await (await fetch(`${base}/healthz`)).json()
   assert.equal(health.sessions.messages, 2)
 
-  const cleared = await (await fetch(`${base}/v1/sessions/${SID}`, { method: 'DELETE', headers: auth })).json()
+  const cleared = await (
+    await fetch(`${base}/v1/sessions/${SID}`, { method: 'DELETE', headers: auth })
+  ).json()
   assert.equal(cleared.removed, 2)
-  assert.deepEqual((await (await fetch(`${base}/v1/sessions/${SID}`, { headers: auth })).json()).messages, [])
+  assert.deepEqual(
+    (await (await fetch(`${base}/v1/sessions/${SID}`, { headers: auth })).json()).messages,
+    [],
+  )
   await new Promise((r) => server.close(r))
 })
 
@@ -298,4 +314,59 @@ test('не поместившиеся реплики считаются, а не
   })
   assert.equal(sessions.tail(SID, 10_000).dropped, 0, 'всё поместилось — выпавших нет')
   sessions.close()
+})
+
+test('сумма токенов переписки: ответы считаются, отказы — нет', async () => {
+  const { ask, sessions } = setup()
+  await ask({ prompt: 'первый вопрос' })
+  await ask({ prompt: 'второй вопрос' })
+  assert.equal(sessions.totalTokens(SID), 1080, 'две итерации по 540 токенов')
+
+  sessions.append({
+    sessionId: SID,
+    role: 'agent',
+    text: 'отказ',
+    tokens: 0,
+    meta: { error: true, totalTokens: 999 },
+  })
+  assert.equal(sessions.totalTokens(SID), 1080, 'отказ ничего не стоил')
+  assert.equal(
+    sessions.totalTokens('44444444-4444-4444-8444-444444444444'),
+    0,
+    'чужая сессия — ноль',
+  )
+})
+
+test('без темы отбор идёт по словам разговора, а не по полю', async () => {
+  const { ask, fetchImpl, tool } = setup()
+  await ask({ prompt: 'что нового в финтехе' })
+  await ask({ prompt: 'а подробнее про первое' })
+
+  // Второй запрос сам по себе не содержит зацепок: слова должны прийти
+  // из прежних реплик пользователя.
+  const query = tool.calls[1].prompt
+  assert.match(query, /финтех/, 'тема разговора попала в отбор')
+  assert.match(query, /подробнее/, 'текущее сообщение тоже')
+  assert.equal(fetchImpl.calls[1].body.input.includes('Тематика:'), false, 'темы в промпте нет')
+})
+
+test('с темой отбор остаётся по одному сообщению — дни 6 и 7 не меняются', async () => {
+  const { ask, tool } = setup()
+  await ask({ sphere: 'финтех', prompt: 'что нового' })
+  await ask({ sphere: 'финтех', prompt: 'а что в Индии' })
+
+  // День 7 присылает тему и с дня 8 продолжает отбирать статьи ровно так же:
+  // слова прошлой реплики в запрос к архиву не подмешиваются (ADR 2026-09-13-0930).
+  assert.equal(tool.calls[1].prompt, 'а что в Индии', 'запрос — только текущее сообщение')
+  assert.equal(tool.calls[1].sphere, 'финтех', 'тема идёт отдельным полем, как прежде')
+})
+
+test('без числа статей подборку ограничивают потолок издания и предел модели', async () => {
+  const { ask, tool } = setup()
+  await ask({ prompt: 'вопрос' })
+  assert.equal(tool.calls[0].limit, 200, 'явного числа нет — берём столько, сколько влезет')
+
+  const explicit = setup()
+  await explicit.ask({ prompt: 'вопрос', articles: 12 })
+  assert.equal(explicit.tool.calls[0].limit, 12, 'явное число дни 6 и 7 присылают как прежде')
 })

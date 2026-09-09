@@ -83,7 +83,7 @@ test('создание запуска: проверка тела, агента �
   assert.equal(unknown.status, 404)
   const bad = await post('/v1/runs', { agent: 'news-analyst', input: { sphere: '' } })
   assert.equal(bad.status, 400)
-  assert.match((await bad.json()).message, /Укажите тему/)
+  assert.match((await bad.json()).message, /Напишите сообщение/)
 })
 
 test('запуск: 202 с runId, поток событий до end с результатом, снимок готового', async () => {

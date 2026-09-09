@@ -951,6 +951,15 @@ test('потолок ответа задаётся вызывающим в пр�
   assert.equal(ok.ok, true)
   assert.equal(calls[0].body.max_tokens, 1500)
 
+  // Умолчание дня 8: при прежнем потолке 2048 этот вызов был бы отказом.
+  const умолчаниеДня8 = await router.route({
+    taskClass: 'news_answer',
+    input: 'x',
+    answerTokens: 3000,
+  })
+  assert.equal(умолчаниеДня8.ok, true)
+  assert.equal(calls[1].body.max_tokens, 3000)
+
   const тоомного = await router.route({
     taskClass: 'news_answer',
     input: 'x',
@@ -958,8 +967,11 @@ test('потолок ответа задаётся вызывающим в пр�
   })
   assert.equal(тоомного.ok, false)
   assert.equal(тоомного.code, 'refused')
-  assert.match(тоомного.message, /от 1 до 2048/)
-  assert.equal(calls.length, 1, 'за границей класса провайдера не зовём')
+  // Потолок класса поднят до 4096 под умолчание дня 8 в 3000
+  // (ADR 2026-09-13-0930). Проверяется прежнее: за границей класса
+  // провайдера не зовут.
+  assert.match(тоомного.message, /от 1 до 4096/)
+  assert.equal(calls.length, 2, 'за границей класса провайдера не зовём')
 })
 
 test('стоп-последовательности доходят до всех трёх диалектов', async () => {

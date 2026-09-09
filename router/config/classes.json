@@ -12,7 +12,7 @@
     "requires": ["text_generation"],
     "thinking": "none",
     "answerTokens": 600,
-    "maxAnswerTokens": 2048,
+    "maxAnswerTokens": 4096,
     "dataClass": "public"
   },
   "extract_json": {
