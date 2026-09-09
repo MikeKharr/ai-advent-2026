@@ -437,9 +437,12 @@
     if (entry.usage && entry.usage.inputTokens !== null)
       tag(`токены: ${entry.usage.inputTokens} → ${entry.usage.outputTokens}`, 'is-tokens');
     tag(`max_tokens: ${entry.params.maxTokens}`);
-    tag(`статей: ${entry.selection.used}, по запросу ${entry.selection.matched}`);
-    if (entry.selection.budgetChars)
-      tag(`бюджет: ${Math.round(entry.selection.budgetChars / 1000)}K символов`);
+    const sel = entry.selection;
+    // Отобрано и ушло — разные числа: подборка урезается под предел модели.
+    tag(sel.selected && sel.selected !== sel.used
+      ? `статей: ${sel.used} из ${sel.selected} отобранных, по запросу ${sel.matched}`
+      : `статей: ${sel.used}, по запросу ${sel.matched}`);
+    if (sel.budgetTokens) tag(`предел входа: ${sel.budgetTokens} токенов`);
     tag(`с текстом: ${entry.selection.withText}`);
     if (entry.params.stopSequences.length)
       tag(`стоп: ${entry.params.stopSequences.join(' | ')}`);

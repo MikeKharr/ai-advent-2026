@@ -19,17 +19,43 @@ const NUMBERS = {
  * подмножество, которое день предлагает выбрать.
  */
 export const MODELS = [
-  { id: 'anthropic-haiku', label: 'Claude Haiku 4.5', note: 'Anthropic', maxChars: 120_000 },
-  // У Groq на тарифе on_demand предел — входные токены в минуту (7–8 тысяч),
-  // и подборка на 30 тысяч токенов получает 413. Поэтому бюджет символов
-  // у этих моделей свой, и он вчетверо с лишним меньше.
-  { id: 'groq-gpt-oss-20b', label: 'GPT-OSS 20B', note: 'Groq', maxChars: 18_000 },
-  { id: 'groq-qwen3.6-27b', label: 'Qwen3.6 27B', note: 'Groq', maxChars: 15_000 },
+  {
+    id: 'anthropic-haiku',
+    label: 'Claude Haiku 4.5',
+    note: 'Anthropic',
+    maxChars: 120_000,
+    maxInputTokens: 40_000,
+  },
+  // У Groq на тарифе on_demand предел — входные токены в минуту: 8000
+  // у gpt-oss, 7000 у qwen. Запрос сверху получает 413, а не обрезается.
+  // Значения ниже — с запасом под пределы роутера (6000 и 5000) и меряются
+  // по всему запросу, а не по одним текстам статей.
+  {
+    id: 'groq-gpt-oss-20b',
+    label: 'GPT-OSS 20B',
+    note: 'Groq',
+    maxChars: 18_000,
+    maxInputTokens: 5200,
+  },
+  {
+    id: 'groq-qwen3.6-27b',
+    label: 'Qwen3.6 27B',
+    note: 'Groq',
+    maxChars: 15_000,
+    maxInputTokens: 4300,
+  },
 ]
 
-/** Бюджет символов подборки для выбранной модели. */
+const model = (id) => MODELS.find((m) => m.id === id) ?? MODELS[0]
+
+/** Бюджет символов на тексты статей для выбранной модели. */
 export function budgetFor(modelId) {
-  return MODELS.find((m) => m.id === modelId)?.maxChars ?? MODELS[0].maxChars
+  return model(modelId).maxChars
+}
+
+/** Предел всего запроса в токенах — тем же счётом, что у роутера. */
+export function inputBudgetFor(modelId) {
+  return model(modelId).maxInputTokens
 }
 
 export function parseEnv(source = process.env) {
