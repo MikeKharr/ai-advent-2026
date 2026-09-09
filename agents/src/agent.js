@@ -127,7 +127,11 @@ export function createNewsAnalyst({
       const { sphere, params } = run.input
       const startedAt = now()
       const emit = (fields) => runs.emit(run.id, fields)
-      const fail = ({ code, message, status = null, paid = false, title }) =>
+      // С момента запроса к роутеру вызов считается оплаченным, пока роутер
+      // не сказал обратного: неожиданная ошибка после ответа модели не должна
+      // возвращать дню слот за деньги, которые уже потрачены.
+      let modelAsked = false
+      const fail = ({ code, message, status = null, paid = modelAsked, title }) =>
         runs.finish(run.id, {
           status: 'failed',
           error: { code, message, paidNothing: !paid },
@@ -280,6 +284,7 @@ export function createNewsAnalyst({
           },
         })
         let answer
+        modelAsked = true
         try {
           answer = await askRouter(
             { system, taskClass: agent.taskClass, sphere, params, items },

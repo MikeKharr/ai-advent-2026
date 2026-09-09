@@ -254,3 +254,27 @@ test('описание: промпт из реестра, модели с жив
   assert.equal(JSON.stringify(d).includes('app-agents'), false)
   assert.equal(JSON.stringify(d).includes('agent-key'), false)
 })
+
+test('неожиданная ошибка после ответа модели не возвращает дню слот', async () => {
+  // Общий catch раньше считал любой сбой неоплаченным; после запроса к
+  // роутеру деньги уже потрачены, и признак обязан это отражать.
+  const runs = createRuns()
+  const agent = createNewsAnalyst({
+    agent: NEWS,
+    archive: fakeArchive(),
+    runs,
+    env: ENV,
+    fetchImpl: fakeRouter(),
+    log: () => {},
+  })
+  const run = runs.create({ agent, input: agent.parseInput({ sphere: 'финтех' }).input })
+  // Сбой после ответа модели: слушатель ломает доставку события llm_result.
+  runs.subscribe(run.id, (m) => {
+    if (m.type === 'event' && m.event.stage === 'llm_result') throw new Error('сбой после ответа')
+  })
+  await agent.execute(run)
+  const snap = runs.snapshot(run.id)
+  assert.equal(snap.status, 'failed')
+  assert.equal(snap.error.code, 'internal')
+  assert.equal(snap.error.paidNothing, false, 'модель уже вызвана — слот не возвращается')
+})
