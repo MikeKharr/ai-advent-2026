@@ -1,0 +1,47 @@
+// Разбор окружения сервиса агентов на границе. Ключ сервиса и ключ
+// приложения у роутера обязательны: без первого проверка авторизации
+// сравнивала бы пустые строки, без второго роутер отвечал бы 401 на всё.
+
+const NUMBERS = {
+  MAX_OUTPUT_TOKENS: 2048, // потолок для пользовательского max_tokens
+  WINDOW_SIZE: 1000, // сколько статей держим в окне архива
+  REFRESH_MIN_MINUTES: 15, // не чаще, чем раз в столько минут, опрашиваем ленты
+  MAX_AGE_DAYS: 180, // дольше этого чужие тексты в архиве не хранятся
+  // Ноутбук отвечает минутами: двадцать секунд на загрузку модели плюс
+  // около восьми токенов в секунду. Облачные модели в этот потолок
+  // укладываются с огромным запасом.
+  ROUTER_TIMEOUT_MS: 240_000,
+  RUN_TTL_MINUTES: 10, // готовый запуск живёт в памяти столько
+  PORT: 8082,
+}
+
+export function parseEnv(source = process.env) {
+  const errors = []
+  const env = {
+    ROUTER_URL: source.ROUTER_URL || 'http://router:8081',
+    STORE_FILE: source.STORE_FILE || '/data/store.json',
+  }
+
+  for (const name of ['AGENT_KEY', 'ROUTER_APP_KEY']) {
+    const value = source[name] ?? ''
+    if (!value) errors.push(`${name} не задан`)
+    env[name] = value
+  }
+
+  for (const [name, fallback] of Object.entries(NUMBERS)) {
+    const raw = source[name]
+    if (raw === undefined || raw === '') {
+      env[name] = fallback
+      continue
+    }
+    const value = Number(raw)
+    if (!Number.isFinite(value) || value <= 0) {
+      errors.push(`${name}: ожидалось положительное число, получено ${JSON.stringify(raw)}`)
+      env[name] = fallback
+      continue
+    }
+    env[name] = value
+  }
+
+  return { env, errors }
+}
