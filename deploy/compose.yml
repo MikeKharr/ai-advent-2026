@@ -18,6 +18,7 @@ services:
       - day3
       - day4
       - day5
+      - day6
 
   day1:
     # Тег приходит из .env, который переписывает workflow деплоя.
@@ -107,6 +108,48 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  day6:
+    image: ghcr.io/mikekharr/advent-day6:${DAY6_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # День — пульт к агенту: у него только ключ сервиса агентов
+      # (AGENT_KEY в day6.env, то же значение — AGENT_KEY в agents.env).
+      # Ключа роутера у дня нет: деньги тратит агент.
+      - path: ./day6.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Сервис агентов (ADR 2026-09-10-1000). Публичного адреса нет: к нему
+  # ходят контейнеры дней по сети compose, http://agents:8082. Сам он ходит
+  # в роутер по ключу приложения `agents`.
+  agents:
+    image: ghcr.io/mikekharr/advent-agents:${AGENTS_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8082"
+    env_file:
+      # AGENT_KEY (проверяет сервис) и ROUTER_APP_KEY (предъявляет роутеру).
+      # Без файла сервис падает на старте (нет секретов); дни поднимаются.
+      - path: ./agents.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - agents_data:/data   # архив статей агента, переживает пересоздание контейнера
+    depends_on:
+      - router
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Роутер LLM-провайдеров (ADR 2026-09-08-1748). Публичного адреса нет:
   # к нему ходят только контейнеры дней по сети compose, http://router:8081.
   router:
@@ -132,4 +175,5 @@ volumes:
   caddy_data:
   caddy_config:
   router_data:
+  agents_data:
   day5_data:

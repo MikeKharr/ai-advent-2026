@@ -2,10 +2,10 @@ name: ci
 
 on:
   pull_request:
-    paths: ['days/**', 'router/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
+    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
   push:
     branches: [main]
-    paths: ['days/**', 'router/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
+    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
 
 permissions:
   contents: read
@@ -27,8 +27,8 @@ jobs:
             base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
           fi
           changed=$(git diff --name-only "$base" HEAD || true)
-          # Единица сборки — день (days/dayN) или сервис роутера (router).
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^router/' | cut -d/ -f1; } | sort -u | jq -R . | jq -sc .)
+          # Единица сборки — день (days/dayN) или сервис (router, agents).
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; } | sort -u | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -49,8 +49,11 @@ jobs:
       - id: unit
         name: Каталог единицы
         run: |
-          if [ "${{ matrix.day }}" = router ]; then echo "dir=router" >> "$GITHUB_OUTPUT"; echo "port=8081" >> "$GITHUB_OUTPUT"
-          else echo "dir=days/${{ matrix.day }}" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT"; fi
+          case "${{ matrix.day }}" in
+            router) echo "dir=router" >> "$GITHUB_OUTPUT"; echo "port=8081" >> "$GITHUB_OUTPUT" ;;
+            agents) echo "dir=agents" >> "$GITHUB_OUTPUT"; echo "port=8082" >> "$GITHUB_OUTPUT" ;;
+            *) echo "dir=days/${{ matrix.day }}" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - name: Синтаксис
         working-directory: ${{ steps.unit.outputs.dir }}
@@ -74,10 +77,12 @@ jobs:
           # Ключ фиктивный: проверяем, что контейнер поднимается и отвечает,
           # а не что конфигурация полна — /healthz отдаёт 503 без ключа.
           # Роутеру для старта нужны ключи приложений — тоже фиктивные.
+          # Сервису агентов — AGENT_KEY и ROUTER_APP_KEY, дню 6 — AGENT_KEY.
           docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
             -e GROQ_API_KEY=ci-dummy \
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
-            -e APP_KEY_DAY5=ci-dummy -e ROUTER_APP_KEY=ci-dummy \
+            -e APP_KEY_DAY5=ci-dummy -e APP_KEY_AGENTS=ci-dummy \
+            -e ROUTER_APP_KEY=ci-dummy -e AGENT_KEY=ci-dummy \
             -p ${{ steps.unit.outputs.port }}:${{ steps.unit.outputs.port }} ci-check:${{ matrix.day }}
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:${{ steps.unit.outputs.port }}/healthz >/dev/null 2>&1; then

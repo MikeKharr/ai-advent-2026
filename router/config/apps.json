@@ -20,6 +20,15 @@
         "dailyTokens": 2000000,
         "dailyCostUsd": 2
       }
+    },
+    {
+      "id": "agents",
+      "secretEnv": "APP_KEY_AGENTS",
+      "classes": ["news_answer"],
+      "limits": {
+        "dailyTokens": 2000000,
+        "dailyCostUsd": 2
+      }
     }
   ]
 }
