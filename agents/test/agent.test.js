@@ -219,8 +219,10 @@ test('обновление не удалось целиком — одно пр�
 test('вход проверяется на границе агента', () => {
   const runs = createRuns()
   const agent = createNewsAnalyst({ agent: NEWS, archive: fakeArchive(), runs, env: ENV })
-  assert.match(agent.parseInput({}).message, /sphere/)
-  assert.match(agent.parseInput({ sphere: '' }).message, /Укажите тему/)
+  // Тема стала необязательной (день 8), но пустой запуск без сообщения — нет.
+  assert.match(agent.parseInput({}).message, /Напишите сообщение/)
+  assert.match(agent.parseInput({ sphere: '' }).message, /Напишите сообщение/)
+  assert.equal(agent.parseInput({ prompt: 'вопрос без темы' }).ok, true)
   assert.equal(agent.parseInput({ sphere: 'x', model: 'gpt-5' }).message, 'Неизвестная модель')
   assert.match(agent.parseInput({ sphere: 'x', maxTokens: 9999 }).message, /Лимит токенов/)
   assert.match(agent.parseInput(null).message, /объектом/)

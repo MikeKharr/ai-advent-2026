@@ -199,7 +199,13 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
       if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
       if (req.method === 'GET') {
-        return send(res, 200, { ok: true, messages: sessions.history(sessionId) })
+        return send(res, 200, {
+          ok: true,
+          messages: sessions.history(sessionId),
+          // Сумму считает тот, у кого данные: страница видит только
+          // загруженное и не знает, что удалено по сроку.
+          totalTokens: sessions.totalTokens(sessionId),
+        })
       }
       if (req.method === 'DELETE') {
         return send(res, 200, { ok: true, removed: sessions.clear(sessionId) })

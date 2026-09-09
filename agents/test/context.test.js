@@ -18,9 +18,10 @@ function setup({ router, archive } = {}) {
   const sessions = createSessions({ file: ':memory:', ttlMs: 30 * 3600_000, log: () => {} })
   const runs = createRuns()
   const fetchImpl = router ?? fakeRouter()
+  const tool = archive ?? fakeArchive()
   const agent = createNewsAnalyst({
     agent: NEWS,
-    archive: archive ?? fakeArchive(),
+    archive: tool,
     runs,
     sessions,
     env: ENV,
@@ -35,7 +36,7 @@ function setup({ router, archive } = {}) {
     await agent.execute(run)
     return { run, snapshot: runs.snapshot(run.id) }
   }
-  return { agent, runs, sessions, fetchImpl, ask }
+  return { agent, runs, sessions, fetchImpl, tool, ask }
 }
 
 test('второе сообщение уходит модели вместе с первым разговором', async () => {
@@ -298,4 +299,38 @@ test('не поместившиеся реплики считаются, а не
   })
   assert.equal(sessions.tail(SID, 10_000).dropped, 0, 'всё поместилось — выпавших нет')
   sessions.close()
+})
+
+test('сумма токенов переписки: ответы считаются, отказы — нет', async () => {
+  const { ask, sessions } = setup()
+  await ask({ prompt: 'первый вопрос' })
+  await ask({ prompt: 'второй вопрос' })
+  assert.equal(sessions.totalTokens(SID), 1080, 'две итерации по 540 токенов')
+
+  sessions.append({ sessionId: SID, role: 'agent', text: 'отказ', tokens: 0, meta: { error: true, totalTokens: 999 } })
+  assert.equal(sessions.totalTokens(SID), 1080, 'отказ ничего не стоил')
+  assert.equal(sessions.totalTokens('44444444-4444-4444-8444-444444444444'), 0, 'чужая сессия — ноль')
+})
+
+test('без темы отбор идёт по словам разговора, а не по полю', async () => {
+  const { ask, fetchImpl, tool } = setup()
+  await ask({ prompt: 'что нового в финтехе' })
+  await ask({ prompt: 'а подробнее про первое' })
+
+  // Второй запрос сам по себе не содержит зацепок: слова должны прийти
+  // из прежних реплик пользователя.
+  const query = tool.calls[1].prompt
+  assert.match(query, /финтех/, 'тема разговора попала в отбор')
+  assert.match(query, /подробнее/, 'текущее сообщение тоже')
+  assert.equal(fetchImpl.calls[1].body.input.includes('Тематика:'), false, 'темы в промпте нет')
+})
+
+test('без числа статей подборку ограничивают потолок издания и предел модели', async () => {
+  const { ask, tool } = setup()
+  await ask({ prompt: 'вопрос' })
+  assert.equal(tool.calls[0].limit, 200, 'явного числа нет — берём столько, сколько влезет')
+
+  const explicit = setup()
+  await explicit.ask({ prompt: 'вопрос', articles: 12 })
+  assert.equal(explicit.tool.calls[0].limit, 12, 'явное число дни 6 и 7 присылают как прежде')
 })

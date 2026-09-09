@@ -22,7 +22,6 @@
         "maxTokens": 600,
         "temperature": 1,
         "perSource": 5,
-        "articles": 30,
         "contextTokens": 3000
       }
     }

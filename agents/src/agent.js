@@ -31,6 +31,20 @@ import {
 } from './params.js'
 import { TERMINAL } from './runs.js'
 
+/**
+ * Сколько последних реплик пользователя участвуют в отборе статей. Больше
+ * трёх — и слова давнего поворота разговора начинают перевешивать нынешний
+ * вопрос; меньше — теряется тема, названная парой сообщений раньше.
+ */
+const RECENT_USER_MESSAGES = 3
+
+/**
+ * Верхняя граница подборки, когда число статей не задано. Это не предел
+ * ответа, а защита от бессмысленной работы: реально ограничивают потолок
+ * на издание (восемь лент по пять статей) и предел входа модели.
+ */
+const FILL_LIMIT = 200
+
 /** «2.0 с» / «320 мс» — для деталей события; страница форматирует сама. */
 function seconds(ms) {
   return ms < 1000 ? `${Math.round(ms)} мс` : `${(ms / 1000).toFixed(1)} с`
@@ -102,6 +116,10 @@ export function createNewsAnalyst({
         defaults: agent.defaults,
       })
       if (!parsed.ok) return { ok: false, message: parsed.message }
+      // Тема необязательна с дня 8, но спрашивать всё равно надо о чём-то:
+      // пустые и тема, и сообщение — это запуск ни за чем.
+      if (sphere.sphere === '' && parsed.params.prompt === '')
+        return { ok: false, message: 'Напишите сообщение' }
       const system = parseSystem(body.system)
       if (!system.ok) return { ok: false, message: system.message }
       // Сессия необязательна: без неё агент ведёт себя как в дне 6.
@@ -238,14 +256,67 @@ export function createNewsAnalyst({
           })
         }
 
+        // Пределы модели и память поднимаются до архива: с дня 8 отбор идёт
+        // по словам разговора, значит хвост диалога нужен раньше подборки
+        // (ADR 2026-09-13-0930).
+        const planStarted = now()
+        const limits = await limitsOf()
+        const budget = effectiveBudget(params.model, inputBudgetFor(params.model), limits)
+
+        // Диалог берётся до статей: сначала память, потом подборка на
+        // остаток. Действующий размер меньше заданного, если предел входа
+        // модели не позволяет (ADR 2026-09-12-0930).
+        const effective = effectiveContext(params.contextTokens, budget.tokens)
+        if (memory && effective > 0) {
+          const tail = sessions.tail(sessionId, effective)
+          transcript = tail.messages
+          context = {
+            used: tail.tokens,
+            effective,
+            requested: params.contextTokens,
+            messages: tail.messages.length,
+            dropped: tail.dropped,
+          }
+          if (tail.messages.length > 0) {
+            emit({
+              stage: 'planning',
+              title: 'Вспомнил разговор',
+              detail:
+                `${tail.messages.length} реплик, ${tail.tokens} из ${effective} токенов контекста` +
+                (effective < params.contextTokens ? ` (модель даёт меньше ${params.contextTokens})` : ''),
+              data: { ...context },
+            })
+          }
+        } else {
+          context = { used: 0, effective, requested: params.contextTokens, messages: 0, dropped: 0 }
+        }
+
+        // Реплика пользователя записывается до вызова модели: вопрос задан,
+        // и неудачный запуск не должен делать вид, что его не было.
+        remember('user', params.prompt || sphere, estimateTokens(params.prompt || sphere), {
+          sphere,
+        })
+        asked = true
+
         // Инструмент: архив. Аргументы без текстов — тема и запрос в событие
         // не идут, только пределы отбора.
         const toolCallId = randomUUID()
+        // Слова для отбора — из разговора, а не из одного поля: «а подробнее
+        // про первое» само по себе не содержит ни одной зацепки, а тема живёт
+        // в предыдущих репликах (ADR 2026-09-13-0930). Хвост диалога уже
+        // поднят для модели, поэтому лишних чтений базы это не добавляет.
+        const recentUser = transcript
+          .filter((m) => m.role === 'user')
+          .slice(-RECENT_USER_MESSAGES)
+          .map((m) => m.text)
+        const query = [...recentUser, params.prompt].filter(Boolean).join(' ')
         const toolArgs = {
           sphere,
-          prompt: params.prompt,
+          prompt: query,
           perSource: params.perSource,
-          limit: params.articles,
+          // Без явного числа подборку ограничивают потолок на издание и
+          // предел входа модели, а не параметр.
+          limit: params.articles ?? FILL_LIMIT,
           // Бюджет зависит от модели: у моделей Groq предел на запрос жёстче
           // окна, и подборка «как для Haiku» получила бы отказ 413.
           maxChars: budgetFor(params.model),
@@ -307,48 +378,6 @@ export function createNewsAnalyst({
             message: 'Архив пуст: ни одна лента пока не отдала статей. Попробуйте позже.',
           })
         }
-
-        // Подгонка под модель. Предел провайдера меряется по всему запросу,
-        // а не по текстам статей; берём меньшее из объявленного агентом и
-        // того, что провайдер сообщил о своём остатке.
-        const planStarted = now()
-        const limits = await limitsOf()
-        const budget = effectiveBudget(params.model, inputBudgetFor(params.model), limits)
-
-        // Диалог берётся до статей: сначала память, потом подборка на
-        // остаток. Действующий размер меньше заданного, если предел входа
-        // модели не позволяет (ADR 2026-09-12-0930).
-        const effective = effectiveContext(params.contextTokens, budget.tokens)
-        if (memory && effective > 0) {
-          const tail = sessions.tail(sessionId, effective)
-          transcript = tail.messages
-          context = {
-            used: tail.tokens,
-            effective,
-            requested: params.contextTokens,
-            messages: tail.messages.length,
-            dropped: tail.dropped,
-          }
-          if (tail.messages.length > 0) {
-            emit({
-              stage: 'planning',
-              title: 'Вспомнил разговор',
-              detail:
-                `${tail.messages.length} реплик, ${tail.tokens} из ${effective} токенов контекста` +
-                (effective < params.contextTokens ? ` (модель даёт меньше ${params.contextTokens})` : ''),
-              data: { ...context },
-            })
-          }
-        } else {
-          context = { used: 0, effective, requested: params.contextTokens, messages: 0, dropped: 0 }
-        }
-
-        // Реплика пользователя записывается до вызова модели: вопрос задан,
-        // и неудачный запуск не должен делать вид, что его не было.
-        remember('user', params.prompt || sphere, estimateTokens(params.prompt || sphere), {
-          sphere,
-        })
-        asked = true
 
         const items = fitToBudget(system, sphere, params, found.items, budget.tokens, transcript)
         const needed = requestTokens(system, sphere, params, items, transcript)
