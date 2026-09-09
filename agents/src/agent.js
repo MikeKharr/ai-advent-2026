@@ -335,7 +335,9 @@ export function createNewsAnalyst({
 
         // Реплика пользователя записывается до вызова модели: вопрос задан,
         // и неудачный запуск не должен делать вид, что его не было.
-        remember('user', params.prompt || sphere, estimateTokens(params.prompt || sphere))
+        remember('user', params.prompt || sphere, estimateTokens(params.prompt || sphere), {
+          sphere,
+        })
         asked = true
 
         const items = fitToBudget(system, sphere, params, found.items, budget.tokens, transcript)
@@ -447,16 +449,36 @@ export function createNewsAnalyst({
         const totalMs = now() - startedAt
         const totalTokens =
           (answer.usage.inputTokens ?? 0) + (answer.usage.outputTokens ?? 0)
+        // Сводка переживает перезапуск вместе с перепиской: события монитора
+        // живут до перезагрузки страницы, а «что было в этой итерации»
+        // должно читаться и завтра (ADR 2026-09-12-0930).
         const summary = {
           model: answer.provider?.model ?? params.model,
+          provider: params.model,
           articlesUsed: items.length,
           articlesSelected: found.items.length,
+          matched: found.matched,
+          withText: items.filter((i) => i.text).length,
+          refreshed: found.refresh.refreshed,
+          links: guard.total,
+          strippedLinks: guard.stripped.length,
+          inputTokens: answer.usage.inputTokens,
+          outputTokens: answer.usage.outputTokens,
           totalTokens,
           durationMs: totalMs,
+          budgetTokens: budget.tokens,
+          budgetSource: budget.source,
           contextUsed: context.used,
           contextEffective: context.effective,
+          contextRequested: context.requested,
+          contextMessages: context.messages,
           truncated: answer.truncated,
-          strippedLinks: guard.stripped.length,
+          systemOverridden,
+          maxTokens: params.maxTokens,
+          temperature: params.temperature,
+          perSource: params.perSource,
+          articles: params.articles,
+          stopSequences: params.stopSequences.length,
         }
         // Ответ модели — в переписку: он же станет контекстом следующего
         // сообщения. Считаем его выходными токенами, а не заново.

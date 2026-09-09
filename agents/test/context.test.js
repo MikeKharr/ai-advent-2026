@@ -256,3 +256,30 @@ test('через сервис переписка читается и удаля�
   assert.deepEqual((await (await fetch(`${base}/v1/sessions/${SID}`, { headers: auth })).json()).messages, [])
   await new Promise((r) => server.close(r))
 })
+
+test('сводка ответа переживает перезапуск: в ней всё для раскрытия', async () => {
+  const { ask, sessions } = setup()
+  await ask({ sphere: 'климатические технологии', prompt: 'вопрос', maxTokens: 500 })
+  const [user, agentMsg] = sessions.history(SID)
+
+  assert.equal(user.meta.sphere, 'климатические технологии', 'тема — у реплики пользователя')
+  const m = agentMsg.meta
+  assert.equal(m.model, 'claude-haiku-4-5')
+  assert.equal(m.inputTokens, 500)
+  assert.equal(m.outputTokens, 40)
+  assert.equal(m.totalTokens, 540)
+  assert.equal(m.articlesUsed, 2)
+  assert.equal(m.articlesSelected, 2)
+  assert.equal(m.links, 2)
+  assert.equal(m.strippedLinks, 1)
+  assert.equal(m.maxTokens, 500)
+  assert.equal(m.contextRequested, 3000)
+  assert.equal(m.systemOverridden, false)
+  assert.equal(typeof m.durationMs, 'number')
+})
+
+test('тема пользователя не попадает в снимок запуска', async () => {
+  const { ask, runs } = setup()
+  const { run } = await ask({ sphere: 'тайная тема', prompt: 'вопрос' })
+  assert.equal(JSON.stringify(runs.snapshot(run.id)).includes('тайная тема'), false)
+})

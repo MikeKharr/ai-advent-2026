@@ -19,6 +19,7 @@ services:
       - day4
       - day5
       - day6
+      - day7
 
   day1:
     # Тег приходит из .env, который переписывает workflow деплоя.
@@ -118,6 +119,24 @@ services:
       # (AGENT_KEY в day6.env, то же значение — AGENT_KEY в agents.env).
       # Ключа роутера у дня нет: деньги тратит агент.
       - path: ./day6.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  day7:
+    image: ghcr.io/mikekharr/advent-day7:${DAY7_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # Тот же ключ сервиса агентов, что и у дня 6: своих данных и ключей
+      # к моделям у дня нет, переписка живёт у агента.
+      - path: ./day7.env
         required: false
     environment:
       - NODE_ENV=production

@@ -1,0 +1,1581 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day6 -> /day6/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Агент новостей стартапов — AI Advent 2026, день 7</title>
+<style>
+  /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
+     Значения вне этих шкал — дефект, а не нюанс. */
+  :root {
+    color-scheme: light dark;
+    --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+    --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+    --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-lg:1.125rem; --t-xl:1.5rem;
+    --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+    --line:#e6e6e3; --line-ctl:#8f8f8a;
+    --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+    --overlay:rgb(23 23 26 / .5);
+    --r-sm:6px; --r-md:10px; --r-full:999px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+      --line:#2a2a30; --line-ctl:#6a6a73;
+      --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+      --overlay:rgb(0 0 0 / .6);
+    }
+  }
+  * { box-sizing: border-box; }
+  /* Собственный display у элемента перебивает [hidden] из таблицы браузера,
+     и скрытый блок остаётся на экране. Правило нужно всем блокам окна,
+     которые прячутся по состоянию. */
+  [hidden] { display:none !important; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Раскладка «работа / параметры / результат». На широком экране каждая
+     колонка скроллится сама, поэтому форма и параметры остаются на местах,
+     пока листаешь ленту. На узком — обычный поток страницы. */
+  .layout {
+    display:grid; grid-template-columns:1fr; gap:var(--s-6);
+    max-width:80rem; margin:0 auto; padding:var(--s-6) var(--s-4);
+  }
+  @media (min-width: 73rem) {
+    html, body { height:100%; }
+    body { overflow:hidden; }
+    .layout {
+      grid-template-columns: minmax(0,1fr) 24rem;
+      height:100dvh; padding:var(--s-6) var(--s-5);
+    }
+    /* Правый отступ обязателен: колонка со своим скроллом обрезает всё, что
+       касается её края, — бегунок ползунка в крайних положениях, кольцо
+       фокуса (outline-offset 2px) и содержимое под полосой прокрутки. */
+    .col { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+    main.col { display:flex; flex-direction:column; }
+    main.col footer { margin-top:auto; }
+  }
+
+  h1 { font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; margin:0 0 var(--s-2); }
+  h2 {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); margin:0;
+  }
+  .sub { color:var(--fg-mut); margin:0 0 var(--s-4); max-width:60ch; }
+
+  /* Пять состояний у каждого интерактивного элемента: покой, наведение,
+     нажатие, :focus-visible, [disabled]. Фокус — на всех, а не только у полей. */
+  :where(button, input, textarea, a, summary, [tabindex]):focus-visible {
+    outline:2px solid var(--acc); outline-offset:2px;
+  }
+  input, textarea {
+    width:100%; padding:var(--s-2) var(--s-3); font:inherit; color:var(--fg);
+    background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  }
+  input:hover, textarea:hover { border-color:var(--fg-mut); }
+  textarea { resize:vertical; }
+
+  form { display:block; }
+  .ask { display:block; margin-bottom:var(--s-4); font-size:var(--t-sm); line-height:1.5; }
+  .ask-name { display:block; margin-bottom:var(--s-2); }
+  .submit { margin-top:var(--s-5); }
+  .ask .hint, form > .hint {
+    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
+    margin:calc(-1 * var(--s-3)) 0 var(--s-4); max-width:52ch;
+  }
+  button {
+    font:inherit; font-weight:600; border-radius:var(--r-sm); cursor:pointer;
+    padding:var(--s-2) var(--s-4); color:var(--acc-fg); background:var(--acc);
+    border:1px solid var(--acc);
+  }
+  button:hover { filter:brightness(1.08); }
+  button:active { transform:translateY(1px); }
+  button[disabled] { opacity:.5; cursor:default; filter:none; transform:none; }
+
+  /* Кнопка в тексте описания: вид ссылки, но открывает окно, а не переходит.
+     Подчёркивание цветом границы, не акцентом: акцент на экране один — «Спросить». */
+  .about {
+    display:inline; padding:0; border:0; background:transparent; font:inherit; font-weight:400;
+    color:var(--fg); text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em;
+  }
+  .about:hover { filter:none; text-decoration-color:var(--fg); }
+  .about:active { transform:none; opacity:.7; }
+  .about[disabled] { opacity:.5; text-decoration-color:var(--line-ctl); }
+
+  .chips { display:flex; gap:var(--s-2); flex-wrap:wrap;
+           margin:calc(-1 * var(--s-2)) 0 var(--s-4); }
+  .chip {
+    padding:var(--s-1) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .chip:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
+
+  .params h2 + .field { margin-top:var(--s-5); }
+  .params .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
+  .params .name {
+    display:flex; justify-content:space-between; align-items:baseline;
+    gap:var(--s-2); margin-bottom:var(--s-2);
+  }
+  .params .hint {
+    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
+    margin-top:var(--s-1); max-width:52ch;
+  }
+  .num { font-variant-numeric:tabular-nums; }
+  .params .name .num { color:var(--fg-mut); }
+  /* Собственная высота, а не авто: у авто-высоты бегунок выше бокса и
+     срезается сверху и снизу. display:block убирает щель под базовой линией. */
+  input[type=range] {
+    display:block; width:100%; height:var(--s-5); margin:0; cursor:pointer;
+    accent-color:var(--acc); padding:0; border:0; background:transparent;
+  }
+  input[type=range]:hover { border:0; filter:brightness(1.08); }
+
+  /* Правая колонка: монитор и справочный футер. Ленты в ней больше нет,
+     поэтому монитор занимает всю высоту — делить не с кем. */
+  .right { display:flex; flex-direction:column; gap:var(--s-5); }
+  .monitor { display:flex; flex-direction:column; gap:var(--s-3); }
+  /* Заголовок → строка архива: --s-3; строка архива → панель: --s-2.
+     Отрицательный отступ снимает разницу с зазора, поэтому он на панели,
+     а не на строке архива — иначе сжимался бы верхний зазор. */
+  .monitor .panel { margin-top:calc(-1 * var(--s-1)); }
+  .feed-head { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2); }
+
+  /* Диалог — главный блок страницы: он занимает всю высоту левой колонки,
+     а прокручивается только сам лог. */
+  .chat-col { display:flex; flex-direction:column; }
+  .chat { display:flex; flex-direction:column; gap:var(--s-3); min-height:0; flex:1; }
+  .restored { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch; }
+  /* Лог — такая же панель, как у монитора: те же четыре свойства (фон,
+     граница, радиус, отсутствие тени). Отступы — у сообщений. */
+  .log {
+    list-style:none; margin:0; padding:0;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+    max-height:60dvh; overflow-y:auto;
+  }
+  @media (min-width: 73rem) {
+    .right { min-height:0; }
+    .monitor { flex:1; min-height:0; }
+    .panel { overflow-y:auto; min-height:0; }
+    /* На широком экране потолок задаёт колонка, а не доля высоты экрана. */
+    .log { flex:1; min-height:0; max-height:none; }
+  }
+  .clear {
+    padding:var(--s-1) var(--s-3); font-size:var(--t-xs); line-height:1.4; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .clear:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
+
+  /* Сообщение — строка панели. Линия отбивает пару «вопрос — ответ»:
+     она стоит перед репликой пользователя, а внутри пары её нет. */
+  .msg { padding:var(--s-3) var(--s-4); }
+  .msg.is-user + .msg { padding-top:0; }
+  .msg.is-user:not(:first-child) { border-top:1px solid var(--line); }
+  .msg-head {
+    margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  /* Реплика пользователя — цитата: линия и тон, а не цвет и не выравнивание. */
+  .msg.is-user .msg-text {
+    margin:var(--s-2) 0 0; padding:var(--s-1) 0 var(--s-1) var(--s-3);
+    border-left:2px solid var(--line-ctl);
+    color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5;
+    max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  /* Ответ идёт первым и ничем не предваряется: он главное в сообщении. */
+  .msg.is-agent .msg-text {
+    margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5;
+    max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .msg.is-error .msg-text { color:var(--fg); }
+  .msg.is-error .mark { color:var(--danger); font-weight:600; margin-right:var(--s-1); }
+  /* Предупреждение видимо: оно объясняет оборванный ответ. Конвенция
+     монитора — маркер и начертание, без нового цветового токена. */
+  .warned { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; font-weight:600; }
+  .warned .mark { margin-right:var(--s-1); }
+  /* Сводка итерации: строка действий и строка чисел. Она — то, что остаётся
+     от монитора после перезагрузки, поэтому живёт в сообщении. */
+  .sum {
+    margin:var(--s-3) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .sum + .sum { margin-top:var(--s-1); }
+  .msg .params-d { margin-top:var(--s-3); }
+  .msg .params-d > summary {
+    list-style:none; cursor:pointer; display:flex; align-items:center; gap:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  .msg .params-d > summary::-webkit-details-marker { display:none; }
+  .msg .params-d > summary::before { content:"▸"; }
+  .msg .params-d[open] > summary::before { content:"▾"; }
+  .msg .params-d > summary:hover { color:var(--fg); }
+  .msg .params-d > summary:active { background:var(--bg); }
+  .msg .params-d > summary:focus-visible { outline-offset:-2px; }
+
+  /* Параметры — свёрнутый блок над композитором: их меняют раз в сессию,
+     и держать под них колонку значит платить из кармана диалога. */
+  .params-box > summary {
+    list-style:none; cursor:pointer; display:flex; align-items:center; gap:var(--s-2);
+    font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); padding:var(--s-1) 0;
+  }
+  .params-box > summary::-webkit-details-marker { display:none; }
+  .params-box > summary::before { content:"▸"; font-size:var(--t-xs); }
+  .params-box[open] > summary::before { content:"▾"; }
+  .params-box > summary:hover { color:var(--fg); }
+  .params-box > summary:active { background:var(--bg); }
+  .params-box > summary:focus-visible { outline-offset:-2px; }
+  .params-body { padding-top:var(--s-3); }
+  .params-body .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
+  .params-body .name {
+    display:flex; justify-content:space-between; align-items:baseline;
+    gap:var(--s-2); margin-bottom:var(--s-2);
+  }
+  .params-body .hint {
+    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
+    margin-top:var(--s-1); max-width:52ch;
+  }
+  .params-body .name .num { color:var(--fg-mut); }
+
+  /* Композитор занимает низ колонки, и каждая его строка отнимает высоту
+     у лога. Поэтому тема — в одну строку с подписью, а кнопка и подсказка
+     делят строку: так логу остаётся больше 380 px при окне 900. */
+  .composer { display:flex; flex-direction:column; gap:var(--s-2); }
+  .composer .ask {
+    display:flex; align-items:center; gap:var(--s-3); margin-bottom:0;
+  }
+  .composer .ask-name { margin-bottom:0; flex:none; }
+  .composer .submit { margin-top:0; flex:none; }
+  .submit-row { display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap; }
+  .submit-row .hint { margin:0; max-width:52ch; }
+  .dlg-btn.is-danger { color:var(--danger); }
+
+  .tag {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:var(--s-1) var(--s-2);
+    font-variant-numeric:tabular-nums;
+  }
+  /* Пустое состояние ленты и пустое состояние монитора — одно правило:
+     две одинаковые панели обязаны выглядеть одинаково и пустыми. */
+  .mon-empty, .empty {
+    margin:0; padding:var(--s-3) var(--s-4); color:var(--fg-mut);
+    font-size:var(--t-sm); line-height:1.5; max-width:52ch;
+  }
+
+  footer {
+    margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
+    color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; max-width:52ch;
+  }
+  footer a { color:var(--acc); }
+  footer a:hover { color:var(--fg); }
+  footer a:active { opacity:.7; }
+
+  /* Визуальное скрытие для живых областей и текстовых префиксов уровня:
+     одна утилита на все скрытые области. */
+  .vh {
+    position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden;
+    clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; border:0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation:none !important; transition:none !important; }
+    button:active { transform:none; }
+  }
+</style>
+<style>
+  /* Выбор модели: радиогруппа, а не выпадающий список — вариантов четыре,
+     и все должны быть видны сразу, вместе с пометкой поставщика. */
+  .models { display:flex; flex-direction:column; gap:var(--s-2); margin:var(--s-2) 0 0; }
+  .model {
+    display:flex; align-items:baseline; gap:var(--s-2);
+    padding:var(--s-2) var(--s-3); border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm); background:var(--surface); cursor:pointer;
+  }
+  .model:hover { border-color:var(--fg-mut); }
+  .model:has(input:focus-visible) { outline:2px solid var(--acc); outline-offset:2px; }
+  .model:has(input:checked) { border-color:var(--acc); }
+  .model input { width:auto; margin:0; accent-color:var(--acc); }
+  .model-name { font-size:var(--t-sm); line-height:1.5; }
+  .model-note {
+    margin-left:auto; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:0 var(--s-2);
+  }
+  .archive { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+  .archive .num { color:var(--fg); }
+
+  /* Готовые запросы: список раскрывается, вставка — по явной кнопке.
+     Ничего не отправляется, пока пользователь не нажмёт «Спросить». */
+  .presets { margin:calc(-1 * var(--s-3)) 0 var(--s-4); }
+  .presets > summary {
+    cursor:pointer; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+    padding:var(--s-1) 0; list-style:none; display:flex; align-items:center; gap:var(--s-2);
+  }
+  .presets > summary::-webkit-details-marker { display:none; }
+  .presets > summary::before { content:"▸"; font-size:var(--t-xs); }
+  .presets[open] > summary::before { content:"▾"; }
+  .presets > summary:hover { color:var(--fg); }
+  .preset-list { list-style:none; margin:var(--s-2) 0 0; padding:0; display:flex;
+                 flex-direction:column; gap:var(--s-2); }
+  .preset {
+    display:flex; align-items:flex-start; gap:var(--s-3);
+    padding:var(--s-2) var(--s-3); border:1px solid var(--line); border-radius:var(--r-sm);
+    background:var(--surface);
+  }
+  .preset-body { min-width:0; }
+  .preset-name { display:block; font-size:var(--t-sm); line-height:1.5; }
+  .preset-hint { display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; }
+  .preset-order {
+    flex:none; width:1.5rem; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.6;
+    font-variant-numeric:tabular-nums;
+  }
+  .preset button {
+    flex:none; margin-left:auto; padding:var(--s-1) var(--s-3);
+    font-size:var(--t-xs); line-height:1.4; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .preset button:hover { color:var(--fg); filter:none; }
+</style>
+<style>
+  /* Монитор агента: панель → запуски → события → раскрытие. Три уровня
+     отличимы без цвета: жирный заголовок запуска и линия между запусками,
+     отступ и маркер у события, ступень поверхности вниз у раскрытия. */
+  .panel {
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+    font-size:var(--t-sm); line-height:1.5;
+  }
+  .runs, .events { list-style:none; margin:0; padding:0; }
+  .run + .run { border-top:1px solid var(--line); }
+  .run-s, .ev-s { list-style:none; cursor:pointer; }
+  .run-s::-webkit-details-marker, .ev-s::-webkit-details-marker { display:none; }
+  .run-s:hover, .run-s:active, .ev-s:hover, .ev-s:active { background:var(--bg); }
+  /* Кольцо фокуса внутрь: снаружи его срезал бы скролл панели. */
+  .run-s:focus-visible, .ev-s:focus-visible { outline-offset:-2px; }
+
+  .run-s { display:flex; align-items:baseline; gap:var(--s-2); padding:var(--s-2) var(--s-3); }
+  .run-s::before { content:"▸"; font-size:var(--t-xs); flex:none; }
+  .run-d[open] > .run-s::before { content:"▾"; }
+  /* Заголовок запуска — одна строка. Четыре элемента в колонке 24rem не
+     всегда помещаются («готово · 1.5 с · 1 предупреждение» — 237px из 350),
+     а перенос внутри слова ломал строку на «финте / х». Поэтому: короткая
+     тема цела, длинная усекается по трети ширины, остаток добирает статус
+     и усекается с хвоста — «готово» и длительность видны всегда. */
+  .run-name {
+    font-weight:600; flex:0 0 auto; max-width:45%;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .run-status { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .run-status { color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .run.is-failed .run-status { color:var(--danger); }
+  .run-time {
+    margin-left:auto; flex:none; font-size:var(--t-xs); color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+
+  .ev-s {
+    display:grid; grid-template-columns:var(--s-4) 1fr auto; column-gap:var(--s-2);
+    padding:var(--s-2) var(--s-3) var(--s-2) var(--s-5);
+  }
+  .ev-mark { text-align:center; }
+  .ev-title { overflow-wrap:anywhere; }
+  .ev-dur {
+    color:var(--fg-mut); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap;
+  }
+  .ev-detail {
+    grid-column:2; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .ev-detail:empty { display:none; }
+  .ev.is-warn .ev-mark, .ev.is-warn .ev-title { font-weight:600; }
+  .ev.is-error .ev-mark, .ev.is-error .ev-title { font-weight:600; color:var(--danger); }
+
+  .ev-dl {
+    margin:0; padding:var(--s-2) var(--s-3) var(--s-3) var(--s-5); background:var(--bg);
+    display:grid; grid-template-columns:auto 1fr; gap:var(--s-1) var(--s-3);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  .ev-dl dt, .ev-dl dd { margin:0; }
+  .ev-dl dd { max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+
+  /* Окно передачи: нативный dialog, без тени — подложка уже отделяет. */
+  dialog {
+    width:min(44rem, 100% - 2 * var(--s-4)); max-height:calc(100dvh - 2 * var(--s-6));
+    padding:var(--s-5); margin:auto; color:var(--fg); background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--r-md);
+    display:none; flex-direction:column; gap:var(--s-4);
+  }
+  dialog[open] { display:flex; }
+  dialog::backdrop { background:var(--overlay); }
+  .dlg-head { display:flex; align-items:baseline; gap:var(--s-2); }
+  .dlg-name { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
+  .dlg-head .tag { align-self:center; }
+  .dlg-purpose { margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch; }
+  .dlg-row { display:flex; align-items:center; gap:var(--s-2); }
+  .dlg-row h2 { margin-right:auto; }
+  .dlg-note {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .icon-btn {
+    flex:none; width:var(--s-6); height:var(--s-6); padding:0; margin-left:auto;
+    display:inline-flex; align-items:center; justify-content:center;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm); font-weight:400; line-height:1;
+  }
+  .dlg-row .icon-btn { margin-left:0; }
+  .icon-btn:hover { color:var(--fg); background:var(--bg); filter:none; }
+  .icon-btn svg { width:1rem; height:1rem; stroke:currentColor; fill:none;
+                  stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  /* Поле промпта: тот же бокс, что был у блока для чтения, но это элемент
+     управления — граница --line-ctl, а не --line (корпус требует ≥ 3:1).
+     Высоту задаёт окно, поэтому resize отключён: растягивание внутри
+     flex-колонки ломает раскладку. */
+  .prompt {
+    display:block; width:100%; margin:0; padding:var(--s-3) var(--s-4);
+    flex:1 1 auto; min-height:0; overflow-y:auto; resize:none;
+    font:var(--t-sm)/1.5 ui-monospace, monospace; color:var(--fg); overflow-wrap:anywhere;
+    background:var(--bg); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  }
+  .prompt:hover { border-color:var(--fg-mut); }
+  .prompt[aria-invalid="true"] { border-color:var(--danger); }
+  .prompt[disabled] { opacity:.5; }
+  .dlg-hint { margin:calc(-1 * var(--s-2)) 0 0; font-size:var(--t-xs); line-height:1.4;
+              color:var(--fg-mut); max-width:68ch; }
+  /* Действия под полем и вне прокрутки: до кнопки сохранения не должно
+     приходиться листать. */
+  .dlg-actions { display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap; }
+  .dlg-btn {
+    padding:var(--s-2) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
+    color:var(--fg); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm);
+  }
+  .dlg-btn:hover { background:var(--bg); filter:none; }
+  .dlg-btn.is-second { color:var(--fg-mut); }
+  .dlg-btn.is-second:hover { color:var(--fg); }
+  .dlg-msg { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); flex:1; min-width:0; }
+  /* Признак у кнопки «Об агенте»: правка действует на каждый запуск, и
+     о ней должно быть видно снаружи закрытого окна. */
+  .about-note { color:var(--fg-mut); font-size:var(--t-sm); }
+  .about-note:empty { display:none; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <main class="col chat-col">
+    <h1>Агент новостей стартапов</h1>
+    <p class="sub">Вы переписываетесь с агентом: он держит архив статей восьми изданий
+    (США, Европа, Индия, Китай), отбирает статьи под тему, спрашивает выбранную модель
+    и проверяет ссылки в ответе. Ход каждого запуска виден в мониторе.
+    <button class="about" id="about" type="button" disabled>Об агенте</button><span
+    class="about-note" id="about-note"></span></p>
+
+    <section class="chat" aria-labelledby="chat-h">
+      <div class="feed-head">
+        <h2 id="chat-h">Диалог</h2>
+        <button class="clear" id="clear" type="button" disabled
+                aria-label="Очистить переписку и начать новую">очистить</button>
+      </div>
+      <p class="restored" id="restored" hidden></p>
+
+      <ol class="log" id="log">
+        <li class="empty" id="empty">Переписки пока нет. Задайте тему, напишите
+        сообщение — агент ответит по архиву статей.</li>
+      </ol>
+
+      <details class="params-box" id="params-box">
+        <summary id="params-sum">Параметры</summary>
+        <div class="params-body">
+          <div class="field">
+            <span class="name">Готовые темы</span>
+            <div class="chips" id="chips"></div>
+          </div>
+
+          <fieldset class="field" style="border:0;padding:0;margin:0 0 var(--s-5);">
+            <legend class="name" style="padding:0;">Модель</legend>
+            <div class="models" id="models"></div>
+            <span class="hint">Выбирается до запуска. Агент спрашивает именно её; подмены
+            на другую при отказе не будет. Рядом — сколько статей она примет сейчас:
+            у Groq предел считается за минуту, поэтому число меняется.</span>
+          </fieldset>
+
+          <label class="field">
+            <span class="name">Размер контекста</span>
+            <input id="p-context" class="num" type="number" min="0" max="8000" step="100"
+                   value="3000" inputmode="numeric" aria-describedby="p-context-live">
+            <span class="hint">Сколько токенов хвоста переписки уходит модели (0–8000).
+            Смена значения действует со следующего сообщения и переписку не удаляет.</span>
+            <span class="hint" id="p-context-live" role="status"></span>
+          </label>
+
+          <label class="field">
+            <!-- aria-label на самом ползунке: <label> без for связался бы с первым
+                 labelable-потомком, то есть с <output>, и слайдер остался бы без
+                 имени. Значение скринридер объявляет сам, поэтому <output> скрыт
+                 от него — иначе каждый шаг перечитывал бы всю строку. -->
+            <span class="name">Температура <output class="num" id="p-temp-out" aria-hidden="true">1.0</output></span>
+            <input id="p-temp" type="range" min="0" max="1" step="0.1" value="1" aria-label="Температура">
+            <span class="hint">0 — предсказуемо и сухо, 1 — свободнее и разнообразнее. Шаг 0.1.
+            При единице параметр не отправляется вовсе: часть моделей принимает только своё умолчание.</span>
+          </label>
+
+          <label class="field">
+            <span class="name">Статей в подборке</span>
+            <input id="p-articles" class="num" type="number" min="1" max="60" value="30" inputmode="numeric">
+            <span class="hint">Сколько статей архива уйдёт в модель (1–60). Сначала подходящие
+            по запросу, затем самые свежие.</span>
+          </label>
+
+          <label class="field">
+            <span class="name">Статей с источника</span>
+            <input id="p-per-source" class="num" type="number" min="1" max="15" value="5" inputmode="numeric">
+            <span class="hint">Потолок на издание (1–15), чтобы плодовитые не вытесняли регионы.</span>
+          </label>
+
+          <label class="field">
+            <span class="name">Условие завершения ответа</span>
+            <textarea id="p-stop" rows="2" maxlength="400"
+              placeholder="слово или фраза; при появлении в ответе генерация остановится"></textarea>
+            <span class="hint">До 4 стоп-последовательностей, по одной на строку.</span>
+          </label>
+
+          <label class="field">
+            <span class="name">Останов по токенам</span>
+            <input id="p-max-tokens" class="num" type="number" min="1" max="2048" value="600" inputmode="numeric">
+            <span class="hint">Максимум токенов ответа, 1–2048.</span>
+          </label>
+
+          <div class="field">
+            <span class="name">Готовые запросы — от простого к сложному</span>
+            <ul class="preset-list" id="presets"></ul>
+          </div>
+        </div>
+      </details>
+
+      <form id="f" class="composer">
+        <label class="ask">
+          <span class="ask-name">Тема</span>
+          <input id="q" type="text" name="sphere" maxlength="60"
+                 placeholder="fintech, climate tech, robotics…"
+                 autocomplete="off" required>
+        </label>
+        <textarea id="p-prompt" rows="3" maxlength="2000" aria-label="Сообщение агенту"
+          placeholder="например: какие раунды и на какие суммы подняли компании — таблицей, с датой и ссылкой"></textarea>
+        <div class="submit-row">
+          <button id="go" type="submit" class="submit">Спросить</button>
+          <p class="hint" id="composer-hint">Переписка хранится у агента 30 часов без новых
+          сообщений. Ctrl + Enter — отправить.</p>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <div class="col right">
+    <section class="monitor" aria-labelledby="mon-h">
+      <h2 id="mon-h">Монитор агента</h2>
+      <p class="archive" id="archive"></p>
+      <div class="panel" id="panel">
+        <p class="mon-empty" id="mon-empty">Здесь по ходу запроса появляются события агента:
+        получил запрос, обновил архив, отобрал статьи, спросил модель, проверил ссылки.
+        Только ваши запросы из этого браузера; после перезагрузки страницы список пуст.</p>
+        <ol class="runs" id="runs"></ol>
+      </div>
+      <!-- Список событий не живой: десять событий за шесть секунд читались бы
+           дольше запуска. Объявляются только статусы запуска и ошибки. -->
+      <div class="vh" id="live" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="vh" id="alert" role="alert"></div>
+    </section>
+
+    <footer>
+      Источники: <span id="sources">…</span>. Ссылки в ответах — только из лент
+      изданий; ссылку не из списка агент вырезает. Переписка хранится у агента 30 часов
+      без новых сообщений и удаляется кнопкой «очистить»; события монитора живут до
+      перезагрузки страницы.
+      Издание может попросить убрать свою ленту: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
+    </footer>
+  </div>
+
+</div>
+
+<dialog id="ask-clear" aria-labelledby="ask-clear-h" tabindex="-1">
+  <p class="dlg-name" id="ask-clear-h">Очистить переписку?</p>
+  <p class="dlg-purpose">Переписка удалится у агента, и начнётся новая. Вернуть её будет нельзя.</p>
+  <div class="dlg-actions">
+    <button class="dlg-btn is-danger" id="ask-clear-yes" type="button">Очистить</button>
+    <button class="dlg-btn is-second" id="ask-clear-no" type="button">Отмена</button>
+  </div>
+</dialog>
+
+<dialog id="dlg" aria-labelledby="dlg-name" tabindex="-1">
+  <div class="dlg-head">
+    <p class="dlg-name" id="dlg-name">Агент</p>
+    <span class="tag" id="dlg-version" hidden></span>
+    <button class="icon-btn" id="dlg-close" type="button" aria-label="Закрыть">×</button>
+  </div>
+  <p class="dlg-purpose" id="dlg-purpose"></p>
+  <div class="dlg-row" id="dlg-row" hidden>
+    <h2>Системный промпт</h2>
+    <span class="dlg-note" id="dlg-state"></span>
+    <button class="icon-btn" id="dlg-copy" type="button" aria-label="Скопировать системный промпт">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+    </button>
+  </div>
+  <textarea class="prompt" id="dlg-prompt" rows="6" maxlength="4000"
+    aria-label="Текст системного промпта" hidden></textarea>
+  <p class="dlg-hint" id="dlg-hint" hidden>Правка хранится в этом браузере и уходит вместе
+  с запросом. Реестр агента и запуски других людей не меняются.</p>
+  <div class="dlg-actions" id="dlg-actions" hidden>
+    <button class="dlg-btn" id="dlg-save" type="button">Обновить</button>
+    <button class="dlg-btn is-second" id="dlg-reset" type="button">Вернуть исходный</button>
+    <!-- Одна живая область на окно: признак, подтверждение копирования и
+         отказы перебивали бы друг друга, будь их несколько. -->
+    <span class="dlg-msg" id="dlg-note" role="status"></span>
+  </div>
+  <p class="dlg-purpose" id="dlg-nopr" hidden>Системный промпт недоступен</p>
+</dialog>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const form = $('f'), input = $('q'), button = $('go');
+  const log = $('log'), empty = $('empty');
+  const runsList = $('runs'), monEmpty = $('mon-empty'), panel = $('panel');
+  const live = $('live'), alertBox = $('alert');
+
+  const SPHERES = [
+    { text: 'финтех' },
+    { text: 'климатические технологии' },
+    { text: 'робототехника' },
+    { text: 'кибербезопасность' },
+    { text: 'AI infrastructure', lang: 'en' },
+    { text: '人工智能', lang: 'zh' },
+    { text: 'फिनटेक', lang: 'hi' },
+  ];
+
+  for (const { text, lang } of SPHERES) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = text;
+    if (lang) chip.lang = lang;
+    chip.onclick = () => { input.value = text; $('p-prompt').focus(); };
+    $('chips').append(chip);
+  }
+
+  // Список моделей, описание агента и состояние архива приходят с сервера:
+  // держать их в двух местах — способ разойтись.
+  let models = [];
+  let defaults = {};
+  let agentInfo = null;
+
+  const renderModels = () => {
+    const box = $('models');
+    box.replaceChildren();
+    models.forEach((m) => {
+      const label = document.createElement('label');
+      label.className = 'model';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'model';
+      radio.value = m.id;
+      radio.checked = m.id === (defaults.model ?? models[0].id);
+      const name = document.createElement('span');
+      name.className = 'model-name';
+      name.textContent = m.label;
+      const note = document.createElement('span');
+      note.className = 'model-note';
+      // Рядом с моделью — сколько статей она примет прямо сейчас. Число
+      // живое: у Groq предел считается за минуту и меняется от запроса
+      // к запросу, а постоянная цифра здесь обманывала бы.
+      note.textContent = m.articlesFit
+        ? `${m.note} · сейчас ~${m.articlesFit} статей`
+        : `${m.note} · ${Math.round(m.budgetTokens / 1000)}K токенов`;
+      if (m.slow) note.textContent += ' · медленно';
+      if (m.available === false) {
+        label.style.opacity = '.55';
+        note.textContent = `${m.note} · сейчас недоступна`;
+      }
+      label.title = `Предел входа: ${m.budgetTokens} токенов (${m.budgetSource})`;
+      label.append(radio, name, note);
+      box.append(label);
+    });
+  };
+  const chosenModel = () =>
+    document.querySelector('input[name=model]:checked')?.value ?? models[0]?.id;
+
+  // Готовые запросы. Кнопка только вставляет текст в поле: запрос уходит
+  // лишь по «Спросить», как и любой другой, набранный руками.
+  const renderPresets = (presets) => {
+    const box = $('presets');
+    box.replaceChildren();
+    presets.forEach((p, i) => {
+      const li = document.createElement('li');
+      li.className = 'preset';
+
+      const order = document.createElement('span');
+      order.className = 'preset-order';
+      order.textContent = `${i + 1}.`;
+
+      const body = document.createElement('span');
+      body.className = 'preset-body';
+      const name = document.createElement('span');
+      name.className = 'preset-name';
+      name.textContent = p.title;
+      const hint = document.createElement('span');
+      hint.className = 'preset-hint';
+      hint.textContent = p.hint;
+      body.append(name, hint);
+
+      const insert = document.createElement('button');
+      insert.type = 'button';
+      insert.textContent = 'вставить';
+      insert.setAttribute('aria-label', `Вставить запрос «${p.title}» в поле запроса`);
+      insert.onclick = () => {
+        const field = $('p-prompt');
+        field.focus();
+        field.select();
+        // execCommand сохраняет историю отмены: присваивание value её стирает,
+        // и набранный текст было бы не вернуть.
+        if (!document.execCommand?.('insertText', false, p.text)) field.value = p.text;
+        field.setSelectionRange(field.value.length, field.value.length);
+        // Зрячему текст виден в поле с фокусом; скринридеру — объявление.
+        announce(`Вставлен запрос «${p.title}». Нажмите «Спросить», когда будете готовы.`);
+      };
+
+      li.append(order, body, insert);
+      box.append(li);
+    });
+  };
+
+  // Последнее известное состояние архива: ответ запуска несёт только новый
+  // размер, а ёмкость, квота и время проверки остаются от загрузки страницы.
+  let archiveState = null;
+  const showArchive = (patch) => {
+    if (!patch) return;
+    const a = { ...(archiveState ?? {}), ...patch };
+    archiveState = a;
+    const when = a.lastRefresh
+      ? new Date(a.lastRefresh).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+      : 'ещё не проверялись';
+    $('archive').innerHTML =
+      `У агента в архиве <span class="num">${a.total}</span> из ${a.capacity} статей, ` +
+      `квота на издание ${a.quota}. Ленты проверены: ${when}.`;
+  };
+
+  fetch('./api/state')
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then((d) => {
+      models = d.models ?? [];
+      defaults = d.defaults ?? {};
+      agentInfo = d.agent ?? null;
+      renderPresets(d.presets ?? []);
+      renderModels();
+      showArchive(d.archive);
+      $('sources').textContent = (d.sources ?? []).map((f) => f.source).join(', ');
+      if (defaults.contextTokens !== undefined) $('p-context').value = defaults.contextTokens;
+      showParamsSummary();
+      showContextLive();
+    })
+    .catch(() => { $('sources').textContent = 'недоступны'; })
+    .finally(() => {
+      $('about').disabled = false;
+      // Признак у кнопки считается от промпта реестра, поэтому он верен
+      // только после того, как состояние пришло.
+      showPromptState();
+    });
+
+  const temp = $('p-temp'), tempOut = $('p-temp-out');
+  const showTemp = () => { tempOut.textContent = Number(temp.value).toFixed(1); };
+  temp.addEventListener('input', showTemp);
+  showTemp();
+
+  // Живая область объявляет только смену статуса запуска и ошибки: событие
+  // за событием читалось бы дольше самого запуска.
+  const announce = (text) => {
+    live.textContent = '';
+    live.textContent = text;
+  };
+  const shout = (text) => {
+    alertBox.textContent = '';
+    alertBox.textContent = text;
+  };
+
+  /* ---------- монитор ---------- */
+
+  const MAX_RUNS = 5;
+  const STATUS_WORD = {
+    queued: 'в очереди', running: 'выполняется', succeeded: 'готово',
+    failed: 'ошибка', cancelled: 'отменён',
+  };
+  const LEVEL_WORD = { info: 'сведения', warn: 'предупреждение', error: 'ошибка' };
+  const LEVEL_MARK = { info: '·', warn: '!', error: '×' };
+  const LEVEL_PREFIX = { warn: 'Предупреждение: ', error: 'Ошибка: ' };
+
+  const fmtDuration = (ms) => {
+    if (ms === null || ms === undefined || !Number.isFinite(ms)) return '';
+    if (ms < 1000) return `${Math.round(ms)} мс`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)} с`;
+    const m = Math.floor(ms / 60_000);
+    return `${m} мин ${Math.round((ms - m * 60_000) / 1000)} с`;
+  };
+  const fmtTime = (iso) =>
+    new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const plural = (n, one, few, many) => {
+    const a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return many;
+    if (b > 1 && b < 5) return few;
+    if (b === 1) return one;
+    return many;
+  };
+
+  /** Запуски в памяти страницы: не больше пяти, новые сверху, без сохранения. */
+  const runs = [];
+
+  const runHeader = (run) => {
+    let status = STATUS_WORD[run.status] ?? run.status;
+    if (run.status === 'succeeded' || run.status === 'failed') {
+      const parts = [status];
+      if (run.durationMs !== null) parts.push(fmtDuration(run.durationMs));
+      if (run.warnings > 0)
+        parts.push(`${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}`);
+      status = parts.join(' · ');
+    }
+    return status;
+  };
+
+  const renderEvent = (event) => {
+    const li = document.createElement('li');
+    li.className = `ev is-${event.level}`;
+    const d = document.createElement('details');
+    const s = document.createElement('summary');
+    s.className = 'ev-s';
+
+    const mark = document.createElement('span');
+    mark.className = 'ev-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = LEVEL_MARK[event.level] ?? '·';
+
+    const title = document.createElement('span');
+    title.className = 'ev-title';
+    if (LEVEL_PREFIX[event.level]) {
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = LEVEL_PREFIX[event.level];
+      title.append(prefix);
+    }
+    title.append(event.title);
+
+    const dur = document.createElement('span');
+    dur.className = 'ev-dur';
+    dur.textContent = fmtDuration(event.durationMs);
+
+    const detail = document.createElement('span');
+    detail.className = 'ev-detail';
+    detail.textContent = (event.detail ?? '').split('\n')[0];
+
+    s.append(mark, title, dur, detail);
+
+    const dl = document.createElement('dl');
+    dl.className = 'ev-dl';
+    const row = (term, value) => {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    row('время', fmtTime(event.at));
+    row('стадия', event.stage);
+    row('уровень', LEVEL_WORD[event.level] ?? event.level);
+    row('статус', STATUS_WORD[event.status] ?? event.status);
+    if (event.detail) row('детали', event.detail);
+
+    d.append(s, dl);
+    li.append(d);
+    return li;
+  };
+
+  const renderRun = (run) => {
+    const li = document.createElement('li');
+    li.className = `run is-${run.status}`;
+    li.dataset.run = run.key;
+    const d = document.createElement('details');
+    d.className = 'run-d';
+    d.open = run.open;
+    const s = document.createElement('summary');
+    s.className = 'run-s';
+    const name = document.createElement('span');
+    name.className = 'run-name';
+    name.textContent = run.sphere;
+    const status = document.createElement('span');
+    status.className = 'run-status';
+    status.textContent = `· ${runHeader(run)}`;
+    const time = document.createElement('time');
+    time.className = 'run-time';
+    time.dateTime = run.startedAt;
+    time.textContent = fmtTime(run.startedAt);
+    s.append(name, status, time);
+    const events = document.createElement('ol');
+    events.className = 'events';
+    for (const event of run.events) events.append(renderEvent(event));
+    d.append(s, events);
+    // Раскрытие запоминается: перерисовка не должна сворачивать то, что открыл пользователь.
+    d.addEventListener('toggle', () => { run.open = d.open; });
+    if (run.status === 'queued' || run.status === 'running') li.setAttribute('aria-busy', 'true');
+    li.append(d);
+    return li;
+  };
+
+  const renderMonitor = () => {
+    runsList.replaceChildren(...runs.map(renderRun));
+    monEmpty.hidden = runs.length > 0;
+  };
+
+  const setStatus = (run, status) => {
+    if (run.status === status) return;
+    run.status = status;
+    if (status === 'succeeded' || status === 'failed') {
+      run.durationMs = run.durationMs ?? (Date.now() - Date.parse(run.startedAt));
+      const tail = status === 'succeeded'
+        ? `готово за ${fmtDuration(run.durationMs)}` +
+          (run.warnings ? `, ${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}` : '')
+        : 'ошибка';
+      announce(`Запуск «${run.sphere}»: ${tail}`);
+    } else {
+      announce(`Запуск «${run.sphere}»: ${STATUS_WORD[status]}`);
+    }
+  };
+
+  /** Событие от агента или от самой страницы (стадия «страница»). */
+  const addEvent = (run, event) => {
+    // Новые сверху: при нулевой прокрутке панели новая строка всегда видна.
+    run.events.unshift(event);
+    if (event.level === 'warn') run.warnings += 1;
+    if (event.level === 'error') shout(`Ошибка: ${event.title}`);
+    if (event.status && event.status !== run.status) setStatus(run, event.status);
+    if (event.stage === 'done' && event.durationMs) run.durationMs = event.durationMs;
+    renderMonitor();
+  };
+  const pageEvent = (run, level, title, detail = '') =>
+    addEvent(run, {
+      at: new Date().toISOString(), stage: 'страница', level, title, detail,
+      status: run.status, durationMs: null,
+    });
+
+  const startRun = (sphere) => {
+    for (const r of runs) r.open = false;
+    const run = {
+      key: String(Date.now()), sphere, status: 'queued', startedAt: new Date().toISOString(),
+      events: [], warnings: 0, durationMs: null, open: true, answered: false,
+    };
+    runs.unshift(run);
+    // Шестой запуск вытесняет самый старый целиком: усечённый выглядел бы оборванным.
+    if (runs.length > MAX_RUNS) runs.length = MAX_RUNS;
+    renderMonitor();
+    announce(`Запуск «${sphere}»: в очереди`);
+    return run;
+  };
+
+  const failRun = (run, title, detail) => {
+    run.status = 'failed';
+    pageEvent(run, 'error', title, detail);
+    run.durationMs = Date.now() - Date.parse(run.startedAt);
+    announce(`Запуск «${run.sphere}»: ошибка`);
+    renderMonitor();
+  };
+
+  /* ---------- чат ---------- */
+
+  // Переписка живёт у агента: страница её показывает, но не хранит.
+  // Сессия — в cookie, которую страница не видит и видеть не должна.
+  let messages = [];
+  let restoredFromServer = false;
+
+  // Время и длительности форматирует монитор — здесь те же правила.
+  const fmtInt = (n) => Number(n).toLocaleString('ru-RU');
+
+  /** Тема повторяется в голове только когда сменилась: иначе это шум. */
+  const topicChanged = (index) => {
+    const own = messages[index]?.meta?.sphere;
+    if (!own) return false;
+    for (let i = index - 1; i >= 0; i--) {
+      const prev = messages[i]?.meta?.sphere;
+      if (prev) return prev !== own;
+    }
+    return true;
+  };
+
+  const renderUser = (m, index) => {
+    const li = document.createElement('li');
+    li.className = 'msg is-user';
+    const head = document.createElement('p');
+    head.className = 'msg-head';
+    head.textContent = `Вы · ${fmtTime(m.at)}`;
+    if (topicChanged(index)) head.textContent += ` · тема: ${m.meta.sphere}`;
+    const text = document.createElement('p');
+    text.className = 'msg-text';
+    text.textContent = m.text;
+    li.append(head, text);
+    return li;
+  };
+
+  /** Строка сводки: то, что осталось бы от монитора после перезагрузки. */
+  const summaryLines = (s) => {
+    const did = [];
+    did.push(s.refreshed ? 'Обновил архив' : 'Архив не обновлял');
+    if (s.articlesUsed !== undefined)
+      did.push(
+        `отобрал ${s.articlesUsed} из ${s.articlesSelected} статей` +
+          (s.matched === 0 ? ', по запросу 0' : ''),
+      );
+    if (s.model) did.push(`спросил ${s.model}`);
+    if (s.links !== undefined)
+      did.push(
+        s.strippedLinks > 0
+          ? `ссылки: ${s.links - s.strippedLinks} из ${s.links}, ${s.strippedLinks} вырезаны`
+          : `ссылки: ${s.links} из ${s.links}`,
+      );
+    if (s.systemOverridden) did.push('системный промпт изменён');
+
+    const numbers = [];
+    if (s.totalTokens !== undefined) numbers.push(`${fmtInt(s.totalTokens)} токенов`);
+    if (s.contextEffective !== undefined)
+      numbers.push(`контекст ${fmtInt(s.contextUsed)} из ${fmtInt(s.contextRequested)}`);
+    if (s.durationMs !== undefined) numbers.push(fmtDuration(s.durationMs));
+    return [did.join(' · '), numbers.join(' · ')];
+  };
+
+  const renderAgent = (m) => {
+    const li = document.createElement('li');
+    const meta = m.meta ?? {};
+    li.className = `msg is-agent${meta.error ? ' is-error' : ''}`;
+
+    const head = document.createElement('p');
+    head.className = 'msg-head';
+    head.textContent = `Агент · ${fmtTime(m.at)}`;
+
+    const text = document.createElement('p');
+    text.className = 'msg-text';
+    if (meta.error) {
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '×';
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Ошибка: ';
+      text.append(mark, prefix, `Ответа нет: ${m.text} Что случилось — в мониторе агента.`);
+    } else {
+      text.textContent = m.text || '(пустой ответ)';
+    }
+    li.append(head, text);
+    if (meta.error) return li;
+
+    if (meta.truncated) {
+      const warn = document.createElement('p');
+      warn.className = 'warned';
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '!';
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Предупреждение: ';
+      warn.append(mark, prefix, 'Ответ обрезан лимитом токенов');
+      li.append(warn);
+    }
+    // Не поместившиеся реплики — не потеря: переписка цела, просто в этот
+    // запрос ушёл хвост покороче.
+    const dropped = (meta.contextRequested ?? 0) - (meta.contextEffective ?? 0);
+    if (dropped > 0) {
+      const warn = document.createElement('p');
+      warn.className = 'warned';
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '!';
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Предупреждение: ';
+      warn.append(
+        mark,
+        prefix,
+        `Модель приняла ${fmtInt(meta.contextEffective)} токенов контекста из заданных ${fmtInt(meta.contextRequested)}`,
+      );
+      li.append(warn);
+    }
+
+    for (const line of summaryLines(meta)) {
+      if (!line) continue;
+      const p = document.createElement('p');
+      p.className = 'sum';
+      p.textContent = line;
+      li.append(p);
+    }
+
+    const details = document.createElement('details');
+    details.className = 'params-d';
+    const summary = document.createElement('summary');
+    summary.textContent = 'параметры ответа';
+    const dl = document.createElement('dl');
+    dl.className = 'ev-dl';
+    const row = (term, value) => {
+      if (value === undefined || value === null || value === '') return;
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    row('модель', meta.provider);
+    row('max_tokens', meta.maxTokens);
+    row('температура', meta.temperature === undefined ? null : Number(meta.temperature).toFixed(1));
+    row(
+      'отбор статей',
+      meta.articlesUsed === undefined
+        ? null
+        : `${meta.articlesUsed} из ${meta.articlesSelected}, по запросу ${meta.matched}`,
+    );
+    row(
+      'предел входа',
+      meta.budgetTokens === undefined
+        ? null
+        : `${fmtInt(meta.budgetTokens)} токенов (${meta.budgetSource})`,
+    );
+    row('с текстом', meta.withText);
+    row('стоп-последовательности', meta.stopSequences || null);
+    row(
+      'размер контекста',
+      meta.contextRequested === undefined
+        ? null
+        : `задан ${fmtInt(meta.contextRequested)}, действует ${fmtInt(meta.contextEffective)}`,
+    );
+    row('сообщений в контексте', meta.contextMessages);
+    row(
+      'вход / выход',
+      meta.inputTokens === undefined
+        ? null
+        : `${fmtInt(meta.inputTokens)} / ${fmtInt(meta.outputTokens)} токенов`,
+    );
+    row('системный промпт', meta.systemOverridden ? 'изменённый в этом браузере' : 'исходный');
+    details.append(summary, dl);
+    li.append(details);
+    return li;
+  };
+
+  /** Прокрутка вниз только если пользователь и так внизу: иначе не мешаем. */
+  const atBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+
+  const renderLog = ({ keepScroll = false } = {}) => {
+    const stick = keepScroll ? atBottom() : true;
+    const nodes = [];
+    messages.forEach((m, i) => {
+      try {
+        nodes.push(m.role === 'user' ? renderUser(m, i) : renderAgent(m));
+      } catch {}
+    });
+    log.replaceChildren(...(nodes.length > 0 ? nodes : [empty]));
+    $('clear').disabled = messages.length === 0;
+    $('restored').hidden = !(restoredFromServer && messages.length > 0);
+    if (stick) log.scrollTop = log.scrollHeight;
+  };
+
+  $('restored').textContent =
+    'Переписка восстановлена с сервера. События прошлых запусков не хранятся — ' +
+    'что делал агент, осталось в сводке под каждым ответом.';
+
+  // История поднимается при загрузке страницы: агент помнит разговор, даже
+  // если его перезапускали.
+  fetch('./api/chat')
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then((d) => {
+      messages = d.messages ?? [];
+      restoredFromServer = messages.length > 0;
+      renderLog();
+      showParamsSummary();
+    })
+    .catch(() => {
+      // Придумывать за сервер «переписки нет» нельзя.
+      restoredFromServer = false;
+      $('restored').hidden = false;
+      $('restored').textContent =
+        'Прежнюю переписку загрузить не удалось. Новое сообщение начнёт диалог заново.';
+    });
+
+  /** Последний ответ агента — источник чисел о контексте для параметров. */
+  const lastSummary = () => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'agent' && m.meta && !m.meta.error) return m.meta;
+    }
+    return null;
+  };
+
+  const showParamsSummary = () => {
+    const model = models.find((m) => m.id === chosenModel());
+    const last = lastSummary();
+    const requested = Number($('p-context').value) || 0;
+    const parts = ['Параметры'];
+    if (model) parts.push(model.label);
+    parts.push(`контекст ${fmtInt(last?.contextUsed ?? 0)} из ${fmtInt(requested)}`);
+    parts.push(`${$('p-articles').value} статей`);
+    $('params-sum').textContent = parts.join(' · ');
+  };
+
+  /**
+   * Действующий размер контекста известен только после ответа модели:
+   * до него страница говорит о пределе входа, а не выдаёт заданное за
+   * действующее.
+   */
+  const showContextLive = () => {
+    const requested = Number($('p-context').value) || 0;
+    const model = models.find((m) => m.id === chosenModel());
+    const last = lastSummary();
+    if (last && last.provider === chosenModel()) {
+      $('p-context-live').textContent =
+        last.contextEffective >= requested
+          ? `Действует ${fmtInt(requested)} — весь заданный размер.`
+          : `Действует ${fmtInt(last.contextEffective)} из заданных ${fmtInt(requested)} — ` +
+            `предел входа ${model?.label ?? chosenModel()} (${fmtInt(last.budgetTokens)} токенов).`;
+      return;
+    }
+    $('p-context-live').textContent = model
+      ? `Действует до ${fmtInt(requested)}; предел входа ${model.label} — ` +
+        `${fmtInt(model.budgetTokens)} токенов на системный промпт, статьи и переписку, ` +
+        'поэтому уйти может меньше.'
+      : '';
+  };
+
+  for (const id of ['p-context', 'p-articles']) {
+    $(id).addEventListener('input', () => {
+      showParamsSummary();
+      showContextLive();
+    });
+  }
+  $('models').addEventListener('change', () => {
+    showParamsSummary();
+    showContextLive();
+  });
+
+  /* ---------- свой системный промпт ---------- */
+
+  // Правка живёт в браузере и уходит с каждым запросом; реестр на сервере
+  // она не меняет (ADR 2026-09-11-0930). Версия и исходник на момент правки
+  // хранятся вместе с ней, чтобы заметить смену промпта у агента.
+  const PROMPT_STORE = 'day7-agent-prompt';
+  let savedPrompt = null;   // { version, base, text } или null
+  let promptInMemory = false; // хранилище отказало, правка живёт до перезагрузки
+
+  const loadPrompt = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PROMPT_STORE));
+      if (parsed && typeof parsed.text === 'string' && parsed.text.trim()) return parsed;
+    } catch {}
+    return null;
+  };
+  savedPrompt = loadPrompt();
+
+  /** Промпт, с которым уйдёт следующий запуск, или null — значит реестровый. */
+  const activePrompt = () => {
+    const base = agentInfo?.systemPrompt ?? '';
+    if (!savedPrompt || !savedPrompt.text.trim()) return null;
+    return savedPrompt.text === base ? null : savedPrompt.text;
+  };
+
+  /* ---------- отправка ---------- */
+
+  /** Сообщение показывается в логе сразу: оно уже отправлено. */
+  const pushLocal = (role, text, meta) => {
+    messages.push({
+      id: `local-${messages.length}`,
+      role,
+      text,
+      tokens: 0,
+      at: new Date().toISOString(),
+      meta,
+    });
+    renderLog({ keepScroll: true });
+  };
+
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const sphere = input.value.trim();
+    if (!sphere) return;
+    const message = $('p-prompt').value.trim();
+
+    const invalid = [$('p-per-source'), $('p-max-tokens'), $('p-articles'), $('p-context')]
+      .find((el) => !el.checkValidity());
+    if (invalid) {
+      // Поле может лежать в закрытом блоке параметров: показать сообщение
+      // браузера негде, пока блок свёрнут.
+      $('params-box').open = true;
+      invalid.reportValidity();
+      return;
+    }
+
+    const params = {
+      sphere,
+      prompt: message,
+      model: chosenModel(),
+      maxTokens: Number($('p-max-tokens').value),
+      temperature: Number(temp.value),
+      perSource: Number($('p-per-source').value),
+      articles: Number($('p-articles').value),
+      contextTokens: Number($('p-context').value),
+      stopSequences: $('p-stop').value.split('\n').map((s) => s.trim()).filter(Boolean),
+    };
+    // Поле уходит только при изменённом промпте: при исходном поведение
+    // агента не меняется ни на байт.
+    const mine = activePrompt();
+    if (mine) params.system = mine;
+
+    button.disabled = true;
+    log.setAttribute('aria-busy', 'true');
+    const run = startRun(sphere);
+    pushLocal('user', message || sphere, { sphere });
+    $('p-prompt').value = '';
+
+    const finish = () => {
+      button.disabled = false;
+      log.removeAttribute('aria-busy');
+      renderMonitor();
+    };
+    /** Ответ и отказ приходят в лог одинаково: пара «вопрос — ответ» цела. */
+    const answered = (text, meta) => {
+      pushLocal('agent', text, meta);
+      showParamsSummary();
+      showContextLive();
+    };
+
+    let runId;
+    try {
+      const response = await fetch('./api/answer', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        failRun(run, 'Сервер отклонил запрос', data.error ?? `ответ ${response.status}`);
+        answered(data.error ?? `ответ ${response.status}`, { error: true });
+        return finish();
+      }
+      runId = data.runId;
+    } catch {
+      failRun(run, 'Связь с агентом прервана', 'запрос не отправлен');
+      answered('запрос не отправлен', { error: true });
+      return finish();
+    }
+
+    const es = new EventSource(`./api/runs/${encodeURIComponent(runId)}/events`);
+    let ended = false;
+    es.addEventListener('event', (m) => {
+      let ev;
+      try { ev = JSON.parse(m.data); } catch { return; }
+      addEvent(run, ev);
+    });
+    es.addEventListener('end', (m) => {
+      ended = true;
+      es.close();
+      let end = {};
+      try { end = JSON.parse(m.data); } catch {}
+      if (end.result) {
+        run.answered = true;
+        const r = end.result;
+        showArchive(r.archive.refreshed
+          ? { total: r.archive.total, lastRefresh: new Date().toISOString() }
+          : { total: r.archive.total });
+        // Сводка приходит от агента: она же лежит в базе и переживёт
+        // перезагрузку страницы вместе с перепиской.
+        answered(r.answer, r.summary);
+      } else if (end.error) {
+        answered(end.error.message ?? 'агент не ответил', { error: true });
+      }
+      setStatus(run, end.status === 'succeeded' || end.status === 'failed' ? end.status
+        : run.answered ? 'succeeded' : 'failed');
+      finish();
+    });
+    es.onerror = () => {
+      if (ended) return;
+      ended = true;
+      es.close();
+      // Ответ важнее потерянного события: если он уже пришёл, запуск готов.
+      if (run.answered) { setStatus(run, 'succeeded'); finish(); return; }
+      // Два случая различаются тем, доходили ли события агента: `readyState`
+      // здесь не помощник — close() уже перевёл его в CLOSED, а до вызова он
+      // одинаков (CONNECTING) и при обрыве сети, и при закрытии сервером.
+      if (run.events.length > 0) {
+        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа');
+        answered('поток закрылся без ответа', { error: true });
+      } else {
+        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся');
+        answered('связь с агентом прервана', { error: true });
+      }
+      finish();
+    };
+  };
+
+  // Ctrl + Enter отправляет: в поле на три строки перевод строки нужен чаще,
+  // чем отправка, поэтому голый Enter оставлен переводу строки.
+  $('p-prompt').addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') form.requestSubmit();
+  });
+
+  /* ---------- очистка переписки ---------- */
+
+  // Удаление необратимо и происходит на сервере, поэтому оно спрашивает.
+  const askClear = $('ask-clear');
+  $('clear').onclick = () => {
+    askClear.showModal();
+    $('ask-clear-no').focus();
+  };
+  $('ask-clear-no').onclick = () => askClear.close();
+  askClear.addEventListener('close', () => $('clear').focus());
+  $('ask-clear-yes').onclick = async () => {
+    askClear.close();
+    try {
+      const r = await fetch('./api/chat', { method: 'DELETE' });
+      if (!r.ok) throw new Error(String(r.status));
+      messages = [];
+      restoredFromServer = false;
+      renderLog();
+      showParamsSummary();
+      showContextLive();
+      announce('Переписка удалена, начата новая.');
+    } catch {
+      announce('Переписку удалить не удалось: агент не ответил.');
+    }
+  };
+
+  /* ---------- окно передачи ---------- */
+
+  const dlg = $('dlg'), about = $('about');
+  const field = $('dlg-prompt'), stateLabel = $('dlg-state'), note = $('dlg-note');
+  const saveBtn = $('dlg-save'), resetBtn = $('dlg-reset');
+  let noteTimer = null;
+
+  const say = (text, keep) => {
+    clearTimeout(noteTimer);
+    note.textContent = text;
+    // Две секунды — как у подтверждения копирования в дне 6 изначально.
+    if (!keep && text) noteTimer = setTimeout(() => { note.textContent = ''; }, 2000);
+  };
+
+  /**
+   * Признак «исходный / изменённый» — сравнение текста с промптом реестра,
+   * а не флаг «когда-то сохранял»: иначе он врал бы после возврата вручную.
+   */
+  const showPromptState = () => {
+    const base = agentInfo?.systemPrompt ?? '';
+    const active = activePrompt();
+    const shown = active ?? base;
+    const chars = (n) => `${n} ${plural(n, 'знак', 'знака', 'знаков')}`;
+    if (!active) {
+      stateLabel.textContent = `Исходный · ${chars(base.length)}`;
+    } else if (savedPrompt?.base !== undefined && savedPrompt.base !== base) {
+      // Промпт агента сменился в реестре, а правка осталась прежней: молча
+      // подменять сохранённое нельзя, но и промолчать об этом тоже. Сверяем
+      // текст, а не только версию: промпт правят и без смены версии.
+      stateLabel.textContent =
+        savedPrompt.version && agentInfo?.version && savedPrompt.version !== agentInfo.version
+          ? `Изменён от прежней версии промпта (${savedPrompt.version}); у агента сейчас ${agentInfo.version}`
+          : 'Изменён от прежней версии промпта; у агента он с тех пор поменялся';
+    } else {
+      stateLabel.textContent = `Изменён — только в этом браузере · ${chars(shown.length)}`;
+    }
+    resetBtn.disabled = !active;
+    $('about-note').textContent = active ? ' — промпт изменён' : '';
+  };
+  showPromptState();
+
+  const openAbout = () => {
+    const base = agentInfo?.systemPrompt ?? '';
+    $('dlg-name').textContent = agentInfo?.name ?? 'Агент';
+    const version = $('dlg-version');
+    version.hidden = !agentInfo?.version;
+    version.textContent = agentInfo?.version ? `v${agentInfo.version}` : '';
+    $('dlg-purpose').textContent = agentInfo
+      ? agentInfo.purpose
+      : 'Описание агента недоступно: не удалось получить его состояние';
+    $('dlg-row').hidden = !agentInfo;
+    // Сообщение о недоступности — обычной строкой вместо поля: в рамке
+    // моноширинного блока оно читалось бы как сам промпт.
+    field.hidden = !base;
+    $('dlg-hint').hidden = !base;
+    $('dlg-actions').hidden = !base;
+    $('dlg-nopr').hidden = !agentInfo || Boolean(base);
+    // В поле — сохранённая правка, иначе исходный текст. Несохранённое
+    // прошлое открытие не восстанавливается: сохранение — по кнопке.
+    if (base) field.value = savedPrompt?.text ?? base;
+    field.disabled = !base;
+    field.removeAttribute('aria-invalid');
+    saveBtn.disabled = !base;
+    $('dlg-copy').disabled = !base;
+    say(promptInMemory ? 'Браузер отказал в хранении: правка действует до закрытия вкладки' : '', true);
+    showPromptState();
+    dlg.showModal();
+    dlg.focus();
+  };
+  about.onclick = openAbout;
+  $('dlg-close').onclick = () => dlg.close();
+  // Возврат фокуса на открывшую кнопку — проверяется, а не считается данным.
+  dlg.addEventListener('close', () => about.focus());
+
+  // Отказ снимается первым же введённым символом: держать красную рамку
+  // после исправления значило бы врать.
+  field.addEventListener('input', () => {
+    if (field.getAttribute('aria-invalid')) field.removeAttribute('aria-invalid');
+  });
+
+  saveBtn.onclick = () => {
+    const text = field.value.trim();
+    if (!text) {
+      // Пустой промпт не сохраняется и не отправляется, и кнопка остаётся
+      // активной: отключённая кнопка не объяснила бы, почему ничего не вышло.
+      field.setAttribute('aria-invalid', 'true');
+      say('Пустой промпт отправить нельзя. Верните текст или нажмите «Вернуть исходный»', true);
+      field.focus();
+      return;
+    }
+    savedPrompt = { version: agentInfo?.version ?? null, base: agentInfo?.systemPrompt ?? '', text };
+    promptInMemory = false;
+    try {
+      localStorage.setItem(PROMPT_STORE, JSON.stringify(savedPrompt));
+      say('Промпт обновлён. Следующие запросы уйдут с ним', true);
+    } catch {
+      // Правка остаётся в памяти страницы: делать вид, что сохранили, нельзя.
+      promptInMemory = true;
+      say('Браузер отказал в хранении: правка действует до закрытия вкладки', true);
+    }
+    showPromptState();
+  };
+
+  resetBtn.onclick = () => {
+    savedPrompt = null;
+    promptInMemory = false;
+    try { localStorage.removeItem(PROMPT_STORE); } catch {}
+    field.value = agentInfo?.systemPrompt ?? '';
+    field.removeAttribute('aria-invalid');
+    say('Возвращён исходный промпт агента', true);
+    showPromptState();
+    field.focus();
+  };
+
+  $('dlg-copy').onclick = async () => {
+    try {
+      // Копируется то, что видно в поле: рядом написано, исходный это
+      // текст или изменённый, и копировать другое было бы обманом.
+      await navigator.clipboard.writeText(field.value);
+      say('Скопировано');
+    } catch {
+      say('Не удалось скопировать — выделите текст вручную', true);
+      field.focus();
+    }
+  };
+</script>
+</body>
+</html>
