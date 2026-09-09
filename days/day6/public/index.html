@@ -97,7 +97,7 @@
   .about {
     display:inline; padding:0; border:0; background:transparent; font:inherit; font-weight:400;
     color:var(--fg); text-decoration:underline; text-decoration-color:var(--line-ctl);
-    text-underline-offset:.15em; border-radius:0;
+    text-underline-offset:.15em;
   }
   .about:hover { filter:none; text-decoration-color:var(--fg); }
   .about:active { transform:none; opacity:.7; }
@@ -137,7 +137,10 @@
      после него, и обе должны быть видны без прокрутки страницы. */
   .right { display:flex; flex-direction:column; gap:var(--s-5); }
   .monitor { display:flex; flex-direction:column; gap:var(--s-3); }
-  .monitor .archive { margin:calc(-1 * var(--s-1)) 0 0; }
+  /* Заголовок → строка архива: --s-3; строка архива → панель: --s-2.
+     Отрицательный отступ снимает разницу с зазора, поэтому он на панели,
+     а не на строке архива — иначе сжимался бы верхний зазор. */
+  .monitor .panel { margin-top:calc(-1 * var(--s-1)); }
   .feed { display:flex; flex-direction:column; gap:var(--s-4); }
   .feed-head { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2); }
   .feed-list { list-style:none; margin:0; padding:0; }
@@ -285,7 +288,16 @@
   .run-s { display:flex; align-items:baseline; gap:var(--s-2); padding:var(--s-2) var(--s-3); }
   .run-s::before { content:"▸"; font-size:var(--t-xs); flex:none; }
   .run-d[open] > .run-s::before { content:"▾"; }
-  .run-name { font-weight:600; min-width:0; overflow-wrap:anywhere; }
+  /* Заголовок запуска — одна строка. Четыре элемента в колонке 24rem не
+     всегда помещаются («готово · 1.5 с · 1 предупреждение» — 237px из 350),
+     а перенос внутри слова ломал строку на «финте / х». Поэтому: короткая
+     тема цела, длинная усекается по трети ширины, остаток добирает статус
+     и усекается с хвоста — «готово» и длительность видны всегда. */
+  .run-name {
+    font-weight:600; flex:0 0 auto; max-width:45%;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .run-status { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .run-status { color:var(--fg-mut); font-variant-numeric:tabular-nums; }
   .run.is-failed .run-status { color:var(--danger); }
   .run-time {
@@ -488,6 +500,7 @@
     </button>
   </div>
   <pre class="prompt" id="dlg-prompt" tabindex="0" aria-label="Текст системного промпта" hidden></pre>
+  <p class="dlg-purpose" id="dlg-nopr" hidden>Системный промпт недоступен</p>
 </dialog>
 
 <script>
@@ -522,7 +535,6 @@
   let models = [];
   let defaults = {};
   let agentInfo = null;
-  let stateFailed = false;
 
   const renderModels = () => {
     const box = $('models');
@@ -629,10 +641,7 @@
       showArchive(d.archive);
       $('sources').textContent = (d.sources ?? []).map((f) => f.source).join(', ');
     })
-    .catch(() => {
-      stateFailed = true;
-      $('sources').textContent = 'недоступны';
-    })
+    .catch(() => { $('sources').textContent = 'недоступны'; })
     .finally(() => { $('about').disabled = false; });
 
   const temp = $('p-temp'), tempOut = $('p-temp-out');
@@ -1043,11 +1052,12 @@
     const row = $('dlg-row'), pre = $('dlg-prompt'), copy = $('dlg-copy');
     $('dlg-note').textContent = '';
     row.hidden = !agentInfo;
-    pre.hidden = !agentInfo;
-    if (agentInfo) {
-      pre.textContent = prompt || 'Системный промпт недоступен';
-      copy.disabled = !prompt;
-    }
+    // Сообщение о недоступности — обычной строкой вместо блока: в рамке
+    // моноширинного блока оно читалось бы как сам промпт.
+    pre.hidden = !prompt;
+    $('dlg-nopr').hidden = !agentInfo || Boolean(prompt);
+    if (prompt) pre.textContent = prompt;
+    copy.disabled = !prompt;
     dlg.showModal();
     dlg.focus();
   };
