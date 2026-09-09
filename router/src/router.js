@@ -188,18 +188,14 @@ export function createRouter({
         continue
       }
       const quota = health.quotaOf(p)
-      if (
-        quota?.remainingTokens !== null &&
-        quota !== null &&
-        inputTokens > quota.remainingTokens
-      ) {
+      if (quota !== null && quota.remainingTokens !== null && inputTokens > quota.remainingTokens) {
         const when = quota.resetAt ? new Date(quota.resetAt).toISOString() : 'неизвестно когда'
-        reasons.push({
-          provider: `${p.id}#${p.revision}`,
-          stage: 'health',
-          reason: `остаток квоты ${quota.remainingTokens} токенов меньше входа ${inputTokens}, сброс ${when}`,
-        })
+        const reason = `остаток квоты ${quota.remainingTokens} токенов меньше входа ${inputTokens}, сброс ${when}`
+        reasons.push({ provider: `${p.id}#${p.revision}`, stage: 'health', reason })
         bump(p, 'skipped')
+        // Пропуск по квоте — такой же отказ, как прочие: в журнале должны
+        // быть видны все, иначе лог показывает лишь часть картины.
+        log({ event: 'skip', taskClass, provider: `${p.id}#${p.revision}`, thinking, reason })
         continue
       }
       if (budgetUntil !== null && budgetUntil - now() <= 0) {

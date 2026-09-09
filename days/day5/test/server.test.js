@@ -5,9 +5,12 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { budgetFor, inputBudgetFor, parseEnv, parseParams } from '../env.js'
 import {
+  articleTokens,
   askRouter,
   buildInput,
   fetchLimits,
+  overheadTokens,
+  requestTokens,
   estimateTokens,
   fitToBudget,
   renderCandidates,
@@ -216,12 +219,80 @@ test('пределы моделей запрашиваются у роутера
   assert.equal(limits.providers[0].quota.remainingTokens, 1500)
 })
 
-test('роутер недоступен — день работает по своим пределам, а не падает', async () => {
-  const failing = async () => {
-    throw new Error('сеть')
+test('ответ роутера проверяется по форме, а не принимается на веру', async () => {
+  // undefined в пределе превращает арифметику бюджета в NaN, и проверка
+  // молча выключается. Такие записи отбрасываются целиком.
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      providers: [
+        { id: 'без-предела' },
+        { id: 'предел-строкой', maxRequestTokens: '6000' },
+        null,
+        {
+          id: 'годный',
+          maxRequestTokens: 6000,
+          quota: { limitTokens: 8000, remainingTokens: 1500, resetAt: null, stale: false },
+        },
+      ],
+    }),
+  })
+  const limits = await fetchLimits(ENV, { fetchImpl })
+  assert.deepEqual(
+    limits.providers.map((p) => p.id),
+    ['годный'],
+  )
+  assert.equal(limits.providers[0].quota.remainingTokens, 1500)
+})
+
+test('ответ не по форме и отказ роутера дают пустой список, а не поломку', async () => {
+  const garbage = async () => ({ ok: true, status: 200, json: async () => ({ providers: 'нет' }) })
+  assert.deepEqual((await fetchLimits(ENV, { fetchImpl: garbage })).providers, [])
+  const refused = async () => ({ ok: false, status: 401, json: async () => ({ ok: false }) })
+  assert.deepEqual((await fetchLimits(ENV, { fetchImpl: refused })).providers, [])
+})
+
+test('оценка входа включает системный промпт — как и у роутера', () => {
+  // Иначе остаётся полоса, где день говорит «влезает», а роутер отказывает.
+  const { params } = parseParams({}, ENV)
+  const items = [
+    {
+      url: 'https://example.com/1',
+      title: 'Fintech',
+      source: 'TechCrunch',
+      date: '2026-09-09T10:00:00.000Z',
+      text: 'текст',
+    },
+  ]
+  const withSystem = requestTokens('тема', params, items)
+  const withoutSystem = estimateTokens(buildInput('тема', params, items))
+  assert.ok(withSystem > withoutSystem + 200, 'системный промпт весит сотни токенов')
+})
+
+test('быстрая оценка числа статей сходится с настоящей подгонкой', () => {
+  // Линейная прикидка не должна обещать больше, чем реально влезает.
+  const items = Array.from({ length: 40 }, (_, n) => ({
+    url: `https://example.com/${n}`,
+    title: `Fintech funding round number ${n} in emerging markets`,
+    source: 'TechCrunch',
+    date: '2026-09-09T10:00:00.000Z',
+    text: 'x'.repeat(1200),
+  }))
+  const { params } = parseParams({}, ENV)
+  const budget = 4300
+
+  let used = overheadTokens('тема', params)
+  let fits = 0
+  for (const item of items) {
+    used += articleTokens(item)
+    if (used > budget) break
+    fits += 1
   }
-  await assert.rejects(() => fetchLimits(ENV, { fetchImpl: failing }))
-  // Сервер оборачивает вызов в catch: см. handleAnswer и /api/state.
+  const fitted = fitToBudget('тема', params, items, budget)
+  assert.ok(fits > 0, 'что-то влезает')
+  assert.ok(Math.abs(fits - fitted.length) <= 1, `прикидка ${fits}, подгонка ${fitted.length}`)
+  assert.ok(requestTokens('тема', params, items.slice(0, fits)) <= budget, 'прикидка не завышает')
 })
 
 test('бюджет подборки зависит от выбранной модели', () => {

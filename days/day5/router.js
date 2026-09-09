@@ -111,15 +111,33 @@ export function estimateTokens(text) {
 }
 
 /**
+ * Сколько токенов займёт запрос целиком — тем же счётом, что у роутера:
+ * системный промпт входит в вход и там, и здесь. Считать иначе значит
+ * оставить полосу, где день говорит «влезает», а роутер отказывает.
+ */
+export function requestTokens(sphere, params, items) {
+  return estimateTokens(SYSTEM) + estimateTokens(buildInput(sphere, params, items))
+}
+
+/** Постоянная часть запроса: системный промпт и обёртка без единой статьи. */
+export function overheadTokens(sphere, params) {
+  return requestTokens(sphere, params, [])
+}
+
+/** Во что обходится одна статья в списке кандидатов. */
+export function articleTokens(item) {
+  return estimateTokens(renderCandidates([item])) + 1
+}
+
+/**
  * Отбрасывает статьи с конца подборки, пока запрос не уложится в предел
  * модели. С конца — потому что список отсортирован, и последними стоят
  * наименее релевантные.
  */
 export function fitToBudget(sphere, params, items, maxInputTokens) {
-  const fits = (list) =>
-    estimateTokens(SYSTEM) + estimateTokens(buildInput(sphere, params, list)) <= maxInputTokens
   let list = items
-  while (list.length > 1 && !fits(list)) list = list.slice(0, -1)
+  while (list.length > 1 && requestTokens(sphere, params, list) > maxInputTokens)
+    list = list.slice(0, -1)
   return list
 }
 
@@ -134,8 +152,29 @@ export async function fetchLimits(env, { fetchImpl = fetch } = {}) {
     signal: AbortSignal.timeout(10_000),
   })
   const json = await response.json().catch(() => null)
-  if (!response.ok || !json) return { providers: [], budgetLeft: null }
-  return { providers: json.providers ?? [], budgetLeft: json.budgetLeft ?? null }
+  if (!response.ok || !json || !Array.isArray(json.providers))
+    return { providers: [], budgetLeft: null }
+
+  // Форма проверяется, а не принимается на веру: undefined в пределе
+  // превращает арифметику бюджета в NaN, и проверка молча выключается.
+  const providers = json.providers
+    .filter((p) => p && typeof p.id === 'string' && Number.isInteger(p.maxRequestTokens))
+    .map((p) => ({
+      id: p.id,
+      model: typeof p.model === 'string' ? p.model : null,
+      maxRequestTokens: p.maxRequestTokens,
+      available: p.available !== false,
+      quota:
+        p.quota && Number.isFinite(p.quota.remainingTokens)
+          ? {
+              limitTokens: Number.isFinite(p.quota.limitTokens) ? p.quota.limitTokens : null,
+              remainingTokens: p.quota.remainingTokens,
+              resetAt: typeof p.quota.resetAt === 'string' ? p.quota.resetAt : null,
+              stale: p.quota.stale === true,
+            }
+          : null,
+    }))
+  return { providers, budgetLeft: json.budgetLeft ?? null }
 }
 
 /** Запрос к роутеру. Возвращает ответ модели и то, чем именно он получен. */
@@ -172,6 +211,9 @@ export async function askRouter(sphere, params, items, env, { fetchImpl = fetch 
     error.status = response.status
     error.code = json.code
     error.reasons = json.reasons ?? []
+    // Пустой список попыток означает, что ни один провайдер не вызывался:
+    // отказ произошёл до траты денег, и слот возвращать можно.
+    error.attempts = Array.isArray(json.attempts) ? json.attempts : []
     throw error
   }
 

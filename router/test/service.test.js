@@ -76,6 +76,7 @@ async function start({
   const get = (path, key = ENV.ROUTER_ADMIN_KEY) =>
     fetch(`${base}${path}`, { headers: { authorization: `Bearer ${key}` } })
   return {
+    base,
     post,
     get,
     calls,
@@ -271,6 +272,34 @@ test('сервис принимает выбор модели и потолок 
         .status,
       400,
     )
+  } finally {
+    await s.close()
+  }
+})
+
+test('/v1/models: только по ключу приложения и только свои классы', async () => {
+  const apps = {
+    ...APPS,
+    apps: [{ ...APPS.apps[0], classes: ['news_answer', 'summarize'] }],
+  }
+  const s = await start({ apps, hosts: { [LAPTOP]: laptopOk, [CLOUD]: cloudOk } })
+  try {
+    const anon = await fetch(`${s.base}/v1/models`)
+    assert.equal(anon.status, 401, 'без ключа приложения ничего не отдаём')
+
+    const wrong = await s.get('/v1/models?taskClass=guard_prompt', ENV.APP_KEY_SMOKE)
+    assert.equal(wrong.status, 403, 'чужой класс — отказ')
+
+    const ok = await (await s.get('/v1/models?taskClass=news_answer', ENV.APP_KEY_SMOKE)).json()
+    assert.equal(ok.taskClass, 'news_answer')
+    const ids = ok.providers.map((p) => p.id)
+    assert.ok(ids.includes('anthropic-haiku'))
+    assert.equal(ids.includes('groq-prompt-guard'), false, 'классификатор не предлагаем')
+    for (const p of ok.providers) {
+      assert.equal(typeof p.maxRequestTokens, 'number')
+      assert.equal('baseUrl' in p, false, 'адресов провайдеров наружу не отдаём')
+      assert.equal('secretEnv' in p, false, 'и тем более имён секретов')
+    }
   } finally {
     await s.close()
   }

@@ -18,7 +18,14 @@ import {
 } from './env.js'
 import { collectItems, FEEDS } from './feeds.js'
 import { createLimiter } from './limits.js'
-import { askRouter, buildInput, estimateTokens, fetchLimits, fitToBudget } from './router.js'
+import {
+  articleTokens,
+  askRouter,
+  fetchLimits,
+  fitToBudget,
+  overheadTokens,
+  requestTokens,
+} from './router.js'
 import { selectForQuery } from './select.js'
 import { createStore } from './store.js'
 
@@ -106,10 +113,15 @@ export async function refreshIfStale({ now = Date.now(), fetchImpl = fetch } = {
  */
 function articlesThatFit(items, budgetTokens) {
   const params = { prompt: '', model: '', maxTokens: 0, stopSequences: [] }
+  // Складываем по одной статье, а не пересобираем запрос заново на каждом
+  // шаге: пересборка давала квадратичный проход по всему архиву на каждый
+  // показ страницы. Постоянная часть — системный промпт и обёртка.
+  let used = overheadTokens('тема', params)
   let fits = 0
-  for (let n = 1; n <= items.length; n++) {
-    if (estimateTokens(buildInput('тема', params, items.slice(0, n))) > budgetTokens) break
-    fits = n
+  for (const item of items) {
+    used += articleTokens(item)
+    if (used > budgetTokens) break
+    fits += 1
   }
   return fits
 }
@@ -227,7 +239,7 @@ async function handleAnswer(req, res) {
     // Если не помещается даже одна статья, звать модель незачем: она
     // ответит отказом, а слот суточного предела будет потрачен. Причина
     // пользователю понятна — квота на минуту, а не поломка.
-    const needed = estimateTokens(buildInput(sphere.sphere, params, items))
+    const needed = requestTokens(sphere.sphere, params, items)
     if (needed > budget.tokens) {
       limiter.release(ip)
       const reset = budget.quota?.resetAt
@@ -272,6 +284,8 @@ async function handleAnswer(req, res) {
       error.code === 'budget_exceeded' ||
       error.code === 'refused' ||
       error.code === 'no_provider' ||
+      // Пропуск по квоте даёт all_failed без единого вызова провайдера.
+      (Array.isArray(error.attempts) && error.attempts.length === 0) ||
       (error.status >= 400 && error.status < 500 && error.status !== 429)
     if (paidNothing) limiter.release(ip)
     if (error.code === 'budget_exceeded') {

@@ -7,26 +7,49 @@
  * длительность вида «577ms», «38.407s», «2m52.8s».
  */
 
-const DURATION = /(\d+(?:\.\d+)?)(ms|s|m|h)/g
+/** Форма длительности целиком: только числа с известными единицами. */
+const DURATION_SHAPE = /^(?:\d+(?:\.\d+)?(?:ms|s|m|h))+$/i
+const DURATION_PART = /(\d+(?:\.\d+)?)(ms|s|m|h)/gi
 const UNIT_MS = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }
 
+/**
+ * Потолок на окно сброса. Окна провайдеров минутные; час — заведомо
+ * достаточный предел, за которым значение можно считать мусором.
+ * Без потолка «999999999s» означал бы, что квота не протухнет никогда.
+ */
+export const MAX_WINDOW_MS = 3_600_000
+
 export function parseReset(raw, now) {
-  if (!raw) return null
-  const asDate = Date.parse(raw)
-  if (Number.isFinite(asDate)) return asDate
-  let total = 0
-  let matched = false
-  for (const [, value, unit] of raw.matchAll(DURATION)) {
-    total += Number(value) * UNIT_MS[unit]
-    matched = true
+  if (typeof raw !== 'string') return null
+  const text = raw.trim()
+  if (text === '') return null
+
+  // Длительность разбирается первой: «60» — это шестьдесят чего-то, а не
+  // 1960 год, но Date.parse охотно прочтёт его как год и отправит сброс
+  // в прошлое. Тогда квота всегда выглядит полной, и проверка выключается.
+  if (DURATION_SHAPE.test(text)) {
+    let total = 0
+    for (const [, value, unit] of text.matchAll(DURATION_PART))
+      total += Number(value) * UNIT_MS[unit.toLowerCase()]
+    return now + Math.min(Math.round(total), MAX_WINDOW_MS)
   }
-  return matched ? now + Math.round(total) : null
+
+  // На метку времени похоже только то, где есть её разделители.
+  if (!/[-T:]/.test(text)) return null
+  const asDate = Date.parse(text)
+  return Number.isFinite(asDate) ? asDate : null
 }
 
+/**
+ * Число из заголовка. Отрицательный остаток провайдеры отдают именно при
+ * исчерпании, поэтому он равен нулю, а не «неизвестно»: спутать эти два
+ * состояния значит пойти звать заведомо исчерпанного провайдера.
+ */
 const num = (raw) => {
   if (raw === null || raw === undefined || raw === '') return null
   const n = Number(raw)
-  return Number.isFinite(n) && n >= 0 ? n : null
+  if (!Number.isFinite(n)) return null
+  return n < 0 ? 0 : n
 }
 
 /**
