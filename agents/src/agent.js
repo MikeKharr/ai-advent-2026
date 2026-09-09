@@ -24,6 +24,7 @@ import {
   PROMPT_PRESETS,
   parseParams,
   parseSphere,
+  parseSystem,
 } from './params.js'
 import { TERMINAL } from './runs.js'
 
@@ -68,7 +69,8 @@ export function createNewsAnalyst({
   now = Date.now,
   log = console.error,
 }) {
-  const system = agent.systemPrompt
+  // Промпт из реестра — основа; запуск может прийти со своим (см. parseSystem).
+  const baseSystem = agent.systemPrompt
   const limitsOf = () => fetchLimits(env, agent.taskClass, { fetchImpl }).catch(() => null)
 
   return {
@@ -86,7 +88,12 @@ export function createNewsAnalyst({
         defaults: agent.defaults,
       })
       if (!parsed.ok) return { ok: false, message: parsed.message }
-      return { ok: true, input: { sphere: sphere.sphere, params: parsed.params } }
+      const system = parseSystem(body.system)
+      if (!system.ok) return { ok: false, message: system.message }
+      return {
+        ok: true,
+        input: { sphere: sphere.sphere, params: parsed.params, system: system.system },
+      }
     },
 
     /**
@@ -105,7 +112,7 @@ export function createNewsAnalyst({
           budgetSource: budget.source,
           quota: budget.quota,
           available: budget.available,
-          articlesFit: fresh.length > 0 ? articlesThatFit(system, fresh, budget.tokens) : null,
+          articlesFit: fresh.length > 0 ? articlesThatFit(baseSystem, fresh, budget.tokens) : null,
         }
       })
       return {
@@ -113,7 +120,7 @@ export function createNewsAnalyst({
         name: agent.name,
         version: agent.version,
         purpose: agent.purpose,
-        systemPrompt: system,
+        systemPrompt: baseSystem,
         taskClass: agent.taskClass,
         tools: [archive.describe()],
         models,
@@ -126,6 +133,11 @@ export function createNewsAnalyst({
     /** Выполняет запуск до терминального события. Возвращает, когда всё записано. */
     async execute(run) {
       const { sphere, params } = run.input
+      // Свой промпт запуска или промпт из реестра. Всё, что считает размер
+      // запроса и зовёт модель, обязано брать именно его: иначе агент
+      // пообещает, что подборка влезает, по чужой мерке.
+      const system = run.input.system ?? baseSystem
+      const systemOverridden = run.input.system !== null && run.input.system !== undefined
       const startedAt = now()
       const emit = (fields) => runs.emit(run.id, fields)
       // С момента запроса к роутеру вызов считается оплаченным, пока роутер
@@ -159,8 +171,20 @@ export function createNewsAnalyst({
             temperature: params.temperature,
             promptChars: params.prompt.length,
             stopSequences: params.stopSequences.length,
+            systemOverridden,
+            systemChars: system.length,
           },
         })
+        if (systemOverridden) {
+          // Свой промпт меняет поведение агента, и это должно быть видно
+          // в мониторе: текста здесь нет, только сам факт и длина.
+          emit({
+            stage: 'planning',
+            title: 'Взял ваш системный промпт',
+            detail: `${system.length} знаков вместо промпта из реестра`,
+            data: { systemOverridden: true, systemChars: system.length },
+          })
+        }
 
         // Инструмент: архив. Аргументы без текстов — тема и запрос в событие
         // не идут, только пределы отбора.
@@ -352,6 +376,7 @@ export function createNewsAnalyst({
             usage: answer.usage,
             truncated: answer.truncated,
             durationMs: answer.durationMs,
+            systemOverridden,
             selection: {
               budgetChars: toolArgs.maxChars,
               budgetTokens: budget.tokens,

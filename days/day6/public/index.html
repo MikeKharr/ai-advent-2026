@@ -29,6 +29,10 @@
     }
   }
   * { box-sizing: border-box; }
+  /* Собственный display у элемента перебивает [hidden] из таблицы браузера,
+     и скрытый блок остаётся на экране. Правило нужно всем блокам окна,
+     которые прячутся по состоянию. */
+  [hidden] { display:none !important; }
   body {
     margin:0; background:var(--bg); color:var(--fg);
     font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -143,13 +147,20 @@
   .monitor .panel { margin-top:calc(-1 * var(--s-1)); }
   .feed { display:flex; flex-direction:column; gap:var(--s-4); }
   .feed-head { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2); }
-  .feed-list { list-style:none; margin:0; padding:0; }
+  /* Лента — такая же панель, как у монитора: те же четыре свойства (фон,
+     граница, радиус, отсутствие тени). Иначе два блока колонки не читаются
+     как одно целое. Отступы — у записей, у панели своих нет. */
+  .feed-list {
+    list-style:none; margin:0; padding:0;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  }
   @media (min-width: 73rem) {
     .right { min-height:0; }
     .monitor { flex:none; max-height:40%; min-height:0; }
     .panel { overflow-y:auto; min-height:0; }
     .feed { flex:1; min-height:0; }
-    .feed-list { overflow-y:auto; min-height:0; flex:1; padding-right:var(--s-2); }
+    /* Правый отступ снят: кольца фокуса внутри панели рисуются внутрь. */
+    .feed-list { overflow-y:auto; min-height:0; flex:1; }
   }
   .clear {
     padding:var(--s-1) var(--s-3); font-size:var(--t-xs); line-height:1.4; font-weight:400;
@@ -158,41 +169,60 @@
   }
   .clear:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
 
-  .entry {
-    padding:var(--s-4); margin-bottom:var(--s-5);
-    border:1px solid var(--line); border-radius:var(--r-md); background:var(--surface);
-  }
+  /* Запись — строка панели, а не карточка: границу между записями рисует
+     линия сверху, как между запусками монитора. */
+  .entry { padding:var(--s-3); }
+  .entry + .entry { border-top:1px solid var(--line); }
   .entry .head {
     display:flex; justify-content:space-between; gap:var(--s-2); flex-wrap:wrap;
-    font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); margin-bottom:var(--s-2);
+    font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
   }
   .entry .sphere { font-weight:600; color:var(--fg); }
   .entry time { font-variant-numeric:tabular-nums; }
-  .tags { display:flex; gap:var(--s-2); flex-wrap:wrap; margin-bottom:var(--s-3); }
-  .tag {
-    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
-    border:1px solid var(--line); border-radius:var(--r-full); padding:var(--s-1) var(--s-2);
+  /* Восемь чипов занимали пять рядов и 166 px до первой строки ответа.
+     Осталась одна строка о том, чем спрашивали и на чём основано. */
+  .meta {
+    margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
     font-variant-numeric:tabular-nums;
-    max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
-  .tag.is-tokens { color:var(--fg); border-color:var(--line-ctl); }
+  /* Предупреждение видимо: оно объясняет оборванный ответ, и прятать его
+     за кликом нечестно. Конвенция монитора — маркер, начертание, без цвета. */
+  .warned { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; font-weight:600; }
+  .warned .mark { margin-right:var(--s-1); }
   .entry .ask-echo {
-    margin:0 0 var(--s-3); padding:var(--s-1) 0 var(--s-1) var(--s-3);
+    margin:var(--s-3) 0 0; padding:var(--s-1) 0 var(--s-1) var(--s-3);
     border-left:2px solid var(--line-ctl);
-  }
-  .ask-echo-label {
-    display:block; font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
-    letter-spacing:.06em; color:var(--fg-mut); margin-bottom:var(--s-1);
   }
   .ask-echo-text {
     margin:0; color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5;
     max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
   }
   .answer {
-    margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch;
+    margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; max-width:68ch;
     white-space:pre-wrap; overflow-wrap:anywhere;
   }
-  .empty { color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5; margin:0; }
+  .entry .params-d { margin-top:var(--s-3); }
+  .entry .params-d > summary {
+    list-style:none; cursor:pointer; display:flex; align-items:center; gap:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  .entry .params-d > summary::-webkit-details-marker { display:none; }
+  .entry .params-d > summary::before { content:"▸"; }
+  .entry .params-d[open] > summary::before { content:"▾"; }
+  .entry .params-d > summary:hover { color:var(--fg); }
+  .entry .params-d > summary:active { background:var(--bg); }
+  .entry .params-d > summary:focus-visible { outline-offset:-2px; }
+  .tag {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:var(--s-1) var(--s-2);
+    font-variant-numeric:tabular-nums;
+  }
+  /* Пустое состояние ленты и пустое состояние монитора — одно правило:
+     две одинаковые панели обязаны выглядеть одинаково и пустыми. */
+  .mon-empty, .empty {
+    margin:0; padding:var(--s-3) var(--s-4); color:var(--fg-mut);
+    font-size:var(--t-sm); line-height:1.5; max-width:52ch;
+  }
 
   footer {
     margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
@@ -276,7 +306,6 @@
     background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
     font-size:var(--t-sm); line-height:1.5;
   }
-  .mon-empty { margin:0; padding:var(--s-3) var(--s-4); color:var(--fg-mut); max-width:52ch; }
   .runs, .events { list-style:none; margin:0; padding:0; }
   .run + .run { border-top:1px solid var(--line); }
   .run-s, .ev-s { list-style:none; cursor:pointer; }
@@ -345,7 +374,10 @@
   .dlg-purpose { margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch; }
   .dlg-row { display:flex; align-items:center; gap:var(--s-2); }
   .dlg-row h2 { margin-right:auto; }
-  .dlg-note { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+  .dlg-note {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
   .icon-btn {
     flex:none; width:var(--s-6); height:var(--s-6); padding:0; margin-left:auto;
     display:inline-flex; align-items:center; justify-content:center;
@@ -356,11 +388,37 @@
   .icon-btn:hover { color:var(--fg); background:var(--bg); filter:none; }
   .icon-btn svg { width:1rem; height:1rem; stroke:currentColor; fill:none;
                   stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  /* Поле промпта: тот же бокс, что был у блока для чтения, но это элемент
+     управления — граница --line-ctl, а не --line (корпус требует ≥ 3:1).
+     Высоту задаёт окно, поэтому resize отключён: растягивание внутри
+     flex-колонки ломает раскладку. */
   .prompt {
-    margin:0; padding:var(--s-3) var(--s-4); min-height:0; overflow-y:auto;
-    font:var(--t-sm)/1.5 ui-monospace, monospace; white-space:pre-wrap; overflow-wrap:anywhere;
-    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-sm);
+    display:block; width:100%; margin:0; padding:var(--s-3) var(--s-4);
+    flex:1 1 auto; min-height:0; overflow-y:auto; resize:none;
+    font:var(--t-sm)/1.5 ui-monospace, monospace; color:var(--fg); overflow-wrap:anywhere;
+    background:var(--bg); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
   }
+  .prompt:hover { border-color:var(--fg-mut); }
+  .prompt[aria-invalid="true"] { border-color:var(--danger); }
+  .prompt[disabled] { opacity:.5; }
+  .dlg-hint { margin:calc(-1 * var(--s-2)) 0 0; font-size:var(--t-xs); line-height:1.4;
+              color:var(--fg-mut); max-width:68ch; }
+  /* Действия под полем и вне прокрутки: до кнопки сохранения не должно
+     приходиться листать. */
+  .dlg-actions { display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap; }
+  .dlg-btn {
+    padding:var(--s-2) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
+    color:var(--fg); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm);
+  }
+  .dlg-btn:hover { background:var(--bg); filter:none; }
+  .dlg-btn.is-second { color:var(--fg-mut); }
+  .dlg-btn.is-second:hover { color:var(--fg); }
+  .dlg-msg { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); flex:1; min-width:0; }
+  /* Признак у кнопки «Об агенте»: правка действует на каждый запуск, и
+     о ней должно быть видно снаружи закрытого окна. */
+  .about-note { color:var(--fg-mut); font-size:var(--t-sm); }
+  .about-note:empty { display:none; }
 </style>
 </head>
 <body>
@@ -372,7 +430,8 @@
     изданий (США, Европа, Индия, Китай), отбирает подходящие под тему, спрашивает
     выбранную модель и проверяет ссылки в ответе. Эта страница — пульт к нему:
     отправляет запрос, показывает ход работы и ответ.
-    <button class="about" id="about" type="button" disabled>Об агенте</button></p>
+    <button class="about" id="about" type="button" disabled>Об агенте</button><span
+    class="about-note" id="about-note"></span></p>
 
     <form id="f">
       <label class="ask">
@@ -478,8 +537,10 @@
         <h2 id="feed-h">Ответы</h2>
         <button class="clear" id="clear" type="button" hidden>очистить</button>
       </div>
-      <p class="empty" id="empty">Пока пусто. Задайте тематику, при желании — запрос, и ответ агента появится здесь.</p>
-      <ul class="feed-list" id="feed"></ul>
+      <ul class="feed-list" id="feed">
+        <li class="empty" id="empty">Пока пусто. Задайте тематику, при желании — запрос,
+        и ответ агента появится здесь.</li>
+      </ul>
     </section>
   </div>
 
@@ -494,12 +555,22 @@
   <p class="dlg-purpose" id="dlg-purpose"></p>
   <div class="dlg-row" id="dlg-row" hidden>
     <h2>Системный промпт</h2>
-    <span class="dlg-note" id="dlg-note" role="status"></span>
+    <span class="dlg-note" id="dlg-state"></span>
     <button class="icon-btn" id="dlg-copy" type="button" aria-label="Скопировать системный промпт">
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
     </button>
   </div>
-  <pre class="prompt" id="dlg-prompt" tabindex="0" aria-label="Текст системного промпта" hidden></pre>
+  <textarea class="prompt" id="dlg-prompt" rows="6" maxlength="4000"
+    aria-label="Текст системного промпта" hidden></textarea>
+  <p class="dlg-hint" id="dlg-hint" hidden>Правка хранится в этом браузере и уходит вместе
+  с запросом. Реестр агента и запуски других людей не меняются.</p>
+  <div class="dlg-actions" id="dlg-actions" hidden>
+    <button class="dlg-btn" id="dlg-save" type="button">Обновить</button>
+    <button class="dlg-btn is-second" id="dlg-reset" type="button">Вернуть исходный</button>
+    <!-- Одна живая область на окно: признак, подтверждение копирования и
+         отказы перебивали бы друг друга, будь их несколько. -->
+    <span class="dlg-msg" id="dlg-note" role="status"></span>
+  </div>
   <p class="dlg-purpose" id="dlg-nopr" hidden>Системный промпт недоступен</p>
 </dialog>
 
@@ -642,7 +713,12 @@
       $('sources').textContent = (d.sources ?? []).map((f) => f.source).join(', ');
     })
     .catch(() => { $('sources').textContent = 'недоступны'; })
-    .finally(() => { $('about').disabled = false; });
+    .finally(() => {
+      $('about').disabled = false;
+      // Признак у кнопки считается от промпта реестра, поэтому он верен
+      // только после того, как состояние пришло.
+      showPromptState();
+    });
 
   const temp = $('p-temp'), tempOut = $('p-temp-out');
   const showTemp = () => { tempOut.textContent = Number(temp.value).toFixed(1); };
@@ -849,6 +925,31 @@
   const STORE = 'day6-agent-feed';
   const MAX_ENTRIES = 50;
 
+  /* ---------- свой системный промпт ---------- */
+
+  // Правка живёт в браузере и уходит с каждым запросом; реестр на сервере
+  // она не меняет (ADR 2026-09-11-0930). Версия и исходник на момент правки
+  // хранятся вместе с ней, чтобы заметить смену промпта у агента.
+  const PROMPT_STORE = 'day6-agent-prompt';
+  let savedPrompt = null;   // { version, base, text } или null
+  let promptInMemory = false; // хранилище отказало, правка живёт до перезагрузки
+
+  const loadPrompt = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PROMPT_STORE));
+      if (parsed && typeof parsed.text === 'string' && parsed.text.trim()) return parsed;
+    } catch {}
+    return null;
+  };
+  savedPrompt = loadPrompt();
+
+  /** Промпт, с которым уйдёт следующий запуск, или null — значит реестровый. */
+  const activePrompt = () => {
+    const base = agentInfo?.systemPrompt ?? '';
+    if (!savedPrompt || !savedPrompt.text.trim()) return null;
+    return savedPrompt.text === base ? null : savedPrompt.text;
+  };
+
   const loadFeed = () => {
     try {
       const parsed = JSON.parse(localStorage.getItem(STORE));
@@ -873,48 +974,87 @@
     when.textContent = new Date(entry.at).toLocaleString('ru-RU');
     head.append(sphere, when);
 
-    const tags = document.createElement('div');
-    tags.className = 'tags';
-    const tag = (text, cls) => {
-      const t = document.createElement('span');
-      t.className = cls ? `tag ${cls}` : 'tag';
-      t.textContent = text;
-      tags.append(t);
-    };
-    if (entry.model) tag(`модель: ${entry.model.model}`, 'is-tokens');
-    if (entry.usage && entry.usage.inputTokens !== null)
-      tag(`токены: ${entry.usage.inputTokens} → ${entry.usage.outputTokens}`, 'is-tokens');
-    tag(`max_tokens: ${entry.params.maxTokens}`);
-    tag(`темп.: ${Number(entry.params.temperature ?? 1).toFixed(1)}`);
     const sel = entry.selection;
-    tag(sel.selected && sel.selected !== sel.used
-      ? `статей: ${sel.used} из ${sel.selected} отобранных, по запросу ${sel.matched}`
-      : `статей: ${sel.used}, по запросу ${sel.matched}`);
-    if (sel.budgetTokens)
-      tag(`предел входа: ${sel.budgetTokens} токенов${sel.budgetSource === 'остаток квоты' ? ' (остаток квоты)' : ''}`);
-    tag(`с текстом: ${sel.withText}`);
-    if (entry.params.stopSequences.length)
-      tag(`стоп: ${entry.params.stopSequences.join(' | ')}`);
-    if (entry.truncated) tag('ответ обрезан лимитом токенов');
+    // Одна строка вместо восьми чипов: чем спрашивали, во что обошлось,
+    // на чём основано. Остальное — в раскрытии под ответом.
+    const meta = document.createElement('p');
+    meta.className = 'meta';
+    const parts = [];
+    if (entry.model) parts.push(entry.model.model);
+    if (entry.usage && entry.usage.inputTokens !== null)
+      parts.push(`${entry.usage.inputTokens} → ${entry.usage.outputTokens} токенов`);
+    parts.push(sel.selected && sel.selected !== sel.used
+      ? `${sel.used} из ${sel.selected} статей`
+      : `${sel.used} статей`);
+    meta.textContent = parts.join(' · ');
 
-    const answer = document.createElement('p');
-    answer.className = 'answer';
-    answer.textContent = entry.answer || '(пустой ответ)';
+    li.append(head, meta);
 
-    li.append(head);
+    // Предупреждение видимо: оно объясняет оборванный ответ.
+    if (entry.truncated) {
+      const warn = document.createElement('p');
+      warn.className = 'warned';
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '!';
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Предупреждение: ';
+      warn.append(mark, prefix, 'Ответ обрезан лимитом токенов');
+      li.append(warn);
+    }
+
     if (entry.params.prompt) {
       const ask = document.createElement('div');
       ask.className = 'ask-echo';
+      // Надпись «ЗАПРОС» стоила двух строк на записи и дублировала то, что
+      // и так видно по левой линии; для скринридера она осталась именем.
       const label = document.createElement('span');
-      label.className = 'ask-echo-label';
-      label.textContent = 'Запрос';
+      label.className = 'vh';
+      label.textContent = 'Запрос пользователя';
       const askText = document.createElement('p');
       askText.className = 'ask-echo-text';
       askText.textContent = entry.params.prompt;
       ask.append(label, askText);
       li.append(ask);
     }
-    li.append(tags, answer);
+
+    const answer = document.createElement('p');
+    answer.className = 'answer';
+    answer.textContent = entry.answer || '(пустой ответ)';
+    li.append(answer);
+
+    // Параметры запуска — под ответом и за раскрытием: их читают после
+    // ответа, а не вместо него.
+    const details = document.createElement('details');
+    details.className = 'params-d';
+    const summary = document.createElement('summary');
+    summary.textContent = 'параметры запуска';
+    const dl = document.createElement('dl');
+    dl.className = 'ev-dl';
+    const row = (term, value) => {
+      if (value === undefined || value === null || value === '') return;
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    row('max_tokens', entry.params.maxTokens);
+    row('температура', Number(entry.params.temperature ?? 1).toFixed(1));
+    row('отбор статей', `${sel.used} из ${sel.selected ?? sel.used}, по запросу ${sel.matched}`);
+    if (sel.budgetTokens)
+      row('предел входа', `${sel.budgetTokens} токенов${sel.budgetSource === 'остаток квоты' ? ' (остаток квоты)' : ''}`);
+    row('с текстом', sel.withText);
+    if (entry.params.stopSequences?.length)
+      row('стоп-последовательности', entry.params.stopSequences.join(' | '));
+    // Записи, сделанные до появления правки промпта, признака не несут:
+    // дописывать им «исходный» задним числом нельзя.
+    if (entry.systemOverridden !== undefined)
+      row('системный промпт', entry.systemOverridden ? 'изменённый в этом браузере' : 'исходный');
+    details.append(summary, dl);
+    li.append(details);
     return li;
   };
 
@@ -924,8 +1064,9 @@
     for (const entry of entries) {
       try { nodes.push(renderEntry(entry)); } catch {}
     }
-    feed.replaceChildren(...nodes);
-    empty.hidden = nodes.length > 0;
+    // Пустое состояние живёт внутри панели: иначе при первом же ответе
+    // блок менял бы форму, а рамка появлялась бы из ниоткуда.
+    feed.replaceChildren(...(nodes.length > 0 ? nodes : [empty]));
     $('clear').hidden = entries.length === 0;
   };
 
@@ -955,6 +1096,10 @@
       articles: Number($('p-articles').value),
       stopSequences: $('p-stop').value.split('\n').map((s) => s.trim()).filter(Boolean),
     };
+    // Поле уходит только при изменённом промпте: при исходном поведение
+    // агента не меняется ни на байт.
+    const mine = activePrompt();
+    if (mine) params.system = mine;
 
     button.disabled = true;
     feed.setAttribute('aria-busy', 'true');
@@ -1005,15 +1150,20 @@
         showArchive(r.archive.refreshed
           ? { total: r.archive.total, lastRefresh: new Date().toISOString() }
           : { total: r.archive.total });
+        // Текст промпта в ленту не кладём: показывается только признак,
+        // а копии текста пережили бы «Вернуть исходный» и раздували бы
+        // хранилище на 50 записей.
+        const { system: _sent, ...feedParams } = params;
         saveFeed([{
           at: new Date().toISOString(),
           sphere,
-          params,
+          params: feedParams,
           answer: r.answer,
           model: r.model,
           usage: r.usage,
           truncated: r.truncated,
           selection: r.selection,
+          systemOverridden: Boolean(r.systemOverridden),
         }, ...loadFeed()]);
         renderFeed();
       }
@@ -1040,8 +1190,46 @@
   /* ---------- окно передачи ---------- */
 
   const dlg = $('dlg'), about = $('about');
+  const field = $('dlg-prompt'), stateLabel = $('dlg-state'), note = $('dlg-note');
+  const saveBtn = $('dlg-save'), resetBtn = $('dlg-reset');
+  let noteTimer = null;
+
+  const say = (text, keep) => {
+    clearTimeout(noteTimer);
+    note.textContent = text;
+    // Две секунды — как у подтверждения копирования в дне 6 изначально.
+    if (!keep && text) noteTimer = setTimeout(() => { note.textContent = ''; }, 2000);
+  };
+
+  /**
+   * Признак «исходный / изменённый» — сравнение текста с промптом реестра,
+   * а не флаг «когда-то сохранял»: иначе он врал бы после возврата вручную.
+   */
+  const showPromptState = () => {
+    const base = agentInfo?.systemPrompt ?? '';
+    const active = activePrompt();
+    const shown = active ?? base;
+    const chars = (n) => `${n} ${plural(n, 'знак', 'знака', 'знаков')}`;
+    if (!active) {
+      stateLabel.textContent = `Исходный · ${chars(base.length)}`;
+    } else if (savedPrompt?.base !== undefined && savedPrompt.base !== base) {
+      // Промпт агента сменился в реестре, а правка осталась прежней: молча
+      // подменять сохранённое нельзя, но и промолчать об этом тоже. Сверяем
+      // текст, а не только версию: промпт правят и без смены версии.
+      stateLabel.textContent =
+        savedPrompt.version && agentInfo?.version && savedPrompt.version !== agentInfo.version
+          ? `Изменён от прежней версии промпта (${savedPrompt.version}); у агента сейчас ${agentInfo.version}`
+          : 'Изменён от прежней версии промпта; у агента он с тех пор поменялся';
+    } else {
+      stateLabel.textContent = `Изменён — только в этом браузере · ${chars(shown.length)}`;
+    }
+    resetBtn.disabled = !active;
+    $('about-note').textContent = active ? ' — промпт изменён' : '';
+  };
+  showPromptState();
+
   const openAbout = () => {
-    const prompt = agentInfo?.systemPrompt ?? '';
+    const base = agentInfo?.systemPrompt ?? '';
     $('dlg-name').textContent = agentInfo?.name ?? 'Агент';
     const version = $('dlg-version');
     version.hidden = !agentInfo?.version;
@@ -1049,15 +1237,22 @@
     $('dlg-purpose').textContent = agentInfo
       ? agentInfo.purpose
       : 'Описание агента недоступно: не удалось получить его состояние';
-    const row = $('dlg-row'), pre = $('dlg-prompt'), copy = $('dlg-copy');
-    $('dlg-note').textContent = '';
-    row.hidden = !agentInfo;
-    // Сообщение о недоступности — обычной строкой вместо блока: в рамке
+    $('dlg-row').hidden = !agentInfo;
+    // Сообщение о недоступности — обычной строкой вместо поля: в рамке
     // моноширинного блока оно читалось бы как сам промпт.
-    pre.hidden = !prompt;
-    $('dlg-nopr').hidden = !agentInfo || Boolean(prompt);
-    if (prompt) pre.textContent = prompt;
-    copy.disabled = !prompt;
+    field.hidden = !base;
+    $('dlg-hint').hidden = !base;
+    $('dlg-actions').hidden = !base;
+    $('dlg-nopr').hidden = !agentInfo || Boolean(base);
+    // В поле — сохранённая правка, иначе исходный текст. Несохранённое
+    // прошлое открытие не восстанавливается: сохранение — по кнопке.
+    if (base) field.value = savedPrompt?.text ?? base;
+    field.disabled = !base;
+    field.removeAttribute('aria-invalid');
+    saveBtn.disabled = !base;
+    $('dlg-copy').disabled = !base;
+    say(promptInMemory ? 'Браузер отказал в хранении: правка действует до закрытия вкладки' : '', true);
+    showPromptState();
     dlg.showModal();
     dlg.focus();
   };
@@ -1066,17 +1261,55 @@
   // Возврат фокуса на открывшую кнопку — проверяется, а не считается данным.
   dlg.addEventListener('close', () => about.focus());
 
-  let noteTimer = null;
-  $('dlg-copy').onclick = async () => {
-    const note = $('dlg-note');
-    clearTimeout(noteTimer);
+  // Отказ снимается первым же введённым символом: держать красную рамку
+  // после исправления значило бы врать.
+  field.addEventListener('input', () => {
+    if (field.getAttribute('aria-invalid')) field.removeAttribute('aria-invalid');
+  });
+
+  saveBtn.onclick = () => {
+    const text = field.value.trim();
+    if (!text) {
+      // Пустой промпт не сохраняется и не отправляется, и кнопка остаётся
+      // активной: отключённая кнопка не объяснила бы, почему ничего не вышло.
+      field.setAttribute('aria-invalid', 'true');
+      say('Пустой промпт отправить нельзя. Верните текст или нажмите «Вернуть исходный»', true);
+      field.focus();
+      return;
+    }
+    savedPrompt = { version: agentInfo?.version ?? null, base: agentInfo?.systemPrompt ?? '', text };
+    promptInMemory = false;
     try {
-      await navigator.clipboard.writeText(agentInfo?.systemPrompt ?? '');
-      note.textContent = 'Скопировано';
-      noteTimer = setTimeout(() => { note.textContent = ''; }, 2000);
+      localStorage.setItem(PROMPT_STORE, JSON.stringify(savedPrompt));
+      say('Промпт обновлён. Следующие запросы уйдут с ним', true);
     } catch {
-      note.textContent = 'Не удалось скопировать — выделите текст вручную';
-      $('dlg-prompt').focus();
+      // Правка остаётся в памяти страницы: делать вид, что сохранили, нельзя.
+      promptInMemory = true;
+      say('Браузер отказал в хранении: правка действует до закрытия вкладки', true);
+    }
+    showPromptState();
+  };
+
+  resetBtn.onclick = () => {
+    savedPrompt = null;
+    promptInMemory = false;
+    try { localStorage.removeItem(PROMPT_STORE); } catch {}
+    field.value = agentInfo?.systemPrompt ?? '';
+    field.removeAttribute('aria-invalid');
+    say('Возвращён исходный промпт агента', true);
+    showPromptState();
+    field.focus();
+  };
+
+  $('dlg-copy').onclick = async () => {
+    try {
+      // Копируется то, что видно в поле: рядом написано, исходный это
+      // текст или изменённый, и копировать другое было бы обманом.
+      await navigator.clipboard.writeText(field.value);
+      say('Скопировано');
+    } catch {
+      say('Не удалось скопировать — выделите текст вручную', true);
+      field.focus();
     }
   };
 </script>
