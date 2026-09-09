@@ -51,7 +51,7 @@
     "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если в консоли не включён Zero Data Retention."
   },
   {
-    "_": "Генеративная модель Groq для явного выбора пользователем (день 5). У GPT-OSS нет уровня none (только low|medium|high) и нет reasoning_format: none отображён на low, рассуждения прячутся через include_reasoning, reasoningFloorTokens не даёт им съесть ответ.",
+    "_": "Генеративная модель Groq для явного выбора пользователем (день 5). У GPT-OSS нет уровня none (только low|medium|high) и нет reasoning_format: none отображён на low, рассуждения прячутся через include_reasoning, reasoningFloorTokens не даёт им съесть ответ. maxRequestTokens — не окно модели, а предел тарифа on_demand: 8000 входных токенов в минуту, запрос сверху получает 413.",
     "id": "groq-gpt-oss-20b",
     "revision": 1,
     "kind": "groq",
@@ -78,10 +78,11 @@
       "inputPerMTok": 0.075,
       "outputPerMTok": 0.3
     },
-    "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если не включён Zero Data Retention."
+    "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если не включён Zero Data Retention.",
+    "maxRequestTokens": 6000
   },
   {
-    "_": "Генеративная модель Groq для явного выбора пользователем (день 5). У Qwen 3.6 из уровней есть только none и default, поэтому low|medium|high не объявлены; рассуждения прячутся через reasoning_format: hidden.",
+    "_": "Генеративная модель Groq для явного выбора пользователем (день 5). У Qwen 3.6 из уровней есть только none и default, поэтому low|medium|high не объявлены; рассуждения прячутся через reasoning_format: hidden. maxRequestTokens — предел тарифа on_demand: 7000 входных токенов в минуту, запрос сверху получает 413.",
     "id": "groq-qwen3.6-27b",
     "revision": 1,
     "kind": "groq",
@@ -104,6 +105,7 @@
       "inputPerMTok": 0.6,
       "outputPerMTok": 3.0
     },
-    "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если не включён Zero Data Retention."
+    "dataHandling": "Промпты не используются для обучения; могут храниться до 30 дней для расследования злоупотреблений, если не включён Zero Data Retention.",
+    "maxRequestTokens": 5000
   }
 ]

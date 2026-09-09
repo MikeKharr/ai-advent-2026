@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { parseEnv, parseParams } from '../env.js'
+import { budgetFor, parseEnv, parseParams } from '../env.js'
 import { askRouter, renderCandidates, stripUnknownLinks } from '../router.js'
 
 const ENV = parseEnv({ ROUTER_APP_KEY: 'app-day5', ROUTER_URL: 'http://router.test:8081' }).env
@@ -122,6 +122,19 @@ test('ссылка без схемы проходит ту же проверку
   const out = stripUnknownLinks(text, ITEMS)
   assert.ok(out.includes('www.techcrunch.com/a'), 'известная ссылка без схемы уцелела')
   assert.ok(!out.includes('evil.example'), 'неизвестная вырезана, хоть и без схемы')
+})
+
+test('бюджет подборки зависит от выбранной модели', () => {
+  // У моделей Groq предел на запрос жёстче окна: подборка «как для Haiku»
+  // получила бы 413, поэтому бюджет символов у них свой.
+  assert.equal(budgetFor('anthropic-haiku'), 120_000)
+  assert.ok(budgetFor('groq-gpt-oss-20b') < 20_000)
+  assert.ok(budgetFor('groq-qwen3.6-27b') < budgetFor('groq-gpt-oss-20b'))
+  assert.equal(
+    budgetFor('неизвестная'),
+    budgetFor('anthropic-haiku'),
+    'запасной вариант — умолчание',
+  )
 })
 
 test('окружение без ключа приложения — ошибка конфигурации, а не тихий старт', () => {

@@ -88,6 +88,15 @@ export function validateProviders(providers, env) {
       fail(`${where}: dataClasses — непустой массив`)
     if (!Number.isInteger(p.contextWindow) || p.contextWindow < 1)
       fail(`${where}: contextWindow — целое ≥ 1`)
+    // Практический предел на один запрос бывает жёстче окна модели: у Groq
+    // на тарифе on_demand это входные токены в минуту (ITPM), и запрос
+    // сверх него получает 413, а не обрезается.
+    if (p.maxRequestTokens !== undefined) {
+      if (!Number.isInteger(p.maxRequestTokens) || p.maxRequestTokens < 1)
+        fail(`${where}: maxRequestTokens — целое ≥ 1`)
+      if (p.maxRequestTokens > p.contextWindow)
+        fail(`${where}: maxRequestTokens больше окна ${p.contextWindow}`)
+    }
     // Уровень none обязателен; значение — либо `true` («параметр не слать»),
     // либо имя усилия в диалекте провайдера.
     if (!p.thinking || typeof p.thinking !== 'object' || !p.thinking.none)
@@ -222,10 +231,11 @@ export function capabilityFit(p, cls, level, dataClass, inputTokens, extraRequir
       ok: false,
       reason: `юрисдикция ${p.jurisdiction} вне допустимых ${cls.jurisdictions.join(',')}`,
     }
-  if (inputTokens > p.contextWindow)
+  const limit = p.maxRequestTokens ?? p.contextWindow
+  if (inputTokens > limit)
     return {
       ok: false,
-      reason: `вход ${inputTokens} токенов больше окна ${p.contextWindow}`,
+      reason: `вход ${inputTokens} токенов больше предела ${limit} у провайдера`,
     }
   return { ok: true }
 }

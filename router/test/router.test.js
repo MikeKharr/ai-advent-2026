@@ -707,7 +707,7 @@ test('классификатор не берётся за генеративны
   const long = await router.route({ taskClass: 'guard_prompt', input: 'x'.repeat(4000) })
   assert.equal(long.ok, false)
   assert.equal(long.code, 'refused')
-  assert.match(long.reasons[0].reason, /окн/)
+  assert.match(long.reasons[0].reason, /больше предела/)
   assert.equal(calls.filter((c) => c.host === GROQ).length, 0)
 })
 
@@ -744,6 +744,46 @@ test('оценка расхода при явном выборе считает 
   const picked = router.estimateRequest({ ...req, provider: 'groq-gpt-oss-20b' })
   assert.ok(picked.costUsd < auto.costUsd, 'по выбранной, а не по самой дорогой')
   assert.ok(picked.tokens < auto.tokens, 'и один вызов вместо двух')
+})
+
+test('предел провайдера на запрос жёстче окна: отказ до вызова', async () => {
+  // У Groq на тарифе on_demand ограничение — входные токены в минуту,
+  // и запрос сверх него получает 413. Роутер обязан отказать раньше.
+  const limited = { ...GROQ_CHAT, contextWindow: 131072, maxRequestTokens: 5000 }
+  const { router, calls } = setup({
+    providers: [limited, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  // 40 тысяч символов латиницы это ~10 тысяч токенов по оценке роутера.
+  const big = await router.route({
+    taskClass: 'news_answer',
+    input: 'a'.repeat(40_000),
+    provider: 'groq-gpt-oss-20b',
+  })
+  assert.equal(big.ok, false)
+  assert.equal(big.code, 'refused')
+  assert.match(big.reasons[0].reason, /больше предела 5000/)
+  assert.equal(calls.length, 0, 'до провайдера запрос не дошёл')
+
+  // Тот же провайдер на запросе по размеру отвечает как обычно.
+  const small = await router.route({
+    taskClass: 'news_answer',
+    input: 'коротко',
+    provider: 'groq-gpt-oss-20b',
+  })
+  assert.equal(small.ok, true)
+})
+
+test('maxRequestTokens больше окна модели — крах на старте', () => {
+  const broken = [
+    { ...GROQ_CHAT, contextWindow: 1000, maxRequestTokens: 5000 },
+    PROVIDERS[1],
+    GUARD,
+  ]
+  assert.throws(
+    () => loadConfig({ providers: broken, classes: CLASSES, env: ENV }),
+    /maxRequestTokens/,
+  )
 })
 
 test('явный выбор модели: зовём только её, без фолбэка', async () => {

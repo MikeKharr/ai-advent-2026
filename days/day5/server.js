@@ -6,7 +6,15 @@ import { readFile } from 'node:fs/promises'
 import http from 'node:http'
 import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MODELS, PARAM_DEFAULTS, PARAM_LIMITS, parseEnv, parseParams, parseSphere } from './env.js'
+import {
+  budgetFor,
+  MODELS,
+  PARAM_DEFAULTS,
+  PARAM_LIMITS,
+  parseEnv,
+  parseParams,
+  parseSphere,
+} from './env.js'
 import { collectItems, FEEDS } from './feeds.js'
 import { createLimiter } from './limits.js'
 import { askRouter } from './router.js'
@@ -16,8 +24,6 @@ import { createStore } from './store.js'
 const here = dirname(fileURLToPath(import.meta.url))
 const PUBLIC = join(here, 'public')
 const MAX_BODY = 64 * 1024
-/** Тот же бюджет, что в дне 3: ~120K символов это ~30K токенов. */
-const MAX_TEXT_CHARS = 120_000
 
 const { env, errors: envErrors } = parseEnv()
 for (const message of envErrors) console.error(`конфигурация: ${message}`)
@@ -169,7 +175,9 @@ async function handleAnswer(req, res) {
       prompt: params.prompt,
       perSource: params.perSource,
       limit: params.articles,
-      maxChars: MAX_TEXT_CHARS,
+      // Бюджет зависит от модели: у моделей Groq предел на запрос жёстче
+      // окна, и подборка «как для Haiku» получила бы отказ 413.
+      maxChars: budgetFor(params.model),
     })
 
     const answer = await askRouter(sphere.sphere, params, selection.items, env)
@@ -180,6 +188,7 @@ async function handleAnswer(req, res) {
       truncated: answer.truncated,
       durationMs: answer.durationMs,
       selection: {
+        budgetChars: budgetFor(params.model),
         used: selection.items.length,
         matched: selection.matched,
         terms: selection.terms,
