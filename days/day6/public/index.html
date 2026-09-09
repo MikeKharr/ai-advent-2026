@@ -1016,10 +1016,14 @@
       if (ended) return;
       ended = true;
       es.close();
-      if (run.answered) setStatus(run, 'succeeded');
-      else if (es.readyState === EventSource.CLOSED)
+      // Ответ важнее потерянного события: если он уже пришёл, запуск готов.
+      if (run.answered) { setStatus(run, 'succeeded'); finish(); return; }
+      // Два случая различаются тем, доходили ли события агента: `readyState`
+      // здесь не помощник — close() уже перевёл его в CLOSED, а до вызова он
+      // одинаков (CONNECTING) и при обрыве сети, и при закрытии сервером.
+      if (run.events.length > 0)
         failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа');
-      else failRun(run, 'Связь с агентом прервана', 'поток событий оборвался до завершения');
+      else failRun(run, 'Связь с агентом прервана', 'поток событий не открылся');
       finish();
     };
   };

@@ -3,6 +3,7 @@
 
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import { connect } from 'node:net'
 import { after, before, test } from 'node:test'
 import { createNewsAnalyst } from '../src/agent.js'
 import { createRuns } from '../src/runs.js'
@@ -143,4 +144,24 @@ test('состояние архива у агента; у чужого аген�
     (await fetch(`${base}/v1/agents/nobody/tools/archive`, { headers: AUTH })).status,
     404,
   )
+})
+
+test('битый заголовок Host — 400, а не падение процесса', async () => {
+  // Необработанный отказ в async-обработчике валит весь сервис, поэтому
+  // разбор адреса проверяется сырым запросом, минуя fetch с его нормализацией.
+  const { port } = server.address()
+  const answer = await new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1', () => {
+      socket.write('GET /v1/agents HTTP/1.1\r\nHost: не адрес\r\nConnection: close\r\n\r\n')
+    })
+    let text = ''
+    socket.on('data', (chunk) => {
+      text += chunk
+    })
+    socket.on('end', () => resolve(text))
+    socket.on('error', reject)
+  })
+  assert.match(answer, /^HTTP\/1\.1 400 /)
+  // Процесс жив: обычный запрос после битого проходит.
+  assert.equal((await fetch(`${base}/healthz`)).status, 200)
 })

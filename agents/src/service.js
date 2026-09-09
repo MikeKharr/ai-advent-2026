@@ -121,8 +121,14 @@ export function createService({ agents, archive, runs, env, log = console.error 
   }
 
   return async function handler(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)
-    const path = url.pathname
+    // Разбор адреса до всего остального и в try: битый Host бросает, а
+    // необработанный отказ в async-обработчике валит процесс целиком.
+    let path
+    try {
+      path = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`).pathname
+    } catch {
+      return send(res, 400, { ok: false, code: 'bad_request' })
+    }
 
     if (path === '/healthz') {
       const state = archive.state()

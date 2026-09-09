@@ -25,6 +25,7 @@ import {
   parseParams,
   parseSphere,
 } from './params.js'
+import { TERMINAL } from './runs.js'
 
 /** «2.0 с» / «320 мс» — для деталей события; страница форматирует сама. */
 function seconds(ms) {
@@ -383,7 +384,7 @@ export function createNewsAnalyst({
         // Неожиданная ошибка — тоже терминальное событие: запуск не может
         // остаться «выполняется» навсегда.
         log(`запуск ${run.id}: ${error.stack ?? error.message}`)
-        if (runs.get(run.id) && !['succeeded', 'failed', 'cancelled'].includes(run.status)) {
+        if (runs.get(run.id) && !TERMINAL.has(run.status)) {
           fail({
             code: 'internal',
             title: 'Внутренняя ошибка агента',
