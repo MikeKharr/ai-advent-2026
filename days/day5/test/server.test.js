@@ -3,7 +3,14 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { budgetFor, inputBudgetFor, parseEnv, parseParams } from '../env.js'
+import {
+  budgetFor,
+  inputBudgetFor,
+  PARAM_LIMITS,
+  parseEnv,
+  parseParams,
+  PROMPT_PRESETS,
+} from '../env.js'
 import {
   articleTokens,
   askRouter,
@@ -293,6 +300,41 @@ test('быстрая оценка числа статей сходится с н
   assert.ok(fits > 0, 'что-то влезает')
   assert.ok(Math.abs(fits - fitted.length) <= 1, `прикидка ${fits}, подгонка ${fitted.length}`)
   assert.ok(requestTokens('тема', params, items.slice(0, fits)) <= budget, 'прикидка не завышает')
+})
+
+test('готовые запросы идут от простого к сложному и помещаются в поле', () => {
+  assert.ok(PROMPT_PRESETS.length >= 5 && PROMPT_PRESETS.length <= 7)
+  const lengths = PROMPT_PRESETS.map((p) => p.text.length)
+  // Порядок значим: он показывает, как растёт требовательность запроса.
+  for (let i = 1; i < lengths.length; i++)
+    assert.ok(lengths[i] > lengths[i - 1], `пресет ${i + 1} не длиннее предыдущего`)
+  for (const p of PROMPT_PRESETS) {
+    assert.ok(p.id && p.title && p.hint && p.text)
+    assert.ok(p.text.length <= PARAM_LIMITS.promptChars, `${p.title} не влезает в поле`)
+  }
+  // Пресет должен проходить проверку параметров как обычный запрос.
+  const { params } = parseParams({ prompt: PROMPT_PRESETS.at(-1).text }, ENV)
+  assert.equal(params.prompt, PROMPT_PRESETS.at(-1).text)
+})
+
+test('температура: умолчание не отправляется, сдвинутая уходит в роутер', async () => {
+  let sent = null
+  const def = parseParams({}, ENV).params
+  await askRouter('тема', def, ITEMS, ENV, { fetchImpl: fakeRouter({ onCall: (c) => (sent = c) }) })
+  assert.equal(sent.body.temperature, undefined, 'при единице параметр не шлём')
+
+  const moved = parseParams({ temperature: 0.3 }, ENV).params
+  await askRouter('тема', moved, ITEMS, ENV, {
+    fetchImpl: fakeRouter({ onCall: (c) => (sent = c) }),
+  })
+  assert.equal(sent.body.temperature, 0.3)
+})
+
+test('температура вне шкалы и не по шагу отвергается', () => {
+  assert.match(parseParams({ temperature: 1.5 }, ENV).message, /Температура/)
+  assert.match(parseParams({ temperature: -0.1 }, ENV).message, /Температура/)
+  assert.match(parseParams({ temperature: 0.05 }, ENV).message, /Температура/)
+  assert.equal(parseParams({ temperature: '0.7' }, ENV).params.temperature, 0.7)
 })
 
 test('бюджет подборки зависит от выбранной модели', () => {

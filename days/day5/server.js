@@ -12,6 +12,7 @@ import {
   MODELS,
   PARAM_DEFAULTS,
   PARAM_LIMITS,
+  PROMPT_PRESETS,
   parseEnv,
   parseParams,
   parseSphere,
@@ -337,6 +338,7 @@ const server = http.createServer(async (req, res) => {
     })
     return send(res, 200, {
       models,
+      presets: PROMPT_PRESETS,
       defaults: PARAM_DEFAULTS,
       limits: { ...PARAM_LIMITS, maxTokens: env.MAX_OUTPUT_TOKENS },
       archive: {
