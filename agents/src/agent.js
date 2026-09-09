@@ -11,9 +11,11 @@ import {
   articlesThatFit,
   askRouter,
   effectiveBudget,
+  effectiveContext,
   fetchLimits,
   fitToBudget,
   guardLinks,
+  estimateTokens,
   requestTokens,
 } from './llm.js'
 import {
@@ -22,6 +24,7 @@ import {
   MODELS,
   PARAM_LIMITS,
   PROMPT_PRESETS,
+  isSessionId,
   parseParams,
   parseSphere,
   parseSystem,
@@ -65,6 +68,7 @@ export function createNewsAnalyst({
   archive,
   runs,
   env,
+  sessions = null,
   fetchImpl = fetch,
   now = Date.now,
   log = console.error,
@@ -72,10 +76,20 @@ export function createNewsAnalyst({
   // Промпт из реестра — основа; запуск может прийти со своим (см. parseSystem).
   const baseSystem = agent.systemPrompt
   const limitsOf = () => fetchLimits(env, agent.taskClass, { fetchImpl }).catch(() => null)
+  // Один запуск на сессию за раз: два параллельных перемешали бы порядок
+  // реплик в базе, и диалог перестал бы быть диалогом (ADR 2026-09-12-0930).
+  const busy = new Set()
 
   return {
     id: agent.id,
     version: agent.version,
+
+    /** Идёт ли в этой сессии запуск. Проверяется до создания следующего. */
+    isBusy: (sessionId) => sessionId !== null && busy.has(sessionId),
+    /** Занять сессию — синхронно, в том же такте, что и создание запуска. */
+    hold(sessionId) {
+      if (sessionId) busy.add(sessionId)
+    },
 
     /** Вход запуска: проверяется здесь, на границе агента, а не у дня. */
     parseInput(body) {
@@ -90,9 +104,20 @@ export function createNewsAnalyst({
       if (!parsed.ok) return { ok: false, message: parsed.message }
       const system = parseSystem(body.system)
       if (!system.ok) return { ok: false, message: system.message }
+      // Сессия необязательна: без неё агент ведёт себя как в дне 6.
+      const sessionId = body.sessionId ?? null
+      if (sessionId !== null && !isSessionId(sessionId))
+        return { ok: false, message: 'Поле sessionId должно быть идентификатором сессии' }
+      if (this.isBusy(sessionId))
+        return { ok: false, message: 'Дождитесь ответа на предыдущее сообщение' }
       return {
         ok: true,
-        input: { sphere: sphere.sphere, params: parsed.params, system: system.system },
+        input: {
+          sphere: sphere.sphere,
+          params: parsed.params,
+          system: system.system,
+          sessionId,
+        },
       }
     },
 
@@ -132,20 +157,46 @@ export function createNewsAnalyst({
 
     /** Выполняет запуск до терминального события. Возвращает, когда всё записано. */
     async execute(run) {
-      const { sphere, params } = run.input
+      const { sphere, params, sessionId } = run.input
       // Свой промпт запуска или промпт из реестра. Всё, что считает размер
       // запроса и зовёт модель, обязано брать именно его: иначе агент
       // пообещает, что подборка влезает, по чужой мерке.
       const system = run.input.system ?? baseSystem
       const systemOverridden = run.input.system !== null && run.input.system !== undefined
       const startedAt = now()
+      const memory = sessions !== null && sessionId !== null
+      /** Хвост диалога, ушедший модели. Заполняется после запроса пределов. */
+      let transcript = []
+      let context = {
+        used: 0,
+        effective: 0,
+        requested: params.contextTokens,
+        messages: 0,
+        dropped: 0,
+      }
+      /** Реплика пользователя пишется до вызова модели: вопрос был задан. */
+      let asked = false
+      let memoryFailed = false
+      const remember = (role, text, tokens, meta) => {
+        if (!memory) return
+        try {
+          sessions.append({ sessionId, role, text, tokens, runId: run.id, meta })
+        } catch (error) {
+          // Диалог без записи хуже, чем диалог, но лучше, чем упавший запуск.
+          // Идентификатор сессии — ключ к переписке: в лог идёт только начало.
+          memoryFailed = true
+          log(`сессия ${sessionId.slice(0, 8)}…: запись не удалась: ${error.message}`)
+        }
+      }
       const emit = (fields) => runs.emit(run.id, fields)
       // С момента запроса к роутеру вызов считается оплаченным, пока роутер
       // не сказал обратного: неожиданная ошибка после ответа модели не должна
       // возвращать дню слот за деньги, которые уже потрачены.
       let modelAsked = false
-      const fail = ({ code, message, status = null, paid = modelAsked, title }) =>
-        runs.finish(run.id, {
+      const fail = ({ code, message, status = null, paid = modelAsked, title }) => {
+        // Ошибка видна в чате, но в контекст модели не идёт: это наш текст.
+        if (asked) remember('agent', message, 0, { error: true, code })
+        return runs.finish(run.id, {
           status: 'failed',
           error: { code, message, paidNothing: !paid },
           event: {
@@ -157,6 +208,7 @@ export function createNewsAnalyst({
             durationMs: now() - startedAt,
           },
         })
+      }
 
       try {
         emit({
@@ -262,8 +314,44 @@ export function createNewsAnalyst({
         const planStarted = now()
         const limits = await limitsOf()
         const budget = effectiveBudget(params.model, inputBudgetFor(params.model), limits)
-        const items = fitToBudget(system, sphere, params, found.items, budget.tokens)
-        const needed = requestTokens(system, sphere, params, items)
+
+        // Диалог берётся до статей: сначала память, потом подборка на
+        // остаток. Действующий размер меньше заданного, если предел входа
+        // модели не позволяет (ADR 2026-09-12-0930).
+        const effective = effectiveContext(params.contextTokens, budget.tokens)
+        if (memory && effective > 0) {
+          const tail = sessions.tail(sessionId, effective)
+          transcript = tail.messages
+          context = {
+            used: tail.tokens,
+            effective,
+            requested: params.contextTokens,
+            messages: tail.messages.length,
+            dropped: tail.dropped,
+          }
+          if (tail.messages.length > 0) {
+            emit({
+              stage: 'planning',
+              title: 'Вспомнил разговор',
+              detail:
+                `${tail.messages.length} реплик, ${tail.tokens} из ${effective} токенов контекста` +
+                (effective < params.contextTokens ? ` (модель даёт меньше ${params.contextTokens})` : ''),
+              data: { ...context },
+            })
+          }
+        } else {
+          context = { used: 0, effective, requested: params.contextTokens, messages: 0, dropped: 0 }
+        }
+
+        // Реплика пользователя записывается до вызова модели: вопрос задан,
+        // и неудачный запуск не должен делать вид, что его не было.
+        remember('user', params.prompt || sphere, estimateTokens(params.prompt || sphere), {
+          sphere,
+        })
+        asked = true
+
+        const items = fitToBudget(system, sphere, params, found.items, budget.tokens, transcript)
+        const needed = requestTokens(system, sphere, params, items, transcript)
         emit({
           stage: 'planning',
           title: 'Подогнал под модель',
@@ -272,6 +360,7 @@ export function createNewsAnalyst({
             budgetTokens: budget.tokens,
             budgetSource: budget.source,
             requestTokens: needed,
+            contextTokens: context.used,
             used: items.length,
             selected: found.items.length,
             withText: items.filter((i) => i.text).length,
@@ -284,12 +373,16 @@ export function createNewsAnalyst({
           const reset = budget.quota?.resetAt
             ? ` Сброс: ${new Date(budget.quota.resetAt).toLocaleTimeString('ru-RU')}.`
             : ''
+          const blame =
+            context.used > 0
+              ? ` Из них ${context.used} занял контекст разговора — его размер можно уменьшить.`
+              : ''
           return fail({
             code: 'budget_too_small',
             title: 'Не хватает предела модели',
             message:
               `У модели сейчас осталось ${budget.tokens} токенов на запрос — не хватает даже на одну статью.` +
-              `${reset} Выберите другую модель или подождите.`,
+              `${blame}${reset} Выберите другую модель или подождите.`,
           })
         }
 
@@ -312,7 +405,7 @@ export function createNewsAnalyst({
         modelAsked = true
         try {
           answer = await askRouter(
-            { system, taskClass: agent.taskClass, sphere, params, items },
+            { system, taskClass: agent.taskClass, sphere, params, items, transcript },
             env,
             { fetchImpl },
           )
@@ -368,10 +461,72 @@ export function createNewsAnalyst({
         })
 
         const totalMs = now() - startedAt
+        const totalTokens =
+          (answer.usage.inputTokens ?? 0) + (answer.usage.outputTokens ?? 0)
+        // Сводка переживает перезапуск вместе с перепиской: события монитора
+        // живут до перезагрузки страницы, а «что было в этой итерации»
+        // должно читаться и завтра (ADR 2026-09-12-0930).
+        const summary = {
+          model: answer.provider?.model ?? params.model,
+          provider: params.model,
+          articlesUsed: items.length,
+          articlesSelected: found.items.length,
+          matched: found.matched,
+          withText: items.filter((i) => i.text).length,
+          refreshed: found.refresh.refreshed,
+          links: guard.total,
+          strippedLinks: guard.stripped.length,
+          inputTokens: answer.usage.inputTokens,
+          outputTokens: answer.usage.outputTokens,
+          totalTokens,
+          durationMs: totalMs,
+          budgetTokens: budget.tokens,
+          budgetSource: budget.source,
+          contextUsed: context.used,
+          contextEffective: context.effective,
+          contextRequested: context.requested,
+          contextMessages: context.messages,
+          contextDropped: context.dropped,
+          truncated: answer.truncated,
+          systemOverridden,
+          maxTokens: params.maxTokens,
+          temperature: params.temperature,
+          perSource: params.perSource,
+          articles: params.articles,
+          stopSequences: params.stopSequences.length,
+        }
+        // Ответ модели — в переписку: он же станет контекстом следующего
+        // сообщения. Считаем его выходными токенами, а не заново.
+        // Провайдер может не прислать usage (так делает Ollama). Ноль здесь
+        // означал бы «реплика ничего не весит», и она никогда не вытеснялась
+        // бы из контекста — считаем оценкой, той же, что у роутера.
+        remember(
+          'agent',
+          guard.text,
+          answer.usage.outputTokens ?? estimateTokens(guard.text),
+          summary,
+        )
+
+        if (memoryFailed) {
+          // Память обещана, и её отказ не должен быть виден только в логе
+          // контейнера: после перезагрузки этой реплики в чате не будет.
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Не записал разговор',
+            detail: 'ответ показан, но в переписку не попал — после перезагрузки его не будет',
+            data: { memory: 'failed' },
+          })
+        }
+
         runs.finish(run.id, {
           status: 'succeeded',
           result: {
             answer: guard.text,
+            memoryFailed,
+            summary,
+            context,
+            totalTokens,
             model: answer.provider,
             usage: answer.usage,
             truncated: answer.truncated,
@@ -416,6 +571,9 @@ export function createNewsAnalyst({
             message: 'Внутренняя ошибка агента',
           })
         }
+      } finally {
+        // Сессия свободна при любом исходе: иначе один сбой запер бы диалог.
+        if (sessionId) busy.delete(sessionId)
       }
     },
   }

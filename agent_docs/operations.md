@@ -149,6 +149,42 @@ advent-agents-1`; `/healthz` отдаёт число агентов, живых 
 архива. Готовые запуски живут в памяти 10 минут; перезапуск контейнера
 обрывает запуски в полёте — день покажет это ошибкой запуска.
 
+## День 7 — переписка на сервере
+
+День 7 (`days/day7/`) ходит к тому же сервису агентов и тем же ключом, что
+день 6, поэтому нового секрета не нужно: `deploy/day7.env` заводится копией
+строки из `agents.env`, значение при этом не печатается.
+
+**Файл нужен до мержа.** Без него `AGENT_KEY` у дня пуст, `/day7/healthz`
+отдаёт 503, и шаг проверки живого адреса валит выкатку.
+
+```sh
+cd ~/ai-advent-2026/deploy && umask 077
+grep '^AGENT_KEY=' agents.env > day7.env
+printf 'COOKIE_PATH=/day7/\n' >> day7.env
+chmod 600 day7.env
+grep -o '^[A-Z_]*=' day7.env
+```
+
+Диалоги лежат в SQLite на том же томе `agents_data`, файл `/data/sessions.db`
+(ADR `2026-09-12-0930`). Срок хранения — 30 часов без новых сообщений;
+уборка идёт при старте сервиса и раз в десять минут. Сколько сессий и
+сообщений сейчас — в `/healthz` сервиса агентов.
+
+Образ сервиса агентов собирается на Node 24: встроенный `node:sqlite` в
+Node 22 требует флага. Дни остаются на Node 22, их это не касается.
+Посмотреть базу на сервере:
+
+```sh
+docker compose exec agents node -e "const {DatabaseSync}=require('node:sqlite');\
+const db=new DatabaseSync('/data/sessions.db');\
+console.log(db.prepare('select count(*) sessions from sessions').get(),\
+db.prepare('select count(*) messages from messages').get())"
+```
+
+Переписка — пользовательский текст. В базе нет ни адресов, ни заголовков
+запроса: только идентификатор сессии из cookie, роли, тексты и числа сводки.
+
 ## Добавить приложение
 
 Запись в `router/config/apps.json` с `id`, `secretEnv`, списком классов и хотя бы

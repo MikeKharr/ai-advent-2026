@@ -10,6 +10,7 @@ import { parseEnv } from './src/env.js'
 import { loadRegistry } from './src/registry.js'
 import { createRuns } from './src/runs.js'
 import { createService } from './src/service.js'
+import { createSessions } from './src/sessions.js'
 import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -24,17 +25,52 @@ const log = (entry) => console.log(typeof entry === 'string' ? entry : JSON.stri
 const registry = loadRegistry(JSON.parse(readFileSync(join(here, 'config', 'agents.json'), 'utf8')))
 const archive = createArchiveTool({ env, log })
 const runs = createRuns({ ttlMs: env.RUN_TTL_MINUTES * 60_000 })
+// Диалоги переживают перезапуск: они на томе, а не в памяти процесса.
+// Битый файл базы не должен ронять сервис: в нём живут ещё и запуски дня 6,
+// которому память диалога не нужна вовсе. Без базы сервис работает как
+// день 6, а день 7 получает честный отказ (`503 no_sessions`).
+let sessions = null
+let sweptOnStart = 0
+try {
+  sessions = createSessions({
+    file: env.SESSIONS_FILE,
+    ttlMs: env.SESSION_TTL_HOURS * 3600_000,
+    log,
+  })
+  // Уборка на старте — заодно проверка, что база читается целиком: файл
+  // может открыться заголовком и рассыпаться на странице данных. Отказ
+  // здесь означает, что 30-часовой срок хранения соблюдать нечем, и
+  // притворяться работающей памятью нельзя.
+  sweptOnStart = sessions.sweep()
+} catch (error) {
+  try {
+    sessions?.close()
+  } catch {}
+  sessions = null
+  log({ event: 'sessions_off', file: env.SESSIONS_FILE, reason: error.message })
+}
 
 /** Реестр агентов → исполнители. Сегодня один; следующий добавляется по образцу. */
 const agents = new Map()
 for (const entry of registry.values()) {
-  agents.set(entry.id, createNewsAnalyst({ agent: entry, archive, runs, env, log }))
+  agents.set(entry.id, createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log }))
 }
 
 // Готовые запуски удаляются по TTL; незавершённые живут до терминального события.
 setInterval(() => runs.sweep(), 60_000).unref()
+// Срок хранения диалогов проверяется реже: он измеряется часами.
+if (sessions) {
+  setInterval(() => {
+    try {
+      const removed = sessions.sweep()
+      if (removed > 0) log({ event: 'sessions_swept', removed })
+    } catch (error) {
+      console.error(`уборка диалогов: ${error.message}`)
+    }
+  }, 10 * 60_000).unref()
+}
 
-const handler = createService({ agents, archive, runs, env, log })
+const handler = createService({ agents, archive, runs, sessions, env, log })
 http.createServer(handler).listen(env.PORT, () => {
   log({
     event: 'start',
@@ -43,5 +79,8 @@ http.createServer(handler).listen(env.PORT, () => {
     store: env.STORE_FILE,
     archive: archive.size(),
     skipped: archive.skippedOnLoad(),
+    sessions: sessions
+      ? { ...sessions.stats(), ttlHours: env.SESSION_TTL_HOURS, sweptOnStart }
+      : 'выключены: хранилище недоступно',
   })
 })

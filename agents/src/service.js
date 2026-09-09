@@ -2,6 +2,7 @@
 // `AGENT_KEY`, на все `/v1/*`; `/healthz` открыт — его проверяет compose.
 
 import { timingSafeEqual } from 'node:crypto'
+import { isSessionId } from './params.js'
 import { TERMINAL } from './runs.js'
 
 const MAX_BODY = 64 * 1024
@@ -55,7 +56,22 @@ function sse(res, name, payload, id) {
   res.write(`${lines.join('\n')}\n\n`)
 }
 
-export function createService({ agents, archive, runs, env, log = console.error }) {
+export function createService({ agents, archive, runs, sessions = null, env, log = console.error }) {
+  /**
+   * Счётчики сессий для /healthz: их отказ не должен валить проверку, но и
+   * выглядеть как «памяти нет по настройке» тоже не должен — оператор идёт
+   * сюда именно смотреть, живо ли хранилище.
+   */
+  const sessionStats = () => {
+    if (!sessions) return null
+    try {
+      return sessions.stats()
+    } catch (error) {
+      log(`счётчики сессий: ${error.message}`)
+      return 'недоступны: хранилище не отвечает'
+    }
+  }
+
   const startRun = (agent, run) => {
     // Запуск асинхронный: ответ 202 уходит до первого события. Исполнение
     // само не бросает, но страховка от ошибки в самой страховке — лог.
@@ -80,12 +96,16 @@ export function createService({ agents, archive, runs, env, log = console.error 
     if (!parsed.ok) return send(res, 400, { ok: false, code: 'bad_input', message: parsed.message })
 
     const run = runs.create({ agent, input: parsed.input })
+    // Сессия занимается синхронно, до ответа: иначе второе сообщение успеет
+    // создать свой запуск, пока первый ещё не начал исполняться.
+    agent.hold(parsed.input.sessionId ?? null)
     log(
       JSON.stringify({
         event: 'run',
         runId: run.id,
         agent: agent.id,
         model: parsed.input.params.model,
+        session: Boolean(parsed.input.sessionId),
       }),
     )
     send(res, 202, { ok: true, runId: run.id })
@@ -121,8 +141,19 @@ export function createService({ agents, archive, runs, env, log = console.error 
   }
 
   return async function handler(req, res) {
-    // Разбор адреса до всего остального и в try: битый Host бросает, а
-    // необработанный отказ в async-обработчике валит процесс целиком.
+    // Весь обработчик в try: он async, и любой необработанный отказ — от
+    // битого Host до ошибки ввода-вывода в SQLite — валит процесс целиком,
+    // а с ним день 6, который к сессиям отношения не имеет.
+    try {
+      return await route(req, res)
+    } catch (error) {
+      log(`обработчик: ${error.message}`)
+      if (!res.headersSent) send(res, 500, { ok: false, code: 'internal' })
+      else res.end()
+    }
+  }
+
+  async function route(req, res) {
     let path
     try {
       path = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`).pathname
@@ -138,6 +169,7 @@ export function createService({ agents, archive, runs, env, log = console.error 
         runs: runs.size(),
         archive: state.total,
         lastRefresh: state.lastRefresh,
+        sessions: sessionStats(),
       })
     }
 
@@ -157,6 +189,22 @@ export function createService({ agents, archive, runs, env, log = console.error 
       const snapshot = runs.snapshot(runId)
       if (!snapshot) return send(res, 404, { ok: false, code: 'unknown_run' })
       return send(res, 200, { ok: true, run: snapshot, finished: TERMINAL.has(snapshot.status) })
+    }
+
+    // Переписка сессии: читает и удаляет её только тот, кто знает
+    // идентификатор из cookie (ADR 2026-09-12-0930).
+    const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/)
+    if (sessionMatch) {
+      const sessionId = sessionMatch[1]
+      if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
+      if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      if (req.method === 'GET') {
+        return send(res, 200, { ok: true, messages: sessions.history(sessionId) })
+      }
+      if (req.method === 'DELETE') {
+        return send(res, 200, { ok: true, removed: sessions.clear(sessionId) })
+      }
+      return send(res, 404, { ok: false, code: 'not_found' })
     }
 
     if (path === '/v1/agents' && req.method === 'GET') {

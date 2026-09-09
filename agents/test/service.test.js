@@ -165,3 +165,17 @@ test('битый заголовок Host — 400, а не падение про�
   // Процесс жив: обычный запрос после битого проходит.
   assert.equal((await fetch(`${base}/healthz`)).status, 200)
 })
+
+test('переписка сессии читается и удаляется через сервис', async () => {
+  // Сервис в этом файле поднят без хранилища: сессии в нём выключены,
+  // и это должно быть честным отказом, а не молчаливой пустотой.
+  const id = '33333333-3333-4333-8333-333333333333'
+  const r = await fetch(`${base}/v1/sessions/${id}`, { headers: AUTH })
+  assert.equal(r.status, 503)
+  assert.equal((await r.json()).code, 'no_sessions')
+
+  // Кривой идентификатор не доходит до хранилища.
+  assert.equal((await fetch(`${base}/v1/sessions/..`, { headers: AUTH })).status, 404)
+  // Без ключа — 401, как и всё под /v1/.
+  assert.equal((await fetch(`${base}/v1/sessions/${id}`)).status, 401)
+})

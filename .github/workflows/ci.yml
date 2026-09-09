@@ -43,8 +43,14 @@ jobs:
         day: ${{ fromJSON(needs.detect.outputs.days) }}
     steps:
       - uses: actions/checkout@v4
+      # Сервису агентов нужен Node 24: там встроенный SQLite без флага.
+      - id: node
+        name: Версия Node для единицы
+        run: |
+          if [ "${{ matrix.day }}" = agents ]; then echo "version=24" >> "$GITHUB_OUTPUT"
+          else echo "version=22" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with: { node-version: '${{ steps.node.outputs.version }}' }
 
       - id: unit
         name: Каталог единицы
