@@ -26,12 +26,21 @@ const registry = loadRegistry(JSON.parse(readFileSync(join(here, 'config', 'agen
 const archive = createArchiveTool({ env, log })
 const runs = createRuns({ ttlMs: env.RUN_TTL_MINUTES * 60_000 })
 // Диалоги переживают перезапуск: они на томе, а не в памяти процесса.
-const sessions = createSessions({
-  file: env.SESSIONS_FILE,
-  ttlMs: env.SESSION_TTL_HOURS * 3600_000,
-  log,
-})
-const sweptOnStart = sessions.sweep()
+// Битый файл базы не должен ронять сервис: в нём живут ещё и запуски дня 6,
+// которому память диалога не нужна вовсе. Без базы сервис работает как
+// день 6, а день 7 получает честный отказ (`503 no_sessions`).
+let sessions = null
+let sweptOnStart = 0
+try {
+  sessions = createSessions({
+    file: env.SESSIONS_FILE,
+    ttlMs: env.SESSION_TTL_HOURS * 3600_000,
+    log,
+  })
+  sweptOnStart = sessions.sweep()
+} catch (error) {
+  console.error(`хранилище диалогов ${env.SESSIONS_FILE}: ${error.message}; память выключена`)
+}
 
 /** Реестр агентов → исполнители. Сегодня один; следующий добавляется по образцу. */
 const agents = new Map()
@@ -42,10 +51,16 @@ for (const entry of registry.values()) {
 // Готовые запуски удаляются по TTL; незавершённые живут до терминального события.
 setInterval(() => runs.sweep(), 60_000).unref()
 // Срок хранения диалогов проверяется реже: он измеряется часами.
-setInterval(() => {
-  const removed = sessions.sweep()
-  if (removed > 0) log({ event: 'sessions_swept', removed })
-}, 10 * 60_000).unref()
+if (sessions) {
+  setInterval(() => {
+    try {
+      const removed = sessions.sweep()
+      if (removed > 0) log({ event: 'sessions_swept', removed })
+    } catch (error) {
+      console.error(`уборка диалогов: ${error.message}`)
+    }
+  }, 10 * 60_000).unref()
+}
 
 const handler = createService({ agents, archive, runs, sessions, env, log })
 http.createServer(handler).listen(env.PORT, () => {
@@ -56,6 +71,8 @@ http.createServer(handler).listen(env.PORT, () => {
     store: env.STORE_FILE,
     archive: archive.size(),
     skipped: archive.skippedOnLoad(),
-    sessions: { ...sessions.stats(), ttlHours: env.SESSION_TTL_HOURS, sweptOnStart },
+    sessions: sessions
+      ? { ...sessions.stats(), ttlHours: env.SESSION_TTL_HOURS, sweptOnStart }
+      : 'выключены: хранилище недоступно',
   })
 })

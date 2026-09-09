@@ -65,7 +65,9 @@
     font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
     letter-spacing:.06em; color:var(--fg-mut); margin:0;
   }
-  .sub { color:var(--fg-mut); margin:0 0 var(--s-4); max-width:60ch; }
+  /* 68ch, а не 60: четвёртая строка описания стоила логу 25 px, а корпус
+     разрешает прозе до 68ch. */
+  .sub { color:var(--fg-mut); margin:0 0 var(--s-4); max-width:68ch; }
 
   /* Пять состояний у каждого интерактивного элемента: покой, наведение,
      нажатие, :focus-visible, [disabled]. Фокус — на всех, а не только у полей. */
@@ -150,7 +152,7 @@
      а прокручивается только сам лог. */
   .chat-col { display:flex; flex-direction:column; }
   .chat { display:flex; flex-direction:column; gap:var(--s-3); min-height:0; flex:1; }
-  .restored { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch; }
+  .restored { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch; }
   /* Лог — такая же панель, как у монитора: те же четыре свойства (фон,
      граница, радиус, отсутствие тени). Отступы — у сообщений. */
   .log {
@@ -223,6 +225,7 @@
   .params-box > summary {
     list-style:none; cursor:pointer; display:flex; align-items:center; gap:var(--s-2);
     font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); padding:var(--s-1) 0;
+    font-variant-numeric:tabular-nums;
   }
   .params-box > summary::-webkit-details-marker { display:none; }
   .params-box > summary::before { content:"▸"; font-size:var(--t-xs); }
@@ -238,7 +241,7 @@
   }
   .params-body .hint {
     display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
-    margin-top:var(--s-1); max-width:52ch;
+    margin-top:var(--s-1); max-width:52ch; font-variant-numeric:tabular-nums;
   }
   .params-body .name .num { color:var(--fg-mut); }
 
@@ -252,7 +255,10 @@
   .composer .ask-name { margin-bottom:0; flex:none; }
   .composer .submit { margin-top:0; flex:none; }
   .submit-row { display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap; }
-  .submit-row .hint { margin:0; max-width:52ch; }
+  .submit-row .hint {
+    margin:0; max-width:52ch;
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
   .dlg-btn.is-danger { color:var(--danger); }
 
   .tag {
@@ -271,8 +277,13 @@
     margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
     color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; max-width:52ch;
   }
-  footer a { color:var(--acc); }
-  footer a:hover { color:var(--fg); }
+  /* Футер переехал в колонку монитора и оказался рядом с кнопкой «Спросить».
+     Акцент на экране один, поэтому ссылка здесь — подчёркиванием, не цветом. */
+  footer a {
+    color:var(--fg); text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em;
+  }
+  footer a:hover { text-decoration-color:var(--fg); }
   footer a:active { opacity:.7; }
 
   /* Визуальное скрытие для живых областей и текстовых префиксов уровня:
@@ -568,8 +579,7 @@
           placeholder="например: какие раунды и на какие суммы подняли компании — таблицей, с датой и ссылкой"></textarea>
         <div class="submit-row">
           <button id="go" type="submit" class="submit">Спросить</button>
-          <p class="hint" id="composer-hint">Переписка хранится у агента 30 часов без новых
-          сообщений. Ctrl + Enter — отправить.</p>
+            <p class="hint" id="composer-hint">Ctrl + Enter — отправить.</p>
         </div>
       </form>
     </section>
@@ -593,8 +603,8 @@
 
     <footer>
       Источники: <span id="sources">…</span>. Ссылки в ответах — только из лент
-      изданий; ссылку не из списка агент вырезает. Переписка хранится у агента 30 часов
-      без новых сообщений и удаляется кнопкой «очистить»; события монитора живут до
+      изданий; ссылку не из списка агент вырезает. <span id="ttl-note">Переписка хранится
+      у агента и удаляется кнопкой «очистить»</span>; события монитора живут до
       перезагрузки страницы.
       Издание может попросить убрать свою ленту: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
     </footer>
@@ -777,6 +787,16 @@
       showArchive(d.archive);
       $('sources').textContent = (d.sources ?? []).map((f) => f.source).join(', ');
       if (defaults.contextTokens !== undefined) $('p-context').value = defaults.contextTokens;
+      // Срок хранения приходит с сервера: обещание на странице должно
+      // меняться вместе с настройкой, а не расходиться с ней молча.
+      const hours = d.session?.ttlHours;
+      if (hours) {
+        $('ttl-note').textContent =
+          `Переписка хранится у агента ${hours} ${plural(hours, 'час', 'часа', 'часов')} ` +
+          'без новых сообщений и удаляется кнопкой «очистить»';
+        // Обещание о сроке живёт в футере: второй строкой в подсказке оно
+        // стоило логу 46 px, а спецификация требует от лога не меньше 380.
+      }
       showParamsSummary();
       showContextLive();
     })
@@ -1032,7 +1052,7 @@
         `отобрал ${s.articlesUsed} из ${s.articlesSelected} статей` +
           (s.matched === 0 ? ', по запросу 0' : ''),
       );
-    if (s.model) did.push(`спросил ${s.model}`);
+    if (s.model) did.push(`спросил ${models.find((m) => m.id === s.provider)?.label ?? s.model}`);
     if (s.links !== undefined)
       did.push(
         s.strippedLinks > 0
@@ -1044,7 +1064,7 @@
     const numbers = [];
     if (s.totalTokens !== undefined) numbers.push(`${fmtInt(s.totalTokens)} токенов`);
     if (s.contextEffective !== undefined)
-      numbers.push(`контекст ${fmtInt(s.contextUsed)} из ${fmtInt(s.contextRequested)}`);
+      numbers.push(`контекст ${fmtInt(s.contextUsed)} из ${fmtInt(s.contextEffective)}`);
     if (s.durationMs !== undefined) numbers.push(fmtDuration(s.durationMs));
     return [did.join(' · '), numbers.join(' · ')];
   };
@@ -1068,7 +1088,9 @@
       const prefix = document.createElement('span');
       prefix.className = 'vh';
       prefix.textContent = 'Ошибка: ';
-      text.append(mark, prefix, `Ответа нет: ${m.text} Что случилось — в мониторе агента.`);
+      const said = String(m.text).trim();
+      const dot = /[.!?…]$/.test(said) ? '' : '.';
+      text.append(mark, prefix, `Ответа нет: ${said}${dot} Что случилось — в мониторе агента.`);
     } else {
       text.textContent = m.text || '(пустой ответ)';
     }
@@ -1089,8 +1111,9 @@
       li.append(warn);
     }
     // Не поместившиеся реплики — не потеря: переписка цела, просто в этот
-    // запрос ушёл хвост покороче.
-    const dropped = (meta.contextRequested ?? 0) - (meta.contextEffective ?? 0);
+    // запрос ушёл хвост покороче. Считает их агент: разница заданного и
+    // действующего размера сама по себе ещё ничего не значит.
+    const dropped = meta.contextDropped ?? 0;
     if (dropped > 0) {
       const warn = document.createElement('p');
       warn.className = 'warned';
@@ -1104,7 +1127,7 @@
       warn.append(
         mark,
         prefix,
-        `Модель приняла ${fmtInt(meta.contextEffective)} токенов контекста из заданных ${fmtInt(meta.contextRequested)}`,
+        `В контекст не поместились ${fmtInt(dropped)} ${plural(dropped, 'прежнее сообщение', 'прежних сообщения', 'прежних сообщений')}`,
       );
       li.append(warn);
     }
@@ -1131,7 +1154,7 @@
       dd.textContent = value;
       dl.append(dt, dd);
     };
-    row('модель', meta.provider);
+    row('модель', meta.model);
     row('max_tokens', meta.maxTokens);
     row('температура', meta.temperature === undefined ? null : Number(meta.temperature).toFixed(1));
     row(
@@ -1184,9 +1207,9 @@
     if (stick) log.scrollTop = log.scrollHeight;
   };
 
-  $('restored').textContent =
-    'Переписка восстановлена с сервера. События прошлых запусков не хранятся — ' +
-    'что делал агент, осталось в сводке под каждым ответом.';
+  // Одна короткая строка: каждая её строка отнимается у лога. О том, что
+  // события прошлых запусков не хранятся, говорит пустой монитор рядом.
+  $('restored').textContent = 'Переписка восстановлена с сервера.';
 
   // История поднимается при загрузке страницы: агент помнит разговор, даже
   // если его перезапускали.

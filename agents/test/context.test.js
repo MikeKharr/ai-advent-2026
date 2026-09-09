@@ -283,3 +283,19 @@ test('тема пользователя не попадает в снимок з
   const { run } = await ask({ sphere: 'тайная тема', prompt: 'вопрос' })
   assert.equal(JSON.stringify(runs.snapshot(run.id)).includes('тайная тема'), false)
 })
+
+test('не поместившиеся реплики считаются, а не молчат', () => {
+  const sessions = createSessions({ file: ':memory:', ttlMs: 3600_000, log: () => {} })
+  for (let i = 1; i <= 5; i++)
+    sessions.append({ sessionId: SID, role: 'user', text: `реплика ${i}`, tokens: 100 })
+  assert.deepEqual(sessions.tail(SID, 250), {
+    messages: [
+      { role: 'user', text: 'реплика 4', tokens: 100 },
+      { role: 'user', text: 'реплика 5', tokens: 100 },
+    ],
+    tokens: 200,
+    dropped: 3,
+  })
+  assert.equal(sessions.tail(SID, 10_000).dropped, 0, 'всё поместилось — выпавших нет')
+  sessions.close()
+})

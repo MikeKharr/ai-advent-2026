@@ -152,7 +152,7 @@ export const PARAM_LIMITS = {
  * Идентификатор сессии приходит из cookie дня. Проверяется по форме, а не
  * по содержимому: угадать чужой — то же, что угадать номер запуска.
  */
-const SESSION_ID = /^[0-9a-f-]{36}$/
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 export function isSessionId(value) {
   return typeof value === 'string' && SESSION_ID.test(value)

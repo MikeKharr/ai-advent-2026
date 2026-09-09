@@ -57,6 +57,17 @@ function sse(res, name, payload, id) {
 }
 
 export function createService({ agents, archive, runs, sessions = null, env, log = console.error }) {
+  /** Счётчики сессий для /healthz: их отказ не должен валить проверку. */
+  const sessionStats = () => {
+    if (!sessions) return null
+    try {
+      return sessions.stats()
+    } catch (error) {
+      log(`счётчики сессий: ${error.message}`)
+      return null
+    }
+  }
+
   const startRun = (agent, run) => {
     // Запуск асинхронный: ответ 202 уходит до первого события. Исполнение
     // само не бросает, но страховка от ошибки в самой страховке — лог.
@@ -126,8 +137,19 @@ export function createService({ agents, archive, runs, sessions = null, env, log
   }
 
   return async function handler(req, res) {
-    // Разбор адреса до всего остального и в try: битый Host бросает, а
-    // необработанный отказ в async-обработчике валит процесс целиком.
+    // Весь обработчик в try: он async, и любой необработанный отказ — от
+    // битого Host до ошибки ввода-вывода в SQLite — валит процесс целиком,
+    // а с ним день 6, который к сессиям отношения не имеет.
+    try {
+      return await route(req, res)
+    } catch (error) {
+      log(`обработчик: ${error.message}`)
+      if (!res.headersSent) send(res, 500, { ok: false, code: 'internal' })
+      else res.end()
+    }
+  }
+
+  async function route(req, res) {
     let path
     try {
       path = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`).pathname
@@ -143,7 +165,7 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         runs: runs.size(),
         archive: state.total,
         lastRefresh: state.lastRefresh,
-        sessions: sessions ? sessions.stats() : null,
+        sessions: sessionStats(),
       })
     }
 

@@ -167,16 +167,25 @@ export function createNewsAnalyst({
       const memory = sessions !== null && sessionId !== null
       /** Хвост диалога, ушедший модели. Заполняется после запроса пределов. */
       let transcript = []
-      let context = { used: 0, effective: 0, requested: params.contextTokens, messages: 0 }
+      let context = {
+        used: 0,
+        effective: 0,
+        requested: params.contextTokens,
+        messages: 0,
+        dropped: 0,
+      }
       /** Реплика пользователя пишется до вызова модели: вопрос был задан. */
       let asked = false
+      let memoryFailed = false
       const remember = (role, text, tokens, meta) => {
         if (!memory) return
         try {
           sessions.append({ sessionId, role, text, tokens, runId: run.id, meta })
         } catch (error) {
           // Диалог без записи хуже, чем диалог, но лучше, чем упавший запуск.
-          log(`сессия ${sessionId}: запись не удалась: ${error.message}`)
+          // Идентификатор сессии — ключ к переписке: в лог идёт только начало.
+          memoryFailed = true
+          log(`сессия ${sessionId.slice(0, 8)}…: запись не удалась: ${error.message}`)
         }
       }
       const emit = (fields) => runs.emit(run.id, fields)
@@ -318,6 +327,7 @@ export function createNewsAnalyst({
             effective,
             requested: params.contextTokens,
             messages: tail.messages.length,
+            dropped: tail.dropped,
           }
           if (tail.messages.length > 0) {
             emit({
@@ -330,7 +340,7 @@ export function createNewsAnalyst({
             })
           }
         } else {
-          context = { used: 0, effective, requested: params.contextTokens, messages: 0 }
+          context = { used: 0, effective, requested: params.contextTokens, messages: 0, dropped: 0 }
         }
 
         // Реплика пользователя записывается до вызова модели: вопрос задан,
@@ -363,12 +373,16 @@ export function createNewsAnalyst({
           const reset = budget.quota?.resetAt
             ? ` Сброс: ${new Date(budget.quota.resetAt).toLocaleTimeString('ru-RU')}.`
             : ''
+          const blame =
+            context.used > 0
+              ? ` Из них ${context.used} занял контекст разговора — его размер можно уменьшить.`
+              : ''
           return fail({
             code: 'budget_too_small',
             title: 'Не хватает предела модели',
             message:
               `У модели сейчас осталось ${budget.tokens} токенов на запрос — не хватает даже на одну статью.` +
-              `${reset} Выберите другую модель или подождите.`,
+              `${blame}${reset} Выберите другую модель или подождите.`,
           })
         }
 
@@ -472,6 +486,7 @@ export function createNewsAnalyst({
           contextEffective: context.effective,
           contextRequested: context.requested,
           contextMessages: context.messages,
+          contextDropped: context.dropped,
           truncated: answer.truncated,
           systemOverridden,
           maxTokens: params.maxTokens,
@@ -482,12 +497,33 @@ export function createNewsAnalyst({
         }
         // Ответ модели — в переписку: он же станет контекстом следующего
         // сообщения. Считаем его выходными токенами, а не заново.
-        remember('agent', guard.text, answer.usage.outputTokens ?? 0, summary)
+        // Провайдер может не прислать usage (так делает Ollama). Ноль здесь
+        // означал бы «реплика ничего не весит», и она никогда не вытеснялась
+        // бы из контекста — считаем оценкой, той же, что у роутера.
+        remember(
+          'agent',
+          guard.text,
+          answer.usage.outputTokens ?? estimateTokens(guard.text),
+          summary,
+        )
+
+        if (memoryFailed) {
+          // Память обещана, и её отказ не должен быть виден только в логе
+          // контейнера: после перезагрузки этой реплики в чате не будет.
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Не записал разговор',
+            detail: 'ответ показан, но в переписку не попал — после перезагрузки его не будет',
+            data: { memory: 'failed' },
+          })
+        }
 
         runs.finish(run.id, {
           status: 'succeeded',
           result: {
             answer: guard.text,
+            memoryFailed,
             summary,
             context,
             totalTokens,

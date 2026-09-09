@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS messages (
   meta       TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, id);
+-- Внешнего ключа нет намеренно: удаление идёт явными двумя операторами,
+-- и порядок «сначала сообщения, потом сессия» переживает обрыв между ними.
+-- Осиротевшую сессию подберёт уборка по сроку.
 `
 
 export function createSessions({ file, ttlMs, now = Date.now, log = console.error }) {
@@ -35,7 +38,6 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
   // WAL: чтение не блокируется записью, а обрыв процесса не рвёт файл.
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA synchronous = NORMAL')
-  db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA)
 
   const stmt = {
@@ -116,6 +118,8 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
     tail(sessionId, budgetTokens) {
       const chosen = []
       let used = 0
+      let dropped = 0
+      let full = false
       for (const row of stmt.tail.all(sessionId)) {
         let failed = false
         try {
@@ -124,12 +128,19 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
           failed = false
         }
         if (failed) continue
-        if (used + row.tokens > budgetTokens) break
+        // После первой не поместившейся реплики остальные только считаются:
+        // страница обязана сказать, сколько прежних сообщений выпало, а не
+        // предупреждать о несобытии.
+        if (full || used + row.tokens > budgetTokens) {
+          full = true
+          dropped += 1
+          continue
+        }
         used += row.tokens
         chosen.push({ role: row.role, text: row.text, tokens: row.tokens })
       }
       chosen.reverse()
-      return { messages: chosen, tokens: used }
+      return { messages: chosen, tokens: used, dropped }
     },
 
     /** Удаляет переписку сессии целиком. Действие «очистить» на странице. */

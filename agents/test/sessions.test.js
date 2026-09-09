@@ -60,7 +60,12 @@ test('хвост набирается целыми сообщениями и у�
     'взяты самые свежие, порядок восстановлен',
   )
   assert.equal(s.tail('a', 10_000).messages.length, 5, 'широкий бюджет берёт всё')
-  assert.deepEqual(s.tail('a', 50), { messages: [], tokens: 0 }, 'не влезает ничего — пусто')
+  assert.equal(s.tail('a', 250).dropped, 3, 'три прежние реплики не поместились')
+  assert.deepEqual(
+    s.tail('a', 50),
+    { messages: [], tokens: 0, dropped: 5 },
+    'не влезает ничего — пусто, но выпавшие посчитаны',
+  )
   s.close()
 })
 

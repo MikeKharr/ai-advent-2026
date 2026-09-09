@@ -16,7 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const PUBLIC = join(here, 'public')
 const MAX_BODY = 64 * 1024
 const RUN_ID = /^[0-9a-f-]{36}$/
-const SESSION_ID = /^[0-9a-f-]{36}$/
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const COOKIE_NAME = 'day7_sid'
 /** Сколько помним, чей запуск: чтобы вернуть слот лимитера, если агент денег не потратил. */
 const PENDING_TTL_MS = 10 * 60_000
@@ -88,8 +88,9 @@ function sessionFromCookie(req) {
 
 /**
  * Cookie сессии: `HttpOnly` — страница её не читает; `SameSite=Lax` — чужой
- * сайт не пошлёт от вашего имени; `Path` — только этот день, чтобы соседние
- * дни того же домена её не видели. Срок обновляется на каждом обращении.
+ * сайт не пошлёт её от вашего имени; `Path` — браузер шлёт её только на
+ * адреса этого дня. Это не изоляция от соседних дней: они на том же origin
+ * и могут обратиться к `/day7/` сами. Срок обновляется на каждом обращении.
  */
 function sessionCookie(sessionId) {
   const parts = [
@@ -185,7 +186,13 @@ async function handleChat(req, res) {
   const clearing = req.method === 'DELETE'
   try {
     if (clearing) {
-      await callAgent(`/v1/sessions/${session.sessionId}`, { method: 'DELETE' })
+      const { response } = await callAgent(`/v1/sessions/${session.sessionId}`, {
+        method: 'DELETE',
+      })
+      // Пока агент не подтвердил удаление, обещать его нельзя — и cookie
+      // менять нельзя тоже: без прежнего идентификатора переписку будет
+      // не удалить уже никогда.
+      if (!response.ok) throw new Error(`агент ${response.status}`)
       // Новая сессия начинается сразу: старый идентификатор больше ничего
       // не адресует, и оставлять его в браузере незачем.
       const fresh = randomUUID()
@@ -196,7 +203,16 @@ async function handleChat(req, res) {
     return send(res, 200, { messages: json.messages ?? [] }, session.headers)
   } catch (error) {
     console.error(`переписка: ${error.message}`)
-    return send(res, 502, { error: 'Переписка недоступна: агент не ответил.' }, session.headers)
+    return send(
+      res,
+      502,
+      {
+        error: clearing
+          ? 'Переписку удалить не удалось: агент не ответил. Она осталась на месте.'
+          : 'Переписка недоступна: агент не ответил.',
+      },
+      session.headers,
+    )
   }
 }
 
@@ -207,7 +223,12 @@ async function handleChat(req, res) {
  */
 async function proxyEvents(req, res, runId) {
   const controller = new AbortController()
-  req.on('close', () => controller.abort())
+  req.on('close', () => {
+    controller.abort()
+    // Вкладку закрыли до конца потока: держать связку «запуск → адрес»
+    // дольше нужного незачем (I-10).
+    pending.delete(runId)
+  })
 
   let upstream
   try {
