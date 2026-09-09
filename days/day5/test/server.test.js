@@ -3,8 +3,15 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { budgetFor, parseEnv, parseParams } from '../env.js'
-import { askRouter, renderCandidates, stripUnknownLinks } from '../router.js'
+import { budgetFor, inputBudgetFor, parseEnv, parseParams } from '../env.js'
+import {
+  askRouter,
+  buildInput,
+  estimateTokens,
+  fitToBudget,
+  renderCandidates,
+  stripUnknownLinks,
+} from '../router.js'
 
 const ENV = parseEnv({ ROUTER_APP_KEY: 'app-day5', ROUTER_URL: 'http://router.test:8081' }).env
 
@@ -124,6 +131,46 @@ test('ссылка без схемы проходит ту же проверку
   assert.ok(!out.includes('evil.example'), 'неизвестная вырезана, хоть и без схемы')
 })
 
+test('подборка урезается по всему запросу, а не по одним текстам статей', () => {
+  // Предел провайдера меряется по собранному запросу: заголовки, ссылки
+  // и служебные врезки весят не меньше самих текстов. Раньше урезался
+  // только текст, и запрос всё равно не проходил.
+  const many = Array.from({ length: 30 }, (_, n) => ({
+    url: `https://example.com/${n}`,
+    title: `Article number ${n} about fintech funding rounds in emerging markets`,
+    source: 'TechCrunch',
+    date: '2026-09-09T10:00:00.000Z',
+    text: 'x'.repeat(600),
+  }))
+  const { params } = parseParams({ model: 'groq-qwen3.6-27b' }, ENV)
+  const budget = inputBudgetFor('groq-qwen3.6-27b')
+
+  assert.ok(estimateTokens(buildInput('финтех', params, many)) > budget, 'полная не влезает')
+
+  const fitted = fitToBudget('финтех', params, many, budget)
+  assert.ok(fitted.length < many.length, 'часть статей отброшена')
+  assert.ok(estimateTokens(buildInput('финтех', params, fitted)) <= budget)
+  assert.deepEqual(
+    fitted,
+    many.slice(0, fitted.length),
+    'отброшены последние, наименее релевантные',
+  )
+})
+
+test('для модели с большим пределом подборка не режется', () => {
+  const few = [
+    {
+      url: 'https://example.com/1',
+      title: 'Fintech',
+      source: 'TechCrunch',
+      date: '2026-09-09T10:00:00.000Z',
+      text: 'короткий текст',
+    },
+  ]
+  const { params } = parseParams({ model: 'anthropic-haiku' }, ENV)
+  assert.equal(fitToBudget('тема', params, few, inputBudgetFor('anthropic-haiku')).length, 1)
+})
+
 test('бюджет подборки зависит от выбранной модели', () => {
   // У моделей Groq предел на запрос жёстче окна: подборка «как для Haiku»
   // получила бы 413, поэтому бюджет символов у них свой.
@@ -135,6 +182,10 @@ test('бюджет подборки зависит от выбранной мо�
     budgetFor('anthropic-haiku'),
     'запасной вариант — умолчание',
   )
+  // Предел в токенах у моделей Groq заведомо ниже пределов роутера
+  // (6000 и 5000): запас нужен, потому что предел считается за минуту.
+  assert.ok(inputBudgetFor('groq-gpt-oss-20b') < 6000)
+  assert.ok(inputBudgetFor('groq-qwen3.6-27b') < 5000)
 })
 
 test('окружение без ключа приложения — ошибка конфигурации, а не тихий старт', () => {

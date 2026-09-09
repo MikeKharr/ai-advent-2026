@@ -8,6 +8,7 @@ import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   budgetFor,
+  inputBudgetFor,
   MODELS,
   PARAM_DEFAULTS,
   PARAM_LIMITS,
@@ -17,7 +18,7 @@ import {
 } from './env.js'
 import { collectItems, FEEDS } from './feeds.js'
 import { createLimiter } from './limits.js'
-import { askRouter } from './router.js'
+import { askRouter, fitToBudget } from './router.js'
 import { selectForQuery } from './select.js'
 import { createStore } from './store.js'
 
@@ -180,7 +181,11 @@ async function handleAnswer(req, res) {
       maxChars: budgetFor(params.model),
     })
 
-    const answer = await askRouter(sphere.sphere, params, selection.items, env)
+    // Предел провайдера меряется по всему запросу, а не по текстам статей:
+    // заголовки, ссылки и служебные врезки весят не меньше. Поэтому подборка
+    // подгоняется под предел выбранной модели уже после отбора.
+    const items = fitToBudget(sphere.sphere, params, selection.items, inputBudgetFor(params.model))
+    const answer = await askRouter(sphere.sphere, params, items, env)
     return send(res, 200, {
       answer: answer.answer,
       model: answer.provider,
@@ -189,13 +194,15 @@ async function handleAnswer(req, res) {
       durationMs: answer.durationMs,
       selection: {
         budgetChars: budgetFor(params.model),
-        used: selection.items.length,
+        budgetTokens: inputBudgetFor(params.model),
+        used: items.length,
+        selected: selection.items.length,
         matched: selection.matched,
         terms: selection.terms,
-        withText: selection.items.filter((i) => i.text).length,
+        withText: items.filter((i) => i.text).length,
       },
       archive: { total: store.size(), added: refresh.added, refreshed: refresh.refreshed },
-      sources: selection.items.map((i) => ({
+      sources: items.map((i) => ({
         title: i.title,
         url: i.url,
         source: i.source,
