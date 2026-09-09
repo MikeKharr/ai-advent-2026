@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Ollama, слушающая только адрес в частной сети Tailscale.
+
+  Образец: подставьте адрес своей машины (tailscale ip -4) вместо 100.x.y.z
+  и положите файл в ~/Library/LaunchAgents/.
+
+  Своя служба, а не sh.brew.ollama: `brew services restart` каждый раз
+  заново создаёт свой plist и теряет OLLAMA_HOST, из-за чего Ollama
+  возвращается на 127.0.0.1 и перестаёт быть видна серверу.
+
+  Служба brew должна оставаться остановленной: две Ollama не поделят порт.
+  Проверить: brew services list | grep ollama
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>ai.zpq.ollama-tailnet</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/opt/ollama/bin/ollama</string>
+		<string>serve</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- Только частная сеть: на 0.0.0.0 модель была бы открыта
+		     всей локальной сети, включая чужой Wi-Fi. -->
+		<key>OLLAMA_HOST</key>
+		<string>100.x.y.z:11434</string>
+		<key>OLLAMA_FLASH_ATTENTION</key>
+		<string>1</string>
+		<key>OLLAMA_KV_CACHE_TYPE</key>
+		<string>q8_0</string>
+		<!-- Модель держится в памяти дольше: загрузка 27B занимает
+		     около двадцати секунд, и повторный запрос не должен ждать её снова. -->
+		<key>OLLAMA_KEEP_ALIVE</key>
+		<string>30m</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/opt/homebrew/var/log/ollama.log</string>
+	<key>StandardOutPath</key>
+	<string>/opt/homebrew/var/log/ollama.log</string>
+	<key>WorkingDirectory</key>
+	<string>/opt/homebrew/var</string>
+</dict>
+</plist>
