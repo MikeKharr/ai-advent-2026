@@ -18,7 +18,14 @@ import {
 } from './env.js'
 import { collectItems, FEEDS } from './feeds.js'
 import { createLimiter } from './limits.js'
-import { askRouter, fitToBudget } from './router.js'
+import {
+  articleTokens,
+  askRouter,
+  fetchLimits,
+  fitToBudget,
+  overheadTokens,
+  requestTokens,
+} from './router.js'
 import { selectForQuery } from './select.js'
 import { createStore } from './store.js'
 
@@ -97,6 +104,47 @@ export async function refreshIfStale({ now = Date.now(), fetchImpl = fetch } = {
     }
   })()
   return refreshing
+}
+
+/**
+ * Сколько статей примет модель при нынешнем архиве. Считается по настоящим
+ * статьям, а не по средней длине: разброс между изданиями велик, и средняя
+ * обманывает в обе стороны.
+ */
+function articlesThatFit(items, budgetTokens) {
+  const params = { prompt: '', model: '', maxTokens: 0, stopSequences: [] }
+  // Складываем по одной статье, а не пересобираем запрос заново на каждом
+  // шаге: пересборка давала квадратичный проход по всему архиву на каждый
+  // показ страницы. Постоянная часть — системный промпт и обёртка.
+  let used = overheadTokens('тема', params)
+  let fits = 0
+  for (const item of items) {
+    used += articleTokens(item)
+    if (used > budgetTokens) break
+    fits += 1
+  }
+  return fits
+}
+
+/**
+ * Предел входа для модели: меньшее из объявленного днём, статического
+ * потолка провайдера и его же остатка квоты. Остаток живёт около минуты,
+ * поэтому и оценка верна на минуту — это честнее постоянного числа.
+ */
+function effectiveBudget(modelId, limits) {
+  const own = inputBudgetFor(modelId)
+  const found = limits?.providers?.find((p) => p.id === modelId)
+  if (!found) return { tokens: own, source: 'модель', quota: null, available: null }
+  const candidates = [own, found.maxRequestTokens]
+  const remaining = found.quota?.stale ? null : (found.quota?.remainingTokens ?? null)
+  if (remaining !== null) candidates.push(remaining)
+  const tokens = Math.max(0, Math.min(...candidates))
+  return {
+    tokens,
+    source: remaining !== null && tokens === remaining ? 'остаток квоты' : 'модель',
+    quota: found.quota ?? null,
+    available: found.available,
+  }
 }
 
 function send(res, status, payload) {
@@ -182,9 +230,27 @@ async function handleAnswer(req, res) {
     })
 
     // Предел провайдера меряется по всему запросу, а не по текстам статей:
-    // заголовки, ссылки и служебные врезки весят не меньше. Поэтому подборка
-    // подгоняется под предел выбранной модели уже после отбора.
-    const items = fitToBudget(sphere.sphere, params, selection.items, inputBudgetFor(params.model))
+    // заголовки, ссылки и служебные врезки весят не меньше. Берём меньшее из
+    // объявленного днём и того, что провайдер сообщил о своём остатке.
+    const limits = await fetchLimits(env).catch(() => null)
+    const budget = effectiveBudget(params.model, limits)
+    const items = fitToBudget(sphere.sphere, params, selection.items, budget.tokens)
+
+    // Если не помещается даже одна статья, звать модель незачем: она
+    // ответит отказом, а слот суточного предела будет потрачен. Причина
+    // пользователю понятна — квота на минуту, а не поломка.
+    const needed = requestTokens(sphere.sphere, params, items)
+    if (needed > budget.tokens) {
+      limiter.release(ip)
+      const reset = budget.quota?.resetAt
+        ? ` Сброс: ${new Date(budget.quota.resetAt).toLocaleTimeString('ru-RU')}.`
+        : ''
+      return send(res, 429, {
+        error:
+          `У модели сейчас осталось ${budget.tokens} токенов на запрос — не хватает даже на одну статью.` +
+          `${reset} Выберите другую модель или подождите.`,
+      })
+    }
     const answer = await askRouter(sphere.sphere, params, items, env)
     return send(res, 200, {
       answer: answer.answer,
@@ -194,7 +260,8 @@ async function handleAnswer(req, res) {
       durationMs: answer.durationMs,
       selection: {
         budgetChars: budgetFor(params.model),
-        budgetTokens: inputBudgetFor(params.model),
+        budgetTokens: budget.tokens,
+        budgetSource: budget.source,
         used: items.length,
         selected: selection.items.length,
         matched: selection.matched,
@@ -217,6 +284,8 @@ async function handleAnswer(req, res) {
       error.code === 'budget_exceeded' ||
       error.code === 'refused' ||
       error.code === 'no_provider' ||
+      // Пропуск по квоте даёт all_failed без единого вызова провайдера.
+      (Array.isArray(error.attempts) && error.attempts.length === 0) ||
       (error.status >= 400 && error.status < 500 && error.status !== 429)
     if (paidNothing) limiter.release(ip)
     if (error.code === 'budget_exceeded') {
@@ -251,8 +320,23 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/answer' && req.method === 'POST') return handleAnswer(req, res)
 
   if (url.pathname === '/api/state') {
+    // Пределы приходят от роутера, а сколько статей в них влезет — считается
+    // по нынешнему архиву, а не по средней длине статьи.
+    const limits = await fetchLimits(env).catch(() => null)
+    const fresh = store.all().slice(0, PARAM_LIMITS.articles)
+    const models = MODELS.map((m) => {
+      const budget = effectiveBudget(m.id, limits)
+      return {
+        ...m,
+        budgetTokens: budget.tokens,
+        budgetSource: budget.source,
+        quota: budget.quota,
+        available: budget.available,
+        articlesFit: fresh.length > 0 ? articlesThatFit(fresh, budget.tokens) : null,
+      }
+    })
     return send(res, 200, {
-      models: MODELS,
+      models,
       defaults: PARAM_DEFAULTS,
       limits: { ...PARAM_LIMITS, maxTokens: env.MAX_OUTPUT_TOKENS },
       archive: {

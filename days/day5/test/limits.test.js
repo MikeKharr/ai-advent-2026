@@ -46,7 +46,27 @@ process.env.REFRESH_MIN_MINUTES = '10000'
 // теста попадает в собственную заглушку и до сервера не доходит вовсе.
 const realFetch = globalThis.fetch.bind(globalThis)
 const calls = { count: 0 }
-globalThis.fetch = async () => {
+globalThis.fetch = async (url) => {
+  // Роутер отвечает на два адреса: пределы моделей и сам вызов. Считаем
+  // только вызовы — именно их ограничивает лимитер.
+  if (String(url).includes('/v1/models')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        taskClass: 'news_answer',
+        providers: [
+          {
+            id: 'anthropic-haiku',
+            model: 'claude-haiku-4-5',
+            maxRequestTokens: 200000,
+            quota: null,
+            available: true,
+          },
+        ],
+      }),
+    }
+  }
   calls.count += 1
   return {
     ok: true,

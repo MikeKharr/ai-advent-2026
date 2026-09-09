@@ -5,8 +5,12 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { budgetFor, inputBudgetFor, parseEnv, parseParams } from '../env.js'
 import {
+  articleTokens,
   askRouter,
   buildInput,
+  fetchLimits,
+  overheadTokens,
+  requestTokens,
   estimateTokens,
   fitToBudget,
   renderCandidates,
@@ -169,6 +173,126 @@ test('для модели с большим пределом подборка н
   ]
   const { params } = parseParams({ model: 'anthropic-haiku' }, ENV)
   assert.equal(fitToBudget('тема', params, few, inputBudgetFor('anthropic-haiku')).length, 1)
+})
+
+test('когда остатка не хватает даже на статью, подборка всё равно не пустая', () => {
+  // fitToBudget оставляет хотя бы одну статью: пустой список — не ответ.
+  // Решение «не звать модель» принимает сервер, сравнив нужное с остатком.
+  const items = [
+    {
+      url: 'https://example.com/1',
+      title: 'Very long headline about fintech funding rounds',
+      source: 'TechCrunch',
+      date: '2026-09-09T10:00:00.000Z',
+      text: 'x'.repeat(4000),
+    },
+  ]
+  const { params } = parseParams({ model: 'groq-qwen3.6-27b' }, ENV)
+  const fitted = fitToBudget('тема', params, items, 50)
+  assert.equal(fitted.length, 1)
+  assert.ok(estimateTokens(buildInput('тема', params, fitted)) > 50, 'нужное больше остатка')
+})
+
+test('пределы моделей запрашиваются у роутера', async () => {
+  let asked = null
+  const fetchImpl = async (url, options) => {
+    asked = { url, headers: options.headers }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        taskClass: 'news_answer',
+        providers: [
+          {
+            id: 'groq-gpt-oss-20b',
+            maxRequestTokens: 6000,
+            quota: { limitTokens: 8000, remainingTokens: 1500, resetAt: null, stale: false },
+            available: true,
+          },
+        ],
+      }),
+    }
+  }
+  const limits = await fetchLimits(ENV, { fetchImpl })
+  assert.match(asked.url, /\/v1\/models\?taskClass=news_answer/)
+  assert.equal(asked.headers.authorization, 'Bearer app-day5')
+  assert.equal(limits.providers[0].quota.remainingTokens, 1500)
+})
+
+test('ответ роутера проверяется по форме, а не принимается на веру', async () => {
+  // undefined в пределе превращает арифметику бюджета в NaN, и проверка
+  // молча выключается. Такие записи отбрасываются целиком.
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      providers: [
+        { id: 'без-предела' },
+        { id: 'предел-строкой', maxRequestTokens: '6000' },
+        null,
+        {
+          id: 'годный',
+          maxRequestTokens: 6000,
+          quota: { limitTokens: 8000, remainingTokens: 1500, resetAt: null, stale: false },
+        },
+      ],
+    }),
+  })
+  const limits = await fetchLimits(ENV, { fetchImpl })
+  assert.deepEqual(
+    limits.providers.map((p) => p.id),
+    ['годный'],
+  )
+  assert.equal(limits.providers[0].quota.remainingTokens, 1500)
+})
+
+test('ответ не по форме и отказ роутера дают пустой список, а не поломку', async () => {
+  const garbage = async () => ({ ok: true, status: 200, json: async () => ({ providers: 'нет' }) })
+  assert.deepEqual((await fetchLimits(ENV, { fetchImpl: garbage })).providers, [])
+  const refused = async () => ({ ok: false, status: 401, json: async () => ({ ok: false }) })
+  assert.deepEqual((await fetchLimits(ENV, { fetchImpl: refused })).providers, [])
+})
+
+test('оценка входа включает системный промпт — как и у роутера', () => {
+  // Иначе остаётся полоса, где день говорит «влезает», а роутер отказывает.
+  const { params } = parseParams({}, ENV)
+  const items = [
+    {
+      url: 'https://example.com/1',
+      title: 'Fintech',
+      source: 'TechCrunch',
+      date: '2026-09-09T10:00:00.000Z',
+      text: 'текст',
+    },
+  ]
+  const withSystem = requestTokens('тема', params, items)
+  const withoutSystem = estimateTokens(buildInput('тема', params, items))
+  assert.ok(withSystem > withoutSystem + 200, 'системный промпт весит сотни токенов')
+})
+
+test('быстрая оценка числа статей сходится с настоящей подгонкой', () => {
+  // Линейная прикидка не должна обещать больше, чем реально влезает.
+  const items = Array.from({ length: 40 }, (_, n) => ({
+    url: `https://example.com/${n}`,
+    title: `Fintech funding round number ${n} in emerging markets`,
+    source: 'TechCrunch',
+    date: '2026-09-09T10:00:00.000Z',
+    text: 'x'.repeat(1200),
+  }))
+  const { params } = parseParams({}, ENV)
+  const budget = 4300
+
+  let used = overheadTokens('тема', params)
+  let fits = 0
+  for (const item of items) {
+    used += articleTokens(item)
+    if (used > budget) break
+    fits += 1
+  }
+  const fitted = fitToBudget('тема', params, items, budget)
+  assert.ok(fits > 0, 'что-то влезает')
+  assert.ok(Math.abs(fits - fitted.length) <= 1, `прикидка ${fits}, подгонка ${fitted.length}`)
+  assert.ok(requestTokens('тема', params, items.slice(0, fits)) <= budget, 'прикидка не завышает')
 })
 
 test('бюджет подборки зависит от выбранной модели', () => {

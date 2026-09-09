@@ -157,6 +157,15 @@ export function httpJson(status, json, headers = {}) {
   return httpText(status, JSON.stringify(json), headers)
 }
 
+/** Ответ с заголовками квоты, как их отдаёт Groq. */
+export function groqWithQuota(json, { remaining = 7900, limit = 8000, reset = '577ms' } = {}) {
+  return httpJson(200, json, {
+    'x-ratelimit-limit-tokens': String(limit),
+    'x-ratelimit-remaining-tokens': String(remaining),
+    'x-ratelimit-reset-tokens': reset,
+  })
+}
+
 export function httpText(status, text, headers = {}) {
   return {
     ok: status >= 200 && status < 300,

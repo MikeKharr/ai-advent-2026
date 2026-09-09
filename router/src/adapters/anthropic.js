@@ -5,6 +5,7 @@
 // поиск — серверный инструмент `web_search_20250305`.
 
 import { readJson } from './http.js'
+import { readQuota } from './quota.js'
 
 const API_VERSION = '2023-06-01'
 const WEB_SEARCH_MAX_USES = 3
@@ -24,7 +25,7 @@ export async function call(
     temperature,
     signal,
   },
-  { fetchImpl, env },
+  { fetchImpl, env, now = Date.now },
 ) {
   const body = { model, messages: [{ role: 'user', content: prompt }] }
   if (system) body.system = system
@@ -64,7 +65,10 @@ export async function call(
     signal,
   })
 
-  const json = await readJson(response, `anthropic`)
+  // Остаток квоты приходит в заголовках каждого ответа — и успешного,
+  // и отказного. Роутер запоминает его, чтобы не звать впустую.
+  const quota = readQuota(response.headers, 'anthropic', now())
+  const json = await readJson(response, 'anthropic', quota)
 
   const text = (json.content ?? [])
     .filter((block) => block.type === 'text')
@@ -84,6 +88,7 @@ export async function call(
       evalMs: null,
       tokPerSec: null,
     },
+    quota,
     stopReason: json.stop_reason === 'max_tokens' ? 'length' : (json.stop_reason ?? 'stop'),
   }
 }

@@ -148,6 +148,18 @@ export function createService({
     try {
       if (req.method === 'GET' && url.pathname === '/healthz') return send(res, 200, { ok: true })
       if (req.method === 'POST' && url.pathname === '/v1/route') return await handleRoute(req, res)
+      if (req.method === 'GET' && url.pathname === '/v1/models') {
+        const app = authApp(req)
+        if (!app) return send(res, 401, { ok: false, code: 'unauthorized' })
+        const taskClass = url.searchParams.get('taskClass') ?? app.classes[0]
+        if (!app.classes.includes(router.resolveClass(taskClass)))
+          return send(res, 403, { ok: false, code: 'class_not_allowed' })
+        return send(res, 200, {
+          taskClass: router.resolveClass(taskClass),
+          providers: router.providerLimits(taskClass),
+          budgetLeft: budgetLeft(app, now()),
+        })
+      }
       if (req.method === 'GET' && url.pathname === '/v1/spend') {
         if (!isAdmin(req)) return send(res, 401, { ok: false, code: 'unauthorized' })
         const report = ledger.report(now())

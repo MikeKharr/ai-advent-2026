@@ -3,7 +3,7 @@
  * бывает HTML от прокси — оно не должно превращаться в SyntaxError и терять
  * статус, иначе 429 попадёт в предохранитель вопреки ADR §7.
  */
-export async function readJson(response, who) {
+export async function readJson(response, who, quota = null) {
   const raw = await response.text()
   let json = null
   try {
@@ -21,6 +21,8 @@ export async function readJson(response, who) {
     const error = new Error(`${who} ${response.status}: ${detail}`)
     error.status = response.status
     error.retryAfterMs = retryAfterMs(response)
+    // Квота приходит и с отказом — особенно с 413 и 429, где она и нужна.
+    error.quota = quota
     throw error
   }
   if (json === null || typeof json !== 'object') throw new Error(`${who}: тело ответа не JSON`)

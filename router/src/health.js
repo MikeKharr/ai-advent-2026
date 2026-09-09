@@ -6,12 +6,21 @@ const NEGATIVE_MS = 60_000
 const OPEN_MS = 60_000
 const FAILURES_TO_OPEN = 3
 const BUSY_DEFAULT_MS = 10_000
+/** Сколько верить остатку, если провайдер не назвал времени сброса. */
+const QUOTA_TTL_MS = 60_000
 
 export function createHealth({ now = Date.now } = {}) {
   /** @type {Map<string, {negativeUntil:number, failures:number, openUntil:number, probing:boolean, busyUntil:number}>} */
   const state = new Map()
   /** @type {Map<string, number>} inflight по хосту, не по записи. */
   const inflight = new Map()
+  /**
+   * Последняя известная квота провайдера из заголовков его ответа.
+   * Своего счётчика роутер не ведёт намеренно: он не знает о запросах,
+   * сделанных этим ключом мимо него.
+   * @type {Map<string, {limitTokens:number|null, remainingTokens:number|null, resetAt:number|null, at:number}>}
+   */
+  const quotas = new Map()
 
   const key = (p) => `${p.id}#${p.revision}`
   const host = (p) => p.hostId ?? new URL(p.baseUrl).host
@@ -96,9 +105,30 @@ export function createHealth({ now = Date.now } = {}) {
       return inflight.get(host(p)) ?? 0
     },
 
+    /** Запоминает квоту, сообщённую провайдером. */
+    noteQuota(p, quota) {
+      if (quota) quotas.set(key(p), quota)
+    },
+
+    /**
+     * Остаток входных токенов, если он известен и ещё не сброшен.
+     * После времени сброса окно начинается заново, и старое число врёт.
+     *
+     * Если провайдер не сообщил времени сброса, значение живёт не дольше
+     * запасного окна: иначе остаток «ноль» без даты вычеркнул бы провайдера
+     * навсегда — а при явном выборе модели это мёртвая модель у пользователя.
+     */
+    quotaOf(p) {
+      const q = quotas.get(key(p))
+      if (!q) return null
+      const deadline = q.resetAt ?? q.at + QUOTA_TTL_MS
+      if (now() >= deadline) return { ...q, remainingTokens: q.limitTokens, expired: true }
+      return { ...q, expired: false }
+    },
+
     /** Для метрик и тестов. */
     snapshot(p) {
-      return { ...get(p), inflight: inflight.get(host(p)) ?? 0 }
+      return { ...get(p), inflight: inflight.get(host(p)) ?? 0, quota: quotas.get(key(p)) ?? null }
     },
   }
 }

@@ -187,6 +187,17 @@ export function createRouter({
         })
         continue
       }
+      const quota = health.quotaOf(p)
+      if (quota !== null && quota.remainingTokens !== null && inputTokens > quota.remainingTokens) {
+        const when = quota.resetAt ? new Date(quota.resetAt).toISOString() : 'неизвестно когда'
+        const reason = `остаток квоты ${quota.remainingTokens} токенов меньше входа ${inputTokens}, сброс ${when}`
+        reasons.push({ provider: `${p.id}#${p.revision}`, stage: 'health', reason })
+        bump(p, 'skipped')
+        // Пропуск по квоте — такой же отказ, как прочие: в журнале должны
+        // быть видны все, иначе лог показывает лишь часть картины.
+        log({ event: 'skip', taskClass, provider: `${p.id}#${p.revision}`, thinking, reason })
+        continue
+      }
       if (budgetUntil !== null && budgetUntil - now() <= 0) {
         reasons.push({
           provider: `${p.id}#${p.revision}`,
@@ -318,8 +329,9 @@ export function createRouter({
           temperature: req.temperature,
           signal: ctrl.signal,
         },
-        { fetchImpl, env },
+        { fetchImpl, env, now },
       )
+      health.noteQuota(p, result.quota)
       const text = (result.text ?? '').trim()
       if (text.length === 0) {
         health.failure(p)
@@ -352,6 +364,8 @@ export function createRouter({
         metrics: result.metrics,
       })
     } catch (error) {
+      // Квота приходит и с 413, и с 429 — там она особенно нужна.
+      health.noteQuota(p, error.quota)
       if (ctrl.signal.aborted && ctrl.signal.reason === 'budget')
         return done('aborted', `потолок вызывающего ${req.budgetMs} мс истёк`)
       if (error.status === 429) {
@@ -420,10 +434,46 @@ export function createRouter({
     return { tokens: (inputTokens + outputTokens) * calls, costUsd: worst * calls }
   }
 
+  /**
+   * Что приложение может знать о моделях до запроса: статический предел
+   * на запрос и последний известный остаток квоты. Нужно, чтобы приложение
+   * подгоняло размер запроса, а не узнавало о пределе отказом.
+   */
+  function providerLimits(taskClass) {
+    const cls = config.classes[resolveClass(taskClass)]
+    // Приложению показываем только те модели, которые класс действительно
+    // может использовать: классификатор в списке моделей для ответа
+    // пользователю — это приглашение выбрать заведомый отказ.
+    const capable = orderedCandidates(cls, registry.list()).filter(
+      (p) => capabilityFit(p, cls, cls.thinking, cls.dataClass, 0).ok,
+    )
+    return capable.map((p) => {
+      const quota = health.quotaOf(p)
+      return {
+        id: p.id,
+        revision: p.revision,
+        model: p.model,
+        tier: p.tier,
+        maxRequestTokens: p.maxRequestTokens ?? p.contextWindow,
+        contextWindow: p.contextWindow,
+        quota: quota
+          ? {
+              limitTokens: quota.limitTokens,
+              remainingTokens: quota.remainingTokens,
+              resetAt: quota.resetAt ? new Date(quota.resetAt).toISOString() : null,
+              stale: quota.expired,
+            }
+          : null,
+        available: health.unavailableReason(p) === null,
+      }
+    })
+  }
+
   return {
     route,
     resolveClass,
     estimateRequest,
+    providerLimits,
     providers: () => registry.list(),
     health,
     /** Счётчики по провайдерам и снимок здоровья — для /v1/metrics. */
