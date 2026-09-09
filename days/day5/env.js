@@ -19,10 +19,18 @@ const NUMBERS = {
  * подмножество, которое день предлагает выбрать.
  */
 export const MODELS = [
-  { id: 'anthropic-haiku', label: 'Claude Haiku 4.5', note: 'Anthropic' },
-  { id: 'groq-gpt-oss-20b', label: 'GPT-OSS 20B', note: 'Groq' },
-  { id: 'groq-qwen3.6-27b', label: 'Qwen3.6 27B', note: 'Groq' },
+  { id: 'anthropic-haiku', label: 'Claude Haiku 4.5', note: 'Anthropic', maxChars: 120_000 },
+  // У Groq на тарифе on_demand предел — входные токены в минуту (7–8 тысяч),
+  // и подборка на 30 тысяч токенов получает 413. Поэтому бюджет символов
+  // у этих моделей свой, и он вчетверо с лишним меньше.
+  { id: 'groq-gpt-oss-20b', label: 'GPT-OSS 20B', note: 'Groq', maxChars: 18_000 },
+  { id: 'groq-qwen3.6-27b', label: 'Qwen3.6 27B', note: 'Groq', maxChars: 15_000 },
 ]
+
+/** Бюджет символов подборки для выбранной модели. */
+export function budgetFor(modelId) {
+  return MODELS.find((m) => m.id === modelId)?.maxChars ?? MODELS[0].maxChars
+}
 
 export function parseEnv(source = process.env) {
   const errors = []

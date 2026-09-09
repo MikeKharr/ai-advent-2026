@@ -261,7 +261,8 @@
       <legend class="name" style="padding:0;">Модель</legend>
       <div class="models" id="models"></div>
       <span class="hint">Выбирается до запуска. Все инструкции запроса выполняет
-      выбранная модель; подмены на другую при отказе не будет.</span>
+      выбранная модель; подмены на другую при отказе не будет. Модели Groq
+      принимают меньше текста за запрос, поэтому подборка для них короче.</span>
     </fieldset>
 
     <label class="field">
@@ -350,7 +351,12 @@
       name.textContent = m.label;
       const note = document.createElement('span');
       note.className = 'model-note';
-      note.textContent = m.note;
+      // Предел подборки виден рядом с моделью: у моделей Groq он вчетверо
+      // меньше, и без подписи разница в ответах выглядит необъяснимой.
+      const budget = m.maxChars >= 100000
+        ? `${m.note} · ${Math.round(m.maxChars / 1000)}K символов`
+        : `${m.note} · до ${Math.round(m.maxChars / 1000)}K символов`;
+      note.textContent = budget;
       label.append(radio, name, note);
       box.append(label);
     });
@@ -432,6 +438,8 @@
       tag(`токены: ${entry.usage.inputTokens} → ${entry.usage.outputTokens}`, 'is-tokens');
     tag(`max_tokens: ${entry.params.maxTokens}`);
     tag(`статей: ${entry.selection.used}, по запросу ${entry.selection.matched}`);
+    if (entry.selection.budgetChars)
+      tag(`бюджет: ${Math.round(entry.selection.budgetChars / 1000)}K символов`);
     tag(`с текстом: ${entry.selection.withText}`);
     if (entry.params.stopSequences.length)
       tag(`стоп: ${entry.params.stopSequences.join(' | ')}`);
