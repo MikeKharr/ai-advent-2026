@@ -37,9 +37,17 @@ try {
     ttlMs: env.SESSION_TTL_HOURS * 3600_000,
     log,
   })
+  // Уборка на старте — заодно проверка, что база читается целиком: файл
+  // может открыться заголовком и рассыпаться на странице данных. Отказ
+  // здесь означает, что 30-часовой срок хранения соблюдать нечем, и
+  // притворяться работающей памятью нельзя.
   sweptOnStart = sessions.sweep()
 } catch (error) {
-  console.error(`хранилище диалогов ${env.SESSIONS_FILE}: ${error.message}; память выключена`)
+  try {
+    sessions?.close()
+  } catch {}
+  sessions = null
+  log({ event: 'sessions_off', file: env.SESSIONS_FILE, reason: error.message })
 }
 
 /** Реестр агентов → исполнители. Сегодня один; следующий добавляется по образцу. */

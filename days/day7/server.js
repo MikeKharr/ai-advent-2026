@@ -199,6 +199,16 @@ async function handleChat(req, res) {
       return send(res, 200, { messages: [], cleared: true }, { 'set-cookie': sessionCookie(fresh) })
     }
     const { response, json } = await callAgent(`/v1/sessions/${session.sessionId}`)
+    // Агент отвечает 503, когда его хранилище недоступно. Это не «агент не
+    // ответил»: он ответил, и ответил осмысленно.
+    if (response.status === 503 && json?.code === 'no_sessions') {
+      return send(
+        res,
+        503,
+        { error: 'Память диалога у агента сейчас недоступна: переписка не показана.' },
+        session.headers,
+      )
+    }
     if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, { messages: json.messages ?? [] }, session.headers)
   } catch (error) {

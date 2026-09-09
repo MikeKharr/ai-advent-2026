@@ -57,14 +57,18 @@ function sse(res, name, payload, id) {
 }
 
 export function createService({ agents, archive, runs, sessions = null, env, log = console.error }) {
-  /** Счётчики сессий для /healthz: их отказ не должен валить проверку. */
+  /**
+   * Счётчики сессий для /healthz: их отказ не должен валить проверку, но и
+   * выглядеть как «памяти нет по настройке» тоже не должен — оператор идёт
+   * сюда именно смотреть, живо ли хранилище.
+   */
   const sessionStats = () => {
     if (!sessions) return null
     try {
       return sessions.stats()
     } catch (error) {
       log(`счётчики сессий: ${error.message}`)
-      return null
+      return 'недоступны: хранилище не отвечает'
     }
   }
 
