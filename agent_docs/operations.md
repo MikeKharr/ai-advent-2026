@@ -234,7 +234,54 @@ chmod 600 router.env day5.env
    лимиты приложений, поэтому потолок на стороне поставщика обязателен,
    как и для Anthropic.
 
-### Self-hosted провайдер (Ollama)
+### Ноутбук владельца через Tailscale (подключён 2026-09-09)
+
+Работает: сервер обращается к Ollama на MacBook по частной сети
+(ADR `2026-09-09-2400`). Что где настроено:
+
+| Где | Что |
+|---|---|
+| MacBook | Tailscale (приложение), адрес `100.77.87.97`; служба launchd `ai.zpq.ollama-tailnet` |
+| Сервер | Tailscale (`curl -fsSL https://tailscale.com/install.sh \| sudo sh`), имя узла `advent-server` |
+| Роутер | провайдер `mac-qwen3`, `baseUrl` с адресом частной сети |
+
+**Ollama слушает только частную сеть**, а не все интерфейсы: на чужом Wi-Fi
+модель недоступна. Это задано в `OLLAMA_HOST` внутри службы; образец файла —
+`deploy/mac/ai.zpq.ollama-tailnet.plist`.
+
+**Служба своя, а не `brew services`.** Homebrew при `brew services restart`
+пересоздаёт свой файл службы и теряет `OLLAMA_HOST` — Ollama возвращается
+на петлю и пропадает у сервера. Служба brew должна оставаться остановленной:
+две Ollama не поделят порт.
+
+Проверки:
+
+```sh
+# на ноутбуке: служба поднята и слушает частную сеть
+launchctl print gui/$(id -u)/ai.zpq.ollama-tailnet | grep -E 'state|pid'
+lsof -nP -iTCP:11434 -sTCP:LISTEN
+
+# с сервера: модель видна
+curl -s http://100.77.87.97:11434/api/tags
+
+# из контейнера роутера
+docker compose exec -T router node -e "fetch('http://100.77.87.97:11434/api/tags').then(r=>r.json()).then(d=>console.log(d.models.map(m=>m.name)))"
+```
+
+Перезапустить службу после правки файла: `launchctl bootout` и
+`launchctl bootstrap`, затем `launchctl kickstart`. Обычный
+`launchctl kickstart -k` перечитывать файл не станет.
+
+Командная строка `ollama` на ноутбуке тоже должна знать адрес:
+`launchctl setenv OLLAMA_HOST 100.77.87.97:11434` или переменная в сессии,
+иначе `ollama list` стучится на петлю, где никто не слушает.
+
+**Что будет, когда ноутбук уснёт.** Роутер получит отказ соединения,
+пометит провайдера недоступным на минуту и уйдёт в облако. Для класса
+`news_answer` с явным выбором ноутбука это отказ с причиной, потому что
+подмены модели при явном выборе нет.
+
+### Self-hosted провайдер (Ollama), общий порядок
 
 1. На машине с моделью: `ollama pull <модель>`, убедиться, что API отвечает:
    `curl http://127.0.0.1:11434/api/tags`.
