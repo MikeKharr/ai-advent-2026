@@ -374,7 +374,10 @@
   .dlg-purpose { margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch; }
   .dlg-row { display:flex; align-items:center; gap:var(--s-2); }
   .dlg-row h2 { margin-right:auto; }
-  .dlg-note { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+  .dlg-note {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
   .icon-btn {
     flex:none; width:var(--s-6); height:var(--s-6); padding:0; margin-left:auto;
     display:inline-flex; align-items:center; justify-content:center;
@@ -534,8 +537,10 @@
         <h2 id="feed-h">Ответы</h2>
         <button class="clear" id="clear" type="button" hidden>очистить</button>
       </div>
-      <p class="empty" id="empty">Пока пусто. Задайте тематику, при желании — запрос, и ответ агента появится здесь.</p>
-      <ul class="feed-list" id="feed"></ul>
+      <ul class="feed-list" id="feed">
+        <li class="empty" id="empty">Пока пусто. Задайте тематику, при желании — запрос,
+        и ответ агента появится здесь.</li>
+      </ul>
     </section>
   </div>
 
@@ -1059,8 +1064,9 @@
     for (const entry of entries) {
       try { nodes.push(renderEntry(entry)); } catch {}
     }
-    feed.replaceChildren(...nodes);
-    empty.hidden = nodes.length > 0;
+    // Пустое состояние живёт внутри панели: иначе при первом же ответе
+    // блок менял бы форму, а рамка появлялась бы из ниоткуда.
+    feed.replaceChildren(...(nodes.length > 0 ? nodes : [empty]));
     $('clear').hidden = entries.length === 0;
   };
 
@@ -1191,7 +1197,8 @@
   const say = (text, keep) => {
     clearTimeout(noteTimer);
     note.textContent = text;
-    if (!keep && text) noteTimer = setTimeout(() => { note.textContent = ''; }, 4000);
+    // Две секунды — как у подтверждения копирования в дне 6 изначально.
+    if (!keep && text) noteTimer = setTimeout(() => { note.textContent = ''; }, 2000);
   };
 
   /**
@@ -1202,8 +1209,9 @@
     const base = agentInfo?.systemPrompt ?? '';
     const active = activePrompt();
     const shown = active ?? base;
+    const chars = (n) => `${n} ${plural(n, 'знак', 'знака', 'знаков')}`;
     if (!active) {
-      stateLabel.textContent = `Исходный · ${base.length} знаков`;
+      stateLabel.textContent = `Исходный · ${chars(base.length)}`;
     } else if (savedPrompt?.base !== undefined && savedPrompt.base !== base) {
       // Промпт агента сменился в реестре, а правка осталась прежней: молча
       // подменять сохранённое нельзя, но и промолчать об этом тоже. Сверяем
@@ -1213,7 +1221,7 @@
           ? `Изменён от прежней версии промпта (${savedPrompt.version}); у агента сейчас ${agentInfo.version}`
           : 'Изменён от прежней версии промпта; у агента он с тех пор поменялся';
     } else {
-      stateLabel.textContent = `Изменён — только в этом браузере · ${shown.length} знаков`;
+      stateLabel.textContent = `Изменён — только в этом браузере · ${chars(shown.length)}`;
     }
     resetBtn.disabled = !active;
     $('about-note').textContent = active ? ' — промпт изменён' : '';
