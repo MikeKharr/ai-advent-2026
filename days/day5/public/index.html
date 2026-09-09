@@ -336,6 +336,7 @@
   // Список моделей и состояние архива приходят с сервера: держать их
   // в двух местах — способ разойтись.
   let models = [];
+  let defaults = {};
   const renderModels = () => {
     const box = $('models');
     box.replaceChildren();
@@ -346,7 +347,7 @@
       radio.type = 'radio';
       radio.name = 'model';
       radio.value = m.id;
-      radio.checked = i === 0;
+      radio.checked = m.id === (defaults.model ?? models[0].id);
       const name = document.createElement('span');
       name.className = 'model-name';
       name.textContent = m.label;
@@ -360,6 +361,9 @@
       note.textContent = m.articlesFit
         ? `${m.note} · сейчас ~${m.articlesFit} статей`
         : `${m.note} · ${Math.round(m.budgetTokens / 1000)}K токенов`;
+      // Ноутбук отвечает минутами, а не секундами: об этом честнее сказать
+      // до запуска, чем оставить пользователя ждать молча.
+      if (m.slow) note.textContent += ' · медленно';
       if (m.available === false) {
         label.style.opacity = '.55';
         note.textContent = `${m.note} · сейчас недоступна`;
@@ -386,6 +390,7 @@
     .then((r) => r.json())
     .then((d) => {
       models = d.models ?? [];
+      defaults = d.defaults ?? {};
       renderModels();
       showArchive(d.archive);
       $('sources').textContent = (d.sources ?? []).map((f) => f.source).join(', ');

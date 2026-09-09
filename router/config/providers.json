@@ -1,5 +1,33 @@
 [
   {
+    "_": "Ollama на ноутбуке владельца, доступна через частную сеть Tailscale. Адрес 100.x — не секрет: он маршрутизируется только внутри этой сети. Ёмкость 1: модель на 27B занимает машину целиком. maxRequestTokens жёстче окна модели из-за скорости: разбор входа идёт около 200 ток/с, генерация около 8, поэтому крупный запрос упёрся бы в дедлайн.",
+    "id": "mac-qwen3",
+    "revision": 1,
+    "kind": "ollama",
+    "tier": "self-hosted",
+    "baseUrl": "http://100.77.87.97:11434",
+    "model": "qwen3.8:27b",
+    "profile": "laptop",
+    "capabilities": ["text_generation", "json_schema"],
+    "contextWindow": 131072,
+    "maxRequestTokens": 6000,
+    "jurisdiction": "local",
+    "dataClasses": ["public", "internal", "personal"],
+    "maxConcurrency": 1,
+    "thinking": {
+      "none": true,
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
+    "keepAlive": "30m",
+    "price": {
+      "inputPerMTok": 0,
+      "outputPerMTok": 0
+    },
+    "dataHandling": "Данные не покидают частную сеть владельца; журналов у Ollama нет, кроме локального лога запросов."
+  },
+  {
     "id": "anthropic-haiku",
     "revision": 1,
     "kind": "anthropic",

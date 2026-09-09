@@ -299,6 +299,10 @@ test('бюджет подборки зависит от выбранной мо�
   // У моделей Groq предел на запрос жёстче окна: подборка «как для Haiku»
   // получила бы 413, поэтому бюджет символов у них свой.
   assert.equal(budgetFor('anthropic-haiku'), 120_000)
+  assert.ok(
+    budgetFor('mac-qwen3') < budgetFor('anthropic-haiku'),
+    'ноутбук медленный — подборка меньше',
+  )
   assert.ok(budgetFor('groq-gpt-oss-20b') < 20_000)
   assert.ok(budgetFor('groq-qwen3.6-27b') < budgetFor('groq-gpt-oss-20b'))
   assert.equal(
@@ -323,7 +327,7 @@ test('параметры: неизвестная модель и выход за
   assert.match(parseParams({ articles: 100 }, ENV).message, /Статей в подборке/)
   assert.match(parseParams({ perSource: 0 }, ENV).message, /Статей с источника/)
   const ok = parseParams({}, ENV)
-  assert.equal(ok.params.model, 'anthropic-haiku', 'по умолчанию — Haiku')
+  assert.equal(ok.params.model, 'anthropic-haiku', 'по умолчанию — Haiku, а не ноутбук')
 })
 
 test('директория хранилища берётся из окружения, ключей моделей в дне нет', () => {

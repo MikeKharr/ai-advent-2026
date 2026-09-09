@@ -9,7 +9,10 @@ const NUMBERS = {
   WINDOW_SIZE: 1000, // сколько статей держим в окне
   REFRESH_MIN_MINUTES: 15, // не чаще, чем раз в столько минут, опрашиваем ленты
   MAX_AGE_DAYS: 180, // дольше этого чужие тексты в архиве не хранятся
-  ROUTER_TIMEOUT_MS: 90_000,
+  // Ноутбук отвечает минутами: двадцать секунд на загрузку модели плюс
+  // около восьми токенов в секунду. Облачные модели в этот потолок
+  // укладываются с огромным запасом.
+  ROUTER_TIMEOUT_MS: 240_000,
   PORT: 8080,
 }
 
@@ -44,7 +47,22 @@ export const MODELS = [
     maxChars: 15_000,
     maxInputTokens: 4300,
   },
+  // Ноутбук владельца через частную сеть Tailscale. Стоит последним и не
+  // выбран по умолчанию: он медленный (около восьми токенов в секунду плюс
+  // двадцать секунд на загрузку модели) и доступен, только пока ноутбук
+  // в сети и свободен.
+  {
+    id: 'mac-qwen3',
+    label: 'Qwen3.8 27B',
+    note: 'ноутбук',
+    maxChars: 16_000,
+    maxInputTokens: 4500,
+    slow: true,
+  },
 ]
+
+/** Умолчание названо явно: список упорядочен для показа, а не для выбора. */
+export const DEFAULT_MODEL = 'anthropic-haiku'
 
 const model = (id) => MODELS.find((m) => m.id === id) ?? MODELS[0]
 
@@ -116,7 +134,7 @@ export const PARAM_DEFAULTS = {
   maxTokens: 600,
   perSource: 5,
   articles: 30,
-  model: MODELS[0].id,
+  model: DEFAULT_MODEL,
   prompt: '',
 }
 
