@@ -29,6 +29,10 @@
     }
   }
   * { box-sizing: border-box; }
+  /* Собственный display у элемента перебивает [hidden] из таблицы браузера,
+     и скрытый блок остаётся на экране. Правило нужно всем блокам окна,
+     которые прячутся по состоянию. */
+  [hidden] { display:none !important; }
   body {
     margin:0; background:var(--bg); color:var(--fg);
     font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -1140,10 +1144,14 @@
         showArchive(r.archive.refreshed
           ? { total: r.archive.total, lastRefresh: new Date().toISOString() }
           : { total: r.archive.total });
+        // Текст промпта в ленту не кладём: показывается только признак,
+        // а копии текста пережили бы «Вернуть исходный» и раздували бы
+        // хранилище на 50 записей.
+        const { system: _sent, ...feedParams } = params;
         saveFeed([{
           at: new Date().toISOString(),
           sphere,
-          params,
+          params: feedParams,
           answer: r.answer,
           model: r.model,
           usage: r.usage,
@@ -1196,11 +1204,14 @@
     const shown = active ?? base;
     if (!active) {
       stateLabel.textContent = `Исходный · ${base.length} знаков`;
-    } else if (savedPrompt?.version && agentInfo?.version && savedPrompt.version !== agentInfo.version) {
+    } else if (savedPrompt?.base !== undefined && savedPrompt.base !== base) {
       // Промпт агента сменился в реестре, а правка осталась прежней: молча
-      // подменять сохранённое нельзя, но и промолчать об этом тоже.
+      // подменять сохранённое нельзя, но и промолчать об этом тоже. Сверяем
+      // текст, а не только версию: промпт правят и без смены версии.
       stateLabel.textContent =
-        `Изменён от прежней версии промпта (${savedPrompt.version}); у агента сейчас ${agentInfo.version}`;
+        savedPrompt.version && agentInfo?.version && savedPrompt.version !== agentInfo.version
+          ? `Изменён от прежней версии промпта (${savedPrompt.version}); у агента сейчас ${agentInfo.version}`
+          : 'Изменён от прежней версии промпта; у агента он с тех пор поменялся';
     } else {
       stateLabel.textContent = `Изменён — только в этом браузере · ${shown.length} знаков`;
     }

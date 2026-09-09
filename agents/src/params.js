@@ -147,10 +147,7 @@ export const PARAM_LIMITS = {
 /** Тема от пользователя: длина и управляющие символы отсекаются до всего остального. */
 export function parseSphere(value) {
   if (typeof value !== 'string') return { ok: false, message: 'Поле sphere должно быть строкой' }
-  const sphere = value
-    .replace(/[\u0000-\u001F\u007F]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const sphere = value.replace(/[\u0000-\u001F\u007F]/g, '').replace(/\s+/g, ' ').trim()
   if (sphere.length === 0) return { ok: false, message: 'Укажите тему' }
   if (sphere.length > PARAM_LIMITS.sphereChars) {
     return { ok: false, message: `Слишком длинно: не больше ${PARAM_LIMITS.sphereChars} символов` }
@@ -187,10 +184,7 @@ function cleanText(value) {
   if (typeof value !== 'string') return { ok: false }
   return {
     ok: true,
-    text: value
-      .replace(/\r\n/g, '\n')
-      .replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '')
-      .trim(),
+    text: value.replace(/\r\n/g, '\n').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim(),
   }
 }
 
