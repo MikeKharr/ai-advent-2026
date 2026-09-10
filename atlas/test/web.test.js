@@ -18,6 +18,7 @@ import {
   fit,
   foldExcerpt,
   indexGraph,
+  labelRank,
   maxTwoStep,
   neighborhood,
   parseMarkup,
@@ -480,6 +481,33 @@ test('сосед того же ранга уступает позицию, ес�
   const placed = placeLabels(items, field, monoWidth)
   assert.equal(placed.size, 2, 'подписаны оба')
   assert.equal(placed.get('а').y, 80 - 8 - 16)
+})
+
+test('наведение в виде до 40 узлов не меняет позиции остальных подписей', () => {
+  const field = { width: 300, height: 200 }
+  // Тот же куст, что выше: у нижнего одна позиция, и она же — «под узлом» верхнего.
+  const view = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', slots: ['above'] },
+  ]
+  const layout = (hover) =>
+    placeLabels(
+      view.map((n) => ({ ...n, rank: labelRank({ id: n.id, sel: null, near: null, hover, phase: false, always: true }) })),
+      field,
+      monoWidth,
+    )
+  const still = layout(null)
+  const hovered = layout('а')
+  assert.deepEqual(hovered.get('б'), still.get('б'), 'подпись соседа стоит на месте')
+  assert.deepEqual(hovered.get('а'), still.get('а'), 'подпись наведённого тоже')
+})
+
+test('в большом виде наведённый узел поднимается в порядке подписей', () => {
+  const near = new Set(['сосед'])
+  const args = { sel: 'выбранный', near, hover: 'под курсором', phase: false, always: false }
+  assert.equal(labelRank({ ...args, id: 'под курсором' }), 2)
+  assert.equal(labelRank({ ...args, id: 'сосед' }), 3)
+  assert.equal(labelRank({ ...args, id: 'выбранный' }), 0)
 })
 
 test('подпись важного узла не уступает позицию менее важному', () => {

@@ -14,6 +14,7 @@ import {
   envelopePoses,
   fit,
   indexGraph,
+  labelRank,
   neighborhood,
   pickNode,
   placeDepthLabels,
@@ -236,6 +237,33 @@ test('группа важнее глубины: дальний сосед выб
   ]
   const labels = placeDepthLabels(items, field, measure, new Map([['rest', -0.4], ['nb', 0.4]]))
   assert.ok(labels.get('nb').y > 150, 'сосед — под узлом')
+})
+
+test('в объёме в покое наведение в виде до 40 узлов не меняет позиции остальных подписей', () => {
+  // Окрестность compliance при начальной позе, вписанная по огибающей, как на странице.
+  const sel = 'role/compliance'
+  const ids = neighborhood(index.near, sel, 1)
+  assert.ok(ids.size <= 40)
+  const pts = new Map([...ids].map((id) => [id, byId.get(id)]))
+  const canvas = { width: 814, height: 538 }
+  const at = transform(canvas, { ...fit(canvas, envelopePoints(pts, POSE0)), scale: 1, panX: 0, panY: 0 })
+  const proj = projectAll(pts, POSE0)
+  const near = index.near.get(sel)
+  const depth = new Map([...proj].map(([id, p]) => [id, p.z]))
+  const layout = (hover) =>
+    placeDepthLabels(
+      [...proj].map(([id, p]) => ({
+        id,
+        ...at(p),
+        text: id,
+        rank: labelRank({ id, sel, near, hover, phase: false, always: true }),
+      })),
+      canvas,
+      measure,
+      depth,
+    )
+  const still = layout(null)
+  for (const hover of ids) assert.deepEqual(layout(hover), still, `наведение на ${hover}`)
 })
 
 test('подписи возвращаются по настоящим идентификаторам', () => {
