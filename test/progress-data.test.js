@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import '../site/progress/validate.js'
 import '../site/progress/data.js'
 
-const { dataProblems, prProblems, itemProblems, publicProblems } = globalThis.PROGRESS_CHECK
+const { dataProblems, prProblems, prFieldProblems, itemProblems, publicProblems } = globalThis.PROGRESS_CHECK
 // Публичность проверяется по сырому тексту: Caddy отдаёт файл целиком,
 // с комментариями и любыми полями, а не только те, что рисует страница.
 const RAW = readFileSync(new URL('../site/progress/data.js', import.meta.url), 'utf8')
@@ -49,6 +49,13 @@ test('строка без класса проходит: классов до PR 
 
 test('строка PR с неизвестным полем не проходит', () => {
   assert.ok(prProblems({ ...good(), src: 'заметка' }, KEYS).length > 0)
+})
+
+// Страница отбирает строки по полям, а лишние ловит CI: иначе строка с лишним
+// полем пропала бы под текстом «не хватает полей», который про неё неправ.
+test('лишнее поле не мешает странице нарисовать строку', () => {
+  assert.deepEqual(prFieldProblems({ ...good(), src: 'заметка' }, KEYS), [])
+  assert.ok(prFieldProblems({ ...good(), goal: undefined }, KEYS).length > 0)
 })
 
 test('номер PR — целое не меньше 1', () => {
@@ -227,6 +234,9 @@ test('обычный текст журнала — не утечка', () => {
     'Файл site/progress/data.js, обновлено 10 сентября, 15:19 UTC',
     "updated: '2026-09-10T15:19Z',",
     'Скилл /design-review и /day-cycle, запрет --no-index',
+    'Скрипт bootstrap.sh готовит сервер',
+    'deploy.sh и put-secrets.sh',
+    'Новости из Вашингтона',
   ]
   for (const text of ok) assert.deepEqual(publicProblems(text), [], text)
 })

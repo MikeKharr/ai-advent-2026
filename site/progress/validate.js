@@ -23,9 +23,17 @@
   // Непустая строка не длиннее max знаков (кодовых точек, не единиц UTF-16).
   const isText = (v, max) => typeof v === 'string' && v.trim() !== '' && [...v].length <= max
 
+  // Полная проверка строки для CI: поля плюс запрет лишних.
   function prProblems(pr, streamKeys) {
     if (!isObj(pr)) return ['строка — не объект']
-    const out = extra(pr, 'pr').map((k) => `лишнее поле ${k}`)
+    return [...extra(pr, 'pr').map((k) => `лишнее поле ${k}`), ...prFieldProblems(pr, streamKeys)]
+  }
+
+  // Только поля, которые рисует страница. Ею страница отбирает строки: лишнее
+  // поле не рисуется и ловится в CI, а строку не прячет.
+  function prFieldProblems(pr, streamKeys) {
+    if (!isObj(pr)) return ['строка — не объект']
+    const out = []
     if (!Number.isInteger(pr.n) || pr.n < 1) out.push('n — целое ≥ 1')
     if (typeof pr.merged !== 'string' || !DAY.test(pr.merged)) out.push('merged — YYYY-MM-DD')
     if (!TYPES.includes(pr.type)) out.push(`type — один из ${TYPES.join(', ')}`)
@@ -89,7 +97,8 @@
   // Страница публичная: в файле нет адресов, приватных следов и обращения к
   // владельцу. Проверяется сырой текст data.js — комментарии и любые поля.
   // «Вы» не ловится: совпадёт с «выкатка», его проверяет чтение.
-  const TLD = 'ai|app|biz|cloud|co|com|de|dev|info|io|link|me|net|online|org|page|ru|run|sg|sh|site|so|tech|uk|us|xyz'
+  // Без `sh`: иначе ловятся скрипты репозитория (bootstrap.sh, deploy.sh).
+  const TLD = 'ai|app|biz|cloud|co|com|de|dev|info|io|link|me|net|online|org|page|ru|run|sg|site|so|tech|uk|us|xyz'
   const PRIVATE = [
     ['адрес со схемой', /[a-z][a-z0-9+.-]*:\/\//i],
     ['адрес с www.', /www\./i],
@@ -106,7 +115,8 @@
     // Две группы «hex:» и дальше; время «15:19» и «T15:19Z» не совпадает —
     // нужна буква a–f или «::».
     ['IPv6-адрес', (s) => (s.match(/(?:^|[^\w:])(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]*/gi) || []).some((t) => /::|[a-f]/i.test(t))],
-    ['обращение к владельцу', /(^|[^а-яё])ва[шм]/i],
+    // Формы «ваш» и «вам» целым словом: «Вашингтон» — не обращение.
+    ['обращение к владельцу', /(^|[^а-яё])(ваш(а|е|и|у|ей|его|ему|ем|им|их|ими)?|вам|вами)(?![а-яё])/i],
   ]
 
   function publicProblems(source) {
@@ -119,5 +129,5 @@
     return out
   }
 
-  globalThis.PROGRESS_CHECK = { isText, prProblems, itemProblems, dataProblems, publicProblems }
+  globalThis.PROGRESS_CHECK = { isText, prProblems, prFieldProblems, itemProblems, dataProblems, publicProblems }
 }

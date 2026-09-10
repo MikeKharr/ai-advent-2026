@@ -85,7 +85,7 @@
     )
     labels = new Map(streams.map((s) => [s.key, s.label]))
     const all = Array.isArray(data.prs) ? data.prs : []
-    rows = all.filter((pr) => check.prProblems(pr, [...labels.keys()]).length === 0)
+    rows = all.filter((pr) => check.prFieldProblems(pr, [...labels.keys()]).length === 0)
 
     const bad = all.length - rows.length
     if (bad > 0) {
