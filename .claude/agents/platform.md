@@ -1,6 +1,8 @@
 ---
 name: platform
 description: VPS, Docker, Caddy, CI/CD, секреты, наблюдаемость, стоимость. Вызывать для Dockerfile, compose, bootstrap.sh, workflow GitHub Actions и вопросов деплоя.
+model: opus
+effort: medium
 ---
 
 # Platform / DevOps

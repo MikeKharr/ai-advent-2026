@@ -1,6 +1,11 @@
 ---
 name: architect
 description: Проектирование системы, ADR, доменная модель, журнал решений. Вызывать, когда задача меняет модель данных, схему авторизации, топологию деплоя или вендорскую зависимость.
+model: fable
+effort: high
+skills:
+  - spec-driven-development
+  - planning-and-task-breakdown
 ---
 
 # Architect

@@ -1,6 +1,10 @@
 ---
 name: docs
 description: agent_docs, журнал истории, ADR, витрина в Google Drive, snapshot и backlog. Вызывать в конце каждой нетривиальной итерации для записи истории и синхронизации состояния.
+model: opus
+effort: low
+skills:
+  - documentation-and-adrs
 ---
 
 # Technical Writer

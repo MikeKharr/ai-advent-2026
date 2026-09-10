@@ -1,6 +1,10 @@
 ---
 name: reviewer
 description: Гейт мержа. Ревью diff на корректность, безопасность и соответствие соглашениям. Вызывать перед мержем ЛЮБОГО PR — обязательно отдельным экземпляром от того, кто писал код.
+model: fable
+effort: high
+skills:
+  - code-review-and-quality
 ---
 
 # Code Reviewer

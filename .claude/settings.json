@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(node --test *)",
+      "Bash(node --experimental-sqlite --test *)",
+      "Bash(node --check *)",
+      "Bash(npx markdownlint-cli2 *)",
+      "Bash(npx --yes markdownlint-cli2 *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(gh pr *)",
+      "Bash(gh run *)",
+      "Bash(ssh -i ~/.ssh/advent_deploy advent@challenge.zpq.ai *)",
+      "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai *)"
+    ],
+    "ask": [
+      "Bash(git push --force*)"
+    ],
+    "deny": [
+      "Read(./deploy/*.env)",
+      "Read(./**/.env)"
+    ]
+  }
+}
