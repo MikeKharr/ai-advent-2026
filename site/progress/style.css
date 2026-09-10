@@ -186,6 +186,8 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
   margin-top:var(--s-7); border-top:1px solid var(--line); padding-top:var(--s-4);
   font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
 }
+/* Линия — во всю колонку, текст — полосой вторичного текста корпуса. */
+.foot p { margin:0; max-width:52ch; }
 
 @media (prefers-reduced-motion: reduce) {
   .app, .chip { transition:none; }
