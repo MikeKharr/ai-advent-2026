@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { LAYOUT_SEED, MAX_STRETCH, components, layout } from '../lib/layout.js'
+import { LAYOUT_SEED, MAX_STRETCH, components, depth, layout } from '../lib/layout.js'
 import { density } from './helpers.js'
 
 // Контракт 1 этапа 3: координаты приходят из сборки, а не считаются в
@@ -106,4 +106,90 @@ test('вырожденные случаи не роняют сборку', () =>
     [{ from: 'a', to: 'нет-такого' }],
   )
   assert.equal(loose.size, 2)
+})
+
+// Контракт `z` (ADR 2026-09-14-1000, п. 2): глубина считается после плоской
+// раскладки при зафиксированных `x`, `y` и плоскую картинку не трогает.
+
+test('z лежит в 0…1 с шестью знаками после точки', () => {
+  const { nodes, edges } = sample()
+  const z = depth(nodes, edges, layout(nodes, edges))
+  assert.equal(z.size, nodes.length)
+  for (const [id, v] of z) {
+    assert.equal(typeof v, 'number', id)
+    assert.ok(Number.isFinite(v), `${id}: ${v}`)
+    assert.ok(v >= 0 && v <= 1, `${id}: ${v}`)
+    assert.ok((String(v).split('.')[1] ?? '').length <= 6, `${id}: ${v}`)
+  }
+})
+
+test('z детерминирована: два вызова дают те же числа', () => {
+  const { nodes, edges } = sample()
+  const placed = layout(nodes, edges)
+  assert.deepEqual(depth(nodes, edges, placed), depth(nodes, edges, placed))
+})
+
+test('x и y с z и без одинаковы: глубина не трогает плоскую раскладку', () => {
+  const { nodes, edges } = sample()
+  const placed = layout(nodes, edges)
+  const before = structuredClone(placed)
+  depth(nodes, edges, placed)
+  assert.deepEqual(placed, before, 'depth изменила координаты плоскости')
+  assert.deepEqual(layout(nodes, edges), before)
+})
+
+test('узлы без рёбер лежат на z = 0.5', () => {
+  const { nodes, edges } = sample(20)
+  const loose = Array.from({ length: 5 }, (_, i) => ({ id: `сам-по-себе-${i}` }))
+  const all = [...nodes, ...loose]
+  // Ребро в никуда и петля связей не дают: узел остаётся одиночкой.
+  const withNoise = [...edges, { from: loose[0].id, to: 'нет-такого' }, { from: loose[1].id, to: loose[1].id }]
+  const z = depth(all, withNoise, layout(all, withNoise))
+  for (const n of loose) assert.equal(z.get(n.id), 0.5, n.id)
+
+  assert.equal(depth([], [], new Map()).size, 0)
+  assert.deepEqual(depth([{ id: 'a' }], [], layout([{ id: 'a' }], [])), new Map([['a', 0.5]]))
+})
+
+test('связная часть получает объём, а рёбра стягивают концы по глубине', () => {
+  const { nodes, edges } = sample(60)
+  const z = depth(nodes, edges, layout(nodes, edges))
+  const values = [...z.values()]
+  const span = Math.max(...values) - Math.min(...values)
+  assert.ok(span >= 0.3, `глубина ${span} — граф остался плоским`)
+
+  // Среднее |Δz| по рёбрам меньше среднего по всем парам: глубина следует
+  // структуре, а не рассыпана как попало.
+  const alongEdges = edges.reduce((s, e) => s + Math.abs(z.get(e.from) - z.get(e.to)), 0) / edges.length
+  let allPairs = 0
+  let pairs = 0
+  for (let i = 0; i < values.length; i += 1) {
+    for (let j = i + 1; j < values.length; j += 1) {
+      allPairs += Math.abs(values[i] - values[j])
+      pairs += 1
+    }
+  }
+  assert.ok(alongEdges < (allPairs / pairs) * 0.75, `по рёбрам ${alongEdges.toFixed(4)}, по всем парам ${(allPairs / pairs).toFixed(4)}`)
+})
+
+test('узлы, наложившиеся в плоскости, разведены по глубине', () => {
+  // Две ветви из общего корня кладутся руками в одни и те же точки плоскости:
+  // только глубина может их развести.
+  const nodes = ['root', 'a1', 'a2', 'b1', 'b2'].map((id) => ({ id }))
+  const edges = [
+    { from: 'root', to: 'a1' },
+    { from: 'a1', to: 'a2' },
+    { from: 'root', to: 'b1' },
+    { from: 'b1', to: 'b2' },
+  ]
+  const placed = new Map([
+    ['root', { x: 0.5, y: 0.2 }],
+    ['a1', { x: 0.5, y: 0.5 }],
+    ['b1', { x: 0.5, y: 0.5 }],
+    ['a2', { x: 0.5, y: 0.8 }],
+    ['b2', { x: 0.5, y: 0.8 }],
+  ])
+  const z = depth(nodes, edges, placed)
+  assert.ok(Math.abs(z.get('a1') - z.get('b1')) > 0.1, `a1 ${z.get('a1')}, b1 ${z.get('b1')}`)
+  assert.ok(Math.abs(z.get('a2') - z.get('b2')) > 0.1, `a2 ${z.get('a2')}, b2 ${z.get('b2')}`)
 })

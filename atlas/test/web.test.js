@@ -510,7 +510,7 @@ test('полоса вида называет вид и числа этого в�
   const base = { stats, byId, depth: 1, links: [] }
   assert.match(
     viewLine({ ...base, full: true, selected: null, ids: new Set() }),
-    /^Весь граф: \d+ узл\S+, \d+ связ\S+\. Подписи скрыты/,
+    /^Весь граф: \d+ (?:узел|узла|узлов), \d+ (?:связь|связи|связей)\. Подписи скрыты/,
   )
   assert.equal(viewLine({ ...base, full: false, selected: null, ids: new Set() }), 'Ни одного узла: скрыты все типы')
   assert.equal(
@@ -523,6 +523,35 @@ test('полоса вида называет вид и числа этого в�
   )
   const cycle = cycleView(graph, true)
   assert.match(viewLine({ ...base, full: false, selected: null, ids: cycle.ids }), /^Цикл дня: \d+ фаз\S*, \d+ рол\S+, \d+ класс\S* гейтов$/)
+})
+
+test('полоса всего графа согласует число и форму слова', () => {
+  // Числа живого графа меняются с каждым мержем: форму проверяет таблица, а не
+  // текущий размер графа. 181 — число, на котором упала прежняя регулярка.
+  const line = (nodes, edges) =>
+    viewLine({ full: true, selected: null, ids: new Set(), links: [], depth: 1, byId: new Map(), stats: { nodes, edges } })
+  const nodeForms = [
+    [1, 'узел'],
+    [21, 'узел'],
+    [181, 'узел'],
+    [2, 'узла'],
+    [22, 'узла'],
+    [5, 'узлов'],
+    [11, 'узлов'],
+    [111, 'узлов'],
+  ]
+  for (const [n, form] of nodeForms)
+    assert.equal(line(n, 5), `Весь граф: ${n} ${form}, 5 связей. Подписи скрыты — узел называет панель`)
+  const edgeForms = [
+    [1, 'связь'],
+    [21, 'связь'],
+    [2, 'связи'],
+    [22, 'связи'],
+    [11, 'связей'],
+    [628, 'связей'],
+  ]
+  for (const [m, form] of edgeForms)
+    assert.equal(line(5, m), `Весь граф: 5 узлов, ${m} ${form}. Подписи скрыты — узел называет панель`)
 })
 
 test('у документов есть путь для ссылки на GitHub', () => {
