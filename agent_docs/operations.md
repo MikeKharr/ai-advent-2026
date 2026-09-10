@@ -233,6 +233,21 @@ grep -o '^[A-Z_]*=' day8.env
 `workflow_dispatch`: `gh workflow run deploy.yml -f day=<единица>`. Правило
 действует, пока `detect` не считает от последнего выкаченного sha (бэклог).
 
+## Мерж PR
+
+Мержит агент по консенсусу гейтов класса (ADR `2026-09-14-1400`).
+
+- Личность git в репозитории задана: `Mike <harichko@gmail.com>`
+  (`git config user.email`). Без неё коммиты агентов подписываются адресом
+  из имени машины, и GitHub при squash дописывает `Co-authored-by` — так
+  было с PR #55 по #59, адрес локальной сети попал в историю.
+- Перед мержем очередь выкатки пуста (`gh run list --workflow deploy.yml`,
+  правило выше).
+- Мерж — с явным текстом: `gh pr merge N --squash --subject "… (#N)"
+  --body "…"`. С явным текстом GitHub соавторов не подставляет.
+- После мержа — `git log -1 --format=%B` на `origin/main`: трейлера
+  `Co-authored-by` нет.
+
 ## Добавить приложение
 
 Запись в `router/config/apps.json` с `id`, `secretEnv`, списком классов и хотя бы
