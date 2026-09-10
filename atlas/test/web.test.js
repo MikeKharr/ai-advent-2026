@@ -510,7 +510,7 @@ test('полоса вида называет вид и числа этого в�
   const base = { stats, byId, depth: 1, links: [] }
   assert.match(
     viewLine({ ...base, full: true, selected: null, ids: new Set() }),
-    /^Весь граф: \d+ узл\S+, \d+ связ\S+\. Подписи скрыты/,
+    /^Весь граф: \d+ (?:узел|узл\S+), \d+ связ\S+\. Подписи скрыты/,
   )
   assert.equal(viewLine({ ...base, full: false, selected: null, ids: new Set() }), 'Ни одного узла: скрыты все типы')
   assert.equal(
