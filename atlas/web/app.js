@@ -462,8 +462,11 @@ export const SLOTS = [
   ),
 ]
 
-/** Позиция первого ряда касается своего узла: между ними только зазор. */
-const adjacent = (slot) => !/[23]/.test(slot)
+/**
+ * Позиция первого ряда касается своего узла: между ними только зазор. Номер
+ * ряда в имени позиции есть у всех рядов, начиная со второго.
+ */
+const adjacent = (slot) => !/\d/.test(slot)
 
 function boxAt(slot, p, width) {
   const full = width + 4
@@ -567,9 +570,10 @@ export function placeLabels(items, field, measure) {
   for (const rank of [...new Set(items.map((item) => item.rank))].sort((a, b) => a - b)) {
     const left = items.filter((item) => item.rank === rank).sort(byId)
     while (left.length > 0) {
-      const room = left.map((item) => free(item).length)
-      const [item] = left.splice(room.indexOf(Math.min(...room)), 1)
-      const box = free(item)[0] ?? yielded(item)
+      const room = left.map(free)
+      const next = room.reduce((best, boxes, k) => (boxes.length < room[best].length ? k : best), 0)
+      const [item] = left.splice(next, 1)
+      const box = room[next][0] ?? yielded(item)
       if (box) taken.set(item.id, box)
     }
   }
