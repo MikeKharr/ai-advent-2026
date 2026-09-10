@@ -1,6 +1,11 @@
 ---
 name: frontend
 description: UI, формы, доступность, статика, отображение SSE-прогресса и карточек новостей. Вызывать для работы с public/index.html, app.js, style.css.
+model: opus
+effort: medium
+skills:
+  - incremental-implementation
+  - test-driven-development
 ---
 
 # Frontend Engineer

@@ -82,10 +82,12 @@
 
 ## Роли агентов
 
-- Роли определены в `.claude/agents/*.md`. Карта ролей и протокол передачи — `agent_docs/guides/agent-roles.md`.
-- **Автор кода никогда не ревьюит свой код.** `reviewer` обязан быть другим экземпляром агента, чем `backend`/`frontend`.
+- Роли определены в `.claude/agents/*.md`. Карта ролей и протокол передачи — `agent_docs/guides/agent-roles.md`. Оркестрация полного цикла — скилл `/day-cycle`.
+- **Модель и усилие — свойство роли** (ADR `2026-09-13-1800`): высокоуровневое проектирование (`architect`: архитектура, потоки данных, проектирование гейтов, AI-харнесс) — fable/high; прочее проектирование и гейты ревью (`design`, `design-review`, `reviewer`, `compliance`) — opus/high; реализация и тесты — opus/medium; запись — opus/low. Задано во фронтматтере ролей, не в вызове.
+- **Гейты мержа — по классу изменения** (ADR `2026-09-13-1800`): A — деньги/данные/ключи и workflow CI с `secrets.*`: reviewer + compliance + design-review при UI; B — обычный код и прочий конфиг CI: reviewer, design-review при UI; C — документы и лендинг: только механический CI. Сомнение — в сторону старшего класса. Класс пишется в описание PR, reviewer его подтверждает. Вето `compliance` действует поверх классов.
+- **Автор кода никогда не ревьюит свой код.** `reviewer` обязан быть другим экземпляром агента, чем `backend`/`frontend`. После правок блокирующих находок работа возвращается **тому же экземпляру** ревьюера на перепроверку.
 - `compliance` имеет право вето на изменения, затрагивающие API-ключ, расход средств и защиту от злоупотреблений.
-- **UI проходит через `design` дважды** (ADR `2026-09-08-1110`): до кода — раскладка, иерархия и четыре состояния контента; перед мержем — ревью по скиллу `/design-review` против `agent_docs/design/corpus.md`. Реализует `frontend`. Ревью ведёт отдельный экземпляр `design` — не тот, что выдавал раскладку, и не автор реализации.
+- **UI:** раскладка от `design` до кода — для нового экрана или смены раскладки; перед мержем любого изменения UI — ревью ролью `design-review` по скиллу `/design-review` против `agent_docs/design/corpus.md` (ADR `2026-09-08-1110`, уточнено ADR `2026-09-13-1800`). Реализует `frontend`; экземпляры раскладки, реализации и ревью не пересекаются.
 
 ## Project-Local Skills
 
@@ -94,7 +96,7 @@
 - Skill metadata собственных скиллов проекта должна показывать ту же slash-команду, которую вызывает пользователь: `name: <command>`, description начинается с `/<command>`, первый H1 — `# /<command>`, `agents/openai.yaml display_name: "/<command>"`. На vendored-набор ниже это правило не распространяется.
 - Не создавать новые slash-command файлы; полезные workflows оформлять как skills.
 - Manifest всегда называется `SKILL.md`.
-- В `.agents/skills/` установлен набор `addyosmani/agent-skills` (ADR `2026-09-07-2350`). Использовать эти skills в первую очередь внутри фаз работы: спецификация (`spec-driven-development`, `planning-and-task-breakdown`), кодинг (`incremental-implementation`, `test-driven-development`), тестирование, ревью (`code-review-and-quality`). Верхнеуровневый процесс — этот файл и `agent_docs/` (ADR, dev-history, snapshot, инварианты, роли); при конфликте инструкций skill с правилами проекта приоритет за правилами проекта.
+- В `.agents/skills/` установлен набор `addyosmani/agent-skills` (ADR `2026-09-07-2350`). Ключевые skills **предзагружены в роли** через фронтматтер `skills:` (ADR `2026-09-13-1800`): `architect` — spec-driven-development и planning-and-task-breakdown, `backend`/`frontend` — incremental-implementation и test-driven-development, `qa` — test-driven-development, `design` — frontend-ui-engineering, `design-review` — design-review, `reviewer` — code-review-and-quality, `docs` — documentation-and-adrs. Остальные использовать по фазам работы. Верхнеуровневый процесс — этот файл и `agent_docs/` (ADR, dev-history, snapshot, инварианты, роли); при конфликте инструкций skill с правилами проекта приоритет за правилами проекта.
 - Набор vendored: файлы под `.agents/` не редактировать; они исключены из markdownlint. Обновление — `npx skills update` плюс ручное копирование общих чек-листов и допфайлов скиллов, которые установщик не переносит (процедура — в ADR `2026-09-07-2350`).
 - **Обязательная проверка перед установкой или обновлением любого стороннего skill**: сканирование SkillSpector + семантическое ревью по скиллу `skill-inspector`; `REJECT` или необъяснённая HIGH/CRITICAL-находка — не устанавливать. Процедура, вердикты и работа с находками — ADR `2026-09-08-0205`; установка CLI — `agent_docs/guides/environment-setup.md`.
 - Для любого стороннего скилла при конфликте его инструкций с правилами проекта приоритет за правилами проекта (например, временные отчёты — в `temp/`, а не в `/tmp`, как велит `skill-inspector`).
