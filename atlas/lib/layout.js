@@ -90,6 +90,132 @@ export function layout(nodes, edges, options = {}) {
   return placed
 }
 
+/** Глубина: число проходов релаксации по `z`. */
+const DEPTH_STEPS = 300
+
+/**
+ * Третья координата для режима «Объём» (ADR 2026-09-14-1000, п. 2).
+ *
+ * Считается после плоской раскладки и её не трогает: `x`, `y` заморожены,
+ * двигается только `z`. Внутри компоненты — та же силовая модель, что в
+ * плоскости, но в трёх измерениях: отталкивание всех от всех действует по `z`
+ * своей проекцией, поэтому сильнее всего расходятся узлы, близкие в
+ * плоскости; рёбра стягивают концы по глубине. Ограничения детерминизма те
+ * же: сложение, умножение, деление и `Math.sqrt`, семя `LAYOUT_SEED`.
+ *
+ * Узлы без рёбер — компоненты из одного узла — лежат на `z = 0.5`: глубину
+ * назначили бы связи, а их нет, и решётка остаётся плоской при любом повороте.
+ *
+ * @param {Array<{id:string}>} nodes
+ * @param {Array<{from:string,to:string}>} edges
+ * @param {Map<string,{x:number,y:number}>} placed результат `layout()`, не меняется
+ * @returns {Map<string,number>}
+ */
+export function depth(nodes, edges, placed) {
+  const out = new Map()
+  for (const [i, part] of components(nodes, edges).entries()) {
+    if (part.length < 2) {
+      out.set(part[0].id, 0.5)
+      continue
+    }
+    for (const [id, z] of relax(part, edges, placed, LAYOUT_SEED + i)) out.set(id, round6(z))
+  }
+  return out
+}
+
+/** Одномерная релаксация связной части по `z` при зафиксированных `x`, `y`. */
+function relax(nodes, edges, placed, seed) {
+  const n = nodes.length
+  const rnd = random(seed)
+  const index = new Map(nodes.map((node, i) => [node.id, i]))
+  const px = new Float64Array(n)
+  const py = new Float64Array(n)
+  for (let i = 0; i < n; i += 1) {
+    px[i] = placed.get(nodes[i].id).x
+    py[i] = placed.get(nodes[i].id).y
+  }
+
+  // Считается в единицах плоскости: глубина выходит соразмерной ширине.
+  let minX = px[0]
+  let maxX = px[0]
+  let minY = py[0]
+  let maxY = py[0]
+  for (let i = 1; i < n; i += 1) {
+    if (px[i] < minX) minX = px[i]
+    if (px[i] > maxX) maxX = px[i]
+    if (py[i] < minY) minY = py[i]
+    if (py[i] > maxY) maxY = py[i]
+  }
+  const span = Math.max(maxX - minX, maxY - minY) || 1
+  const k = span / Math.sqrt(n)
+
+  const pz = new Float64Array(n)
+  for (let i = 0; i < n; i += 1) pz[i] = rnd() * span
+
+  const links = edges
+    .map((e) => [index.get(e.from), index.get(e.to)])
+    .filter(([a, b]) => a !== undefined && b !== undefined && a !== b)
+
+  const dz = new Float64Array(n)
+  const MIN = 1e-6
+
+  for (let step = 0; step < DEPTH_STEPS; step += 1) {
+    dz.fill(0)
+
+    for (let i = 0; i < n; i += 1) {
+      for (let j = i + 1; j < n; j += 1) {
+        const ex = px[i] - px[j]
+        const ey = py[i] - py[j]
+        let ez = pz[i] - pz[j]
+        let d2 = ex * ex + ey * ey + ez * ez
+        if (d2 < MIN * MIN) {
+          // Совпавшие узлы разводятся предсказуемо, а не случайно.
+          ez = (i - j) * MIN
+          d2 = ex * ex + ey * ey + ez * ez
+        }
+        const d = Math.sqrt(d2)
+        const uz = (ez / d) * ((k * k) / d)
+        dz[i] += uz
+        dz[j] -= uz
+      }
+    }
+
+    for (const [a, b] of links) {
+      const ex = px[a] - px[b]
+      const ey = py[a] - py[b]
+      const ez = pz[a] - pz[b]
+      const d = Math.sqrt(ex * ex + ey * ey + ez * ez) || MIN
+      const uz = (ez * d) / k
+      dz[a] -= uz
+      dz[b] += uz
+    }
+
+    const temp = 0.1 * span * (1 - step / DEPTH_STEPS)
+    for (let i = 0; i < n; i += 1) {
+      pz[i] += dz[i] > temp ? temp : dz[i] < -temp ? -temp : dz[i]
+    }
+  }
+
+  let minZ = pz[0]
+  let maxZ = pz[0]
+  for (let i = 1; i < n; i += 1) {
+    if (pz[i] < minZ) minZ = pz[i]
+    if (pz[i] > maxZ) maxZ = pz[i]
+  }
+  // Глубина не больше ширины компоненты в плоскости: при замороженных x, y
+  // отталкиванию некуда деться, кроме z, и без предела компонента на
+  // повороте в 90° вытянулась бы в столб (на main — в 1.38 раза при
+  // MAX_STRETCH плоскости 1.3). Ширина плоскости не больше INNER, поэтому
+  // z остаётся в 0…1.
+  const spanZ = maxZ - minZ
+  const scale = spanZ > span ? span / spanZ : 1
+  const middle = (minZ + maxZ) / 2
+
+  const out = new Map()
+  for (let i = 0; i < n; i += 1) out.set(nodes[i].id, 0.5 + (pz[i] - middle) * scale)
+  return out
+}
+
 /** Поля квадрата: узел у самой границы обрезался бы подписью. */
 const BORDER = 0.03
 const INNER = 1 - 2 * BORDER
