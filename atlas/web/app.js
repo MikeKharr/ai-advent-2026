@@ -882,9 +882,13 @@ const LABEL_FONT = '12px ui-sans-serif, system-ui, sans-serif'
  * Порядок важности: выбранный узел, фазы цепи (они и есть рассказ стартового
  * вида), узел под курсором, соседи выбранного, остальные. Важному узлу
  * достаётся позиция ближе к «под узлом», остальным — из оставшихся.
+ *
+ * Узел под курсором поднимается, только когда подписи показаны не у всех
+ * (`always` ложно). В виде до 40 узлов его подпись и так есть, а повышение
+ * переставляло бы соседние: подписи прыгали бы от движения мыши.
  */
-const rankOf = (id, sel, near) =>
-  id === sel ? 0 : state.view.place !== null && node(id).type === 'phase' ? 1 : id === state.hover ? 2 : near?.has(id) ? 3 : 4
+export const labelRank = ({ id, sel, near, hover, phase, always }) =>
+  id === sel ? 0 : phase ? 1 : id === hover && !always ? 2 : near?.has(id) ? 3 : 4
 
 /**
  * Наборы позиций подписи. В цепи первая позиция задана раскладкой цепи:
@@ -968,7 +972,9 @@ function paint() {
   const items = []
   for (const [id, p] of screen) {
     if (!always && id !== sel && id !== state.hover && !near?.has(id)) continue
-    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank: rankOf(id, sel, near), slots: slotsOf(id) })
+    const phase = state.view.place !== null && node(id).type === 'phase'
+    const rank = labelRank({ id, sel, near, hover: state.hover, phase, always })
+    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank, slots: slotsOf(id) })
   }
   const labels = placeLabels(items, { width: w, height: h }, (text) => ctx.measureText(text).width)
   for (const [id, box] of labels) {
