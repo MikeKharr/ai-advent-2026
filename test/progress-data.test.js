@@ -3,11 +3,15 @@
 // agent_docs/design/2026-09-14-1300-progress-page.md, раздел «Файл данных».
 // Тест лежит вне site/: каталог отдаётся Caddy целиком как корень сайта.
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import '../site/progress/validate.js'
 import '../site/progress/data.js'
 
 const { dataProblems, prProblems, itemProblems, publicProblems } = globalThis.PROGRESS_CHECK
+// Публичность проверяется по сырому тексту: Caddy отдаёт файл целиком,
+// с комментариями и любыми полями, а не только те, что рисует страница.
+const RAW = readFileSync(new URL('../site/progress/data.js', import.meta.url), 'utf8')
 const KEYS = ['days', 'process']
 const good = () => ({
   n: 47,
@@ -23,8 +27,8 @@ test('данные страницы проходят проверку полей
   assert.deepEqual(dataProblems(globalThis.PROGRESS), [])
 })
 
-test('данные страницы не содержат адресов и приватных следов', () => {
-  assert.deepEqual(publicProblems(globalThis.PROGRESS), [])
+test('сырой текст data.js не содержит адресов и приватных следов', () => {
+  assert.deepEqual(publicProblems(RAW), [])
 })
 
 test('правильная строка PR проходит', () => {
@@ -41,6 +45,10 @@ test('строка без класса проходит: классов до PR 
   const pr = good()
   delete pr.cls
   assert.deepEqual(prProblems(pr, KEYS), [])
+})
+
+test('строка PR с неизвестным полем не проходит', () => {
+  assert.ok(prProblems({ ...good(), src: 'заметка' }, KEYS).length > 0)
 })
 
 test('номер PR — целое не меньше 1', () => {
@@ -85,6 +93,10 @@ test('пункт «Сейчас в работе»: этап ≤ 24, заголо
   assert.ok(itemProblems({ ...item, title: 'я'.repeat(101) }).length > 0)
   assert.ok(itemProblems({ ...item, text: 'я'.repeat(301) }).length > 0)
   assert.ok(itemProblems({ stage: 'раскладка', text: 'Текст' }).length > 0)
+})
+
+test('пункт «Сейчас в работе» с неизвестным полем не проходит', () => {
+  assert.ok(itemProblems({ stage: 'ревью', title: 'Т', text: 'Т', link: 'заметка' }).length > 0)
 })
 
 const data = () => ({
@@ -135,31 +147,86 @@ test('ключи потоков уникальны, у каждого есть �
   assert.ok(dataProblems(e).length > 0)
 })
 
+test('ключ потока — слово латиницей, а не путь', () => {
+  for (const key of ['/tmp/x', 'a/b', 'Дни', 'days one']) {
+    const d = data()
+    d.streams[0].key = key
+    d.prs.forEach((p) => {
+      p.stream = key
+    })
+    assert.ok(dataProblems(d).length > 0, key)
+  }
+})
+
+test('неизвестные поля на любом уровне — находка', () => {
+  const top = { ...data(), extra: 1 }
+  assert.ok(dataProblems(top).length > 0, 'верхний уровень')
+  const now = data()
+  now.now.src = 'x'
+  assert.ok(dataProblems(now).length > 0, 'now')
+  const stream = data()
+  stream.streams[0].url = 'x'
+  assert.ok(dataProblems(stream).length > 0, 'streams[]')
+  const pr = data()
+  pr.prs[0].src = 'x'
+  assert.ok(dataProblems(pr).length > 0, 'prs[]')
+  const item = data()
+  item.now.items = [{ stage: 'ревью', title: 'Т', text: 'Т', src: 'x' }]
+  assert.ok(dataProblems(item).length > 0, 'now.items[]')
+})
+
 test('кривой верхний уровень — находка, а не исключение', () => {
   for (const bad of [undefined, null, 5, [], { prs: 'нет' }]) {
     assert.ok(dataProblems(bad).length > 0, JSON.stringify(bad))
   }
 })
 
-test('в тексте нельзя адресов, приватных следов и обращения к владельцу', () => {
-  const texts = [
-    'подробности на https://example.com',
-    'см. www.example.com',
-    'сервер 203.0.113.7',
-    'ноутбук в mac.tail1234.ts.net',
-    'выгружено в Google Drive',
-    'файл /Users/mike/Projects',
+// Каждая категория «что можно писать» — отдельный набор утечек. Проверяется
+// сырой текст, поэтому утечка ловится и в комментарии, и в любом поле.
+const LEAKS = {
+  'адрес со схемой': ['подробности на https://example.com', 'ftp://files.example'],
+  'адрес с www.': ['см. www.example.com'],
+  'временный путь': [
+    'отчёт в /tmp/claude-502/-Users-mike/scratchpad/report.md',
     'каталог /private/tmp/x',
-    'по вашей просьбе',
-    'Вам пришло',
+    '/var/folders/ab/T/x',
+  ],
+  'домашний путь': ['файл /Users/mike/Projects', '~/Projects/ai-advent-2026', '/home/deploy/app/.env', '/root/.ssh/key'],
+  'домен без схемы': ['claude.ai/code/artifacts/5f3a9c', 'витрина на challenge.zpq.ai', 'docs.google.com/document/d/x'],
+  'имя хоста': ['ноутбук mac.tail1234.ts.net', 'server.local', 'localhost:8080', 'db.internal'],
+  'id Google Drive': ['файл 1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789', 'выгружено в Google Drive'],
+  email: ['пишите mike@example.com', 'ssh advent@server'],
+  'IPv4-адрес': ['сервер 203.0.113.7'],
+  'IPv6-адрес': ['tailnet fd7a:115c:a1e0::1', '2001:db8:0:0:0:0:2:1'],
+  'обращение к владельцу': ['по вашей просьбе', 'Вам пришло'],
+}
+for (const [what, texts] of Object.entries(LEAKS)) {
+  test(`утечка ловится: ${what}`, () => {
+    for (const text of texts) {
+      assert.ok(publicProblems(`result: '${text}',`).length > 0, text)
+    }
+  })
+}
+
+test('утечка в комментарии data.js ловится', () => {
+  assert.ok(publicProblems(`// черновик: /tmp/x/report.md\nglobalThis.PROGRESS = {}`).length > 0)
+})
+
+test('утечка в неизвестном поле ловится: проверяется весь текст', () => {
+  assert.ok(publicProblems(`{ n: 1, src: 'drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012' },`).length > 0)
+})
+
+test('обычный текст журнала — не утечка', () => {
+  const ok = [
+    'Выкатка прошла, в PR #62 идут reviewer и design-review.',
+    'Сервис router/ без зависимостей в проде',
+    'Атлас в проде на /atlas/ отдельной единицей',
+    'Приложение ходит в Haiku 4.5 вместо Sonnet 5',
+    'Формат — agent_docs/design/2026-09-14-1300-progress-page.md.',
+    'Установлены 25 скиллов addyosmani/agent-skills',
+    'Файл site/progress/data.js, обновлено 10 сентября, 15:19 UTC',
+    "updated: '2026-09-10T15:19Z',",
+    'Скилл /design-review и /day-cycle, запрет --no-index',
   ]
-  for (const text of texts) {
-    const d = data()
-    d.prs[0].result = text
-    assert.ok(publicProblems(d).length > 0, text)
-  }
-  // «Выкатка» начинается с «вы»: обращение ловится по «ваш», «вам», а не по «вы».
-  const ok = data()
-  ok.now.items = [{ stage: 'ревью', title: 'Ок', text: 'Выкатка прошла, в PR #62 идут reviewer и design-review.' }]
-  assert.deepEqual(publicProblems(ok), [])
+  for (const text of ok) assert.deepEqual(publicProblems(text), [], text)
 })

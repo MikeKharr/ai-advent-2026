@@ -7,14 +7,25 @@
   const CLASSES = ['A', 'B', 'C']
   const DAY = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
   const UTC = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d+)?)?Z$/
+  const STREAM_KEY = /^[a-z][a-z0-9-]*$/
+  // Поля каждого уровня. Лишнее поле — находка: страница его не рисует, но
+  // Caddy отдаёт файл целиком, и в нём может уехать что угодно.
+  const FIELDS = {
+    top: ['now', 'streams', 'prs'],
+    now: ['updated', 'items'],
+    stream: ['key', 'label'],
+    pr: ['n', 'merged', 'type', 'stream', 'cls', 'result', 'goal'],
+    item: ['stage', 'title', 'text'],
+  }
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+  const extra = (obj, level) => Object.keys(obj).filter((k) => !FIELDS[level].includes(k))
 
   // Непустая строка не длиннее max знаков (кодовых точек, не единиц UTF-16).
   const isText = (v, max) => typeof v === 'string' && v.trim() !== '' && [...v].length <= max
 
   function prProblems(pr, streamKeys) {
     if (!isObj(pr)) return ['строка — не объект']
-    const out = []
+    const out = extra(pr, 'pr').map((k) => `лишнее поле ${k}`)
     if (!Number.isInteger(pr.n) || pr.n < 1) out.push('n — целое ≥ 1')
     if (typeof pr.merged !== 'string' || !DAY.test(pr.merged)) out.push('merged — YYYY-MM-DD')
     if (!TYPES.includes(pr.type)) out.push(`type — один из ${TYPES.join(', ')}`)
@@ -27,7 +38,7 @@
 
   function itemProblems(item) {
     if (!isObj(item)) return ['пункт — не объект']
-    const out = []
+    const out = extra(item, 'item').map((k) => `лишнее поле ${k}`)
     if (!isText(item.stage, 24)) out.push('stage — непустой, ≤ 24 знаков')
     if (!isText(item.title, 100)) out.push('title — непустой, ≤ 100 знаков')
     if (!isText(item.text, 300)) out.push('text — непустой, ≤ 300 знаков')
@@ -37,17 +48,22 @@
   // Все находки по файлу данных целиком; пустой массив — данные в порядке.
   function dataProblems(data) {
     if (!isObj(data)) return ['PROGRESS — не объект']
-    const out = []
+    const out = extra(data, 'top').map((k) => `лишнее поле ${k}`)
     const streams = Array.isArray(data.streams) ? data.streams : []
     if (!Array.isArray(data.streams) || streams.length === 0) out.push('streams — непустой массив')
     const keys = []
     streams.forEach((s, i) => {
-      if (!isObj(s) || !isText(s.key, Infinity) || !isText(s.label, Infinity)) out.push(`streams[${i}] — { key, label }`)
-      else if (keys.includes(s.key)) out.push(`streams[${i}] — ключ ${s.key} повторяется`)
+      if (!isObj(s) || !STREAM_KEY.test(s.key) || !isText(s.label, Infinity)) {
+        out.push(`streams[${i}] — { key: слово латиницей, label }`)
+        return
+      }
+      for (const k of extra(s, 'stream')) out.push(`streams[${i}]: лишнее поле ${k}`)
+      if (keys.includes(s.key)) out.push(`streams[${i}] — ключ ${s.key} повторяется`)
       else keys.push(s.key)
     })
     if (!isObj(data.now)) out.push('now — объект')
     else {
+      for (const k of extra(data.now, 'now')) out.push(`now: лишнее поле ${k}`)
       if (typeof data.now.updated !== 'string' || !UTC.test(data.now.updated)) out.push('now.updated — ISO 8601 в UTC с Z')
       if (!Array.isArray(data.now.items)) out.push('now.items — массив')
       else {
@@ -70,33 +86,36 @@
     return out
   }
 
-  // Страница публичная: в тексте нет адресов, приватных следов и обращения
-  // к владельцу. «Вы» не ловится: совпадёт с «выкатка», его проверяет чтение.
+  // Страница публичная: в файле нет адресов, приватных следов и обращения к
+  // владельцу. Проверяется сырой текст data.js — комментарии и любые поля.
+  // «Вы» не ловится: совпадёт с «выкатка», его проверяет чтение.
+  const TLD = 'ai|app|biz|cloud|co|com|de|dev|info|io|link|me|net|online|org|page|ru|run|sg|sh|site|so|tech|uk|us|xyz'
   const PRIVATE = [
-    [/:\/\//, 'адрес с ://'],
-    [/www\./i, 'адрес с www.'],
-    [/\b\d{1,3}(\.\d{1,3}){3}\b/, 'IPv4-адрес'],
-    [/ts\.net/i, 'имя частной сети'],
-    [/drive/i, 'Google Drive'],
-    [/\/Users\/|\/private\//, 'путь рабочего каталога'],
-    [/(^|[^а-яё])ва[шм]/i, 'обращение к владельцу'],
+    ['адрес со схемой', /[a-z][a-z0-9+.-]*:\/\//i],
+    ['адрес с www.', /www\./i],
+    ['временный путь', /(^|[^\w/.-])\/(tmp|private|var)\//],
+    ['домашний путь', /(^|[^\w/.-])(~\/|\/(Users|home|root)\/)/],
+    ['домен без схемы', new RegExp(`(^|[^\\w@.-])(?:[a-z0-9-]+\\.)+(?:${TLD})(?![\\w-])`, 'i')],
+    ['имя хоста', /\blocalhost\b|\.(local|internal|lan|ts\.net)(?![\w-])/i],
+    // id файла Drive — 25+ знаков из [A-Za-z0-9_-] вперемешку: буквы обоих
+    // регистров и цифры. Имя файла спецификации (строчные, цифры, дефисы) не
+    // попадает — у него нет заглавных.
+    ['id Google Drive', (s) => /drive/i.test(s) || (s.match(/[A-Za-z0-9_-]{25,}/g) || []).some((t) => /[A-Z]/.test(t) && /[a-z]/.test(t) && /\d/.test(t))],
+    ['email', /[\w.+-]@[a-z0-9-]/i],
+    ['IPv4-адрес', /\b\d{1,3}(\.\d{1,3}){3}\b/],
+    // Две группы «hex:» и дальше; время «15:19» и «T15:19Z» не совпадает —
+    // нужна буква a–f или «::».
+    ['IPv6-адрес', (s) => (s.match(/(?:^|[^\w:])(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]*/gi) || []).some((t) => /::|[a-f]/i.test(t))],
+    ['обращение к владельцу', /(^|[^а-яё])ва[шм]/i],
   ]
 
-  function publicProblems(data) {
-    if (!isObj(data)) return []
-    const texts = []
-    for (const s of Array.isArray(data.streams) ? data.streams : []) if (isObj(s)) texts.push(['streams', s.label])
-    for (const it of isObj(data.now) && Array.isArray(data.now.items) ? data.now.items : []) {
-      if (isObj(it)) texts.push(['now', it.stage], ['now', it.title], ['now', it.text])
-    }
-    for (const pr of Array.isArray(data.prs) ? data.prs : []) {
-      if (isObj(pr)) texts.push([`#${pr.n}`, pr.result], [`#${pr.n}`, pr.goal])
-    }
+  function publicProblems(source) {
     const out = []
-    for (const [where, text] of texts) {
-      if (typeof text !== 'string') continue
-      for (const [re, what] of PRIVATE) if (re.test(text)) out.push(`${where}: ${what} — «${text}»`)
-    }
+    String(source).split('\n').forEach((line, i) => {
+      for (const [what, rule] of PRIVATE) {
+        if (typeof rule === 'function' ? rule(line) : rule.test(line)) out.push(`строка ${i + 1}: ${what} — «${line.trim()}»`)
+      }
+    })
     return out
   }
 
