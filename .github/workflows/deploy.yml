@@ -35,13 +35,16 @@ jobs:
       # База diff — последняя успешная выкатка по push, а не HEAD^: очередь
       # deploy-production отменяет ожидающий запуск, и его изменения должен
       # подобрать следующий. По updated_at, чтобы учесть повторные запуски.
+      # pipefail: сбой API роняет detect, а не даёт пустую базу («все единицы»).
       - id: base
         if: ${{ !inputs.day }}
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          base=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?branch=main&event=push&status=success&per_page=20" \
-            --jq '.workflow_runs | max_by(.updated_at) | .head_sha // empty')
+          set -euo pipefail
+          base=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?branch=main&event=push&status=success&per_page=100" \
+            --jq '.workflow_runs[] | [.updated_at, .head_sha] | @tsv' | sort | tail -1 | cut -f2)
           echo "sha=$base" >> "$GITHUB_OUTPUT"
           echo "последняя успешная выкатка: ${base:-нет}"
 
