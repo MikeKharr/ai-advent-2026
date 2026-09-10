@@ -161,16 +161,22 @@ export function buildGraph(sources) {
   }
 
   // Маршрут — сервис compose за `reverse_proxy <service>:<port>` и префикс
-  // ближайшего `handle_path` над ним. Комментарии Caddyfile упоминают
-  // handle_path в пояснении: маршрут — только действующая строка.
+  // `handle_path`, внутри блока которого он стоит. Блок узнаётся по глубине
+  // скобок: после его `}` префикс сброшен, и `reverse_proxy` под `handle /x/*`
+  // или `handle {` чужого префикса не получает. Комментарии Caddyfile
+  // упоминают handle_path в пояснении: маршрут — только действующая строка.
   const routes = []
   let prefix = null
+  let level = 0
+  let prefixLevel = 0
   for (const l of sources.caddyText.split('\n')) {
     if (/^\s*#/.test(l)) continue
     const path = l.match(/handle_path (\/[^\s*]+\/)\*/)
-    if (path) prefix = path[1]
+    if (path) [prefix, prefixLevel] = [path[1], level]
     const proxy = l.match(/reverse_proxy ([\w-]+):\d+/)
     if (proxy) routes.push({ prefix, service: proxy[1] })
+    level += (l.match(/\{/g) ?? []).length - (l.match(/\}/g) ?? []).length
+    if (level <= prefixLevel) prefix = null
   }
   const routeOf = (name) => routes.find((r) => r.service === name)?.prefix ?? null
 
@@ -212,7 +218,8 @@ export function buildGraph(sources) {
     for (const dep of s.dependsOn) if (has(unitId(dep))) link(unitId(s.name), unitId(dep), 'depends')
     for (const v of s.volumes) if (v.named && has(`volume/${v.source}`)) link(unitId(s.name), `volume/${v.source}`, 'mounts')
   }
-  for (const r of routes) if (has(unitId(r.service))) link('service/caddy', unitId(r.service), 'routes')
+  // Два блока на один сервис — один маршрут в графе.
+  for (const id of new Set(routes.map((r) => unitId(r.service)))) if (has(id)) link('service/caddy', id, 'routes')
   const caddy = composeByName.caddy
   if (caddy?.volumes.some((v) => v.source === '../site')) link('service/caddy', 'service/site', 'serves')
 
