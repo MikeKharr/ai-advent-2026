@@ -4,7 +4,7 @@
 
 import { parseCompose } from './compose.js'
 import { firedTraces } from './fired.js'
-import { layout } from './layout.js'
+import { depth, layout } from './layout.js'
 import {
   atomicId,
   clip,
@@ -414,7 +414,11 @@ export function buildGraph(sources) {
   // Координаты — последними: раскладка считается по готовому графу
   // (контракт 1 этапа 3, раскладка 2026-09-13-2100).
   const placed = layout(nodes, edges)
-  for (const node of nodes) Object.assign(node, placed.get(node.id))
+  // Глубина — после плоскости и при зафиксированных x, y (ADR 2026-09-14-1000).
+  // В узле z стоит перед x: так строка y не получает запятую, и diff
+  // graph.json до и после — одни добавленные строки "z".
+  const deep = depth(nodes, edges, placed)
+  for (const node of nodes) Object.assign(node, { z: deep.get(node.id) }, placed.get(node.id))
 
   return { nodes, edges, findings }
 }

@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import { parseCompose } from '../lib/compose.js'
 import { atomicId } from '../lib/markdown.js'
 import { buildGraph } from '../lib/extract.js'
+import { layout } from '../lib/layout.js'
 import { readSources } from '../lib/sources.js'
 import { ROOT, density } from './helpers.js'
 
@@ -184,6 +185,22 @@ test('каждый узел несёт координаты в единично�
   assert.ok(median >= 0.02, `медиана расстояния до ближайшего соседа ${median.toFixed(4)}`)
 
   assert.equal(new Set(graph.nodes.map((n) => `${n.x},${n.y}`)).size, graph.nodes.length)
+})
+
+test('каждый узел несёт z в 0…1, а x и y — ровно те, что даёт плоская раскладка', () => {
+  // ADR 2026-09-14-1000, п. 2: z добавляется, x и y не меняются.
+  const plane = layout(graph.nodes, graph.edges)
+  const linked = new Set(graph.edges.flatMap((e) => (e.from === e.to ? [] : [e.from, e.to])))
+  for (const node of graph.nodes) {
+    assert.deepEqual({ x: node.x, y: node.y }, plane.get(node.id), node.id)
+    assert.equal(typeof node.z, 'number', node.id)
+    assert.ok(node.z >= 0 && node.z <= 1, `${node.id}: ${node.z}`)
+    assert.ok((String(node.z).split('.')[1] ?? '').length <= 6, `${node.id}: ${node.z}`)
+    if (!linked.has(node.id)) assert.equal(node.z, 0.5, `${node.id} без рёбер вне плоскости 0.5`)
+  }
+  // z стоит перед x, y закрывает узел: строка y не получает запятую, и diff
+  // graph.json до и после — только добавленные строки "z".
+  for (const node of graph.nodes) assert.deepEqual(Object.keys(node).slice(-3), ['z', 'x', 'y'], node.id)
 })
 
 test('у каждого следа есть marks, и срезы по ним — роль и признак', () => {
