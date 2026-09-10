@@ -4,6 +4,7 @@
 
 ## 2026-09
 
+- [x] 2026-09-10 — атлас проекта, этап 4: витрина выкачена отдельной единицей `atlas` на `challenge.zpq.ai/atlas/` (PR #56, класс A; reviewer — APPROVE, compliance — без возражений). → `development-history/2026-09-13-2330-atlas-stage-4.md`
 - [x] 2026-09-13 — атлас проекта, этап 3: страница витрины `atlas/web/` по раскладке `design`, контракты генератора (координаты, `marks` у следов, выдержка без предела, происхождение), `design-review` и `reviewer` — `ГОТОВО` (PR #54). → `development-history/2026-09-13-2300-atlas-stage-3.md`
 - [x] 2026-09-13 — атлас проекта, этапы 1 и 2: граф `atlas/dist/graph.json`, гейт связности ссылок в `guard`, vault Obsidian `atlas/dist/vault/` (ADR `2026-09-13-2000`). → `development-history/2026-09-13-2100-atlas-stages-1-2.md`
 
