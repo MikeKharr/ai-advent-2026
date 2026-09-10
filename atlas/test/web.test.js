@@ -430,6 +430,17 @@ test('дальняя позиция не подписывает соседа', (
   assert.equal(placeLabels([items[0]], field, monoWidth).has('свой'), true)
 })
 
+test('четвёртый ряд тоже не подписывает соседа', () => {
+  const field = { width: 400, height: 300 }
+  // `below4` — в 62 px от своего узла; чужой узел в 12 px под коробкой.
+  const items = [
+    { id: 'свой', x: 200, y: 60, text: 'подпись', rank: 0, slots: ['below4'] },
+    { id: 'чужой', x: 200, y: 150, text: 'x', rank: 1, slots: ['below'] },
+  ]
+  assert.equal(placeLabels(items, field, monoWidth).has('свой'), false)
+  assert.equal(placeLabels([items[0]], field, monoWidth).has('свой'), true)
+})
+
 test('позиция, прижатая краем к узлу, подписывает узел у самой границы', () => {
   const field = { width: 200, height: 100 }
   const at = { id: 'край', x: 196, y: 50, text: 'длинная подпись', rank: 0 }
