@@ -11,7 +11,7 @@
 <link rel="icon" href="data:,">
 </head>
 <body>
-<a class="skip" href="#panel">К панели узла</a>
+<a class="skip" id="skip" href="#panel">К панели узла</a>
 
 <noscript>
   <p class="noscript">Витрина рисует схему в браузере. Включите JavaScript —
@@ -35,11 +35,6 @@
       </div>
     </div>
 
-    <!-- Кнопка есть только на узком экране: канвы в потоке страницы там нет. -->
-    <div class="map-bar">
-      <button type="button" id="map-open">Карта</button>
-    </div>
-
     <div class="canvas-wrap" id="canvas-wrap">
       <canvas id="canvas" aria-hidden="true"></canvas>
       <p class="canvas-msg" id="canvas-msg" role="status"></p>
@@ -53,6 +48,14 @@
     <p class="hint" id="q-note">Схема ещё грузится</p>
     <ul class="results" id="results"></ul>
   </section>
+
+  <!-- Кнопка есть только на узком экране: канвы в потоке страницы там нет.
+       Блок раскладки, а не вложенный элемент: липким может быть только то,
+       чей контейнер — вся колонка страницы, иначе кнопка уезжает вверх
+       вместе со своей полосой и до карты не дотянуться. -->
+  <div class="area-map">
+    <button type="button" id="map-open">Карта</button>
+  </div>
 
   <section class="area-rest">
     <details class="tools" id="tools">

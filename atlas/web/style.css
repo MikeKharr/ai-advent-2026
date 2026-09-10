@@ -33,6 +33,10 @@
 }
 
 * { box-sizing: border-box; }
+/* Заливка флажков и радио — нейтральная, а не системный синий: акцент на
+   экране один, и это кольцо выбранного узла (оно же :focus-visible). Отметку
+   браузер сам рисует контрастной к заданному цвету. */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--fg); }
 /* Собственный display перебивает [hidden] из таблицы браузера. */
 [hidden] { display:none !important; }
 
@@ -69,15 +73,19 @@ body {
    Узкий экран (< 73rem) — один столбец обычным потоком, канвы в потоке нет.
    Порядок: заголовок, поиск, панель, список узлов и фильтры, подвал. */
 .layout {
-  display:grid; grid-template-columns:1fr; gap:var(--s-6);
+  /* Узкий экран — колонка потоком. Флексом, а не сеткой: липкая кнопка карты
+     в элементе сетки липнет внутри своей строки, то есть не липнет вовсе, а
+     в элементе флекса её контейнер — вся колонка. */
+  display:flex; flex-direction:column; gap:var(--s-6);
   padding:var(--s-6) var(--s-4);
-  grid-template-areas: "graph" "search" "panel" "rest" "foot";
 }
-.area-graph { grid-area:graph; display:flex; flex-direction:column; gap:var(--s-3); min-width:0; }
-.area-search { grid-area:search; min-width:0; }
-.area-panel { grid-area:panel; min-width:0; }
-.area-rest { grid-area:rest; display:flex; flex-direction:column; gap:var(--s-5); min-width:0; }
-.area-foot { grid-area:foot; min-width:0; }
+.area-graph { grid-area:graph; display:flex; flex-direction:column; gap:var(--s-3); min-width:0; order:1; }
+.area-search { grid-area:search; min-width:0; order:2; }
+.area-map { grid-area:map; min-width:0; order:3; position:sticky; top:0; z-index:1;
+  background:var(--bg); padding-block:var(--s-2); }
+.area-panel { grid-area:panel; min-width:0; order:5; }
+.area-rest { grid-area:rest; display:flex; flex-direction:column; gap:var(--s-5); min-width:0; order:6; }
+.area-foot { grid-area:foot; min-width:0; order:7; }
 /* На узком экране список узлов идёт перед фильтрами. */
 .area-rest > .tools { order:2; }
 .area-rest > .nodelist { order:1; }
@@ -95,6 +103,7 @@ body {
       "graph search panel"
       "graph rest   panel"
       "foot  rest   panel";
+    display:grid;
     max-width:100rem; margin:0 auto; height:100dvh;
     padding:var(--s-6) var(--s-5); gap:var(--s-6);
   }
@@ -105,7 +114,7 @@ body {
   .area-graph .canvas-wrap { display:block; flex:1; min-height:0; }
   .area-rest > .tools { order:1; }
   .area-rest > .nodelist { order:2; }
-  .map-bar { display:none; }
+  .area-map { display:none; }
   .tools > summary { display:none; }
 }
 
@@ -144,8 +153,7 @@ button:active { background:var(--line); }
 button[disabled], button[aria-disabled="true"] { opacity:.5; cursor:default; }
 #zoom-in, #zoom-out, #map-zoom-in, #map-zoom-out { min-width:2rem; }
 
-.map-bar { margin:0; }
-.map-bar button { position:sticky; top:0; }
+
 
 /* ── Канва ───────────────────────────────────────────────────────────── */
 .canvas-wrap {

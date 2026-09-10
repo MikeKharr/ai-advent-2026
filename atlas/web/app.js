@@ -301,6 +301,13 @@ export function shortName(node) {
  * Чип статуса ADR: в данных 23 различных строки `## Статус` длиной до 185
  * знаков. Чип — навигация, полная строка ниже в «Фактах» — правда.
  */
+/**
+ * Заголовок для панели: без машинного префикса `[2026-09-13 18:00]`, которым
+ * начинаются ADR и записи истории. Дата уже стоит в строке меты, и повторять
+ * её в виде штампа незачем.
+ */
+export const plainTitle = (node) => node.title.replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*/, '')
+
 export function statusChip(status) {
   const first = String(status ?? '')
     .trim()
@@ -419,6 +426,71 @@ export function cycleView(graph, horizontal) {
 
   if (!horizontal) for (const p of place.values()) [p.x, p.y] = [p.y, p.x]
   return { ids, edges, place }
+}
+
+/** Высота коробки подписи и зазор от узла — из шага сетки. */
+export const LABEL_H = 16
+const GAP = 8
+
+/**
+ * Позиции подписи относительно узла. Первая — «под узлом, по центру»
+ * (раскладка, «Подписи»); остальные пробуются, только когда первая занята или
+ * не помещается на канве. Одна позиция на узел означала бы, что подпись
+ * пропадает при первом же соседе — а требование раскладки в видах до 40 узлов
+ * противоположное: подписи не прячутся.
+ */
+export const SLOTS = ['below', 'above', 'right', 'left', 'below2', 'above2']
+
+function boxAt(slot, p, width) {
+  const half = width / 2 + 2
+  switch (slot) {
+    case 'above':
+      return { x1: p.x - half, y1: p.y - GAP - LABEL_H }
+    case 'below2':
+      return { x1: p.x - half, y1: p.y + GAP + LABEL_H + 2 }
+    case 'above2':
+      return { x1: p.x - half, y1: p.y - GAP - 2 * LABEL_H - 2 }
+    case 'right':
+      return { x1: p.x + GAP + 2, y1: p.y - LABEL_H / 2 }
+    case 'left':
+      return { x1: p.x - GAP - 2 - width - 4, y1: p.y - LABEL_H / 2 }
+    default:
+      return { x1: p.x - half, y1: p.y + GAP }
+  }
+}
+
+/**
+ * Расстановка подписей: узлы в порядке важности занимают первую свободную из
+ * своих позиций. Подпись, которой не хватило места ни в одной, не рисуется —
+ * но с шестью позициями это остаток, а не правило.
+ *
+ * Чистая функция: измеритель приходит снаружи, поэтому расстановку можно
+ * посчитать и проверить без канвы, а страница и замер считают её одинаково.
+ *
+ * @param {Array<{id:string, x:number, y:number, text:string, rank:number, slots?:string[]}>} items
+ * @param {{width:number, height:number}} field
+ * @param {(text:string)=>number} measure ширина текста в пикселях
+ * @returns {Map<string,{x:number, y:number, width:number}>} левый верхний угол коробки
+ */
+export function placeLabels(items, field, measure) {
+  const placed = new Map()
+  const boxes = []
+  const free = (b) => boxes.every((o) => b.x2 <= o.x1 || b.x1 >= o.x2 || b.y2 <= o.y1 || b.y1 >= o.y2)
+  const inside = (b) => b.x1 >= 2 && b.x2 <= field.width - 2 && b.y1 >= 2 && b.y2 <= field.height - 2
+
+  const order = [...items].sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id))
+  for (const item of order) {
+    const width = measure(item.text)
+    for (const slot of item.slots ?? SLOTS) {
+      const at = boxAt(slot, item, width)
+      const box = { x1: at.x1, y1: at.y1, x2: at.x1 + width + 4, y2: at.y1 + LABEL_H }
+      if (!inside(box) || !free(box)) continue
+      boxes.push(box)
+      placed.set(item.id, { x: box.x1, y: box.y1, width })
+      break
+    }
+  }
+  return placed
 }
 
 // ───────────────────────────── отрисовка ─────────────────────────────
@@ -569,7 +641,8 @@ function viewLine(ids, links) {
 
 // ── Канва ──────────────────────────────────────────────────────────────
 
-const PAD = 32
+export const PAD = 32
+const fieldOf = (canvas) => ({ width: canvas.clientWidth, height: canvas.clientHeight })
 const TWEEN = 120
 const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 const colors = {}
@@ -590,15 +663,15 @@ function points() {
   return map
 }
 
-function fit(canvas, pts) {
+export function fit(field, pts) {
   if (pts.size === 0) return { base: 1, cx: 0, cy: 0 }
   const xs = [...pts.values()].map((p) => p.x)
   const ys = [...pts.values()].map((p) => p.y)
   const spanX = Math.max(...xs) - Math.min(...xs)
   const spanY = Math.max(...ys) - Math.min(...ys)
   const base = Math.min(
-    spanX > 0 ? (canvas.clientWidth - 2 * PAD) / spanX : Infinity,
-    spanY > 0 ? (canvas.clientHeight - 2 * PAD) / spanY : Infinity,
+    spanX > 0 ? (field.width - 2 * PAD) / spanX : Infinity,
+    spanY > 0 ? (field.height - 2 * PAD) / spanY : Infinity,
   )
   return {
     base: Number.isFinite(base) ? base : 1,
@@ -607,10 +680,10 @@ function fit(canvas, pts) {
   }
 }
 
-const transform = (canvas, cam) => {
+export const transform = (field, cam) => {
   const k = cam.base * cam.scale
-  const w = canvas.clientWidth / 2
-  const h = canvas.clientHeight / 2
+  const w = field.width / 2
+  const h = field.height / 2
   return (p) => ({ x: (p.x - cam.cx) * k + w + cam.panX, y: (p.y - cam.cy) * k + h + cam.panY })
 }
 
@@ -623,6 +696,40 @@ function camNow() {
   const mix = (key) => from[key] + (to[key] - from[key]) * t
   if (t >= 1) state.from = null
   return { base: mix('base'), cx: mix('cx'), cy: mix('cy'), scale: mix('scale'), panX: mix('panX'), panY: mix('panY') }
+}
+
+const LABEL_FONT = '12px ui-sans-serif, system-ui, sans-serif'
+
+/**
+ * Порядок важности: выбранный узел, фазы цепи (они и есть рассказ стартового
+ * вида), узел под курсором, соседи выбранного, остальные. Важному узлу
+ * достаётся позиция ближе к «под узлом», остальным — из оставшихся.
+ */
+const rankOf = (id, sel, near) =>
+  id === sel ? 0 : state.view.place !== null && node(id).type === 'phase' ? 1 : id === state.hover ? 2 : near?.has(id) ? 3 : 4
+
+/**
+ * Наборы позиций подписи. В цепи первая позиция задана раскладкой цепи:
+ * колонка на канве 864 px — это 86 px, а подпись до 24 знаков занимает до
+ * 170 px, поэтому подписи соседних столбцов разводятся по высоте, а роли в
+ * вертикальной цепи стоят сбоку от своей фазы и уходят подписью вверх.
+ */
+function slotsOf(id) {
+  const chain = state.view.place?.get(id)
+  if (!chain) return SLOTS
+  const isPhase = node(id).type === 'phase'
+  const first = !horizontal()
+    ? isPhase
+      ? 'below'
+      : 'above'
+    : isPhase
+      ? Math.abs(Math.round(chain.x)) % 2 === 1
+        ? 'above'
+        : 'below'
+      : Math.abs(Math.round(chain.x)) % 2 === 1
+        ? 'below2'
+        : 'below'
+  return [first, ...SLOTS.filter((slot) => slot !== first)]
 }
 
 /** Перерисовка по событию, а не в цикле: статичная картинка не занимает процессор. */
@@ -639,7 +746,7 @@ function paint() {
   ctx.clearRect(0, 0, w, h)
 
   const cam = camNow()
-  const at = transform(canvas, cam)
+  const at = transform({ width: w, height: h }, cam)
   const screen = new Map([...points()].map(([id, p]) => [id, at(p)]))
   const sel = state.view.ids.has(state.selected) ? state.selected : null
   const selFam = sel ? colors[`fam-${familyOf(node(sel).type)}`] : null
@@ -679,50 +786,22 @@ function paint() {
 
   const always = state.view.ids.size <= LABELS_UPTO
   const near = sel ? state.index.near.get(sel) : null
-  ctx.font = '12px ui-sans-serif, system-ui, sans-serif'
-  ctx.textAlign = 'center'
+  ctx.font = LABEL_FONT
+  ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
-  // Порядок важности: выбранный, узел под курсором, его соседи, остальные.
-  // Подпись, которой не хватило места, уступает более важной — полный список
-  // узлов вида всё равно стоит рядом строками, и там не теряется ничего.
-  // В цепи фаза важнее всех: она и есть рассказ стартового вида.
-  const rank = (id) =>
-    id === sel ? 0 : state.view.place !== null && node(id).type === 'phase' ? 1 : id === state.hover ? 2 : near?.has(id) ? 3 : 4
-  const order = [...screen.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
-  const boxes = []
-  const free = (box) =>
-    boxes.every((b) => box.x2 <= b.x1 || box.x1 >= b.x2 || box.y2 <= b.y1 || box.y1 >= b.y2)
-  for (const id of order) {
-    const p = screen.get(id)
+  const items = []
+  for (const [id, p] of screen) {
     if (!always && id !== sel && id !== state.hover && !near?.has(id)) continue
-    const n = node(id)
-    const text = shortName(n)
-    const width = ctx.measureText(text).width
-    // В цепи подписи разводятся по высоте: колонка цепи на канве 864 px — это
-    // 86 px, а подпись до 24 знаков занимает до 170 px, и десять подписей в
-    // один ряд не помещаются ни при какой ширине колонки.
-    const chain = state.view.place?.get(id)
-    const isPhase = n.type === 'phase'
-    let top = p.y + 8
-    if (chain && !horizontal()) {
-      // Цепь идёт сверху вниз: роли стоят сбоку от своей фазы, поэтому их
-      // подписи уходят над узлом, а подпись фазы остаётся под ним.
-      top = isPhase ? p.y + 8 : p.y - 24
-    } else if (chain) {
-      const odd = Math.abs(Math.round(chain.x)) % 2 === 1
-      top = isPhase ? (odd ? p.y - 24 : p.y + 8) : p.y + 8 + (odd ? 18 : 0)
-    }
-    // Подпись у края канвы не обрезается: сдвигается внутрь целиком.
-    const x = Math.min(Math.max(p.x, width / 2 + 4), w - width / 2 - 4)
+    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank: rankOf(id, sel, near), slots: slotsOf(id) })
+  }
+  const labels = placeLabels(items, { width: w, height: h }, (text) => ctx.measureText(text).width)
+  for (const [id, box] of labels) {
     // Подложка в ширину текста плюс 2 px: без неё подпись на пересечении с
     // ребром нечитаема.
-    const box = { x1: x - width / 2 - 2, x2: x + width / 2 + 2, y1: top, y2: top + 16 }
-    if (!free(box)) continue
-    boxes.push(box)
     ctx.fillStyle = colors.surface
-    ctx.fillRect(box.x1, box.y1, width + 4, 16)
+    ctx.fillRect(box.x, box.y, box.width + 4, LABEL_H)
     ctx.fillStyle = colors.fg
-    ctx.fillText(text, x, top + 2)
+    ctx.fillText(shortName(node(id)), box.x + 2, box.y + 2)
   }
 
   if (state.from) requestAnimationFrame(paint)
@@ -732,7 +811,7 @@ function reframe(animate) {
   const canvas = mapOpen() ? $('map-canvas') : $('canvas')
   if (!canvas || canvas.clientWidth === 0) return
   const before = { ...state.cam }
-  state.cam = { ...fit(canvas, points()), scale: 1, panX: 0, panY: 0 }
+  state.cam = { ...fit(fieldOf(canvas), points()), scale: 1, panX: 0, panY: 0 }
   state.from = animate && !reduceMotion() ? before : null
   state.t0 = performance.now()
   paint()
@@ -759,7 +838,7 @@ function pick(canvas, ev) {
   const box = canvas.getBoundingClientRect()
   const x = ev.clientX - box.left
   const y = ev.clientY - box.top
-  const at = transform(canvas, camNow())
+  const at = transform(fieldOf(canvas), camNow())
   let best = null
   for (const [id, p] of points()) {
     const s = at(p)
@@ -930,7 +1009,7 @@ function renderSearch() {
   }
   for (const n of hits) {
     const li = el('li')
-    li.appendChild(nodeLink(n, `${TYPE_NAME[n.type]} · ${n.title}`))
+    li.appendChild(nodeLink(n, `${TYPE_NAME[n.type]} · ${plainTitle(n)}`))
     ul.appendChild(li)
   }
   if (total > hits.length) {
@@ -941,6 +1020,27 @@ function renderSearch() {
 }
 
 // ── Панель ─────────────────────────────────────────────────────────────
+
+/**
+ * Кнопка разворачивания. Панель пересобирается целиком, поэтому фокус
+ * возвращается на кнопку по её ключу: без этого клавиатурный посетитель
+ * улетает в начало документа и идёт обратно через сотню стопов.
+ */
+function toggle(key, expanded, label) {
+  const button = el('button', undefined, expanded ? 'Свернуть' : label)
+  button.type = 'button'
+  button.dataset.toggle = key
+  button.setAttribute('aria-expanded', String(expanded))
+  button.addEventListener('click', () => switchOpen(key))
+  return button
+}
+
+function switchOpen(key) {
+  if (state.open.has(key)) state.open.delete(key)
+  else state.open.add(key)
+  renderPanel()
+  $('panel').querySelector(`[data-toggle="${CSS.escape(key)}"]`)?.focus()
+}
 
 function block(title) {
   const section = el('section', 'panel-block')
@@ -1035,7 +1135,7 @@ function renderNode(panel, n) {
   const dot = el('span', 'dot')
   dot.setAttribute('aria-hidden', 'true')
   kicker.append(dot, el('span', undefined, TYPE_NAME[n.type]))
-  const h2 = el('h2', undefined, n.title)
+  const h2 = el('h2', undefined, plainTitle(n))
   h2.id = 'panel-h'
   head.append(kicker, h2)
 
@@ -1138,11 +1238,17 @@ function factsOf(n) {
       out.push(['Что входит', n.what])
       if (n.note) out.push(['Примечание', n.note])
       break
-    case 'phase':
+    case 'phase': {
       out.push(['Номер', String(n.n)])
+      const runs = state.graph.edges.filter((e) => e.from === n.id && e.kind === 'runs')
+      const roles = runs.filter((e) => node(e.to).type === 'role').map((e) => link(e.to))
+      const classes = runs.filter((e) => node(e.to).type === 'class').map((e) => link(e.to))
+      if (roles.length > 0) out.push(['Роли', roles])
+      if (classes.length > 0) out.push(['Классы гейтов', classes])
       out.push(['Критерий выхода', n.exit])
       out.push(['Гейт владельца', n.human ? 'да' : 'нет'])
       break
+    }
     case 'day':
       if (n.date) out.push(['Дата', n.date])
       out.push(['Маршрут', n.route, true], ['Каталог', n.dir, true], ['Образ', n.image, true])
@@ -1214,15 +1320,7 @@ function linkList(title, edges, outgoing, key) {
   box.appendChild(ul)
   if (edges.length > LIST_UPTO) {
     // Кнопка со счётчиком честнее треугольника: она называет, сколько скрыто.
-    const more = el('button', undefined, expanded ? 'Свернуть' : `Показать все ${edges.length}`)
-    more.type = 'button'
-    more.setAttribute('aria-expanded', String(expanded))
-    more.addEventListener('click', () => {
-      if (expanded) state.open.delete(key)
-      else state.open.add(key)
-      renderPanel()
-    })
-    box.appendChild(more)
+    box.appendChild(toggle(key, expanded, `Показать все ${edges.length}`))
   }
   return box
 }
@@ -1290,15 +1388,7 @@ function traceCard(e) {
   if (hidden > 0) {
     // Многоточие в месте свёртки не ставится: `…` — знак снятого предела
     // длины, и возвращать его значило бы возвращать сигнал обрыва.
-    const more = el('button', undefined, expanded ? 'Свернуть' : `Показать фразу целиком (ещё ${count(hidden, 'знак', 'знака', 'знаков')})`)
-    more.type = 'button'
-    more.setAttribute('aria-expanded', String(expanded))
-    more.addEventListener('click', () => {
-      if (expanded) state.open.delete(key2)
-      else state.open.add(key2)
-      renderPanel()
-    })
-    card.appendChild(more)
+    card.appendChild(toggle(key2, expanded, `Показать фразу целиком (ещё ${count(hidden, 'знак', 'знака', 'знаков')})`))
   }
 
   card.appendChild(
@@ -1373,6 +1463,21 @@ function renderFooter() {
 
 // ── Состояния и события ────────────────────────────────────────────────
 
+function emptyCanvas(empty) {
+  const msg = clear($('canvas-msg'))
+  const act = clear($('canvas-act'))
+  act.hidden = !empty
+  if (!empty) return
+  msg.textContent = 'Ни одного узла: скрыты все типы'
+  const reset = el('button', undefined, 'Сбросить фильтры')
+  reset.type = 'button'
+  reset.addEventListener('click', () => {
+    state.hidden.clear()
+    refresh(false)
+  })
+  act.appendChild(reset)
+}
+
 function announce(text) {
   $('live').textContent = text
 }
@@ -1381,6 +1486,9 @@ function refresh(animate) {
   computeView()
   $('view-line').textContent = state.view.line
   $('map-title').textContent = state.view.line
+  // Пустая канва читается как «не загрузилось», поэтому у неё есть текст —
+  // тот же механизм, что у загрузки и ошибки.
+  if (state.status === 'ready') emptyCanvas(state.view.ids.size === 0)
   renderTools()
   renderNodeList()
   renderPanel()
@@ -1399,13 +1507,19 @@ function select(id, fromHash) {
   refresh(true)
   if (id) {
     $('panel').scrollTop = 0
-    announce(`Выбран узел: ${node(id).title}, ${TYPE_NAME[node(id).type].toLowerCase()}. Вид: ${state.view.line}`)
+    announce(`Выбран узел: ${plainTitle(node(id))}, ${TYPE_NAME[node(id).type].toLowerCase()}. Вид: ${state.view.line}`)
   } else announce(`Вид: ${state.view.line}`)
 }
 
+/** Якоря страницы, а не адреса узлов: контракт `#`-адресов их не знает. */
+const PAGE_ANCHORS = new Set(['panel'])
+
 function fromHash() {
   const raw = decodeURIComponent(location.hash.replace(/^#/, ''))
-  if (raw === '' || raw === 'panel') {
+  // Якоря самой страницы узлами не притворяются: пропуск-ссылка ведёт к
+  // панели, а не «к отсутствию узла».
+  if (PAGE_ANCHORS.has(raw)) return
+  if (raw === '') {
     state.missing = null
     state.selected = null
     refresh(false)
@@ -1455,9 +1569,19 @@ async function load() {
   setStatus('loading')
   try {
     // Относительный путь: страница едет под handle_path /atlas/*.
-    const res = await fetch('graph.json', { cache: 'no-cache' })
-    if (!res.ok) throw new Error(`ответ ${res.status}`)
-    const graph = await res.json()
+    let res
+    try {
+      res = await fetch('graph.json', { cache: 'no-cache' })
+    } catch {
+      throw new Error('файл graph.json не получен: сети нет или адрес не отвечает.')
+    }
+    if (!res.ok) throw new Error(`на graph.json пришёл ответ ${res.status}.`)
+    let graph
+    try {
+      graph = await res.json()
+    } catch {
+      throw new Error('файл graph.json получен, но это не JSON.')
+    }
     state.graph = graph
     state.index = indexGraph(graph)
     state.addresses = addressTable(graph.nodes)
@@ -1510,7 +1634,11 @@ function wire() {
     if ($('q').value !== '') {
       $('q').value = ''
       renderSearch()
-    } else $('view-reset').focus()
+    } else {
+      // На узком экране «Сбросить вид» не показывается: канвы в потоке нет.
+      const back = [$('view-reset'), $('map-open')].find((b) => b.offsetParent !== null)
+      back?.focus()
+    }
   })
 
   for (const radio of document.querySelectorAll('input[name="depth"]')) {
@@ -1533,6 +1661,23 @@ function wire() {
 
   // Единственная клавиатурная сокращённая команда, кроме поиска и Esc, — и
   // только там, где у стрелок очевидный смысл.
+  addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return
+    const key = document.activeElement?.dataset?.toggle
+    if (key === undefined || !state.open.has(key)) return
+    ev.stopPropagation()
+    switchOpen(key)
+  })
+
+  // Б3: пропуск-ссылка уводит фокус в панель, но не переписывает адрес —
+  // иначе единственный клавиатурный путь к панели стирал бы выбранный узел.
+  $('skip').addEventListener('click', (ev) => {
+    ev.preventDefault()
+    const panel = $('panel')
+    panel.focus()
+    panel.scrollIntoView({ block: 'start', behavior: reduceMotion() ? 'auto' : 'smooth' })
+  })
+
   addEventListener('keydown', (ev) => {
     if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return
     const tag = document.activeElement?.tagName
