@@ -119,13 +119,13 @@ test('.obsidian не генерируется', () => {
   assert.equal(existsSync(join(VAULT, '.obsidian')), false)
 })
 
-test('раздел «Где сработало» роли — ровно рёбра fired, отдельно от упоминаний', () => {
+test('раздел «Следы в записях» — ровно рёбра fired, отдельно от упоминаний', () => {
   const text = readFileSync(join(VAULT, 'roles/compliance.md'), 'utf8')
   const section = (name) => text.slice(text.indexOf(`## ${name}`)).split('\n## ')[0]
 
   const fired = edges('fired').filter((e) => e.from === 'role/compliance')
   const records = new Set(fired.map((e) => e.to))
-  const where = section('Где сработало')
+  const where = section('Следы в записях')
 
   // Числа берутся из графа: следующая запись истории их изменит.
   assert.match(where, new RegExp(`Следов: ${fired.length} в ${records.size} записях`))
@@ -145,6 +145,30 @@ test('раздел «Где сработало» роли — ровно рёб�
   assert.match(said, new RegExp(`Документов: ${mentions.length}`))
   assert.equal(said.split('\n').filter((l) => l.startsWith('- [[')).length, mentions.length)
   assert.notEqual(fired.length, 0)
+
+  // Заголовок и подпись называют отношение, а не вывод: среди следов есть
+  // строки, где гейт не срабатывал.
+  assert.match(where, /Имя роли рядом с признаком гейта/)
+  for (const banned of [/сработал/i, /вынес/i]) {
+    assert.equal(banned.test(where.split('\n').slice(0, 5).join(' ')), false, `в шапке раздела форма ${banned}`)
+  }
+})
+
+test('выдержка следа — целая фраза или строка таблицы, не обрывок', () => {
+  const text = readFileSync(join(VAULT, 'roles/compliance.md'), 'utf8')
+  const rows = text
+    .slice(text.indexOf('## Следы в записях'))
+    .split('\n## ')[0]
+    .split('\n')
+    .filter((l) => l.startsWith('- [['))
+
+  for (const row of rows) {
+    const quote = row.slice(row.indexOf('«') + 1, row.lastIndexOf('»'))
+    if (quote.startsWith('|')) continue
+    // Признак обрыва по переносу — хвост вида «…, » или «…: »; фраза
+    // кончается знаком конца, концом пункта списка или многоточием обрезки.
+    assert.doesNotMatch(quote, /[,:;(+—-]$/, `обрывок фразы: ${quote}`)
+  }
 })
 
 test('обратные ссылки инварианта — все документы, где он упомянут', () => {

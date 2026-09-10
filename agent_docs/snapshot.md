@@ -20,7 +20,7 @@ opus/medium — реализация), skills Османи предзагруж�
 `agent_docs/development-history/2026-09-13-1500-day8-dialogue-relevance.md`.
 **Атлас проекта: этап 1 в `main`** (ADR `2026-09-13-2000`, PR #51): пакет
 `atlas/` без зависимостей строит `dist/graph.json` из репозитория по явному
-списку путей — 174 узла и 551 ребро; шаги `node --test atlas/test/*.test.js`
+списку путей — 174 узла и 550 рёбер; шаги `node --test atlas/test/*.test.js`
 и `node atlas/build.js --check` — в обязательной проверке `guard`.
 **Этап 2 (vault) — в работе**, ветка `feat/atlas-vault`: `node atlas/build.js`
 пишет ещё и `dist/vault/` — 157 заметок Obsidian с фронтматтером, блоком
