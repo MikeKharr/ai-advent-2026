@@ -402,6 +402,10 @@ test('первая позиция подписи — под узлом, оста
   assert.equal(SLOTS[0], 'below')
   assert.equal(new Set(SLOTS).size, SLOTS.length)
   assert.ok(SLOTS.length >= 12, 'позиций хватает, чтобы пропуск был остатком, а не правилом')
+  // Ряды идут по возрастанию удалённости: ближняя позиция пробуется раньше.
+  const rowOf = (slot) => Number(/(\d)/.exec(slot)?.[1] ?? 1)
+  const rows = SLOTS.filter((slot) => slot !== 'right' && slot !== 'left').map(rowOf)
+  assert.deepEqual(rows, [...rows].sort((a, b) => a - b))
 })
 
 test('подпись не накрывает чужой узел', () => {

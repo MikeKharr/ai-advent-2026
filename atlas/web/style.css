@@ -91,30 +91,64 @@ body {
 .area-rest > .nodelist { order:1; }
 .area-graph .canvas-wrap { display:none; }
 
+/* Правая половина: своя колонка только в двухколоночной раскладке. */
+.side { display:contents; }
+
+/* Две колонки (73rem — 100rem). Канва получает W − 464: при 1168 это 704 px
+   против 384 px, которые давали ей три колонки на той же ширине. Новых
+   решений здесь нет — это правая половина узкой раскладки, у которой канва
+   стоит рядом, а не спрятана в `dialog`. */
 @media (min-width: 73rem) {
   html, body { height:100%; }
   body { overflow:hidden; }
   .layout {
-    /* Отступ от схемы корпуса один: 100rem вместо 80rem. Правило полосы
-       чтения относится к тексту, а текст живёт в колонке 24rem. */
+    display:grid;
+    grid-template-columns: minmax(0,1fr) 24rem;
+    grid-template-rows: minmax(0,1fr) auto;
+    grid-template-areas:
+      "graph side"
+      "foot  side";
+    max-width:100rem; margin:0 auto; height:100dvh;
+    padding:var(--s-6) var(--s-5); gap:var(--s-6);
+  }
+  /* Правый отступ обязателен: колонка со своим скроллом обрезает кольцо
+     фокуса (outline-offset 2px). Проверено на дне 8. */
+  .side {
+    grid-area:side; display:flex; flex-direction:column; gap:var(--s-5);
+    min-height:0; overflow-y:auto; padding-right:var(--s-2);
+  }
+  .area-rest { display:contents; }
+  .area-search { order:1; }
+  .area-map { display:none; }
+  .area-rest > .tools { order:2; }
+  .area-panel { order:3; }
+  .area-rest > .nodelist { order:4; }
+  .area-graph { grid-area:graph; overflow:hidden; }
+  .area-graph .canvas-wrap { display:block; flex:1; min-height:0; }
+  .area-foot { grid-area:foot; }
+  .viewbar-acts { display:flex; }
+}
+
+/* Три колонки (≥ 100rem) — схема корпуса «работа / настройки / результат».
+   Ровно один размер: 100rem — это и `max-width` страницы. */
+@media (min-width: 100rem) {
+  .layout {
     grid-template-columns: minmax(0,1fr) 18rem 24rem;
     grid-template-rows: auto minmax(0,1fr) auto;
     grid-template-areas:
       "graph search panel"
       "graph rest   panel"
       "foot  rest   panel";
-    display:grid;
-    max-width:100rem; margin:0 auto; height:100dvh;
-    padding:var(--s-6) var(--s-5); gap:var(--s-6);
   }
-  /* Правый отступ обязателен: колонка со своим скроллом обрезает кольцо
-     фокуса (outline-offset 2px). Проверено на дне 8. */
-  .col, .area-rest { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
-  .area-graph { overflow:hidden; }
-  .area-graph .canvas-wrap { display:block; flex:1; min-height:0; }
+  .side { display:contents; }
+  .area-search { grid-area:search; }
+  .area-rest {
+    grid-area:rest; display:flex; flex-direction:column; gap:var(--s-5);
+    min-height:0; overflow-y:auto; padding-right:var(--s-2);
+  }
+  .area-panel { grid-area:panel; min-height:0; overflow-y:auto; padding-right:var(--s-2); }
   .area-rest > .tools { order:1; }
   .area-rest > .nodelist { order:2; }
-  .area-map { display:none; }
   .tools > summary { display:none; }
 }
 
@@ -254,7 +288,6 @@ legend, .fam-legend {
   background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
   padding:var(--s-5);
 }
-@media (min-width: 73rem) { .area-panel { padding-right:var(--s-3); } }
 .panel-block + .panel-block { margin-top:var(--s-5); }
 .kicker {
   display:flex; align-items:center; gap:var(--s-2);
