@@ -188,6 +188,9 @@ export function buildVault({ graph, sources, provenance }) {
 
   for (const node of graph.nodes.filter((n) => n.type === 'role')) {
     const fired = out(node.id, 'fired')
+    const records = new Set(fired.map((e) => e.to)).size
+    // Предложный падеж: «в 1 записи», «в 21 записи», но «в 11 записях».
+    const inRecords = records % 10 === 1 && records % 100 !== 11 ? 'записи' : 'записях'
     const mentions = into(node.id, 'mentions')
     const body = [
       `# ${node.title}`,
@@ -225,7 +228,7 @@ export function buildVault({ graph, sources, provenance }) {
       // Obsidian, которые складывают все виды рёбер.
       'Имя роли рядом с признаком гейта, и только это.',
       '',
-      `Следов: ${fired.length} в ${new Set(fired.map((e) => e.to)).size} записях.`,
+      `Следов: ${fired.length} в ${records} ${inRecords}.`,
       '',
       list(fired.map((e) => `${named(e.to)}, строка ${e.line}: «${e.excerpt}»`)),
       '',

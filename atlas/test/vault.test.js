@@ -128,7 +128,8 @@ test('раздел «Следы в записях» — ровно рёбра fi
   const where = section('Следы в записях')
 
   // Числа берутся из графа: следующая запись истории их изменит.
-  assert.match(where, new RegExp(`Следов: ${fired.length} в ${records.size} записях`))
+  // Форма слова проверяется отдельным тестом на согласование.
+  assert.match(where, new RegExp(`Следов: ${fired.length} в ${records.size} запис(и|ях)\\.`))
   const rows = where.split('\n').filter((l) => l.startsWith('- [['))
   assert.equal(rows.length, fired.length)
   for (const e of fired) {
@@ -151,6 +152,33 @@ test('раздел «Следы в записях» — ровно рёбра fi
   assert.match(where, /Имя роли рядом с признаком гейта/)
   for (const banned of [/сработал/i, /вынес/i]) {
     assert.equal(banned.test(where.split('\n').slice(0, 5).join(' ')), false, `в шапке раздела форма ${banned}`)
+  }
+})
+
+test('подпись «Следов: N в M …» согласует слово «запись» с числом записей', () => {
+  // «Следов:» — подпись с двоеточием, с числом не согласуется, как и
+  // «Документов:». Согласуется только «в M записи/записях» (предложный падеж).
+  const provenance = { sha: 'abc', time: 'на коммит от 2026-09-10 14:10 +07' }
+  const cases = [
+    [1, 'записи'],
+    [2, 'записях'],
+    [5, 'записях'],
+    [11, 'записях'],
+    [21, 'записи'],
+  ]
+  for (const [records, form] of cases) {
+    const history = Array.from({ length: records }, (_, i) => ({
+      id: `history/2026-09-10-${String(i).padStart(4, '0')}-x`,
+      key: `2026-09-10-${String(i).padStart(4, '0')}-x`,
+      type: 'history',
+      title: 'x',
+      file: 'x.md',
+    }))
+    const role = { id: 'role/r', key: 'r', type: 'role', title: 'r', description: '', model: 'm', effort: 'e' }
+    const fired = history.map((h) => ({ from: role.id, to: h.id, kind: 'fired', line: 1, excerpt: 'x.' }))
+    const files = buildVault({ graph: { nodes: [role, ...history], edges: fired }, sources: EMPTY_SOURCES, provenance })
+    const note = files.find((f) => f.path === 'roles/r.md').text
+    assert.ok(note.includes(`Следов: ${records} в ${records} ${form}.`), `${records}: ${note.match(/Следов: .*/)?.[0]}`)
   }
 })
 
