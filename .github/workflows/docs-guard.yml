@@ -50,6 +50,10 @@ jobs:
       - name: Тесты атласа
         run: node --test atlas/test/*.test.js
 
+      # site/ не единица CI, а строки data.js добавляют PR класса C без ревью.
+      - name: Данные страницы прогресса
+        run: node --test test/*.test.js
+
       - name: Ссылки между документами разрешаются (атлас)
         run: node atlas/build.js --check
 
