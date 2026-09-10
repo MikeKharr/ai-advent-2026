@@ -22,6 +22,7 @@
 - `agent_docs/development-history/` — атомарный журнал итераций (по файлу на итерацию). Правила: `agent_docs/development-history/README.md`.
 - `agent_docs/design/corpus.md` — дизайн-корпус: шкалы, палитра, обязательные состояния. Читать перед любой работой с UI; ревью — скилл `/design-review`.
 - `agent_docs/backlog-closed.md` — архив закрытых пунктов бэклога.
+- `atlas/README.md` — генератор атласа: граф проекта, гейт связности ссылок в `guard`, vault Obsidian.
 
 ## Правила и гайды
 
