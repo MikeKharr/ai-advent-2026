@@ -61,8 +61,13 @@ description: /day-cycle — оркестрация полного цикла д�
    владельца**: значение не появляется ни в команде, ни в транскрипте.
    Копия существующего секрета между env-файлами сервера (`grep … >`)
    допустима — значение не печатается. Новый маршрут —
-   `docker compose restart caddy` и повтор проверки. Живая проверка в
-   проде на значениях по умолчанию.
+   `docker compose restart caddy` и повтор проверки. Канонические
+   серверные команды — две точные строки без хвостов, allowlist требует
+   буквального совпадения: `ssh -i ~/.ssh/advent_deploy -o BatchMode=yes
+   advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose
+   ps'` и та же форма с `docker compose restart caddy`. Логи и всё прочее
+   по ssh — через подтверждение. Живая проверка в проде на значениях по
+   умолчанию.
 10. **Запись** — `docs` (opus, low): dev-history, snapshot, backlog;
     закрытые пункты — в `backlog-closed.md`. Сверка с
     `agent_docs/guides/dod.md`.
