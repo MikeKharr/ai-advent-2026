@@ -462,8 +462,11 @@ export const SLOTS = [
   ),
 ]
 
-/** Позиция первого ряда касается своего узла: между ними только зазор. */
-const adjacent = (slot) => !/[23]/.test(slot)
+/**
+ * Позиция первого ряда касается своего узла: между ними только зазор. Номер
+ * ряда в имени позиции есть у всех рядов, начиная со второго.
+ */
+const adjacent = (slot) => !/\d/.test(slot)
 
 function boxAt(slot, p, width) {
   const full = width + 4
@@ -482,6 +485,13 @@ function boxAt(slot, p, width) {
  * своих позиций. Подпись, которой не хватило места ни в одной, не рисуется —
  * но с двенадцатью позициями это остаток, а не правило.
  *
+ * Внутри одного ранга порядок — по тесноте: первым встаёт узел, у которого
+ * свободных позиций осталось меньше всех. Порядок по идентификатору в плотном
+ * кусте отдавал единственную позицию одного узла соседу, у которого были
+ * другие. Если подписи всё равно негде встать, её единственную помеху того же
+ * ранга можно переставить на другую свою позицию. Более важную подпись не
+ * двигает никто: выбранному узлу остаётся «под узлом».
+ *
  * Чистая функция: измеритель приходит снаружи, поэтому расстановку можно
  * посчитать и проверить без канвы, а страница и замер считают её одинаково.
  *
@@ -491,9 +501,6 @@ function boxAt(slot, p, width) {
  * @returns {Map<string,{x:number, y:number, width:number}>} левый верхний угол коробки
  */
 export function placeLabels(items, field, measure) {
-  const placed = new Map()
-  const boxes = []
-  const free = (b) => boxes.every((o) => b.x2 <= o.x1 || b.x1 >= o.x2 || b.y2 <= o.y1 || b.y1 >= o.y2)
   const inside = (b) => b.x1 >= 2 && b.x2 <= field.width - 2 && b.y1 >= 2 && b.y2 <= field.height - 2
 
   /** Расстояние от точки до прямоугольника: ноль, если точка внутри. */
@@ -519,22 +526,58 @@ export function placeLabels(items, field, measure) {
     return items.every((other) => other === item || reach(other, box) >= (strict ? mine : 1))
   }
 
-  // Порядок при равном ранге — по идентификатору побайтно, а не через
-  // `localeCompare`: тот зависит от локали и версии ICU, и «ноль пропущенных»
-  // перестал бы быть воспроизводимым числом.
-  const order = [...items].sort((a, b) => a.rank - b.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  for (const item of order) {
-    const width = measure(item.text)
-    for (const slot of item.slots ?? SLOTS) {
-      const at = boxAt(slot, item, width)
-      const box = { x1: at.x1, y1: at.y1, x2: at.x1 + width + 4, y2: at.y1 + LABEL_H }
-      if (!inside(box) || !free(box) || !owned(item, box, !adjacent(slot))) continue
-      boxes.push(box)
-      placed.set(item.id, { x: box.x1, y: box.y1, width })
-      break
+  // Позиции, доступные узлу вообще: в поле и у своего узла. От соседних
+  // подписей это не зависит, поэтому считается один раз, в порядке `slots`.
+  const options = new Map(
+    items.map((item) => {
+      const width = measure(item.text)
+      const own = []
+      for (const slot of item.slots ?? SLOTS) {
+        const at = boxAt(slot, item, width)
+        const box = { x1: at.x1, y1: at.y1, x2: at.x1 + width + 4, y2: at.y1 + LABEL_H, width }
+        if (inside(box) && owned(item, box, !adjacent(slot))) own.push(box)
+      }
+      return [item.id, own]
+    }),
+  )
+  const rankOf = new Map(items.map((item) => [item.id, item.rank]))
+  const taken = new Map()
+  const cross = (a, b) => !(b.x2 <= a.x1 || b.x1 >= a.x2 || b.y2 <= a.y1 || b.y1 >= a.y2)
+  const freeOf = (box, skip) => {
+    for (const [id, o] of taken) if (id !== skip && cross(box, o)) return false
+    return true
+  }
+  const free = (item) => options.get(item.id).filter((box) => freeOf(box))
+
+  /** Позиция, освобождённая перестановкой единственной помехи того же ранга. */
+  const yielded = (item) => {
+    for (const box of options.get(item.id)) {
+      const hits = [...taken].filter(([, o]) => cross(box, o))
+      if (hits.length !== 1 || rankOf.get(hits[0][0]) !== item.rank) continue
+      const [other] = hits[0]
+      const moved = options.get(other).find((o) => !cross(box, o) && freeOf(o, other))
+      if (!moved) continue
+      taken.set(other, moved)
+      return box
+    }
+    return undefined
+  }
+
+  // Равная теснота — по идентификатору побайтно, а не через `localeCompare`:
+  // тот зависит от локали и версии ICU, и «ноль пропущенных» перестал бы быть
+  // воспроизводимым числом.
+  const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  for (const rank of [...new Set(items.map((item) => item.rank))].sort((a, b) => a - b)) {
+    const left = items.filter((item) => item.rank === rank).sort(byId)
+    while (left.length > 0) {
+      const room = left.map(free)
+      const next = room.reduce((best, boxes, k) => (boxes.length < room[best].length ? k : best), 0)
+      const [item] = left.splice(next, 1)
+      const box = room[next][0] ?? yielded(item)
+      if (box) taken.set(item.id, box)
     }
   }
-  return placed
+  return new Map([...taken].map(([id, box]) => [id, { x: box.x1, y: box.y1, width: box.width }]))
 }
 
 /**
@@ -839,9 +882,13 @@ const LABEL_FONT = '12px ui-sans-serif, system-ui, sans-serif'
  * Порядок важности: выбранный узел, фазы цепи (они и есть рассказ стартового
  * вида), узел под курсором, соседи выбранного, остальные. Важному узлу
  * достаётся позиция ближе к «под узлом», остальным — из оставшихся.
+ *
+ * Узел под курсором поднимается, только когда подписи показаны не у всех
+ * (`always` ложно). В виде до 40 узлов его подпись и так есть, а повышение
+ * переставляло бы соседние: подписи прыгали бы от движения мыши.
  */
-const rankOf = (id, sel, near) =>
-  id === sel ? 0 : state.view.place !== null && node(id).type === 'phase' ? 1 : id === state.hover ? 2 : near?.has(id) ? 3 : 4
+export const labelRank = ({ id, sel, near, hover, phase, always }) =>
+  id === sel ? 0 : phase ? 1 : id === hover && !always ? 2 : near?.has(id) ? 3 : 4
 
 /**
  * Наборы позиций подписи. В цепи первая позиция задана раскладкой цепи:
@@ -925,7 +972,9 @@ function paint() {
   const items = []
   for (const [id, p] of screen) {
     if (!always && id !== sel && id !== state.hover && !near?.has(id)) continue
-    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank: rankOf(id, sel, near), slots: slotsOf(id) })
+    const phase = state.view.place !== null && node(id).type === 'phase'
+    const rank = labelRank({ id, sel, near, hover: state.hover, phase, always })
+    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank, slots: slotsOf(id) })
   }
   const labels = placeLabels(items, { width: w, height: h }, (text) => ctx.measureText(text).width)
   for (const [id, box] of labels) {

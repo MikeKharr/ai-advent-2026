@@ -18,6 +18,7 @@ import {
   fit,
   foldExcerpt,
   indexGraph,
+  labelRank,
   maxTwoStep,
   neighborhood,
   parseMarkup,
@@ -430,6 +431,17 @@ test('дальняя позиция не подписывает соседа', (
   assert.equal(placeLabels([items[0]], field, monoWidth).has('свой'), true)
 })
 
+test('четвёртый ряд тоже не подписывает соседа', () => {
+  const field = { width: 400, height: 300 }
+  // `below4` — в 62 px от своего узла; чужой узел в 12 px под коробкой.
+  const items = [
+    { id: 'свой', x: 200, y: 60, text: 'подпись', rank: 0, slots: ['below4'] },
+    { id: 'чужой', x: 200, y: 150, text: 'x', rank: 1, slots: ['below'] },
+  ]
+  assert.equal(placeLabels(items, field, monoWidth).has('свой'), false)
+  assert.equal(placeLabels([items[0]], field, monoWidth).has('свой'), true)
+})
+
 test('позиция, прижатая краем к узлу, подписывает узел у самой границы', () => {
   const field = { width: 200, height: 100 }
   const at = { id: 'край', x: 196, y: 50, text: 'длинная подпись', rank: 0 }
@@ -443,6 +455,70 @@ test('позиция, прижатая краем к узлу, подписыв�
     Math.max(box.y - at.y, 0, at.y - (box.y + 16)),
   )
   assert.ok(gap <= 12, `подпись оторвана от узла на ${gap}`)
+})
+
+// Два узла одного ранга один над другим, в 32 px: подпись нижнего «над узлом»
+// и подпись верхнего «под узлом» — одна и та же коробка.
+test('узел с единственной позицией получает её раньше соседа того же ранга с запасом', () => {
+  const field = { width: 300, height: 200 }
+  const items = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', rank: 3, slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', rank: 3, slots: ['above'] },
+  ]
+  const placed = placeLabels(items, field, monoWidth)
+  assert.equal(placed.size, 2, 'подписаны оба')
+  assert.equal(placed.get('а').y, 80 - 8 - 16, 'верхний ушёл на свою вторую позицию')
+})
+
+test('сосед того же ранга уступает позицию, если у него есть другая', () => {
+  const field = { width: 300, height: 200 }
+  // Равный запас позиций, и по порядку идентификаторов первым встаёт верхний:
+  // его «под узлом» накрывает обе позиции нижнего.
+  const items = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', rank: 3, slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', rank: 3, slots: ['above', 'above-start'] },
+  ]
+  const placed = placeLabels(items, field, monoWidth)
+  assert.equal(placed.size, 2, 'подписаны оба')
+  assert.equal(placed.get('а').y, 80 - 8 - 16)
+})
+
+test('наведение в виде до 40 узлов не меняет позиции остальных подписей', () => {
+  const field = { width: 300, height: 200 }
+  // Тот же куст, что выше: у нижнего одна позиция, и она же — «под узлом» верхнего.
+  const view = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', slots: ['above'] },
+  ]
+  const layout = (hover) =>
+    placeLabels(
+      view.map((n) => ({ ...n, rank: labelRank({ id: n.id, sel: null, near: null, hover, phase: false, always: true }) })),
+      field,
+      monoWidth,
+    )
+  const still = layout(null)
+  const hovered = layout('а')
+  assert.deepEqual(hovered.get('б'), still.get('б'), 'подпись соседа стоит на месте')
+  assert.deepEqual(hovered.get('а'), still.get('а'), 'подпись наведённого тоже')
+})
+
+test('в большом виде наведённый узел поднимается в порядке подписей', () => {
+  const near = new Set(['сосед'])
+  const args = { sel: 'выбранный', near, hover: 'под курсором', phase: false, always: false }
+  assert.equal(labelRank({ ...args, id: 'под курсором' }), 2)
+  assert.equal(labelRank({ ...args, id: 'сосед' }), 3)
+  assert.equal(labelRank({ ...args, id: 'выбранный' }), 0)
+})
+
+test('подпись важного узла не уступает позицию менее важному', () => {
+  const field = { width: 300, height: 200 }
+  const items = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', rank: 0, slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', rank: 3, slots: ['above', 'above-start'] },
+  ]
+  const placed = placeLabels(items, field, monoWidth)
+  assert.equal(placed.get('а').y, 80 + 8, 'выбранный остаётся под узлом')
+  assert.equal(placed.has('б'), false)
 })
 
 test('панель собирается для каждого узла графа', () => {
