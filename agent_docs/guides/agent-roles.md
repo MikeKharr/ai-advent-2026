@@ -49,13 +49,12 @@ architect ──► ADR (если решение значимое) ──► Г�
         frontend ─────► UI
           │
           ▼
-        design-review ► /design-review ──► ГОТОВО | ПРАВКИ | ПЕРЕДЕЛАТЬ
-                          │
-                          ▼
-                  qa ──► тесты из критериев, не из кода
-                          │
-                          ▼
-         reviewer + compliance ──► гейт мержа
+        qa ──► тесты из критериев, не из кода
+          │
+          ▼
+reviewer + compliance + design-review ──► гейт мержа (параллельно,
+   │        по классу изменения; design-review — /design-review
+   │        с вердиктом ГОТОВО | ПРАВКИ | ПЕРЕДЕЛАТЬ)
                           │
                           ▼
                   platform ──► деплой ──► ГЕЙТ: согласование владельца

@@ -31,11 +31,14 @@
     "ask": [
       "Bash(gh run rerun *)",
       "Bash(gh run cancel *)",
-      "Bash(git push --force*)"
+      "Bash(git push --force*)",
+      "Bash(git push -f*)"
     ],
     "deny": [
       "Read(./deploy/*.env)",
       "Read(./**/.env)",
+      "Read(./**/.env.local)",
+      "Read(./**/.env.production)",
       "Bash(git diff --no-index*)",
       "Bash(gh pr merge --admin*)"
     ]
