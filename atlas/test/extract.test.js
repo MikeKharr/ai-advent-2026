@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { parseCompose } from '../lib/compose.js'
+import { atomicId } from '../lib/markdown.js'
 import { buildGraph } from '../lib/extract.js'
 import { readSources } from '../lib/sources.js'
 import { ROOT } from './helpers.js'
@@ -190,7 +191,7 @@ test('следы compliance на репозитории: строка табли
   const rows = linesMatching(table.text, (l) => l.startsWith('| compliance |') && /Вето/.test(l))
   assert.equal(rows.length, 2, 'в записи изменилась таблица вето — проверьте якорь теста')
   assert.deepEqual(
-    mine.filter((e) => e.to === `history/${table.key.slice(0, 15)}`).map((e) => e.line),
+    mine.filter((e) => e.to === `history/${atomicId(table.key)}`).map((e) => e.line),
     rows.map((r) => r.line),
   )
 

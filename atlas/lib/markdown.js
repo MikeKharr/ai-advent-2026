@@ -62,20 +62,55 @@ export function clip(s, limit = 160) {
 // `development-history/id`, `guides/name.md`.
 const PLACEHOLDER = /YYYY|HHMM|<|\*|\bимя\b|name\.md|\/id$/
 
-const ADR_CITE = /ADR\s+`([^`\n]+)`/g
-const DOC_PATH = /`((?:agent_docs\/)?(?:adr|development-history|design|guides)\/[A-Za-z0-9._-]+)`/g
-// Закрытый список корневых документов: они узлы `guide/*`, значит и цели
-// цитат — в обеих формах, с префиксом `agent_docs/` и без (проект решения
-// 2026-09-13-2000, таблица рёбер). Голые пути в прозе вне этого списка
-// цитатами по-прежнему не считаются.
-const ROOT_DOC = /`(?:agent_docs\/)?(architecture\.md|index\.md|glossary\.md|AGENTS\.md)`/g
-const INVARIANT = /\bI-(\d+)\b/g
-const BACKTICK_WORD = /`([a-z][a-z-]*)`/g
+// Соглашения цитирования проекта — одним выражением: по нему и ищут цитаты
+// (`scanCitations`), и заменяют их на wikilinks в копии для vault
+// (`mapCitations`). Одно выражение, а не два похожих: разойдясь, они дали бы
+// граф и vault, которые расходятся между собой.
+const CITE = new RegExp(
+  [
+    // Две «защитные» ветки идут первыми: то, что они съели, не разбирается
+    // дальше. Блок кода — образец, его переписывать нельзя; готовая
+    // `[[ссылка]]` уже разрешена, и второй проход по ней дал бы
+    // `[[invariants/[[invariants/I-4]]]]`.
+    '(?<fence>^```[\\s\\S]*?^```)',
+    // Двойные обратные кавычки в проекте значат ровно одно: показать цитату
+    // буквально. Разобрав их, атлас переписал бы объяснение самого себя —
+    // «источник → копия» превратилось бы в «X → X».
+    '(?<dbl>``(?:[^`]|`(?!`))*``)',
+    '(?<link>\\[\\[[^\\]\\n]*\\]\\])',
+    'ADR\\s+`(?<adr>[^`\\n]+)`',
+    '`(?<path>(?:agent_docs/)?(?:adr|development-history|design|guides)/[A-Za-z0-9._-]+)`',
+    // Закрытый список корневых документов, в обеих формах записи. Префикс
+    // сохраняется как написан: `agent_docs/AGENTS.md` — не тот же файл, что
+    // `AGENTS.md`, и такая ссылка обязана стать находкой, а не пройти.
+    '`(?<root>(?:agent_docs/)?(?:architecture|index|glossary|AGENTS)\\.md)`',
+    '\\bI-(?<inv>\\d+)\\b',
+    '`(?<word>[a-z][a-z-]*)`',
+  ].join('|'),
+  'gm',
+)
 
 /** Идентификатор атомарного документа: `YYYY-MM-DD-HHMM` в начале имени. */
 export function atomicId(value) {
   const m = value.match(/(\d{4}-\d{2}-\d{2}-\d{4})/)
   return m ? m[1] : null
+}
+
+/** Что за цитата попалась: вид и значение, либо null для заглушки шаблона. */
+function classify(groups) {
+  if (groups.fence !== undefined || groups.dbl !== undefined || groups.link !== undefined) return null
+  if (groups.adr !== undefined) {
+    if (PLACEHOLDER.test(groups.adr)) return null
+    const id = atomicId(groups.adr)
+    return id ? { kind: 'adr', value: id } : null
+  }
+  if (groups.path !== undefined) {
+    if (PLACEHOLDER.test(groups.path)) return null
+    return { kind: 'path', value: groups.path.replace(/^agent_docs\/(?=(?:adr|development-history|design|guides)\/)/, '') }
+  }
+  if (groups.root !== undefined) return { kind: 'path', value: groups.root }
+  if (groups.inv !== undefined) return { kind: 'invariant', value: `I-${Number(groups.inv)}` }
+  return { kind: 'word', value: groups.word }
 }
 
 /** Номер строки по смещению в тексте — быстрым поиском по началам строк. */
@@ -104,28 +139,26 @@ function lineIndexer(text) {
 export function scanCitations(text) {
   const at = lineIndexer(text)
   const found = []
+  for (const m of text.matchAll(CITE)) {
+    const cite = classify(m.groups)
+    if (cite) found.push({ ...cite, line: at(m.index) })
+  }
+  return found
+}
 
-  for (const m of text.matchAll(ADR_CITE)) {
-    if (PLACEHOLDER.test(m[1])) continue
-    const id = atomicId(m[1])
-    if (id) found.push({ kind: 'adr', value: id, line: at(m.index), index: m.index })
-  }
-  for (const m of text.matchAll(DOC_PATH)) {
-    if (PLACEHOLDER.test(m[1])) continue
-    found.push({ kind: 'path', value: m[1].replace(/^agent_docs\//, ''), line: at(m.index), index: m.index })
-  }
-  for (const m of text.matchAll(ROOT_DOC)) {
-    found.push({ kind: 'path', value: m[1], line: at(m.index), index: m.index })
-  }
-  for (const m of text.matchAll(INVARIANT)) {
-    found.push({ kind: 'invariant', value: `I-${Number(m[1])}`, line: at(m.index), index: m.index })
-  }
-  for (const m of text.matchAll(BACKTICK_WORD)) {
-    found.push({ kind: 'word', value: m[1], line: at(m.index), index: m.index })
-  }
-
-  found.sort((a, b) => a.index - b.index)
-  return found.map(({ index, ...rest }) => rest)
+/**
+ * Замена цитат в тексте одним проходом. `fn(kind, value)` возвращает строку
+ * замены или null, чтобы оставить как есть. Один проход обязателен: после
+ * замены `I-4` на `[[invariants/I-4]]` второй проход нашёл бы `I-4` внутри
+ * уже готовой ссылки.
+ */
+export function mapCitations(text, fn) {
+  return text.replace(CITE, (whole, ...args) => {
+    const groups = args.at(-1)
+    const cite = classify(groups)
+    if (!cite) return whole
+    return fn(cite.kind, cite.value) ?? whole
+  })
 }
 
 /**

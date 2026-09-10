@@ -7,6 +7,7 @@ import {
   heading,
   parseFrontmatter,
   replacementRefs,
+  mapCitations,
   scanCitations,
   section,
 } from '../lib/markdown.js'
@@ -51,10 +52,36 @@ test('пути к документам нормализуются без пре�
 
 test('корневые документы читаются в обеих формах, прочие голые пути — нет', () => {
   const found = scanCitations('см. `agent_docs/glossary.md`, `glossary.md`, `AGENTS.md`, `agent_docs/AGENTS.md` и `README.md`')
+  // Префикс сохраняется как написан: `agent_docs/AGENTS.md` — другой файл,
+  // и разрешаться он обязан отдельно (и не разрешиться).
   assert.deepEqual(
     found.filter((f) => f.kind === 'path').map((f) => f.value),
-    ['glossary.md', 'glossary.md', 'AGENTS.md', 'AGENTS.md'],
+    ['agent_docs/glossary.md', 'glossary.md', 'AGENTS.md', 'agent_docs/AGENTS.md'],
   )
+})
+
+test('образец не цитата: блок кода и двойные кавычки гейт не проверяет', () => {
+  const fenced = ['```sh', 'см. ADR `2026-01-01-0000` и I-4', '```'].join('\n')
+  assert.deepEqual(scanCitations(fenced), [], 'содержимое блока кода — образец, а не ссылка')
+
+  const doubled = 'форма записи: `` ADR `2026-01-01-0000` `` и `` `compliance` ``'
+  assert.deepEqual(scanCitations(doubled), [], 'двойные кавычки показывают цитату буквально')
+
+  // Та же цитата, написанная обычным образом, видна — иначе сужение
+  // означало бы дыру в гейте, а не отказ разбирать образцы.
+  const plain = scanCitations('см. ADR `2026-01-01-0000` и I-4 у `compliance`')
+  assert.deepEqual(
+    plain.map((f) => `${f.kind}:${f.value}`),
+    ['adr:2026-01-01-0000', 'invariant:I-4', 'word:compliance'],
+  )
+})
+
+test('замена в копии не трогает образцы и не входит в готовую ссылку', () => {
+  const map = (t) => mapCitations(t, (kind, value) => (kind === 'invariant' ? `[[invariants/${value}]]` : null))
+  assert.equal(map('```\nI-4\n```'), '```\nI-4\n```')
+  assert.equal(map('`` I-4 ``'), '`` I-4 ``')
+  assert.equal(map('[[invariants/I-4]]'), '[[invariants/I-4]]')
+  assert.equal(map('опора на I-4'), 'опора на [[invariants/I-4]]')
 })
 
 test('номер строки в находке — настоящий', () => {
