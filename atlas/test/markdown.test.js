@@ -49,6 +49,14 @@ test('пути к документам нормализуются без пре�
   )
 })
 
+test('корневые документы читаются в обеих формах, прочие голые пути — нет', () => {
+  const found = scanCitations('см. `agent_docs/glossary.md`, `glossary.md`, `AGENTS.md`, `agent_docs/AGENTS.md` и `README.md`')
+  assert.deepEqual(
+    found.filter((f) => f.kind === 'path').map((f) => f.value),
+    ['glossary.md', 'glossary.md', 'AGENTS.md', 'AGENTS.md'],
+  )
+})
+
 test('номер строки в находке — настоящий', () => {
   const found = scanCitations('строка один\n\nADR `2026-09-07-1525`\n')
   assert.equal(found.find((f) => f.kind === 'adr').line, 3)

@@ -80,7 +80,9 @@ export function parseCompose(text) {
       continue
     }
 
-    const field = raw.match(/^ {4}([a-z_]+):\s*(.*)$/)
+    // Дефис в классе — ради расширений `x-*`, которые compose разрешает
+    // на любом уровне: они не наши, но и не выход за подмножество.
+    const field = raw.match(/^ {4}([a-z_-]+):\s*(.*)$/)
     if (field) {
       key = field[1]
       const inline = stripComment(field[2])

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { parseCompose } from '../lib/compose.js'
 import { buildGraph } from '../lib/extract.js'
 import { readSources } from '../lib/sources.js'
 import { ROOT } from './helpers.js'
@@ -11,9 +12,26 @@ const of = (type) => graph.nodes.filter((n) => n.type === type)
 const edges = (kind) => graph.edges.filter((e) => e.kind === kind)
 const ids = new Set(graph.nodes.map((n) => n.id))
 
-/** Число документов считается по каталогу, а не задаётся константой:
- *  ADR, записей истории и спецификаций становится больше каждую неделю. */
+/** Размеры проекта считаются по файлам, а не задаются константами: тесты —
+ *  шаг обязательной проверки, и равенство здесь красит чужой PR, где день,
+ *  инвариант или маршрут просто добавили. Константами остаётся лишь то, что
+ *  не растёт по плану: классы гейтов и фазы цикла. */
 const countMd = (dir) => readdirSync(join(ROOT, dir)).filter((f) => f.endsWith('.md') && f !== 'README.md').length
+const src = readSources(ROOT)
+const dayDirs = readdirSync(join(ROOT, 'days')).filter((d) => /^day\d+$/.test(d))
+const invariantsInFile = src.invariants.split('\n').filter((l) => /^- \*\*I-\d+\.\*\*/.test(l)).length
+// Строки-комментарии Caddyfile упоминают handle_path в пояснении — маршрут
+// считается только по действующим строкам.
+/** Строки текста, подошедшие под условие, вместе с их номерами. */
+const linesMatching = (text, ok) =>
+  text
+    .split('\n')
+    .map((line, i) => ({ line: i + 1, text: line }))
+    .filter((l) => ok(l.text))
+
+const routesInCaddy = src.caddyText
+  .split('\n')
+  .filter((l) => !/^\s*#/.test(l) && /handle_path \/day\d+\/\*/.test(l)).length
 
 test('на базовом состоянии репозитория находок нет', () => {
   assert.deepEqual(graph.findings, [])
@@ -33,13 +51,12 @@ test('число документов в графе равно числу фай
 
 test('структурные числа: они заданы устройством проекта, а не ростом документов', () => {
   assert.equal(of('role').length, 12, '12 ролей — ADR 2026-09-07-1515')
-  assert.equal(of('invariant').length, 12, 'I-1…I-12')
+  assert.equal(of('invariant').length, invariantsInFile, 'каждый пункт invariants.md — узел')
   assert.equal(of('class').length, 3, 'классы гейтов A/B/C')
   assert.equal(of('phase').length, 10, 'десять фаз /day-cycle')
-  assert.equal(of('day').length, 8)
-  assert.equal(of('volume').length, 5)
+  assert.equal(of('day').length, dayDirs.length)
+  assert.equal(of('volume').length, parseCompose(src.composeText).volumes.length)
   assert.equal(of('service').length, 4, 'router, agents, caddy и лендинг site')
-  const src = readSources(ROOT)
   assert.equal(of('external').length, src.providers.length + src.overlay.externals.length)
   assert.equal(
     of('external').some((n) => n.key === 'google-drive'),
@@ -76,7 +93,8 @@ test('предзагруженные скиллы роли ведут на су�
 })
 
 test('топология деплоя: маршруты, зависимости и тома', () => {
-  assert.equal(edges('routes').length, 8)
+  assert.equal(edges('routes').length, routesInCaddy)
+  assert.equal(edges('routes').length, dayDirs.length, 'у каждого дня — маршрут в Caddyfile')
   assert.ok(edges('serves').some((e) => e.from === 'service/caddy' && e.to === 'service/site'))
   assert.ok(edges('depends').some((e) => e.from === 'day/day5' && e.to === 'service/router'))
   assert.ok(edges('mounts').some((e) => e.from === 'service/agents' && e.to === 'volume/agents_data'))
@@ -85,7 +103,7 @@ test('топология деплоя: маршруты, зависимости 
 test('провайдеры попадают в граф без baseUrl: адрес tailnet не публикуется', () => {
   const json = JSON.stringify(graph)
   assert.equal(json.includes('baseUrl'), false)
-  for (const p of readSources(ROOT).providers) {
+  for (const p of src.providers) {
     assert.equal(json.includes(p.baseUrl), false, `в графе адрес провайдера ${p.id}`)
     assert.ok(ids.has(`external/${p.id}`))
   }
@@ -93,8 +111,8 @@ test('провайдеры попадают в граф без baseUrl: адре
 })
 
 test('конвейер образов: image к GHCR и publishes от Actions', () => {
-  const withImage = readSources(ROOT)
-    .composeText.split('\n')
+  const withImage = src.composeText
+    .split('\n')
     .filter((l) => /^ {4}image: ghcr\.io\//.test(l)).length
   assert.equal(edges('image').length, withImage)
   for (const e of edges('image')) assert.equal(e.to, 'external/ghcr')
@@ -128,6 +146,15 @@ test('цитаты, замены и опоры на инварианты ста�
   assert.ok(edges('mentions').some((e) => e.from === 'guide/agents' && e.to === 'role/compliance'))
 })
 
+test('корневые документы — цели цитат в обеих формах', () => {
+  for (const key of ['architecture', 'index', 'glossary', 'agents']) {
+    assert.ok(
+      edges('cites').some((e) => e.to === `guide/${key}`),
+      `у guide/${key} нет входящих цитат — ссылки на него оказались вне гейта`,
+    )
+  }
+})
+
 test('исключение overlay перебивает номер дня из имени файла', () => {
   const about = edges('about').filter((e) => e.from === 'history/2026-09-08-1345')
   assert.deepEqual(
@@ -150,6 +177,8 @@ test('«правило → где сработало»: след несёт ст
 test('следы compliance на репозитории: строка таблицы — единица, отрицание — не след', () => {
   // Числа растут с каждой новой записью истории, поэтому проверяются «не
   // меньше» и поимённо — те случаи, на которых правило ломалось до ревью.
+  // Якорь — текст строки, а не её номер: переформатирование записи не должно
+  // красить обязательную проверку.
   const mine = edges('fired').filter((e) => e.from === 'role/compliance')
   const records = new Set(mine.map((e) => e.to))
   assert.ok(mine.length >= 11, `следов ${mine.length}, ожидалось не меньше 11`)
@@ -157,19 +186,26 @@ test('следы compliance на репозитории: строка табли
 
   // Две строки таблицы одной записи — два следа: дедупликации по паре
   // «роль → документ» нет.
-  const table = mine.filter((e) => e.to === 'history/2026-09-13-1500').map((e) => e.line)
-  assert.deepEqual(table, [43, 44])
+  const table = src.history.find((h) => h.key.startsWith('2026-09-13-1500'))
+  const rows = linesMatching(table.text, (l) => l.startsWith('| compliance |') && /Вето/.test(l))
+  assert.equal(rows.length, 2, 'в записи изменилась таблица вето — проверьте якорь теста')
+  assert.deepEqual(
+    mine.filter((e) => e.to === `history/${table.key.slice(0, 15)}`).map((e) => e.line),
+    rows.map((r) => r.line),
+  )
 
   // «вето нет» и «блокирующих нет» следа не дают.
-  for (const [id, line] of [
-    ['history/2026-09-10-1700', 88],
-    ['history/2026-09-11-1200', 50],
-  ]) {
-    assert.equal(
-      edges('fired').some((e) => e.to === id && e.line === line),
-      false,
-      `${id}:${line} — отрицание, следа быть не должно`,
-    )
+  for (const prefix of ['2026-09-10-1700', '2026-09-11-1200']) {
+    const record = src.history.find((h) => h.key.startsWith(prefix))
+    const denials = linesMatching(record.text, (l) => /вето нет/i.test(l))
+    assert.ok(denials.length > 0, `в ${prefix} пропала строка с «вето нет» — проверьте якорь теста`)
+    for (const d of denials) {
+      assert.equal(
+        edges('fired').some((e) => e.to === `history/${prefix}` && e.line === d.line),
+        false,
+        `${prefix}:${d.line} — отрицание, следа быть не должно`,
+      )
+    }
   }
 
   assert.ok(edges('fired').filter((e) => e.from === 'role/reviewer').length >= 2)

@@ -31,6 +31,28 @@ function format(f) {
     : `${f.file}:${f.line}: ${f.message}`
 }
 
+/**
+ * Узлы без рёбер по типам. Это не находка: вендорный скилл, который ни одна
+ * роль не предзагружает, — факт о проекте, а не дефект графа. Но рост числа
+ * должен быть виден, поэтому сборка печатает сводку (проект решения
+ * 2026-09-13-2000, критерий этапа 1).
+ */
+function isolated(nodes, edges) {
+  const linked = new Set()
+  for (const e of edges) {
+    linked.add(e.from)
+    linked.add(e.to)
+  }
+  const byType = {}
+  for (const n of nodes) if (!linked.has(n.id)) byType[n.type] = (byType[n.type] ?? 0) + 1
+  const total = Object.values(byType).reduce((a, b) => a + b, 0)
+  if (total === 0) return 'ни одного'
+  return `${total} (${Object.entries(byType)
+    .sort()
+    .map(([t, n]) => `${t} ${n}`)
+    .join(', ')})`
+}
+
 function main(argv) {
   const check = argv.includes('--check')
   const { nodes, edges, findings, out } = run({ check })
@@ -51,7 +73,10 @@ function main(argv) {
     .join(', ')
 
   if (check) console.log(`ok: ссылки разрешаются, находок нет (${nodes.length} узлов, ${edges.length} рёбер)`)
-  else console.log(`записано ${out}\n${nodes.length} узлов (${shape}), ${edges.length} рёбер`)
+  else {
+    console.log(`записано ${out}\n${nodes.length} узлов (${shape}), ${edges.length} рёбер`)
+    console.log(`без рёбер: ${isolated(nodes, edges)}`)
+  }
   return 0
 }
 

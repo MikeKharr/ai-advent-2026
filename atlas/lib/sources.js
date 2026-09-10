@@ -27,15 +27,37 @@ export const INPUTS = {
   overlay: 'atlas/overlay.json',
 }
 
+const DECLARED = Object.values(INPUTS).flat()
+/** Каталог, который только перечисляется: содержимое приложений не читается. */
+const LIST_ONLY = new Set([INPUTS.daysDir])
+
+/**
+ * Разрешено ли читать этот файл. Через проверку проходит каждое чтение:
+ * список описывает намерение, а гарантию даёт то, что мимо него ничего не
+ * читается. `days/` в чтение не входит — оттуда берутся только имена.
+ */
+export function isDeclaredInput(rel) {
+  return DECLARED.some((d) => !LIST_ONLY.has(d) && (rel === d || rel.startsWith(`${d}/`)))
+}
+
+/** Разрешено ли перечислять этот каталог. */
+export function isDeclaredDir(rel) {
+  return DECLARED.includes(rel)
+}
+
 /**
  * Читает все входы графа из корня репозитория.
  * @param {string} root корень репозитория
  */
 export function readSources(root) {
   const findings = []
-  const fail = (rel, error) => findings.push({ file: rel, line: 1, message: `вход не читается: ${error.message}` })
+  // Абсолютный путь раннера в сообщении бесполезен: файл уже назван в
+  // поле `file`, а корень у каждой машины свой.
+  const fail = (rel, error) =>
+    findings.push({ file: rel, line: 1, message: `вход не читается: ${error.message.replaceAll(`${root}/`, '')}` })
 
   const text = (rel, fallback = '') => {
+    if (!isDeclaredInput(rel)) throw new Error(`чтение мимо списка входов: ${rel}`)
     try {
       return readFileSync(join(root, rel), 'utf8')
     } catch (error) {
@@ -54,6 +76,7 @@ export function readSources(root) {
     }
   }
   const names = (rel) => {
+    if (!isDeclaredDir(rel)) throw new Error(`перечисление мимо списка входов: ${rel}`)
     try {
       return readdirSync(join(root, rel))
     } catch (error) {

@@ -66,13 +66,20 @@ test('страж: настройки тома в верхнем блоке — �
   assert.equal(findings[0].line, 6)
 })
 
+test('расширение `x-*` — не выход за подмножество', () => {
+  const extended = 'services:\n  a:\n    image: x\n    x-owner: platform\nvolumes:\n'
+  assert.deepEqual(parseCompose(extended).findings, [])
+})
+
 test('состав деплоя: по сервису на строку image: и пять томов', () => {
   const parsed = parseCompose(text)
   const imageLines = text.split('\n').filter((l) => /^ {4}image:/.test(l)).length
   assert.equal(parsed.services.length, imageLines)
-  // Пять томов — структура деплоя, а не растущее число (ADR 2026-09-13-2000).
-  assert.equal(parsed.volumes.length, 5)
-  assert.deepEqual(parsed.volumes.slice().sort(), ['agents_data', 'caddy_config', 'caddy_data', 'day5_data', 'router_data'])
+  // Тома считаются по файлу: девятый день принесёт свой, и равенство здесь
+  // покрасило бы чужой PR (то же, что чинилось в проверке инвариантов).
+  const declared = text.slice(text.lastIndexOf('\nvolumes:\n') + 1).split('\n').filter((l) => /^ {2}[a-z0-9_-]+:/.test(l)).length
+  assert.equal(parsed.volumes.length, declared)
+  for (const v of ['caddy_data', 'router_data']) assert.ok(parsed.volumes.includes(v), v)
 })
 
 test('зависимости, тома и env_file сервиса разбираются', () => {
@@ -87,7 +94,8 @@ test('зависимости, тома и env_file сервиса разбира
   assert.deepEqual(byName.day5.envFiles, ['./day5.env'])
   assert.equal(byName.caddy.image, 'caddy:2-alpine')
   assert.equal(byName.day1.image, 'ghcr.io/mikekharr/advent-day1:${DAY1_TAG:-latest}')
-  assert.equal(byName.caddy.dependsOn.length, 8)
+  const days = parsed.services.filter((s) => /^day\d+$/.test(s.name)).length
+  assert.equal(byName.caddy.dependsOn.length, days, 'caddy зависит от каждого дня')
 })
 
 test('bind-монтирование отличается от именованного тома', () => {

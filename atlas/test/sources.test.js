@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { INPUTS } from '../lib/sources.js'
+import { INPUTS, isDeclaredDir, isDeclaredInput } from '../lib/sources.js'
 
-// Список входов — единственное место, через которое в граф попадают данные.
-// Расширить его — единственный способ протащить секрет, поэтому список
-// прибит тестом: новый вход требует явной правки здесь и разговора на ревью.
+// Границу публикуемого держит не список сам по себе — держит её то, что
+// каждое чтение проходит проверку «путь лежит под объявленным входом».
+// Список описывает намерение и прибит тестом: новый вход требует явной
+// правки здесь и разговора на ревью.
 
 const EXPECTED = [
   'agent_docs/adr',
@@ -39,6 +40,18 @@ test('среди входов нет ни одного запретного пу
   for (const p of paths) {
     for (const re of forbidden) assert.equal(re.test(p), false, `вход ${p} попадает под запрет ${re}`)
   }
+})
+
+test('чтение мимо списка входов не проходит', () => {
+  for (const rel of ['deploy/secrets.env', '.env', 'temp/x.json', 'logs/app.log', 'router/data/ledger.jsonl', 'days/day1/server.js']) {
+    assert.equal(isDeclaredInput(rel), false, rel)
+  }
+  for (const rel of ['agent_docs/adr/2026-01-01-0000-x.md', '.agents/skills/x/SKILL.md', 'AGENTS.md', 'deploy/compose.yml']) {
+    assert.equal(isDeclaredInput(rel), true, rel)
+  }
+  // `days/` только перечисляется: код приложений дня в граф не читается.
+  assert.equal(isDeclaredDir('days'), true)
+  assert.equal(isDeclaredInput('days/day1'), false)
 })
 
 test('входы заданы относительными путями внутри репозитория', () => {

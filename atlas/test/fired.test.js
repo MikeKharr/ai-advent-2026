@@ -33,6 +33,8 @@ test('отрицание отбрасывает срабатывание', () =>
   assert.deepEqual(roles('Ревью compliance: вето нет.'), [])
   assert.deepEqual(roles('У reviewer блокирующих нет.'), [])
   assert.deepEqual(roles('Пройдено без вето compliance.'), [])
+  // «без» сужено до соседства с признаком: иначе терялся бы обычный оборот.
+  assert.deepEqual(roles('compliance снял вето без условий.'), ['compliance'])
   assert.deepEqual(roles('У compliance нет находок.'), [])
   assert.deepEqual(roles('compliance вето не ставил.'), [])
   assert.deepEqual(roles('compliance вето не наложил.'), [])

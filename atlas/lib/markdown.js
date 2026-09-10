@@ -64,6 +64,11 @@ const PLACEHOLDER = /YYYY|HHMM|<|\*|\bимя\b|name\.md|\/id$/
 
 const ADR_CITE = /ADR\s+`([^`\n]+)`/g
 const DOC_PATH = /`((?:agent_docs\/)?(?:adr|development-history|design|guides)\/[A-Za-z0-9._-]+)`/g
+// Закрытый список корневых документов: они узлы `guide/*`, значит и цели
+// цитат — в обеих формах, с префиксом `agent_docs/` и без (проект решения
+// 2026-09-13-2000, таблица рёбер). Голые пути в прозе вне этого списка
+// цитатами по-прежнему не считаются.
+const ROOT_DOC = /`(?:agent_docs\/)?(architecture\.md|index\.md|glossary\.md|AGENTS\.md)`/g
 const INVARIANT = /\bI-(\d+)\b/g
 const BACKTICK_WORD = /`([a-z][a-z-]*)`/g
 
@@ -108,6 +113,9 @@ export function scanCitations(text) {
   for (const m of text.matchAll(DOC_PATH)) {
     if (PLACEHOLDER.test(m[1])) continue
     found.push({ kind: 'path', value: m[1].replace(/^agent_docs\//, ''), line: at(m.index), index: m.index })
+  }
+  for (const m of text.matchAll(ROOT_DOC)) {
+    found.push({ kind: 'path', value: m[1], line: at(m.index), index: m.index })
   }
   for (const m of text.matchAll(INVARIANT)) {
     found.push({ kind: 'invariant', value: `I-${Number(m[1])}`, line: at(m.index), index: m.index })

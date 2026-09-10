@@ -25,7 +25,8 @@ export function buildGraph(sources) {
   const add = (node) => {
     const twin = nodes.find((n) => n.id === node.id)
     if (twin) {
-      note(node.file ?? 'atlas', 1, `узел \`${node.id}\` строится дважды: из ${twin.file ?? 'overlay'} и из ${node.file ?? 'overlay'}`)
+      const where = (n) => n.file ?? 'atlas/overlay.json'
+      note(where(node), 1, `узел \`${node.id}\` строится дважды: из ${where(twin)} и из ${where(node)}`)
       return twin
     }
     nodes.push(node)
@@ -85,8 +86,9 @@ export function buildGraph(sources) {
   }
   // Допустимые номера — те, что разобраны из файла. Константы здесь быть не
   // может: добавленный инвариант иначе роняет обязательную проверку на всех PR.
-  const invariantKeys = nodes.filter((n) => n.type === 'invariant').map((n) => n.key)
-  const invariantRange = invariantKeys.length > 0 ? `${invariantKeys[0]}…${invariantKeys.at(-1)}` : 'ни одного'
+  const invariantNumbers = nodes.filter((n) => n.type === 'invariant').map((n) => Number(n.key.slice(2)))
+  const invariantRange =
+    invariantNumbers.length > 0 ? `I-${Math.min(...invariantNumbers)}…I-${Math.max(...invariantNumbers)}` : 'ни одного'
 
   // --- роли и ярусы -----------------------------------------------------------
 
@@ -153,7 +155,14 @@ export function buildGraph(sources) {
     }
   }
 
-  const routed = new Set([...sources.caddyText.matchAll(/handle_path \/(day\d+)\/\*/g)].map((m) => m[1]))
+  // Комментарии Caddyfile упоминают handle_path в пояснении: маршрут — только
+  // действующая строка.
+  const routed = new Set(
+    sources.caddyText
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .flatMap((l) => [...l.matchAll(/handle_path \/(day\d+)\/\*/g)].map((m) => m[1])),
+  )
 
   for (const name of sources.days) {
     const svc = composeByName[name] ?? { image: null, dependsOn: [], volumes: [], envFiles: [] }
@@ -270,6 +279,17 @@ export function buildGraph(sources) {
   // --- цитаты: cites, relies, mentions ----------------------------------------
 
   const resolvePath = (value) => {
+    if (!value.includes('/')) {
+      // Корневой документ из закрытого списка: `AGENTS.md` лежит в корне,
+      // остальные три — в agent_docs/.
+      const key = value.replace(/\.md$/, '').toLowerCase()
+      const file = value === 'AGENTS.md' ? 'AGENTS.md' : `agent_docs/${value}`
+      // Узел корневого документа строится по списку входов, а не по факту
+      // файла, поэтому здесь проверяется именно файл: иначе переименование
+      // прошло бы мимо гейта.
+      if (!inputExists(sources.root, file)) return { file: null, node: null }
+      return { file, node: has(`guide/${key}`) ? `guide/${key}` : null }
+    }
     const dir = value.slice(0, value.indexOf('/'))
     const rest = value.slice(value.indexOf('/') + 1)
     if (dir === 'guides') {

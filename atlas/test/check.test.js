@@ -58,27 +58,45 @@ test('путь к гайду без файла — находка', () => {
   assert.match(found[0].message, /guides\/nothing\.md/)
 })
 
+test('ссылка на корневой документ проверяется гейтом', () => {
+  assert.deepEqual(appended(GUIDE, '\nСловарь — `agent_docs/glossary.md`, правила — `AGENTS.md`.\n'), [])
+
+  // Переименование корневого документа больше не проходит мимо: цитаты на
+  // него становятся находками (на main таких ссылок 48).
+  const file = join(fixture.root, 'agent_docs/glossary.md')
+  const saved = readFileSync(file, 'utf8')
+  try {
+    rmSync(file)
+    const found = findings()
+    assert.ok(found.some((f) => /glossary\.md/.test(f.message) && /не разрешается/.test(f.message)))
+  } finally {
+    writeFileSync(file, saved)
+  }
+})
+
 test('инвариант, которого нет в invariants.md, — находка', () => {
-  const found = appended(GUIDE, '\nПо инварианту I-13 это запрещено.\n')
+  const found = appended(GUIDE, '\nПо инварианту I-999 это запрещено.\n')
   assert.equal(found.length, 1)
-  assert.match(found[0].message, /I-13/)
+  assert.match(found[0].message, /I-999/)
   assert.match(found[0].message, /agent_docs\/invariants\.md/, 'находка обязана назвать источник списка')
 })
 
 test('добавленный в invariants.md инвариант становится разрешённым, а не находкой', () => {
-  // Диапазон I-N берётся из файла: иначе тринадцатый инвариант уронил бы
+  // Диапазон I-N берётся из файла: иначе новый инвариант уронил бы
   // обязательную проверку на всех PR, обвиняя невиновный документ.
+  // Номер взят заведомо свободный: следующий по порядку однажды займут,
+  // и тест, доказывающий эту починку, сломался бы именно об неё.
   const file = join(fixture.root, 'agent_docs/invariants.md')
   const saved = readFileSync(file, 'utf8')
   try {
-    writeFileSync(file, `${saved}\n- **I-13.** Проверочный инвариант.\n`)
-    appendFileSync(join(fixture.root, GUIDE), '\nПо инварианту I-13 это запрещено.\n')
+    writeFileSync(file, `${saved}\n- **I-999.** Проверочный инвариант.\n`)
+    appendFileSync(join(fixture.root, GUIDE), '\nПо инварианту I-999 это запрещено.\n')
     const graph = buildGraph(readSources(fixture.root))
     assert.deepEqual(graph.findings, [])
-    assert.ok(graph.edges.some((e) => e.kind === 'relies' && e.to === 'invariant/I-13'))
+    assert.ok(graph.edges.some((e) => e.kind === 'relies' && e.to === 'invariant/I-999'))
   } finally {
     writeFileSync(file, saved)
-    writeFileSync(join(fixture.root, GUIDE), readFileSync(join(fixture.root, GUIDE), 'utf8').replace('\nПо инварианту I-13 это запрещено.\n', ''))
+    writeFileSync(join(fixture.root, GUIDE), readFileSync(join(fixture.root, GUIDE), 'utf8').replace('\nПо инварианту I-999 это запрещено.\n', ''))
   }
 })
 
