@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { run } from '../build.js'
@@ -33,18 +33,33 @@ writeFileSync(join(fixture.root, 'id_ed25519'), `-----BEGIN OPENSSH PRIVATE KEY-
 
 const out = join(fixture.root, 'atlas/dist/graph.json')
 const result = run({ root: fixture.root, out })
-const text = readFileSync(out, 'utf8')
+
+/** Все файлы каталога выхода, а не одна строка графа: витрина и vault
+ *  пишут свои файлы, и гарантия не должна зависеть от того, что они
+ *  совпадают с graph.json. */
+const filesIn = (dir) =>
+  readdirSync(dir, { recursive: true })
+    .map((rel) => join(dir, rel))
+    .filter((path) => statSync(path).isFile())
+    .map((path) => ({ path, text: readFileSync(path, 'utf8') }))
+const site = filesIn(result.siteDir)
+const vault = filesIn(result.vaultDir)
 
 test('сборка на копии со секретами рядом проходит без находок', () => {
   assert.deepEqual(result.findings, [])
   assert.ok(result.nodes.length > 100)
+  assert.ok(site.some((f) => f.path.endsWith('graph.json')), 'витрина собрана')
+  assert.ok(vault.length > 100, 'vault собран')
 })
 
-test('маркер из подложенных секретов не попал в graph.json', () => {
-  assert.equal(text.includes(MARKER), false)
+test('маркер из подложенных секретов не попал ни в один файл витрины и vault', () => {
+  for (const f of [...site, ...vault]) assert.equal(f.text.includes(MARKER), false, `маркер в ${f.path}`)
 })
 
-test('в выходе нет образцов ключей и адресов частной сети', () => {
+// Образцы ищутся по витрине, но не по vault: vault — полные копии
+// публичных документов, а они сами называют эти образцы (проект решения
+// атласа, ADR и запись 2026-09-09-2400 про адрес tailnet).
+test('в витрине нет образцов ключей и адресов частной сети', () => {
   const patterns = [
     new RegExp(['sk', 'ant', ''].join('-')),
     /gsk_/,
@@ -53,7 +68,7 @@ test('в выходе нет образцов ключей и адресов ч�
     // документа не должны ронять проверку.
     /\b100\.\d+\.\d+\.\d+\b/,
   ]
-  for (const re of patterns) assert.equal(re.test(text), false, `в graph.json найден образец ${re}`)
+  for (const f of site) for (const re of patterns) assert.equal(re.test(f.text), false, `в ${f.path} найден образец ${re}`)
 })
 
 test('секрет, дописанный в сам входной документ, — уже не наша граница', () => {

@@ -53,12 +53,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: docker/setup-buildx-action@v3
 
       # Атлас: сначала витрина из репозитория, потом образ — в него идёт только
@@ -69,6 +63,14 @@ jobs:
       - name: Сборка витрины атласа
         if: matrix.day == 'atlas'
         run: node atlas/build.js
+
+      # Вход в GHCR — после кода репозитория: токен с packages: write не
+      # лежит на диске раннера, пока исполняется node atlas/build.js.
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Сборка и публикация
         uses: docker/build-push-action@v6
