@@ -266,6 +266,31 @@ test('в объёме в покое наведение в виде до 40 уз�
   for (const hover of ids) assert.deepEqual(layout(hover), still, `наведение на ${hover}`)
 })
 
+test('наведение на узел без подписи в покое показывает его имя', () => {
+  // Единственная позиция на двоих: ближний к камере её занимает, дальний молчит.
+  const items = [
+    { id: 'near', x: 200, y: 150, text: 'alpha', rank: 4, slots: ['below'] },
+    { id: 'far', x: 200, y: 150, text: 'bravo', rank: 4, slots: ['below'] },
+  ]
+  const depth = new Map([['near', -0.2], ['far', 0.3]])
+  const still = placeDepthLabels(items, field, measure, depth, null)
+  assert.ok(still.has('near') && !still.has('far'))
+  const hovered = placeDepthLabels(items, field, measure, depth, 'far')
+  assert.ok(hovered.has('far'), 'наведённый без подписи получает имя')
+})
+
+test('наведение на узел с подписью не меняет ни одной позиции', () => {
+  const items = [
+    { id: 'near', x: 200, y: 150, text: 'alpha', rank: 4, slots: ['below'] },
+    { id: 'far', x: 200, y: 150, text: 'bravo', rank: 4, slots: ['below'] },
+  ]
+  const depth = new Map([['near', -0.2], ['far', 0.3]])
+  assert.deepEqual(
+    placeDepthLabels(items, field, measure, depth, 'near'),
+    placeDepthLabels(items, field, measure, depth, null),
+  )
+})
+
 test('подписи возвращаются по настоящим идентификаторам', () => {
   const items = [
     { id: 'role/compliance', x: 100, y: 100, text: 'compliance', rank: 0 },

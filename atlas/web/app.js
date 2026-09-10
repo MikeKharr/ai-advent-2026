@@ -806,17 +806,29 @@ export function pickNode(screen, order, x, y) {
  * поднимает. `placeLabels` при равной тесноте берёт узлы в порядке
  * идентификаторов, поэтому порядок по глубине приходит через них: ключ —
  * номер узла от ближнего к дальнему. Ранг и позиции остаются как есть.
+ *
+ * Гарантии «подпись есть у всех» в объёме нет, поэтому наведённый узел,
+ * оставшийся без подписи, поднимается до ранга наведения (2) и расстановка
+ * повторяется: под курсором всегда видно имя. Наведение на узел с подписью
+ * ничего не переставляет.
  * @param {Map<string,number>} depth глубина `z` по идентификатору
+ * @param {string|null} hover узел под курсором
  */
-export function placeDepthLabels(items, field, measure, depth) {
-  const near = [...items].sort((a, b) => depth.get(a.id) - depth.get(b.id) || bytewise(a.id, b.id))
-  const real = new Map()
-  const keyed = near.map((item, i) => {
-    const key = `${String(i).padStart(6, '0')} ${item.id}`
-    real.set(key, item.id)
-    return { ...item, id: key }
-  })
-  return new Map([...placeLabels(keyed, field, measure)].map(([key, box]) => [real.get(key), box]))
+export function placeDepthLabels(items, field, measure, depth, hover = null) {
+  const place = (list) => {
+    const near = [...list].sort((a, b) => depth.get(a.id) - depth.get(b.id) || bytewise(a.id, b.id))
+    const real = new Map()
+    const keyed = near.map((item, i) => {
+      const key = `${String(i).padStart(6, '0')} ${item.id}`
+      real.set(key, item.id)
+      return { ...item, id: key }
+    })
+    return new Map([...placeLabels(keyed, field, measure)].map(([key, box]) => [real.get(key), box]))
+  }
+  const still = place(items)
+  const mine = items.find((item) => item.id === hover)
+  if (!mine || still.has(hover) || mine.rank <= 2) return still
+  return place(items.map((item) => (item === mine ? { ...item, rank: 2 } : item)))
 }
 
 /**
@@ -1225,7 +1237,7 @@ function paintDepth(ctx, screen, sel, moving, field) {
     items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank })
     depth.set(id, p.z)
   }
-  const labels = placeDepthLabels(items, field, (text) => ctx.measureText(text).width, depth)
+  const labels = placeDepthLabels(items, field, (text) => ctx.measureText(text).width, depth, state.hover)
   for (const [id, box] of labels) {
     ctx.fillStyle = colors.surface
     ctx.fillRect(box.x, box.y, box.width + 4, LABEL_H)
@@ -1321,10 +1333,11 @@ function wireCanvas(canvas) {
       return
     }
     const hit = pick(canvas, ev)
-    if (volumeOn()) canvas.style.cursor = hit ? 'pointer' : ev.shiftKey ? 'move' : 'grab'
+    // Курсор — на каждом движении, до выхода: иначе `move` из объёма
+    // оставался бы над фоном плоского вида до первого узла.
+    canvas.style.cursor = hit ? 'pointer' : volumeOn() && ev.shiftKey ? 'move' : 'grab'
     if (hit === state.hover) return
     state.hover = hit
-    canvas.style.cursor = hit ? 'pointer' : volumeOn() && ev.shiftKey ? 'move' : 'grab'
     paint()
   })
   canvas.addEventListener('pointerup', (ev) => {
@@ -2231,10 +2244,15 @@ function setVolume(on) {
   state.volume = on
   if (on) state.pose = { ...POSE0 }
   if (!ready) return
+  // В цикле флажок не действует: картинка, полоса вида и строка под ним те
+  // же, и вид не перевписывается — масштаб и сдвиг посетителя остаются.
+  if (state.view.place !== null) {
+    announce(on ? 'Объём включён, но в цикле дня не действует: это схема по номерам фаз. Выберите узел или включите весь граф.' : 'Объём выключен.')
+    return
+  }
   state.morph = from ? { from, t0: performance.now() } : null
   refresh(false)
-  if (state.view.place === null) announceView()
-  else announce(on ? 'Объём включён, но в цикле дня не действует: это схема по номерам фаз. Выберите узел или включите весь граф.' : 'Объём выключен.')
+  announceView()
 }
 
 /** `returned` — возврат по пути: «Вернулись» отличает его от шага вперёд. */
