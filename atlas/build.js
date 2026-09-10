@@ -4,24 +4,73 @@
 // обычный запуск пишет `atlas/dist/graph.json` (каталог в .gitignore).
 // ADR 2026-09-13-2000.
 
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildGraph } from './lib/extract.js'
 import { readSources } from './lib/sources.js'
+import { VAULT_DIRS, buildVault } from './lib/vault.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** Сколько находок печатать: остальное — эхо первых, список должен читаться. */
 const SHOWN = 50
 
-export function run({ root = join(HERE, '..'), check = false, out = join(HERE, 'dist/graph.json') } = {}) {
-  const graph = buildGraph(readSources(root))
-  if (graph.findings.length === 0 && !check) {
-    mkdirSync(dirname(out), { recursive: true })
-    writeFileSync(out, `${JSON.stringify({ nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`)
+/**
+ * Право записи — только внутрь `atlas/dist/`. Проверяется путь после
+ * разрешения, а не строка от вызывающего: `dist/../../.ssh` — тоже строка,
+ * начинающаяся с `dist`.
+ */
+function insideDist(path) {
+  const full = resolve(path)
+  return full.includes(`${sep}atlas${sep}dist${sep}`) || full.endsWith(`${sep}atlas${sep}dist`)
+}
+
+function writeInsideDist(path, text) {
+  if (!insideDist(path)) throw new Error(`запись мимо atlas/dist: ${path}`)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, text)
+}
+
+/**
+ * Коммит и его время — не «сейчас»: иначе каждый прогон давал бы diff во всех
+ * заметках vault. Без git (например, на копии входов в тестах) происхождение
+ * честно говорит, что коммит неизвестен.
+ */
+export function readProvenance(root) {
+  try {
+    const git = (args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
+    return {
+      sha: git(['rev-parse', 'HEAD']),
+      time: git(['show', '-s', '--format=%cd', '--date=format:%Y-%m-%d %H:%M %z', 'HEAD']).replace(/([+-]\d{2})00$/, '$1'),
+    }
+  } catch {
+    return { sha: 'вне git', time: 'не определено' }
   }
-  return { ...graph, out }
+}
+
+export function run({ root = join(HERE, '..'), check = false, out = join(HERE, 'dist/graph.json') } = {}) {
+  const sources = readSources(root)
+  const graph = buildGraph(sources)
+  const vaultDir = join(dirname(out), 'vault')
+  let vault = []
+
+  if (graph.findings.length === 0 && !check) {
+    writeInsideDist(out, `${JSON.stringify({ nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`)
+
+    vault = buildVault({ graph, sources, provenance: readProvenance(root) })
+    // Чистятся только свои каталоги: `.obsidian/` создаёт сам Obsidian, там
+    // состояние окна пользователя, и сборка его не трогает.
+    for (const dir of VAULT_DIRS) {
+      const path = join(vaultDir, dir)
+      if (!insideDist(path)) throw new Error(`очистка мимо atlas/dist: ${path}`)
+      rmSync(path, { recursive: true, force: true })
+    }
+    for (const file of vault) writeInsideDist(join(vaultDir, file.path), file.text)
+  }
+
+  return { ...graph, out, vault, vaultDir }
 }
 
 /** В Actions находка — аннотация: тогда она видна прямо в diff'е PR. */
@@ -55,7 +104,7 @@ function isolated(nodes, edges) {
 
 function main(argv) {
   const check = argv.includes('--check')
-  const { nodes, edges, findings, out } = run({ check })
+  const { nodes, edges, findings, out, vault, vaultDir } = run({ check })
 
   for (const f of findings.slice(0, SHOWN)) console.error(format(f))
   if (findings.length > SHOWN) console.error(`…и ещё ${findings.length - SHOWN} находок`)
@@ -76,6 +125,7 @@ function main(argv) {
   else {
     console.log(`записано ${out}\n${nodes.length} узлов (${shape}), ${edges.length} рёбер`)
     console.log(`без рёбер: ${isolated(nodes, edges)}`)
+    console.log(`vault: ${vault.length} заметок в ${vaultDir}`)
   }
   return 0
 }

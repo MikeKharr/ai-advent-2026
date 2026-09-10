@@ -16,6 +16,9 @@ import {
 } from './markdown.js'
 import { inputExists } from './sources.js'
 
+/** Корневые документы — закрытый список целей цитат (проект решения). */
+const ROOT_DOCS = new Set(['architecture.md', 'index.md', 'glossary.md', 'AGENTS.md'])
+
 export function buildGraph(sources) {
   const nodes = []
   const edges = []
@@ -279,11 +282,13 @@ export function buildGraph(sources) {
   // --- цитаты: cites, relies, mentions ----------------------------------------
 
   const resolvePath = (value) => {
-    if (!value.includes('/')) {
-      // Корневой документ из закрытого списка: `AGENTS.md` лежит в корне,
-      // остальные три — в agent_docs/.
-      const key = value.replace(/\.md$/, '').toLowerCase()
-      const file = value === 'AGENTS.md' ? 'AGENTS.md' : `agent_docs/${value}`
+    const base = value.split('/').pop()
+    if (ROOT_DOCS.has(base)) {
+      // Корневой документ из закрытого списка. Путь берётся как написан:
+      // `AGENTS.md` лежит в корне, и `agent_docs/AGENTS.md` — другой,
+      // несуществующий файл, о чём и должна сказать находка.
+      const key = base.replace(/\.md$/, '').toLowerCase()
+      const file = value.includes('/') ? value : base === 'AGENTS.md' ? 'AGENTS.md' : `agent_docs/${value}`
       // Узел корневого документа строится по списку входов, а не по факту
       // файла, поэтому здесь проверяется именно файл: иначе переименование
       // прошло бы мимо гейта.

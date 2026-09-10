@@ -51,9 +51,11 @@ test('пути к документам нормализуются без пре�
 
 test('корневые документы читаются в обеих формах, прочие голые пути — нет', () => {
   const found = scanCitations('см. `agent_docs/glossary.md`, `glossary.md`, `AGENTS.md`, `agent_docs/AGENTS.md` и `README.md`')
+  // Префикс сохраняется как написан: `agent_docs/AGENTS.md` — другой файл,
+  // и разрешаться он обязан отдельно (и не разрешиться).
   assert.deepEqual(
     found.filter((f) => f.kind === 'path').map((f) => f.value),
-    ['glossary.md', 'glossary.md', 'AGENTS.md', 'AGENTS.md'],
+    ['agent_docs/glossary.md', 'glossary.md', 'AGENTS.md', 'agent_docs/AGENTS.md'],
   )
 })
 

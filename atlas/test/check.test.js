@@ -74,6 +74,13 @@ test('ссылка на корневой документ проверяется
   }
 })
 
+test('корневой документ по неверному пути — находка, а не тихое совпадение', () => {
+  // `AGENTS.md` лежит в корне; `agent_docs/AGENTS.md` — несуществующий файл.
+  const found = appended(GUIDE, '\nПравила — `agent_docs/AGENTS.md`.\n')
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /agent_docs\/AGENTS\.md/)
+})
+
 test('инвариант, которого нет в invariants.md, — находка', () => {
   const found = appended(GUIDE, '\nПо инварианту I-999 это запрещено.\n')
   assert.equal(found.length, 1)
