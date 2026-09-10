@@ -64,6 +64,7 @@
 days/dayN/     приложение дня: Dockerfile, код, public/
 router/        сервис роутера LLM-провайдеров (ADR 2026-09-08-1748)
 agents/        сервис агентов: реестр, инструменты, запуски (ADR 2026-09-10-1000)
+atlas/         атлас проекта: генератор графа и статика на /atlas/ (ADR 2026-09-13-2000)
 site/          лендинг на корне домена
 deploy/        Caddyfile, compose.yml, bootstrap.sh
 ```

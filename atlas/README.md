@@ -98,7 +98,10 @@ API; пути относительные, `<base>` нет — страница �
 тот же результат. Чистятся только свои каталоги; `.obsidian/` создаёт сам
 Obsidian, и сборка его не трогает.
 
-## Чего этапы 1–2 не делают
+## Доставка
 
-Страница витрины (этап 3), `Dockerfile` и доставка на
-`challenge.zpq.ai/atlas/` (этап 4).
+`Dockerfile` и `Caddyfile` пакета — образ `caddy:2-alpine`, который отдаёт
+`dist/site/` и отвечает 200 на `/healthz`. Workflow сначала запускает
+`node atlas/build.js`, затем собирает образ (в него идёт только `dist/site/`)
+и выкатывает единицу `atlas` на `challenge.zpq.ai/atlas/`. Порядок первого
+деплоя — `agent_docs/operations.md`.

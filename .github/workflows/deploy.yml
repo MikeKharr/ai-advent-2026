@@ -3,11 +3,11 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', '.github/workflows/deploy.yml']
+    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/deploy.yml']
   workflow_dispatch:
     inputs:
       day:
-        description: 'Одна единица для передеплоя: day1 …, router или agents. Пусто — все изменённые.'
+        description: 'Одна единица для передеплоя: day1 …, router, agents или atlas. Пусто — все изменённые.'
         required: false
         type: string
 
@@ -34,7 +34,9 @@ jobs:
           else
             base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
             changed=$(git diff --name-only "$base" HEAD)
-            days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; } | sort -u | jq -R . | jq -sc .)
+            # Входы графа атласа — atlas/lib/sources.js; то же правило, что в ci.yml.
+            atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
+            days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | jq -R . | jq -sc .)
             [ -z "$days" ] && days='[]'
           fi
           echo "days=$days" >> "$GITHUB_OUTPUT"
@@ -50,19 +52,31 @@ jobs:
         day: ${{ fromJSON(needs.detect.outputs.days) }}
     steps:
       - uses: actions/checkout@v4
+        with: { persist-credentials: false }
 
+      - uses: docker/setup-buildx-action@v3
+
+      # Атлас: сначала витрина из репозитория, потом образ — в него идёт только
+      # atlas/dist/site. Коммит в подвале страницы — HEAD этой сборки, github.sha.
+      - uses: actions/setup-node@v4
+        if: matrix.day == 'atlas'
+        with: { node-version: '22' }
+      - name: Сборка витрины атласа
+        if: matrix.day == 'atlas'
+        run: node atlas/build.js
+
+      # Токен не лежит на диске, пока исполняется код репозитория: checkout
+      # его не сохраняет (persist-credentials: false), вход в GHCR — после сборки.
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
-
       - name: Сборка и публикация
         uses: docker/build-push-action@v6
         with:
-          context: ${{ contains(fromJSON('["router","agents"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
+          context: ${{ contains(fromJSON('["router","agents","atlas"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
           push: true
           # Владелец в GHCR должен быть в нижнем регистре.
           tags: |
