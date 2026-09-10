@@ -51,12 +51,35 @@ test('граф не схлопывается в точку и не кладёт 
   assert.equal(new Set(placed.map((p) => `${p.x},${p.y}`)).size, nodes.length, 'узлы совпали позициями')
 })
 
-test('масштаб общий для обеих осей: одна ось занимает квадрат целиком', () => {
+test('связная часть занимает почти весь квадрат', () => {
   const { nodes, edges } = sample()
   const placed = [...layout(nodes, edges).values()]
-  const spanX = Math.max(...placed.map((p) => p.x)) - Math.min(...placed.map((p) => p.x))
-  const spanY = Math.max(...placed.map((p) => p.y)) - Math.min(...placed.map((p) => p.y))
-  assert.ok(Math.abs(Math.max(spanX, spanY) - 1) < 1e-6, `${spanX} × ${spanY}`)
+  const span = (axis) => Math.max(...placed.map((p) => p[axis])) - Math.min(...placed.map((p) => p[axis]))
+  // Нормировка по каждой оси отдельно: витрина вписывает окрестность в канву,
+  // и вытянутое облако означало бы пустую половину экрана.
+  assert.ok(span('x') * span('y') >= 0.85, `габарит ${(span('x') * span('y') * 100).toFixed(1)} %`)
+})
+
+test('изолированные узлы не влияют на масштаб связной части', () => {
+  // Причина Б1/Б2: к изолированным применялось только отталкивание, они
+  // улетали к границам и задавали габарит за всех — связная часть сжималась
+  // до 7.7 % квадрата, и в окрестностях пропадали подписи.
+  const { nodes, edges } = sample()
+  const alone = layout(nodes, edges)
+  const withLoose = layout([...nodes, { id: 'один' }, { id: 'другой' }, { id: 'третий' }], edges)
+  for (const node of nodes) assert.deepEqual(withLoose.get(node.id), alone.get(node.id), node.id)
+})
+
+test('изолированные узлы стоят по краю квадрата', () => {
+  const { nodes, edges } = sample()
+  const loose = ['один', 'другой', 'третий', 'четвёртый']
+  const placed = layout([...nodes, ...loose.map((id) => ({ id }))], edges)
+  for (const id of loose) {
+    const { x, y } = placed.get(id)
+    const onEdge = x <= 0.02 || x >= 0.98 || y <= 0.02 || y >= 0.98
+    assert.ok(onEdge, `${id} не на краю: ${x}, ${y}`)
+  }
+  assert.equal(new Set(loose.map((id) => JSON.stringify(placed.get(id)))).size, loose.length, 'изолированные совпали')
 })
 
 test('вырожденные случаи не роняют сборку', () => {

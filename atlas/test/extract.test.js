@@ -173,8 +173,16 @@ test('каждый узел несёт координаты в единично�
       assert.ok((String(v).split('.')[1] ?? '').length <= 6, `${node.id}: ${v}`)
     }
   }
-  const spread = (axis) => Math.max(...graph.nodes.map((n) => n[axis])) - Math.min(...graph.nodes.map((n) => n[axis]))
-  assert.ok(spread('x') > 0.5 && spread('y') > 0.5, 'раскладка схлопнулась')
+  // Габарит меряется по связной части: изолированные узлы стоят по краю и
+  // масштаб не задают (иначе связная часть сжимается — так было до правки).
+  const linked = new Set()
+  for (const e of graph.edges) {
+    linked.add(e.from)
+    linked.add(e.to)
+  }
+  const core = graph.nodes.filter((n) => linked.has(n.id))
+  const span = (axis) => Math.max(...core.map((n) => n[axis])) - Math.min(...core.map((n) => n[axis]))
+  assert.ok(span('x') * span('y') >= 0.85, `связная часть занимает ${(span('x') * span('y') * 100).toFixed(1)} % квадрата`)
   assert.equal(new Set(graph.nodes.map((n) => `${n.x},${n.y}`)).size, graph.nodes.length)
 })
 

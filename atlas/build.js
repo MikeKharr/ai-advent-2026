@@ -49,45 +49,49 @@ function writeUnder(dir, path, text) {
 }
 
 /**
- * Коммит, его время и состояние дерева. Время — коммита, а не «сейчас»:
- * иначе каждый прогон давал бы diff во всех заметках vault. Если в дереве
- * есть несохранённые правки, копия собрана не из коммита, и блок
- * происхождения обязан это сказать — иначе он врёт ровно тому, кто правит
- * документ и пересобирает vault. Без git происхождение честно говорит,
- * что коммит неизвестен.
+ * Три факта о состоянии репозитория одним обращением к git: коммит, его
+ * время и признак несохранённых правок. Дальше из них лепятся и строки для
+ * блока происхождения vault, и поля подвала витрины — git об одном и том же
+ * дважды не спрашивается.
  */
-export function readProvenance(root) {
-  try {
-    const git = (args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
-    const sha = git(['rev-parse', 'HEAD'])
-    const dirty = git(['status', '--porcelain']) !== ''
-    const time = git(['show', '-s', '--format=%cd', '--date=format:%Y-%m-%d %H:%M %z', 'HEAD']).replace(/([+-]\d{2})00$/, '$1')
-    return {
-      sha: dirty ? `${sha} + несохранённые правки рабочего дерева` : sha,
-      time: `на коммит от ${time}`,
-    }
-  } catch {
-    return { sha: 'вне git', time: 'не определено' }
-  }
-}
-
-/**
- * Происхождение для подвала витрины: короткий коммит, его дата и признак
- * несохранённых правок. Отдельно от `readProvenance`, потому что странице
- * нужны поля, а vault'у — готовые строки. Без git полей нет — подвал тогда
- * честно говорит «из ветки main», а не показывает выдуманную дату.
- */
-export function pageProvenance(root) {
+function gitFacts(root) {
   try {
     const git = (args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
     return {
       sha: git(['rev-parse', 'HEAD']),
       dirty: git(['status', '--porcelain']) !== '',
+      stamp: git(['show', '-s', '--format=%cd', '--date=format:%Y-%m-%d %H:%M %z', 'HEAD']).replace(/([+-]\d{2})00$/, '$1'),
       date: git(['show', '-s', '--format=%cd', '--date=format:%d.%m.%Y', 'HEAD']),
     }
   } catch {
-    return { sha: null, dirty: false, date: null }
+    return null
   }
+}
+
+/**
+ * Происхождение для блока заметок vault. Время — коммита, а не «сейчас»:
+ * иначе каждый прогон давал бы diff во всех заметках. Если в дереве есть
+ * несохранённые правки, копия собрана не из коммита, и блок обязан это
+ * сказать — иначе он врёт ровно тому, кто правит документ и пересобирает
+ * vault. Без git происхождение честно говорит, что коммит неизвестен.
+ */
+export function readProvenance(root, facts = gitFacts(root)) {
+  if (facts === null) return { sha: 'вне git', time: 'не определено' }
+  return {
+    sha: facts.dirty ? `${facts.sha} + несохранённые правки рабочего дерева` : facts.sha,
+    time: `на коммит от ${facts.stamp}`,
+  }
+}
+
+/**
+ * Происхождение для подвала витрины: коммит, его дата и признак
+ * несохранённых правок. Отдельно от `readProvenance`, потому что странице
+ * нужны поля, а vault'у — готовые строки. Без git полей нет — подвал тогда
+ * честно говорит «из ветки main», а не показывает выдуманную дату.
+ */
+export function pageProvenance(root, facts = gitFacts(root)) {
+  if (facts === null) return { sha: null, dirty: false, date: null }
+  return { sha: facts.sha, dirty: facts.dirty, date: facts.date }
 }
 
 /** Файлы витрины: рядом со страницей ложится и `graph.json`. */
@@ -102,7 +106,9 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
   if (graph.findings.length === 0 && !check) {
     const outDir = dirname(out)
     if (!isDistDir(outDir)) throw new Error(`каталог выхода не atlas/dist внутри пакета: ${outDir}`)
-    const json = `${JSON.stringify({ provenance: pageProvenance(root), nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`
+    // Один опрос git на всю сборку: подвалу нужны поля, vault'у — строки.
+    const facts = gitFacts(root)
+    const json = `${JSON.stringify({ provenance: pageProvenance(root, facts), nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`
     writeUnder(outDir, out, json)
 
     // Витрина — статика: страница, её код, стили и граф рядом. Собирается
@@ -110,10 +116,13 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
     const siteDir = join(outDir, 'site')
     if (!underDir(outDir, siteDir)) throw new Error(`сайт мимо каталога выхода ${outDir}: ${siteDir}`)
     rmSync(siteDir, { recursive: true, force: true })
+    // Собственные файлы пакета, а не входы графа: `isDeclaredInput` стережёт
+    // границу публикуемого — что атлас читает из репозитория, — а свои
+    // ассеты `atlas/web/` под неё не подпадают и мимо неё не проходят.
     for (const file of WEB_FILES) writeUnder(outDir, join(siteDir, file), readFileSync(join(HERE, 'web', file)))
     writeUnder(outDir, join(siteDir, 'graph.json'), json)
 
-    vault = buildVault({ graph, sources, provenance: readProvenance(root) })
+    vault = buildVault({ graph, sources, provenance: readProvenance(root, facts) })
     // Чистятся только свои каталоги: `.obsidian/` создаёт сам Obsidian, там
     // состояние окна пользователя, и сборка его не трогает.
     for (const dir of VAULT_DIRS) {

@@ -10,6 +10,7 @@ import {
   clip,
   firstParagraph,
   heading,
+  labeledParagraph,
   parseFrontmatter,
   replacementRefs,
   scanCitations,
@@ -99,8 +100,8 @@ export function buildGraph(sources) {
   const roleNames = new Set(sources.roles.map((r) => r.key))
   for (const entry of sources.roles) {
     const { data, body } = parseFrontmatter(entry.text)
-    const owns = (body.match(/^\*\*Владеет:\*\*\s*(.+)$/m) ?? [])[1] ?? ''
-    const never = (body.match(/^\*\*Никогда:\*\*\s*(.+)$/m) ?? [])[1] ?? ''
+    const owns = labeledParagraph(body, 'Владеет')
+    const never = labeledParagraph(body, 'Никогда')
     const tierKey = `${data.model}-${data.effort}`
     add({
       id: `role/${entry.key}`,
