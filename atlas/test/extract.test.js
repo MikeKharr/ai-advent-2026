@@ -6,7 +6,7 @@ import { parseCompose } from '../lib/compose.js'
 import { atomicId } from '../lib/markdown.js'
 import { buildGraph } from '../lib/extract.js'
 import { readSources } from '../lib/sources.js'
-import { ROOT } from './helpers.js'
+import { ROOT, density } from './helpers.js'
 
 const graph = buildGraph(readSources(ROOT))
 const of = (type) => graph.nodes.filter((n) => n.type === type)
@@ -175,23 +175,11 @@ test('каждый узел несёт координаты в единично�
   }
   // Меряется заполненность, а не габаритная рамка: рамка была здоровой ровно
   // тогда, когда 150 узлов сидели в 2.7 % площади, а натягивала её пара из
-  // двух узлов в противоположном углу (находка Б6 ревью этапа 3).
-  const cells = 20
-  const busy = new Set()
-  for (const n of graph.nodes) {
-    busy.add(`${Math.min(cells - 1, Math.floor(n.x * cells))},${Math.min(cells - 1, Math.floor(n.y * cells))}`)
-  }
-  // Доля от числа узлов, а не от числа ячеек: порог должен ловить слипание,
-  // а не зависеть от того, сколько документов в проекте.
-  assert.ok(
-    busy.size / Math.min(graph.nodes.length, cells * cells) >= 0.5,
-    `в своей ячейке сетки 20×20 ${busy.size} узлов из ${graph.nodes.length}`,
-  )
-
-  const nearest = graph.nodes
-    .map((a) => Math.min(...graph.nodes.filter((b) => b !== a).map((b) => Math.hypot(a.x - b.x, a.y - b.y))))
-    .sort((a, b) => a - b)
-  const median = nearest[Math.floor(nearest.length / 2)]
+  // двух узлов в противоположном углу (находка Б6 ревью этапа 3). Что именно
+  // считается ячейкой — записано словами в `density` (test/helpers.js): три
+  // независимых замера этапа 3 разошлись из-за разной нормировки сетки.
+  const { busy, filled, median } = density(graph.nodes)
+  assert.ok(filled >= 0.5, `в своей ячейке сетки 20×20 ${busy} узлов из ${graph.nodes.length}`)
   assert.ok(median >= 0.02, `медиана расстояния до ближайшего соседа ${median.toFixed(4)}`)
 
   assert.equal(new Set(graph.nodes.map((n) => `${n.x},${n.y}`)).size, graph.nodes.length)

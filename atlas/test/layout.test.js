@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { LAYOUT_SEED, MAX_STRETCH, components, layout } from '../lib/layout.js'
+import { density } from './helpers.js'
 
 // Контракт 1 этапа 3: координаты приходят из сборки, а не считаются в
 // браузере посетителя (раскладка 2026-09-13-2100).
@@ -12,21 +13,6 @@ function sample(n = 40) {
   for (let i = 1; i < n; i += 1) edges.push({ from: `n${i - 1}`, to: `n${i}` })
   for (let i = 0; i + 7 < n; i += 7) edges.push({ from: `n${i}`, to: `n${i + 7}` })
   return { nodes, edges }
-}
-
-/**
- * Заполненность: доля узлов, попавших каждый в свою ячейку сетки 20×20, и
- * медиана расстояния до ближайшего соседа. Доля считается от числа узлов, а
- * не от числа ячеек: иначе порог зависел бы от размера графа, а не от того,
- * слиплись узлы или нет.
- */
-function density(points, cells = 20) {
-  const busy = new Set()
-  for (const p of points) busy.add(`${Math.min(cells - 1, Math.floor(p.x * cells))},${Math.min(cells - 1, Math.floor(p.y * cells))}`)
-  const nearest = points
-    .map((a) => Math.min(...points.filter((b) => b !== a).map((b) => Math.hypot(a.x - b.x, a.y - b.y))))
-    .sort((a, b) => a - b)
-  return { filled: busy.size / Math.min(points.length, cells * cells), median: nearest[Math.floor(nearest.length / 2)] }
 }
 
 test('координаты лежат в единичном квадрате с шестью знаками после точки', () => {
