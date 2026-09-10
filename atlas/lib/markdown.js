@@ -44,6 +44,23 @@ export function section(text, name) {
   return (next === -1 ? rest : rest.slice(0, next)).trim()
 }
 
+/**
+ * Абзац за пометкой `**Метка:**` целиком, собранный через переносы. Строки
+ * ролей двухстрочные, и первая строка кончается запятой: показать её одну —
+ * показать оборванное предложение как законченный факт.
+ */
+export function labeledParagraph(text, label) {
+  const lines = text.split('\n')
+  const head = `**${label}:**`
+  const i = lines.findIndex((l) => l.startsWith(head))
+  if (i === -1) return ''
+  const parts = [lines[i].slice(head.length).trim()]
+  for (let j = i + 1; j < lines.length && lines[j].trim() !== '' && !lines[j].startsWith('**'); j += 1) {
+    parts.push(lines[j].trim())
+  }
+  return parts.join(' ').trim()
+}
+
 /** Первый абзац раздела — выдержка для панели узла. */
 export function firstParagraph(text) {
   const para = text.split(/\n\s*\n/).find((p) => p.trim() !== '')

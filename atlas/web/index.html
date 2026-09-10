@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base> и ни одного ведущего `/`: страница едет под
+     handle_path /atlas/*, то же правило, что у дней. Относительные пути
+     верны и в проде, и при открытии каталога локально. -->
+<title>Атлас проекта AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" id="skip" href="#panel">К панели узла</a>
+
+<noscript>
+  <p class="noscript">Витрина рисует схему в браузере. Включите JavaScript —
+  или откройте документы проекта в репозитории:
+  <a href="https://github.com/mikekharr/ai-advent-2026">mikekharr/ai-advent-2026</a>.</p>
+</noscript>
+
+<div class="layout">
+
+  <main class="area-graph col" aria-labelledby="title">
+    <h1 id="title">Атлас проекта AI Advent 2026</h1>
+    <!-- Описание с числами собирается из графа: ни одного счётчика литералом. -->
+    <p class="sub" id="lede"></p>
+
+    <div class="viewbar">
+      <p class="view-line" id="view-line"></p>
+      <div class="viewbar-acts">
+        <button type="button" id="zoom-out" aria-label="Мельче">−</button>
+        <button type="button" id="zoom-in" aria-label="Крупнее">+</button>
+        <button type="button" id="view-reset">Сбросить вид</button>
+      </div>
+    </div>
+
+    <div class="canvas-wrap" id="canvas-wrap">
+      <canvas id="canvas" aria-hidden="true"></canvas>
+      <p class="canvas-msg" id="canvas-msg" role="status"></p>
+      <div class="canvas-act" id="canvas-act" hidden></div>
+    </div>
+  </main>
+
+  <!-- Блоки правой половины: при трёх колонках и на узком экране `.side`
+       раскрывается (`display: contents`) и они встают в раскладку сами, при
+       двух — становится колонкой 24rem со своим скроллом. -->
+  <div class="side">
+
+  <section class="area-search" aria-label="Поиск по схеме">
+    <label class="field-label" for="q">Поиск по заголовкам</label>
+    <input type="search" id="q" autocomplete="off" disabled aria-describedby="q-note">
+    <p class="hint" id="q-note">Схема ещё грузится</p>
+    <ul class="results" id="results"></ul>
+  </section>
+
+  <!-- Кнопка есть только на узком экране: канвы в потоке страницы там нет.
+       Блок раскладки, а не вложенный элемент: липким может быть только то,
+       чей контейнер — вся колонка страницы, иначе кнопка уезжает вверх
+       вместе со своей полосой и до карты не дотянуться. -->
+  <div class="area-map">
+    <button type="button" id="map-open">Карта</button>
+  </div>
+
+  <section class="area-rest">
+    <details class="tools" id="tools">
+      <summary>Фильтры и вид</summary>
+
+      <fieldset class="depth">
+        <legend>Соседи выбранного узла</legend>
+        <label><input type="radio" name="depth" value="1" checked> <span id="depth-1">1 шаг</span></label>
+        <label><input type="radio" name="depth" value="2"> <span id="depth-2">2 шага</span></label>
+        <p class="hint" id="depth-note"></p>
+      </fieldset>
+
+      <p class="full"><label><input type="checkbox" id="full"> <span id="full-label"></span></label></p>
+
+      <div id="filters"></div>
+      <button type="button" id="filters-reset" hidden></button>
+    </details>
+
+    <section class="nodelist" aria-labelledby="nodelist-h">
+      <h2 id="nodelist-h">Узлы в этом виде</h2>
+      <ul id="nodes"></ul>
+    </section>
+  </section>
+
+  <aside class="area-panel col" id="panel" tabindex="-1" aria-labelledby="panel-h"></aside>
+
+  </div>
+
+  <footer class="area-foot" id="footer"></footer>
+</div>
+
+<dialog id="map" aria-labelledby="map-title">
+  <div class="map-head">
+    <p class="view-line" id="map-title"></p>
+    <button type="button" id="map-close">Закрыть карту</button>
+  </div>
+  <div class="canvas-wrap" id="map-wrap"><canvas id="map-canvas" aria-hidden="true"></canvas></div>
+  <div class="map-foot">
+    <button type="button" id="map-zoom-out" aria-label="Мельче">−</button>
+    <button type="button" id="map-zoom-in" aria-label="Крупнее">+</button>
+    <button type="button" id="map-reset">Сбросить вид</button>
+  </div>
+</dialog>
+
+<p class="vh" id="live" role="status" aria-live="polite"></p>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

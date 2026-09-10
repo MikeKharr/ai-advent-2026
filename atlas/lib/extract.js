@@ -4,11 +4,13 @@
 
 import { parseCompose } from './compose.js'
 import { firedTraces } from './fired.js'
+import { layout } from './layout.js'
 import {
   atomicId,
   clip,
   firstParagraph,
   heading,
+  labeledParagraph,
   parseFrontmatter,
   replacementRefs,
   scanCitations,
@@ -98,8 +100,8 @@ export function buildGraph(sources) {
   const roleNames = new Set(sources.roles.map((r) => r.key))
   for (const entry of sources.roles) {
     const { data, body } = parseFrontmatter(entry.text)
-    const owns = (body.match(/^\*\*Владеет:\*\*\s*(.+)$/m) ?? [])[1] ?? ''
-    const never = (body.match(/^\*\*Никогда:\*\*\s*(.+)$/m) ?? [])[1] ?? ''
+    const owns = labeledParagraph(body, 'Владеет')
+    const never = labeledParagraph(body, 'Никогда')
     const tierKey = `${data.model}-${data.effort}`
     add({
       id: `role/${entry.key}`,
@@ -392,7 +394,7 @@ export function buildGraph(sources) {
     const id = `history/${atomicId(entry.key)}`
     if (!has(id)) continue
     for (const trace of firedTraces(entry.text, roleNames)) {
-      link(`role/${trace.role}`, id, 'fired', { line: trace.line, excerpt: trace.excerpt })
+      link(`role/${trace.role}`, id, 'fired', { line: trace.line, excerpt: trace.excerpt, marks: trace.marks })
     }
   }
 
@@ -408,6 +410,11 @@ export function buildGraph(sources) {
       `внешний узел \`${n.key}\` не связан ни с чем: либо его нет в работе системы, либо не хватает ребра`,
     )
   }
+
+  // Координаты — последними: раскладка считается по готовому графу
+  // (контракт 1 этапа 3, раскладка 2026-09-13-2100).
+  const placed = layout(nodes, edges)
+  for (const node of nodes) Object.assign(node, placed.get(node.id))
 
   return { nodes, edges, findings }
 }

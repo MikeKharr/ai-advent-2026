@@ -8,8 +8,6 @@
 // не знает, вынесено вето или снято. Поэтому и выдержка даётся целой фразой —
 // по обрывку читатель додумает то, чего в записи нет.
 
-import { clip } from './markdown.js'
-
 /** Буква слова — с кириллицей: `\b` в JS её не знает и режет «ответов» на «вето». */
 const W = 'A-Za-zА-Яа-яЁё0-9_'
 const word = (body) => new RegExp(`(?<![${W}])(?:${body})(?![${W}])`, 'i')
@@ -36,6 +34,21 @@ const NEGATIONS = [
 const roleRe = (role) => new RegExp(`(?<![${W}/-])${role}(?![${W}/-])`, 'i')
 
 const isTableRow = (line) => line.trimStart().startsWith('|')
+
+/** Маркер пункта или цитаты в начале строки — но не `**` выделения. */
+const LEADING_MARKER = /^\s*(?:[-*+]\s+|>\s*)+/
+
+/**
+ * Выдержка: снимается маркер пункта или цитаты, но не `**` — ведущие
+ * звёздочки это открывающее выделение, и без пары разметка ломается.
+ * Предела длины у выдержки следа нет: `clip` резал четыре из четырнадцати
+ * посреди фразы — ровно тот дефект, который правило запрещает.
+ * `tail` = false оставляет хвост нетронутым — так считается сдвиг начала.
+ */
+const strip = (text, tail = true) => {
+  const cut = text.replace(LEADING_MARKER, '').replace(/^\s+/, '')
+  return tail ? cut.trimEnd() : cut
+}
 
 /** Начало нового блока: пункт списка, цитата, заголовок, строка таблицы. */
 const startsBlock = (line) => /^\s*(?:[-*+]\s|\d+\.\s|>|#{1,6}\s|\|)/.test(line)
@@ -117,26 +130,53 @@ function unitsOf(text) {
   return units
 }
 
-const hasMark = (text) => MARKS.some((re) => re.test(text)) && !NEGATIONS.some((re) => re.test(text))
+const markOf = (text) => MARKS.map((re) => re.exec(text)).filter(Boolean).sort((a, b) => a.index - b.index)[0]
+const hasMark = (text) => markOf(text) !== undefined && !NEGATIONS.some((re) => re.test(text))
 
 /**
- * Следы в тексте записи истории.
- * @param {string} text
- * @param {Set<string>} roleNames имена ролей из .claude/agents/
- * @returns {Array<{role:string, line:number, excerpt:string}>}
+ * Смещения совпавшего фрагмента внутри выдержки: полуинтервалы `[start, end)`
+ * в единицах кода UTF-16 по строке `excerpt` **до** любой обработки разметки
+ * (контракт `marks` раскладки 2026-09-13-2100). Считаются здесь, а не в
+ * браузере: второй экземпляр правила однажды разошёлся бы с первым.
+ *
+ * Границы единицы приходят готовыми — искать её текстом в выдержке нельзя:
+ * повторяющийся текст дал бы первое вхождение, а ненайденный — молча
+ * растянул бы подсветку на всю выдержку.
+ *
+ * @param {string} excerpt выдержка следа
+ * @param {[number,number]} unit границы совпавшей единицы внутри выдержки
+ * @param {string} role имя роли
+ * @returns {{unit:[number,number], role:[number,number], sign:[number,number]}|null}
  */
+function marksIn(excerpt, unit, role) {
+  const [start, end] = unit
+  if (start < 0 || end > excerpt.length || start >= end) return null
+
+  const inside = excerpt.slice(start, end)
+  const roleMatch = roleRe(role).exec(inside)
+  const signMatch = markOf(inside)
+  // Роль и признак обязаны найтись внутри единицы: они там и совпали. Если
+  // нет — смещения разошлись с текстом, и лучше отдать `null`, чем неверную
+  // подсветку: тест на все следы делает из этого находку.
+  if (!roleMatch || !signMatch) return null
+
+  return {
+    unit: [start, end],
+    role: [start + roleMatch.index, start + roleMatch.index + roleMatch[0].length],
+    sign: [start + signMatch.index, start + signMatch.index + signMatch[0].length],
+  }
+}
+
 export function firedTraces(text, roleNames) {
   const traces = []
   const seen = new Set()
   const lines = text.split('\n')
 
-  const hit = (role, line, excerpt) => {
+  const hit = (role, line, excerpt, unit) => {
     const key = `${role}:${line}`
     if (seen.has(key)) return
     seen.add(key)
-    // Снимается маркер пункта или цитаты, но не `**`: ведущие звёздочки —
-    // открывающее выделение, и без пары разметка ломается.
-    traces.push({ role, line, excerpt: clip(excerpt.replace(/^\s*(?:[-*+]\s+|>\s*)+/, '').trim()) })
+    traces.push({ role, line, excerpt, marks: marksIn(excerpt, unit, role) })
   }
 
   for (const block of paragraphs(lines)) {
@@ -145,7 +185,8 @@ export function firedTraces(text, roleNames) {
     if (isTableRow(block[0].text)) {
       for (const line of block) {
         if (!hasMark(line.text)) continue
-        for (const role of roleNames) if (roleRe(role).test(line.text)) hit(role, line.n, line.text)
+        const excerpt = strip(line.text)
+        for (const role of roleNames) if (roleRe(role).test(line.text)) hit(role, line.n, excerpt, [0, excerpt.length])
       }
       continue
     }
@@ -162,11 +203,22 @@ export function firedTraces(text, roleNames) {
           // там, где их не находило, и число следов поехало бы.
           const at = startOf(line.n) + unit.at
           const bound = bounds.find((b) => at >= b.start && at < b.end) ?? { start: at, end: joined.length }
-          // Номер — строка, где начинается совпавшая фраза; выдержка — всё
-          // предложение вокруг неё. Номер и единица привязки — одно и то же
-          // место: иначе след из «design — «правки»» встал бы на строку выше,
-          // где стоит «вето нет», и читался бы как след отрицания.
-          hit(role, line.n, joined.slice(bound.start, bound.end))
+
+          // Номер — строка, где начинается совпавшая единица, а не всё
+          // предложение вокруг неё: предложение может начинаться строкой
+          // выше, и след `design` встал бы на строку с «вето нет», то есть
+          // читался бы как след отрицания.
+          const raw = joined.slice(bound.start, bound.end)
+          const excerpt = strip(raw)
+          // Сдвиг выдержки относительно абзаца: снятый маркер пункта и
+          // пробелы. Смещения единицы считаются от него, без поиска текстом.
+          const shift = bound.start + (raw.length - strip(raw, false).length)
+          // Из единицы снимается тот же маркер пункта, что и из выдержки:
+          // иначе её начало уехало бы левее начала выдержки.
+          const unitText = strip(unit.text)
+          const drop = unit.text.length - strip(unit.text, false).length
+          const unitStart = at + drop - shift
+          hit(role, line.n, excerpt, [unitStart, unitStart + unitText.length])
         }
       }
     }

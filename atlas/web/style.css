@@ -1,0 +1,417 @@
+/* Витрина атласа. Токены — agent_docs/design/corpus.md, раскладка —
+   agent_docs/design/2026-09-13-2100-atlas-page-layout.md.
+   Значение вне шкалы — дефект, а не нюанс. */
+
+:root {
+  color-scheme: light dark;
+  --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+  --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+  --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-lg:1.125rem; --t-xl:1.5rem;
+  --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+  --line:#e6e6e3; --line-ctl:#8f8f8a;
+  --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+  --overlay:rgb(23 23 26 / .5);
+  --r-sm:6px; --r-md:10px; --r-full:999px;
+
+  /* Пять семейств на четырнадцать типов. Контраст посчитан в разделе
+     «Семейства и цвета» раскладки; меняя токен — пересчитать таблицу. */
+  --fam-dec:#2c5aa8;  /* Решения     */
+  --fam-rul:#8a5a00;  /* Правила     */
+  --fam-rec:#9c3d78;  /* Записи      */
+  --fam-act:#54545c;  /* Исполнители */
+  --fam-sys:#0f6e75;  /* Система     */
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+    --line:#2a2a30; --line-ctl:#6a6a73;
+    --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+    --overlay:rgb(0 0 0 / .6);
+    --fam-dec:#8fb3f0; --fam-rul:#d9a441; --fam-rec:#e695c6;
+    --fam-act:#acacb6; --fam-sys:#5fc0c8;
+  }
+}
+
+* { box-sizing: border-box; }
+/* Заливка флажков и радио — нейтральная, а не системный синий: акцент на
+   экране один, и это кольцо выбранного узла (оно же :focus-visible). Отметку
+   браузер сам рисует контрастной к заданному цвету. */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--fg); }
+/* Собственный display перебивает [hidden] из таблицы браузера. */
+[hidden] { display:none !important; }
+
+body {
+  margin:0; background:var(--bg); color:var(--fg);
+  font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* Пять состояний у каждого интерактивного элемента: покой, наведение,
+   нажатие, :focus-visible, [disabled]. Фокус — у всех, а не только у полей. */
+:where(button, input, a, summary, [tabindex]):focus-visible {
+  outline:2px solid var(--acc); outline-offset:2px;
+}
+
+.vh {
+  position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+  overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0;
+}
+.skip {
+  position:absolute; left:var(--s-2); top:var(--s-2); z-index:2;
+  transform:translateY(-200%);
+  background:var(--surface); color:var(--fg); border:1px solid var(--line-ctl);
+  border-radius:var(--r-sm); padding:var(--s-2) var(--s-3);
+  font-size:var(--t-sm); text-decoration:none;
+}
+.skip:focus-visible { transform:none; }
+.noscript {
+  margin:0; padding:var(--s-4);
+  background:var(--surface); border-bottom:1px solid var(--line);
+  font-size:var(--t-sm);
+}
+
+/* ── Раскладка ───────────────────────────────────────────────────────────
+   Узкий экран (< 73rem) — один столбец обычным потоком, канвы в потоке нет.
+   Порядок: заголовок, поиск, панель, список узлов и фильтры, подвал. */
+.layout {
+  /* Узкий экран — колонка потоком. Флексом, а не сеткой: липкая кнопка карты
+     в элементе сетки липнет внутри своей строки, то есть не липнет вовсе, а
+     в элементе флекса её контейнер — вся колонка. */
+  display:flex; flex-direction:column; gap:var(--s-6);
+  padding:var(--s-6) var(--s-4);
+}
+.area-graph { grid-area:graph; display:flex; flex-direction:column; gap:var(--s-3); min-width:0; order:1; }
+.area-search { grid-area:search; min-width:0; order:2; }
+.area-map { grid-area:map; min-width:0; order:3; position:sticky; top:0; z-index:1;
+  background:var(--bg); padding-block:var(--s-2); }
+.area-panel { grid-area:panel; min-width:0; order:5; }
+.area-rest { grid-area:rest; display:flex; flex-direction:column; gap:var(--s-5); min-width:0; order:6; }
+.area-foot { grid-area:foot; min-width:0; order:7; }
+/* На узком экране список узлов идёт перед фильтрами. */
+.area-rest > .tools { order:2; }
+.area-rest > .nodelist { order:1; }
+.area-graph .canvas-wrap { display:none; }
+
+/* Правая половина: своя колонка только в двухколоночной раскладке. */
+.side { display:contents; }
+
+/* Две колонки (73rem — 100rem). Канва получает W − 464: при 1168 это 704 px
+   против 384 px, которые давали ей три колонки на той же ширине. Новых
+   решений здесь нет — это правая половина узкой раскладки, у которой канва
+   стоит рядом, а не спрятана в `dialog`. */
+@media (min-width: 73rem) {
+  html, body { height:100%; }
+  body { overflow:hidden; }
+  .layout {
+    display:grid;
+    grid-template-columns: minmax(0,1fr) 24rem;
+    grid-template-rows: minmax(0,1fr) auto;
+    grid-template-areas:
+      "graph side"
+      "foot  side";
+    max-width:100rem; margin:0 auto; height:100dvh;
+    padding:var(--s-6) var(--s-5); gap:var(--s-6);
+  }
+  /* Правый отступ обязателен: колонка со своим скроллом обрезает кольцо
+     фокуса (outline-offset 2px). Проверено на дне 8. */
+  .side {
+    grid-area:side; display:flex; flex-direction:column; gap:var(--s-5);
+    min-height:0; overflow-y:auto; padding-right:var(--s-2);
+  }
+  .area-rest { display:contents; }
+  .area-search { order:1; }
+  .area-map { display:none; }
+  .area-rest > .tools { order:2; }
+  .area-panel { order:3; }
+  .area-rest > .nodelist { order:4; }
+  .area-graph { grid-area:graph; overflow:hidden; }
+  .area-graph .canvas-wrap { display:block; flex:1; min-height:0; }
+  .area-foot { grid-area:foot; }
+  .viewbar-acts { display:flex; }
+}
+
+/* Три колонки (≥ 100rem) — схема корпуса «работа / настройки / результат».
+   Ровно один размер: 100rem — это и `max-width` страницы. */
+@media (min-width: 100rem) {
+  .layout {
+    grid-template-columns: minmax(0,1fr) 18rem 24rem;
+    grid-template-rows: auto minmax(0,1fr) auto;
+    grid-template-areas:
+      "graph search panel"
+      "graph rest   panel"
+      "foot  rest   panel";
+  }
+  .side { display:contents; }
+  .area-search { grid-area:search; }
+  .area-rest {
+    grid-area:rest; display:flex; flex-direction:column; gap:var(--s-5);
+    min-height:0; overflow-y:auto; padding-right:var(--s-2);
+  }
+  .area-panel { grid-area:panel; min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+  .area-rest > .tools { order:1; }
+  .area-rest > .nodelist { order:2; }
+  .tools > summary { display:none; }
+}
+
+h1 { font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; margin:0; }
+h2 {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--fg-mut); margin:0 0 var(--s-2);
+}
+h3 { font-size:var(--t-md); line-height:1.4; margin:0; }
+.sub { color:var(--fg-mut); margin:0; max-width:68ch; font-size:var(--t-sm); line-height:1.5; }
+.hint { color:var(--fg-mut); margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; max-width:52ch; }
+.num { font-variant-numeric:tabular-nums; }
+
+/* ── Полоса вида ─────────────────────────────────────────────────────── */
+.viewbar {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:var(--s-4); flex-wrap:wrap;
+}
+.view-line {
+  margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  font-variant-numeric:tabular-nums;
+}
+/* Кнопки масштаба на узком экране не показываются: канвы в потоке нет, а у
+   карты свои кнопки внизу окна. */
+.viewbar-acts { display:none; gap:var(--s-2); }
+@media (min-width: 73rem) { .viewbar-acts { display:flex; } }
+
+button {
+  font:inherit; font-size:var(--t-sm); line-height:1.5;
+  background:var(--surface); color:var(--fg);
+  border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  padding:var(--s-1) var(--s-3); cursor:pointer;
+}
+button:hover { background:var(--bg); }
+button:active { background:var(--line); }
+button[disabled], button[aria-disabled="true"] { opacity:.5; cursor:default; }
+#zoom-in, #zoom-out, #map-zoom-in, #map-zoom-out { min-width:2rem; }
+
+
+
+/* ── Канва ───────────────────────────────────────────────────────────── */
+.canvas-wrap {
+  position:relative;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  overflow:hidden;
+}
+.canvas-wrap canvas { display:block; width:100%; height:100%; touch-action:none; }
+.canvas-msg {
+  position:absolute; inset:0; margin:0;
+  display:flex; align-items:center; justify-content:center; flex-direction:column;
+  gap:var(--s-3); padding:var(--s-5); text-align:center;
+  color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5;
+}
+.canvas-msg:empty { display:none; }
+.canvas-act {
+  position:absolute; inset-inline:0; bottom:var(--s-5);
+  display:flex; gap:var(--s-2); justify-content:center; flex-wrap:wrap;
+}
+.canvas-err { color:var(--danger); }
+
+/* ── Поиск ───────────────────────────────────────────────────────────── */
+.field-label {
+  display:block; font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--fg-mut); margin-bottom:var(--s-2);
+}
+input[type="search"] {
+  font:inherit; font-size:var(--t-sm); line-height:1.5; width:100%;
+  background:var(--surface); color:var(--fg);
+  border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  padding:var(--s-2) var(--s-3);
+}
+input[type="search"]:hover { background:var(--bg); }
+input[disabled] { opacity:.5; cursor:default; }
+.results { list-style:none; margin:var(--s-3) 0 0; padding:0; }
+.results li + li { margin-top:var(--s-1); }
+
+/* ── Фильтры и вид ───────────────────────────────────────────────────── */
+.tools {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  padding:var(--s-4);
+}
+.tools > summary { cursor:pointer; font-size:var(--t-sm); line-height:1.5; }
+.tools > summary:hover { color:var(--fg-mut); }
+.tools > *:not(summary) { margin-top:var(--s-4); }
+.tools > summary + * { margin-top:var(--s-4); }
+fieldset { border:0; margin:0; padding:0; min-width:0; }
+legend, .fam-legend {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--fg-mut); padding:0;
+}
+.depth label, .full label, .types label {
+  display:flex; align-items:center; gap:var(--s-2);
+  font-size:var(--t-sm); line-height:1.5; padding:var(--s-1) 0; cursor:pointer;
+}
+.depth label:hover, .full label:hover, .types label:hover { color:var(--fg-mut); }
+.depth { display:flex; flex-direction:column; }
+.depth legend { margin-bottom:var(--s-2); }
+.full { margin:0; }
+.fam + .fam { margin-top:var(--s-3); }
+.fam-head { display:flex; align-items:center; gap:var(--s-2); }
+.types { margin:var(--s-1) 0 0; padding-left:var(--s-5); }
+.types .n { color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+.swatch {
+  width:12px; height:12px; border-radius:var(--r-sm); flex:none;
+  background:var(--fam-act);
+}
+.dot { width:8px; height:8px; border-radius:var(--r-full); flex:none; background:var(--fam-act); }
+.f-dec .swatch, .f-dec .dot { background:var(--fam-dec); }
+.f-rul .swatch, .f-rul .dot { background:var(--fam-rul); }
+.f-rec .swatch, .f-rec .dot { background:var(--fam-rec); }
+.f-act .swatch, .f-act .dot { background:var(--fam-act); }
+.f-sys .swatch, .f-sys .dot { background:var(--fam-sys); }
+
+/* ── Список узлов ────────────────────────────────────────────────────── */
+.nodelist {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  padding:var(--s-4);
+}
+.nodelist ul, .links ul, .rail { list-style:none; margin:0; padding:0; }
+.node-link {
+  display:flex; align-items:center; gap:var(--s-2);
+  padding:var(--s-1) var(--s-2); border-radius:var(--r-sm);
+  color:var(--fg); text-decoration:none; font-size:var(--t-sm); line-height:1.5;
+}
+.node-link:hover { background:var(--bg); }
+.node-link:active { opacity:.7; }
+.node-link .name { flex:none; }
+.node-link .meta {
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.node-link[aria-current="true"] .name { font-weight:600; }
+.results .node-link:hover, .panel .node-link:hover { background:var(--bg); }
+
+/* ── Панель ──────────────────────────────────────────────────────────── */
+.area-panel {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  padding:var(--s-5);
+}
+.panel-block + .panel-block { margin-top:var(--s-5); }
+.kicker {
+  display:flex; align-items:center; gap:var(--s-2);
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--fg-mut); margin:0 0 var(--s-2);
+}
+.panel h2 { font-size:var(--t-lg); line-height:1.4; text-transform:none; letter-spacing:0; color:var(--fg); margin:0; }
+.meta-row {
+  margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+  font-variant-numeric:tabular-nums;
+}
+.chip {
+  display:inline-block; border:1px solid var(--line-ctl); border-radius:var(--r-full);
+  padding:0 var(--s-2); font-size:var(--t-xs); line-height:1.4;
+}
+dl { margin:0; }
+dt {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--fg-mut); margin-top:var(--s-3);
+}
+dd { margin:var(--s-1) 0 0; font-size:var(--t-sm); line-height:1.5; }
+dd.num { font-variant-numeric:tabular-nums; }
+.mono {
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); line-height:1.4; overflow-wrap:anywhere;
+}
+.quote {
+  border-left:2px solid var(--line); padding-left:var(--s-3);
+  margin:var(--s-2) 0 0; font-size:var(--t-md); line-height:1.6;
+}
+a { color:var(--fg); }
+a:active { opacity:.7; }
+.plain { text-decoration:none; }
+.plain:hover { text-decoration:underline; }
+.links li + li { margin-top:var(--s-1); }
+.panel-head { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-3); flex-wrap:wrap; }
+.counter { font-size:var(--t-sm); line-height:1.5; font-variant-numeric:tabular-nums; }
+
+/* ── Следы в записях ─────────────────────────────────────────────────── */
+.traces { list-style:none; margin:var(--s-3) 0 0; padding:0; }
+.traces li + li { margin-top:var(--s-3); }
+/* Карточка на --bg внутри панели на --surface — обратный ход шкалы, и он
+   намеренный: третьей поверхности в корпусе нет, линия делает границу
+   однозначной в любом направлении. */
+.trace {
+  background:var(--bg); border:1px solid var(--line); border-radius:var(--r-md);
+  padding:var(--s-3);
+}
+.trace-head {
+  display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2);
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  font-variant-numeric:tabular-nums;
+}
+.trace-head a { color:inherit; }
+.excerpt { margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; }
+/* Выдержка не режется вёрсткой: ни line-clamp, ни text-overflow на ней нет. */
+.mut { color:var(--fg-mut); }
+/* Подсветка — уровнем контраста, а не заливкой: шестой цвет не заводится и с
+   правилом одного акцента не спорит. */
+.hit { color:var(--fg); text-decoration:underline dotted var(--fam-act) 2px; text-underline-offset:var(--s-1); }
+.excerpt code, .quote code, dd code {
+  /* Размер наследуется: шестого размера шрифта на экране не заводится. */
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap:anywhere;
+}
+.row { display:flex; flex-wrap:wrap; }
+.cell { overflow-wrap:anywhere; }
+.cell + .cell { border-left:1px solid var(--line); padding-left:var(--s-2); margin-left:var(--s-2); }
+.trace-note, .empty {
+  margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch;
+}
+.empty { font-size:var(--t-sm); line-height:1.5; }
+.summary { list-style:none; margin:var(--s-2) 0 0; padding:0; }
+.summary li + li { margin-top:var(--s-3); }
+/* Имя со счётчиком в строке, диапазон дат под ними: три колонки в панели
+   24rem не живут, а счётчик обрезать нельзя. */
+.summary-row { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-1); }
+/* Строка сводки идёт вплотную к краям панели: счётчику нужна вся её ширина. */
+.summary-row .node-link { padding-inline:0; flex:none; }
+.summary-row .counter { text-align:right; }
+/* Счётчик не переносится там, где панель заведомо его вмещает: он читается
+   как одна фраза, и «в 8» на второй строке — уже не тот факт. На 360 px он
+   шире всей колонки, и там перенос честнее горизонтальной прокрутки. */
+@media (min-width: 73rem) { .summary-row .counter { white-space:nowrap; } }
+.summary .span {
+  margin:0; text-align:right; color:var(--fg-mut);
+  font-size:var(--t-xs); line-height:1.4; font-variant-numeric:tabular-nums;
+}
+
+.rail { display:flex; flex-wrap:wrap; gap:var(--s-1); margin-top:var(--s-2); }
+.rail a {
+  display:block; min-width:1.5rem; text-align:center;
+  border:1px solid var(--line); border-radius:var(--r-sm);
+  padding:0 var(--s-1); font-size:var(--t-xs); line-height:1.4;
+  font-variant-numeric:tabular-nums; text-decoration:none;
+}
+.rail a:hover { background:var(--bg); }
+.rail a[aria-current="true"] { border-color:var(--line-ctl); font-weight:600; }
+.steps { display:flex; justify-content:space-between; gap:var(--s-3); margin-top:var(--s-3); flex-wrap:wrap; }
+.steps a { font-size:var(--t-sm); line-height:1.5; }
+
+/* ── Подвал ──────────────────────────────────────────────────────────── */
+.area-foot {
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  font-variant-numeric:tabular-nums;
+}
+.area-foot p { margin:0; }
+.area-foot a { color:inherit; }
+
+/* ── Карта на узком экране ───────────────────────────────────────────── */
+dialog {
+  width:100%; max-width:100%; height:100%; max-height:100%;
+  margin:0; border:0; padding:var(--s-4);
+  background:var(--bg); color:var(--fg);
+  display:none; flex-direction:column; gap:var(--s-3);
+  /* Единственное, что действительно всплывает над контентом. */
+  box-shadow:0 0 var(--s-6) var(--overlay);
+}
+dialog[open] { display:flex; }
+dialog::backdrop { background:var(--overlay); }
+.map-head, .map-foot { display:flex; align-items:center; gap:var(--s-3); }
+.map-head { justify-content:space-between; }
+.map-foot { justify-content:center; }
+#map-wrap { flex:1; min-height:0; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition:none !important; animation:none !important; }
+}

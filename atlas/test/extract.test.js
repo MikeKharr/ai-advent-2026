@@ -6,7 +6,7 @@ import { parseCompose } from '../lib/compose.js'
 import { atomicId } from '../lib/markdown.js'
 import { buildGraph } from '../lib/extract.js'
 import { readSources } from '../lib/sources.js'
-import { ROOT } from './helpers.js'
+import { ROOT, density } from './helpers.js'
 
 const graph = buildGraph(readSources(ROOT))
 const of = (type) => graph.nodes.filter((n) => n.type === type)
@@ -165,13 +165,50 @@ test('исключение overlay перебивает номер дня из �
   )
 })
 
+test('каждый узел несёт координаты в единичном квадрате', () => {
+  for (const node of graph.nodes) {
+    for (const v of [node.x, node.y]) {
+      assert.equal(typeof v, 'number', node.id)
+      assert.ok(v >= 0 && v <= 1, `${node.id}: ${v}`)
+      assert.ok((String(v).split('.')[1] ?? '').length <= 6, `${node.id}: ${v}`)
+    }
+  }
+  // Меряется заполненность, а не габаритная рамка: рамка была здоровой ровно
+  // тогда, когда 150 узлов сидели в 2.7 % площади, а натягивала её пара из
+  // двух узлов в противоположном углу (находка Б6 ревью этапа 3). Что именно
+  // считается ячейкой — записано словами в `density` (test/helpers.js): три
+  // независимых замера этапа 3 разошлись из-за разной нормировки сетки.
+  const { busy, filled, median } = density(graph.nodes)
+  assert.ok(filled >= 0.5, `в своей ячейке сетки 20×20 ${busy} узлов из ${graph.nodes.length}`)
+  assert.ok(median >= 0.02, `медиана расстояния до ближайшего соседа ${median.toFixed(4)}`)
+
+  assert.equal(new Set(graph.nodes.map((n) => `${n.x},${n.y}`)).size, graph.nodes.length)
+})
+
+test('у каждого следа есть marks, и срезы по ним — роль и признак', () => {
+  const fired = edges('fired')
+  assert.ok(fired.length > 0)
+  for (const e of fired) {
+    const role = e.from.slice(e.from.indexOf('/') + 1)
+    assert.ok(e.marks, `${e.to}:${e.line} без marks`)
+    const { unit, role: r, sign } = e.marks
+    assert.equal(e.excerpt.slice(...r).toLowerCase(), role, `${e.to}:${e.line}`)
+    assert.match(e.excerpt.slice(...sign), /^(?:вето|блокирующ|находк|правки|переделать)/i)
+    for (const inner of [r, sign]) {
+      assert.ok(inner[0] >= unit[0] && inner[1] <= unit[1], `${e.to}:${e.line}: ${JSON.stringify(inner)} вне ${JSON.stringify(unit)}`)
+    }
+    assert.ok(unit[1] <= e.excerpt.length, `${e.to}:${e.line}: единица вне выдержки`)
+  }
+})
+
 test('«правило → где сработало»: след несёт строку и выдержку', () => {
   const fired = edges('fired')
   assert.ok(fired.length > 0)
   for (const e of fired) {
     assert.ok(e.to.startsWith('history/'), e.to)
     assert.ok(Number.isInteger(e.line) && e.line > 0)
-    assert.ok(e.excerpt.length > 0 && e.excerpt.length <= 161, e.excerpt)
+    assert.ok(e.excerpt.length > 0)
+    assert.equal(e.excerpt.endsWith('…'), false, `предел длины у следа снят: ${e.excerpt}`)
   }
 })
 
