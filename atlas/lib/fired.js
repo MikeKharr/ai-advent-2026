@@ -134,7 +134,9 @@ export function firedTraces(text, roleNames) {
     const key = `${role}:${line}`
     if (seen.has(key)) return
     seen.add(key)
-    traces.push({ role, line, excerpt: clip(excerpt.replace(/^[-*+>\s]+/, '').trim()) })
+    // Снимается маркер пункта или цитаты, но не `**`: ведущие звёздочки —
+    // открывающее выделение, и без пары разметка ломается.
+    traces.push({ role, line, excerpt: clip(excerpt.replace(/^\s*(?:[-*+]\s+|>\s*)+/, '').trim()) })
   }
 
   for (const block of paragraphs(lines)) {

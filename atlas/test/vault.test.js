@@ -4,7 +4,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { test } from 'node:test'
 import { execFileSync } from 'node:child_process'
-import { readProvenance, run, underDir } from '../build.js'
+import { isDistDir, readProvenance, run, underDir } from '../build.js'
 import { readSources } from '../lib/sources.js'
 import { buildVault } from '../lib/vault.js'
 import { ROOT } from './helpers.js'
@@ -154,21 +154,40 @@ test('раздел «Следы в записях» — ровно рёбра fi
   }
 })
 
-test('выдержка следа — целая фраза или строка таблицы, не обрывок', () => {
-  const text = readFileSync(join(VAULT, 'roles/compliance.md'), 'utf8')
-  const rows = text
-    .slice(text.indexOf('## Следы в записях'))
-    .split('\n## ')[0]
-    .split('\n')
-    .filter((l) => l.startsWith('- [['))
+test('выдержка следа — целая фраза или строка таблицы', () => {
+  const withTraces = new Set(edges('fired').map((e) => e.from.slice(e.from.indexOf('/') + 1)))
+  assert.ok(withTraces.size >= 3, 'следы должны быть у нескольких ролей')
 
-  for (const row of rows) {
-    const quote = row.slice(row.indexOf('«') + 1, row.lastIndexOf('»'))
-    if (quote.startsWith('|')) continue
-    // Признак обрыва по переносу — хвост вида «…, » или «…: »; фраза
-    // кончается знаком конца, концом пункта списка или многоточием обрезки.
-    assert.doesNotMatch(quote, /[,:;(+—-]$/, `обрывок фразы: ${quote}`)
+  let checked = 0
+  let clipped = 0
+  for (const role of withTraces) {
+    const text = readFileSync(join(VAULT, `roles/${role}.md`), 'utf8')
+    const rows = text
+      .slice(text.indexOf('## Следы в записях'))
+      .split('\n## ')[0]
+      .split('\n')
+      .filter((l) => l.startsWith('- [['))
+
+    for (const row of rows) {
+      const quote = row.slice(row.indexOf('«') + 1, row.lastIndexOf('»'))
+      checked += 1
+      if (quote.startsWith('|')) continue
+      if (quote.endsWith('…')) {
+        // Честная обрезка по пределу, а не обрыв по переносу: длина упёрлась.
+        clipped += 1
+        assert.ok(quote.length >= 140, `многоточие не от предела: ${quote}`)
+        continue
+      }
+      // Фраза кончается знаком конца предложения либо концом пункта списка;
+      // висячая запятая или двоеточие — признак обрыва по переносу.
+      assert.doesNotMatch(quote, /[,:;(+—-]$/, `обрывок фразы: ${quote}`)
+      // Выделение не должно оставаться непарным: ведущее `**` — не маркер.
+      assert.equal((quote.match(/\*\*/g) ?? []).length % 2, 0, `непарное выделение: ${quote}`)
+    }
   }
+
+  assert.equal(checked, edges('fired').length)
+  assert.ok(clipped <= 6, `обрезанных по пределу выдержек ${clipped} — предел стоит пересмотреть`)
 })
 
 test('обратные ссылки инварианта — все документы, где он упомянут', () => {
@@ -203,12 +222,34 @@ test('всё, что сборка пишет и удаляет, лежит по�
   const dist = join(ROOT, 'atlas/dist')
   assert.equal(underDir(dist, join(dist, 'vault/adr/x.md')), true)
   assert.equal(underDir(dist, dist), true)
-  // Совпадения подстроки недостаточно: и выход вверх, и чужой «atlas/dist».
+  // Совпадения подстроки недостаточно: и выход вверх, и соседний каталог.
   assert.equal(underDir(dist, join(dist, '../../../.ssh/id_ed25519')), false)
-  assert.equal(underDir(dist, '/tmp/atlas/dist/graph.json'), false)
   assert.equal(underDir(dist, `${dist}-2/graph.json`), false)
 
   for (const file of built.vault) assert.equal(underDir(built.vaultDir, join(built.vaultDir, file.path)), true, file.path)
+})
+
+test('каталог выхода обязан быть atlas/dist внутри пакета', () => {
+  // `underDir` от `dirname(out)` сам по себе всегда истинен — он сравнивает
+  // корень сам с собой. Каталог выхода проверяется отдельно, иначе
+  // рекурсивное удаление имён вроде `days` и `roles` уезжает в чужое дерево.
+  assert.equal(isDistDir(join(ROOT, 'atlas/dist')), true)
+  assert.equal(isDistDir(join(ROOT, 'temp/atlas-fixture/atlas/dist')), true, 'копия входов в temp/ — допустимый выход')
+  for (const bad of ['/tmp/escape', join(ROOT, 'atlas/dist/../..'), '/tmp/atlas/dist', join(ROOT, 'atlas/dist-2')]) {
+    assert.equal(isDistDir(bad), false, bad)
+  }
+
+  for (const out of [
+    '/tmp/escape/graph.json',
+    join(ROOT, 'atlas/dist/../../escape.json'),
+    '/tmp/atlas/dist/graph.json',
+    join(ROOT, 'atlas/dist-2/graph.json'),
+  ]) {
+    assert.throws(() => run({ out }), /каталог выхода не atlas\/dist/, out)
+  }
+  assert.equal(existsSync(join(ROOT, 'escape.json')), false)
+  assert.equal(existsSync(join(ROOT, 'atlas/dist-2')), false)
+  assert.equal(existsSync('/tmp/escape'), false)
 })
 
 test('--check ничего не пишет и не зовёт git', () => {

@@ -18,14 +18,27 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const SHOWN = 50
 
 /**
- * Всё, что сборка пишет и удаляет, лежит под каталогом выхода. Предикат
+ * Всё, что сборка пишет и удаляет, лежит под заданным каталогом. Предикат
  * точный, а не совпадение подстроки: `dist/../../.ssh` — тоже строка,
- * начинающаяся с `dist`, а `/tmp/atlas/dist` — тоже «atlas/dist».
+ * начинающаяся с `dist`, а `dist-2` — тоже начинается с `dist`.
  */
 export function underDir(dir, path) {
   const root = resolve(dir)
   const full = resolve(path)
   return full === root || full.startsWith(root + sep)
+}
+
+/**
+ * Каталог выхода задаёт вызывающий, поэтому одного `underDir` мало: он
+ * сравнил бы корень сам с собой и разрешил бы что угодно. Каталог обязан
+ * быть `atlas/dist` внутри пакета — тогда рекурсивное удаление одиннадцати
+ * вполне обычных имён (`adr`, `days`, `roles`…) не может уехать в чужое
+ * дерево. Копии входов в тестах лежат под `temp/` того же репозитория и
+ * условию удовлетворяют.
+ */
+export function isDistDir(dir) {
+  const full = resolve(dir)
+  return full.endsWith(`${sep}atlas${sep}dist`) && underDir(resolve(HERE, '..'), full)
 }
 
 function writeUnder(dir, path, text) {
@@ -65,6 +78,7 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
 
   if (graph.findings.length === 0 && !check) {
     const outDir = dirname(out)
+    if (!isDistDir(outDir)) throw new Error(`каталог выхода не atlas/dist внутри пакета: ${outDir}`)
     writeUnder(outDir, out, `${JSON.stringify({ nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`)
 
     vault = buildVault({ graph, sources, provenance: readProvenance(root) })
