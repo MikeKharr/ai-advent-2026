@@ -12,6 +12,9 @@ import { readSources } from './lib/sources.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
+/** Сколько находок печатать: остальное — эхо первых, список должен читаться. */
+const SHOWN = 50
+
 export function run({ root = join(HERE, '..'), check = false, out = join(HERE, 'dist/graph.json') } = {}) {
   const graph = buildGraph(readSources(root))
   if (graph.findings.length === 0 && !check) {
@@ -21,11 +24,19 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
   return { ...graph, out }
 }
 
+/** В Actions находка — аннотация: тогда она видна прямо в diff'е PR. */
+function format(f) {
+  return process.env.GITHUB_ACTIONS === 'true'
+    ? `::error file=${f.file},line=${f.line}::${f.message}`
+    : `${f.file}:${f.line}: ${f.message}`
+}
+
 function main(argv) {
   const check = argv.includes('--check')
   const { nodes, edges, findings, out } = run({ check })
 
-  for (const f of findings) console.error(`${f.file}:${f.line}: ${f.message}`)
+  for (const f of findings.slice(0, SHOWN)) console.error(format(f))
+  if (findings.length > SHOWN) console.error(`…и ещё ${findings.length - SHOWN} находок`)
 
   if (findings.length > 0) {
     console.error(`\nнаходок: ${findings.length}. Граф не записан: ссылки чинятся в источнике, а не в атласе.`)

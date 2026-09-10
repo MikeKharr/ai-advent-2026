@@ -3,6 +3,7 @@
 // граф извлекается из действующих соглашений цитирования (ADR 2026-09-13-2000).
 
 import { parseCompose } from './compose.js'
+import { firedTraces } from './fired.js'
 import {
   atomicId,
   clip,
@@ -15,17 +16,18 @@ import {
 } from './markdown.js'
 import { inputExists } from './sources.js'
 
-/** Инвариантов ровно двенадцать: I-N вне этого диапазона — опечатка. */
-export const INVARIANT_MAX = 12
-
-const FIRED_WORDS = [/вето/i, /блокирующ/i, /находк/i, /ПРАВКИ/, /ПЕРЕДЕЛАТЬ/]
-
 export function buildGraph(sources) {
   const nodes = []
   const edges = []
-  const findings = []
+  // Находки чтения входов идут первыми: без входа остальные находки — эхо.
+  const findings = [...(sources.findings ?? [])]
 
   const add = (node) => {
+    const twin = nodes.find((n) => n.id === node.id)
+    if (twin) {
+      note(node.file ?? 'atlas', 1, `узел \`${node.id}\` строится дважды: из ${twin.file ?? 'overlay'} и из ${node.file ?? 'overlay'}`)
+      return twin
+    }
     nodes.push(node)
     return node
   }
@@ -81,6 +83,10 @@ export function buildGraph(sources) {
     const m = line.match(/^- \*\*(I-\d+)\.\*\*\s*(.+)$/)
     if (m) add({ id: `invariant/${m[1]}`, type: 'invariant', key: m[1], title: m[1], text: m[2].trim(), file: 'agent_docs/invariants.md' })
   }
+  // Допустимые номера — те, что разобраны из файла. Константы здесь быть не
+  // может: добавленный инвариант иначе роняет обязательную проверку на всех PR.
+  const invariantKeys = nodes.filter((n) => n.type === 'invariant').map((n) => n.key)
+  const invariantRange = invariantKeys.length > 0 ? `${invariantKeys[0]}…${invariantKeys.at(-1)}` : 'ни одного'
 
   // --- роли и ярусы -----------------------------------------------------------
 
@@ -134,6 +140,7 @@ export function buildGraph(sources) {
   // --- дни, сервисы, тома -----------------------------------------------------
 
   const compose = parseCompose(sources.composeText)
+  for (const f of compose.findings) note('deploy/compose.yml', f.line, f.message)
   const composeByName = Object.fromEntries(compose.services.map((s) => [s.name, s]))
 
   const landing = {}
@@ -208,6 +215,18 @@ export function buildGraph(sources) {
   for (const e of sources.overlay.externals) {
     add({ id: `external/${e.id}`, type: 'external', key: e.id, title: e.title, kind: e.kind, note: e.note, source: 'atlas/overlay.json' })
   }
+  // Конвейер образов: Actions собирает → GHCR → сервер тянет тег.
+  for (const s of compose.services) {
+    if (!s.image?.startsWith('ghcr.io/')) continue
+    if (has('external/ghcr')) link(unitId(s.name), 'external/ghcr', 'image')
+  }
+  for (const p of sources.overlay.publishes ?? []) {
+    if (!has(`external/${p.from}`) || !has(`external/${p.to}`)) {
+      note('atlas/overlay.json', lineOf(sources.overlayText, `"${p.from}"`), `в publishes указан внешний сервис, которого нет среди externals`)
+      continue
+    }
+    link(`external/${p.from}`, `external/${p.to}`, 'publishes')
+  }
   for (const c of sources.overlay.calls) {
     if (!composeByName[c.from]) {
       note('atlas/overlay.json', lineOf(sources.overlayText, `"${c.from}"`), `в calls указан сервис \`${c.from}\`, которого нет в deploy/compose.yml`)
@@ -251,8 +270,8 @@ export function buildGraph(sources) {
   // --- цитаты: cites, relies, mentions ----------------------------------------
 
   const resolvePath = (value) => {
-    const [dir, rest] = value.includes('/') ? [value.slice(0, value.indexOf('/')), value.slice(value.indexOf('/') + 1)] : [null, value]
-    if (dir === null) return { file: `agent_docs/${rest}`, node: null }
+    const dir = value.slice(0, value.indexOf('/'))
+    const rest = value.slice(value.indexOf('/') + 1)
     if (dir === 'guides') {
       const name = rest.replace(/\.md$/, '')
       return { file: `agent_docs/guides/${name}.md`, node: has(`guide/${name}`) ? `guide/${name}` : null }
@@ -296,9 +315,8 @@ export function buildGraph(sources) {
         }
         if (r.node && r.node !== id) addOnce(seen, () => link(id, r.node, 'cites'), `cites:${r.node}`)
       } else if (c.kind === 'invariant') {
-        const n = Number(c.value.slice(2))
-        if (n < 1 || n > INVARIANT_MAX) {
-          note(entry.path, c.line, `упомянут инвариант ${c.value}, а инвариантов I-1…I-${INVARIANT_MAX}`)
+        if (!has(`invariant/${c.value}`)) {
+          note(entry.path, c.line, `упомянут инвариант ${c.value}, которого нет в agent_docs/invariants.md (там ${invariantRange})`)
           continue
         }
         addOnce(seen, () => link(id, `invariant/${c.value}`, 'relies'), `relies:${c.value}`)
@@ -348,29 +366,25 @@ export function buildGraph(sources) {
   for (const entry of sources.history) {
     const id = `history/${atomicId(entry.key)}`
     if (!has(id)) continue
-    const lines = entry.text.split('\n')
-    const seen = new Set()
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i]
-      if (!FIRED_WORDS.some((re) => re.test(line))) continue
-      for (const role of roleNames) {
-        if (seen.has(role) || !mentionsRole(line, role)) continue
-        seen.add(role)
-        link(`role/${role}`, id, 'fired', { line: i + 1, excerpt: clip(line.replace(/^[-*\s>]+/, '').trim()) })
-      }
+    for (const trace of firedTraces(entry.text, roleNames)) {
+      link(`role/${trace.role}`, id, 'fired', { line: trace.line, excerpt: trace.excerpt })
     }
   }
 
-  return { nodes, edges, findings }
-}
+  // Внешний узел — то, с чем работающая система обменивается. Узел без
+  // единого ребра означает, что overlay разошёлся с реальностью: чинится
+  // ребром или удалением записи, а не подстройкой списка руками.
+  for (const n of nodes) {
+    if (n.type !== 'external') continue
+    if (edges.some((e) => e.from === n.id || e.to === n.id)) continue
+    note(
+      n.source === 'atlas/overlay.json' ? 'atlas/overlay.json' : 'router/config/providers.json',
+      n.source === 'atlas/overlay.json' ? lineOf(sources.overlayText, `"${n.key}"`) : 1,
+      `внешний узел \`${n.key}\` не связан ни с чем: либо его нет в работе системы, либо не хватает ребра`,
+    )
+  }
 
-/**
- * Имя роли в строке — обратные кавычки не обязательны, но `/` и `-` рядом
- * запрещены: иначе `agent_docs/design/` даст роль `design`, а `design-review`
- * — её же.
- */
-export function mentionsRole(line, role) {
-  return new RegExp(`(?<![\\w/-])${role}(?![\\w/-])`).test(line)
+  return { nodes, edges, findings }
 }
 
 /** Ребро добавляется один раз на пару «документ — цель». */

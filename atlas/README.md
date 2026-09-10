@@ -18,18 +18,21 @@ node build.js --check    # только проверка ссылок, ниче�
 node --test test/*.test.js
 ```
 
-`--check` — шаг обязательной проверки `guard` в `.github/workflows/docs-guard.yml`.
-Он падает закрыто: цитата `` ADR `id` `` без файла, путь к
-`development-history/`, `design/` или `guides/` без файла, инвариант вне
-I-1…I-12, роль или сервис в `overlay.json`, которых нет в `.claude/agents/` и
-`deploy/compose.yml`. Сообщение называет файл и строку — чинится в источнике,
-не в атласе.
+`--check` и тесты — шаги обязательной проверки `guard` в
+`.github/workflows/docs-guard.yml`. `--check` падает закрыто: цитата
+`` ADR `id` `` без файла, путь к `development-history/`, `design/` или
+`guides/` без файла, инвариант, которого нет в `agent_docs/invariants.md`,
+роль или сервис в `overlay.json`, которых нет в `.claude/agents/` и
+`deploy/compose.yml`, внешний узел без единого ребра, строка `compose.yml` вне
+подмножества парсера, нечитаемый вход. Сообщение называет файл и строку —
+чинится в источнике, не в атласе.
 
 ```text
 build.js        точка входа: --check и обычная сборка
 lib/sources.js  явный список входов; deploy/*.env, .env*, temp/, logs/, data/ не читаются
 lib/markdown.js фронтматтер, разделы, цитаты с номерами строк
-lib/compose.js  узкий парсер подмножества compose.yml (страж — в тестах)
+lib/compose.js  узкий парсер подмножества compose.yml: непонятую строку возвращает находкой
+lib/fired.js    правило «правило → где сработало»: следы гейтов в записях истории
 lib/extract.js  узлы и рёбра, находки для --check
 overlay.json    единственный ручной файл: классы гейтов, фазы, внешние сервисы, исключения
 ```

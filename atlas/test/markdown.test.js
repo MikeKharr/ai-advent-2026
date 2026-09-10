@@ -54,6 +54,24 @@ test('номер строки в находке — настоящий', () => {
   assert.equal(found.find((f) => f.kind === 'adr').line, 3)
 })
 
+test('цитата, перенесённая на другую строку, всё равно видна', () => {
+  // Документы проекта переносятся по ~80 символам: «… ADR ⏎ `id` …» —
+  // обычная форма, а не редкость (adr/2026-09-08-1748-llm-router.md:220).
+  const found = scanCitations('Решение принято в ADR\n`2026-09-07-1525`, и это важно.\n')
+  assert.deepEqual(
+    found.filter((f) => f.kind === 'adr'),
+    [{ kind: 'adr', value: '2026-09-07-1525', line: 1 }],
+  )
+})
+
+test('находки идут в порядке появления в тексте', () => {
+  const found = scanCitations('I-4\nADR `2026-09-07-1525`\n`compliance`\n')
+  assert.deepEqual(
+    found.map((f) => f.line),
+    [1, 2, 3],
+  )
+})
+
 test('инвариант распознаётся, а часть слова — нет', () => {
   const found = scanCitations('инвариант I-4 и I-12; не AI-1 и не 2026-09-13')
   assert.deepEqual(

@@ -73,35 +73,51 @@ export function atomicId(value) {
   return m ? m[1] : null
 }
 
+/** Номер строки по смещению в тексте — быстрым поиском по началам строк. */
+function lineIndexer(text) {
+  const starts = [0]
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) starts.push(i + 1)
+  return (index) => {
+    let lo = 0
+    let hi = starts.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (starts[mid] <= index) lo = mid
+      else hi = mid - 1
+    }
+    return lo + 1
+  }
+}
+
 /**
  * Цитаты документа с номерами строк — номер нужен, чтобы находка `--check`
- * правилась без раскопок.
+ * правилась без раскопок. Поиск идёт по всему тексту, а не построчно:
+ * документы проекта переносятся по ~80 символам, и цитата вида
+ * «… ADR ⏎ `2026-09-07-1525` …» построчному поиску не видна.
  * @returns {Array<{kind:'adr'|'path'|'invariant'|'word', value:string, line:number}>}
  */
 export function scanCitations(text) {
+  const at = lineIndexer(text)
   const found = []
-  const lines = text.split('\n')
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]
-    const at = i + 1
 
-    for (const m of line.matchAll(ADR_CITE)) {
-      if (PLACEHOLDER.test(m[1])) continue
-      const id = atomicId(m[1])
-      if (id) found.push({ kind: 'adr', value: id, line: at })
-    }
-    for (const m of line.matchAll(DOC_PATH)) {
-      if (PLACEHOLDER.test(m[1])) continue
-      found.push({ kind: 'path', value: m[1].replace(/^agent_docs\//, ''), line: at })
-    }
-    for (const m of line.matchAll(INVARIANT)) {
-      found.push({ kind: 'invariant', value: `I-${Number(m[1])}`, line: at })
-    }
-    for (const m of line.matchAll(BACKTICK_WORD)) {
-      found.push({ kind: 'word', value: m[1], line: at })
-    }
+  for (const m of text.matchAll(ADR_CITE)) {
+    if (PLACEHOLDER.test(m[1])) continue
+    const id = atomicId(m[1])
+    if (id) found.push({ kind: 'adr', value: id, line: at(m.index), index: m.index })
   }
-  return found
+  for (const m of text.matchAll(DOC_PATH)) {
+    if (PLACEHOLDER.test(m[1])) continue
+    found.push({ kind: 'path', value: m[1].replace(/^agent_docs\//, ''), line: at(m.index), index: m.index })
+  }
+  for (const m of text.matchAll(INVARIANT)) {
+    found.push({ kind: 'invariant', value: `I-${Number(m[1])}`, line: at(m.index), index: m.index })
+  }
+  for (const m of text.matchAll(BACKTICK_WORD)) {
+    found.push({ kind: 'word', value: m[1], line: at(m.index), index: m.index })
+  }
+
+  found.sort((a, b) => a.index - b.index)
+  return found.map(({ index, ...rest }) => rest)
 }
 
 /**

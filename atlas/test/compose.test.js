@@ -8,38 +8,71 @@ import { ROOT } from './helpers.js'
 const text = readFileSync(join(ROOT, 'deploy/compose.yml'), 'utf8')
 
 // Страж парсера. Парсер узкий: он читает подмножество формата, а не YAML.
-// Если файл выйдет за подмножество (иной отступ, якоря, `extends`), парсер
-// молча увидит меньше — и граф обеднеет незаметно. Поэтому число сервисов и
-// томов пересчитывается здесь вторым, независимым способом: по строкам
-// `image:` (у каждого сервиса ровно одна) и по хвостовому блоку `volumes:`.
-test('страж: парсер видит ровно столько сервисов и томов, сколько в файле', () => {
-  const parsed = parseCompose(text)
+// Страж — не пересчёт числа сервисов (это было бы то же чтение файла тем же
+// способом, одна ошибка, посчитанная дважды), а требование к самому парсеру:
+// встретив в блоке сервиса конструкцию не из подмножества, он обязан выдать
+// находку. Тогда расширение файла роняет обязательную проверку, а не обедняет
+// граф молча (ADR 2026-09-13-2000).
+test('страж: на действующем compose.yml непонятых строк нет', () => {
+  assert.deepEqual(parseCompose(text).findings, [])
+})
 
-  const imageLines = text.split('\n').filter((l) => /^ {4}image:/.test(l)).length
-  assert.equal(
-    parsed.services.length,
-    imageLines,
-    'сервисов найдено не столько, сколько строк image: — compose вышел за подмножество парсера',
-  )
+test('страж: непонятая строка в блоке сервиса — находка с номером строки', () => {
+  const broken = 'services:\n  a:\n    image: x\n    <<: *base\nvolumes:\n'
+  const { findings } = parseCompose(broken)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].line, 4)
+  assert.match(findings[0].message, /подмножеств/)
+})
 
-  const tail = text.slice(text.lastIndexOf('\nvolumes:\n') + 1)
-  const volumeLines = tail.split('\n').filter((l) => /^ {2}[a-z0-9_-]+:\s*$/.test(l)).length
-  assert.equal(
-    parsed.volumes.length,
-    volumeLines,
-    'томов найдено не столько, сколько в верхнем блоке volumes:',
+test('страж: depends_on в форме отображения не обнуляет зависимости молча', () => {
+  const mapping = 'services:\n  a:\n    image: x\n    depends_on:\n      router:\n        condition: service_healthy\nvolumes:\n'
+  const { services, findings } = parseCompose(mapping)
+  assert.deepEqual(services[0].dependsOn, [])
+  assert.equal(findings.length > 0, true, 'форма отображения прошла молча')
+  assert.equal(findings[0].line, 5)
+  assert.match(findings[0].message, /depends_on/)
+})
+
+test('страж: depends_on в поточной форме — находка', () => {
+  const flow = 'services:\n  a:\n    image: x\n    depends_on: [router]\nvolumes:\n'
+  const { findings } = parseCompose(flow)
+  assert.equal(findings.length, 1)
+  assert.match(findings[0].message, /depends_on/)
+})
+
+test('страж: том в длинной форме не теряется молча', () => {
+  const long = 'services:\n  a:\n    image: x\n    volumes:\n      - type: volume\n        source: v\n        target: /data\nvolumes:\n  v:\n'
+  const { services, findings } = parseCompose(long)
+  assert.equal(findings.length > 0, true, 'длинная форма тома прошла молча')
+  assert.deepEqual(
+    services[0].volumes.filter((v) => v.named),
+    [],
   )
 })
 
-test('страж: состав сервисов и томов — тот, что ожидается проектом', () => {
+test('том в короткой форме `имя: {}` — обычная запись, а не находка', () => {
+  const short = 'services:\n  a:\n    image: x\n    volumes:\n      - day9_data:/data\nvolumes:\n  day9_data: {}\n'
+  const { volumes, services, findings } = parseCompose(short)
+  assert.deepEqual(findings, [])
+  assert.deepEqual(volumes, ['day9_data'])
+  assert.equal(services[0].volumes[0].named, true)
+})
+
+test('страж: настройки тома в верхнем блоке — находка', () => {
+  const opts = 'services:\n  a:\n    image: x\nvolumes:\n  v:\n    driver: local\n'
+  const { findings } = parseCompose(opts)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].line, 6)
+})
+
+test('состав деплоя: по сервису на строку image: и пять томов', () => {
   const parsed = parseCompose(text)
-  assert.deepEqual(
-    parsed.services.map((s) => s.name).sort(),
-    ['agents', 'caddy', 'day1', 'day2', 'day3', 'day4', 'day5', 'day6', 'day7', 'day8', 'router'].sort(),
-  )
+  const imageLines = text.split('\n').filter((l) => /^ {4}image:/.test(l)).length
+  assert.equal(parsed.services.length, imageLines)
   // Пять томов — структура деплоя, а не растущее число (ADR 2026-09-13-2000).
   assert.equal(parsed.volumes.length, 5)
-  assert.deepEqual(parsed.volumes.sort(), ['agents_data', 'caddy_config', 'caddy_data', 'day5_data', 'router_data'])
+  assert.deepEqual(parsed.volumes.slice().sort(), ['agents_data', 'caddy_config', 'caddy_data', 'day5_data', 'router_data'])
 })
 
 test('зависимости, тома и env_file сервиса разбираются', () => {
@@ -69,4 +102,5 @@ test('bind-монтирование отличается от именованн
 test('комментарий в конце строки тома не попадает в цель монтирования', () => {
   const parsed = parseCompose('services:\n  a:\n    volumes:\n      - v:/data      # хвост\nvolumes:\n  v:\n')
   assert.deepEqual(parsed.services[0].volumes, [{ source: 'v', target: '/data', named: true }])
+  assert.deepEqual(parsed.findings, [])
 })

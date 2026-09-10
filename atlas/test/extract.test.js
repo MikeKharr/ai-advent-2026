@@ -39,6 +39,13 @@ test('структурные числа: они заданы устройств�
   assert.equal(of('day').length, 8)
   assert.equal(of('volume').length, 5)
   assert.equal(of('service').length, 4, 'router, agents, caddy и лендинг site')
+  const src = readSources(ROOT)
+  assert.equal(of('external').length, src.providers.length + src.overlay.externals.length)
+  assert.equal(
+    of('external').some((n) => n.key === 'google-drive'),
+    false,
+    'Drive — не то, с чем обменивается работающая система; он есть в графе как ADR и гайд',
+  )
   assert.equal(of('tier').length, 4, 'fable/high и opus в трёх усилиях')
 })
 
@@ -85,6 +92,29 @@ test('провайдеры попадают в граф без baseUrl: адре
   assert.ok(edges('calls').some((e) => e.from === 'service/router' && e.to === 'external/anthropic-haiku'))
 })
 
+test('конвейер образов: image к GHCR и publishes от Actions', () => {
+  const withImage = readSources(ROOT)
+    .composeText.split('\n')
+    .filter((l) => /^ {4}image: ghcr\.io\//.test(l)).length
+  assert.equal(edges('image').length, withImage)
+  for (const e of edges('image')) assert.equal(e.to, 'external/ghcr')
+  assert.equal(
+    edges('image').some((e) => e.from === 'service/caddy'),
+    false,
+    'caddy идёт из публичного образа, не из GHCR',
+  )
+  assert.deepEqual(edges('publishes'), [{ from: 'external/github-actions', to: 'external/ghcr', kind: 'publishes' }])
+})
+
+test('внешних узлов без единого ребра нет', () => {
+  for (const n of of('external')) {
+    assert.ok(
+      graph.edges.some((e) => e.from === n.id || e.to === n.id),
+      `${n.id} висит без рёбер`,
+    )
+  }
+})
+
 test('дни 1–4 ходят в Anthropic напрямую — это записано в overlay', () => {
   for (const n of [1, 2, 3, 4]) {
     assert.ok(edges('calls').some((e) => e.from === `day/day${n}` && e.to === 'external/anthropic-api'))
@@ -107,15 +137,43 @@ test('исключение overlay перебивает номер дня из �
   )
 })
 
-test('«правило → где сработало»: у роли есть след с номером строки и выдержкой', () => {
+test('«правило → где сработало»: след несёт строку и выдержку', () => {
   const fired = edges('fired')
   assert.ok(fired.length > 0)
-  assert.ok(fired.some((e) => e.from === 'role/compliance'))
   for (const e of fired) {
     assert.ok(e.to.startsWith('history/'), e.to)
     assert.ok(Number.isInteger(e.line) && e.line > 0)
     assert.ok(e.excerpt.length > 0 && e.excerpt.length <= 161, e.excerpt)
   }
+})
+
+test('следы compliance на репозитории: строка таблицы — единица, отрицание — не след', () => {
+  // Числа растут с каждой новой записью истории, поэтому проверяются «не
+  // меньше» и поимённо — те случаи, на которых правило ломалось до ревью.
+  const mine = edges('fired').filter((e) => e.from === 'role/compliance')
+  const records = new Set(mine.map((e) => e.to))
+  assert.ok(mine.length >= 11, `следов ${mine.length}, ожидалось не меньше 11`)
+  assert.ok(records.size >= 8, `записей ${records.size}, ожидалось не меньше 8`)
+
+  // Две строки таблицы одной записи — два следа: дедупликации по паре
+  // «роль → документ» нет.
+  const table = mine.filter((e) => e.to === 'history/2026-09-13-1500').map((e) => e.line)
+  assert.deepEqual(table, [43, 44])
+
+  // «вето нет» и «блокирующих нет» следа не дают.
+  for (const [id, line] of [
+    ['history/2026-09-10-1700', 88],
+    ['history/2026-09-11-1200', 50],
+  ]) {
+    assert.equal(
+      edges('fired').some((e) => e.to === id && e.line === line),
+      false,
+      `${id}:${line} — отрицание, следа быть не должно`,
+    )
+  }
+
+  assert.ok(edges('fired').filter((e) => e.from === 'role/reviewer').length >= 2)
+  assert.ok(edges('fired').filter((e) => e.from === 'role/design').length >= 1)
 })
 
 test('у ADR есть статус, у документов — выдержка и путь к файлу', () => {

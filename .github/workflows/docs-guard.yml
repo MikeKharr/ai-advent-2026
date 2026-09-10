@@ -47,6 +47,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
 
+      - name: Тесты атласа
+        run: node --test atlas/test/*.test.js
+
       - name: Ссылки между документами разрешаются (атлас)
         run: node atlas/build.js --check
 

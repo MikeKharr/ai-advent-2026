@@ -104,8 +104,11 @@
     { "id": "ghcr", "title": "GitHub Container Registry", "kind": "registry", "note": "Образы единиц деплоя; сервер только тянет тег." },
     { "id": "github-actions", "title": "GitHub Actions", "kind": "ci", "note": "Сборка образов и выкатка; секреты в secrets.*." },
     { "id": "letsencrypt", "title": "Let's Encrypt", "kind": "tls", "note": "Сертификаты challenge.zpq.ai, выпускает Caddy." },
-    { "id": "tailscale", "title": "Tailscale", "kind": "network", "note": "Частная сеть до ноутбука владельца, где живёт Ollama." },
-    { "id": "google-drive", "title": "Google Drive", "kind": "mirror", "note": "Витрина решений только для чтения; расхождение решается в пользу git (I-11)." }
+    { "id": "tailscale", "title": "Tailscale", "kind": "network", "note": "Частная сеть до ноутбука владельца, где живёт Ollama." }
+  ],
+
+  "publishes": [
+    { "from": "github-actions", "to": "ghcr" }
   ],
 
   "calls": [

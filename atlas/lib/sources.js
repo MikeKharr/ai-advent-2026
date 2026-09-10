@@ -1,6 +1,9 @@
 // Входы атласа — явный список путей, а не обход дерева. Это не стиль, а
 // граница публикуемого (I-1…I-3): `deploy/*.env`, `.env*`, `temp/`, `logs/`
 // и `data/` не читаются никогда, поэтому и попасть в граф не могут.
+//
+// Битый или пропавший вход не роняет обязательную проверку голым стеком:
+// он возвращается находкой, как и битая ссылка.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
@@ -24,70 +27,100 @@ export const INPUTS = {
   overlay: 'atlas/overlay.json',
 }
 
-const read = (root, rel) => readFileSync(join(root, rel), 'utf8')
-
-/** Файлы `*.md` каталога, кроме README. */
-function markdownFiles(root, dir) {
-  const abs = join(root, dir)
-  if (!existsSync(abs)) return []
-  return readdirSync(abs)
-    .filter((f) => f.endsWith('.md') && f !== 'README.md')
-    .sort()
-    .map((f) => ({ key: basename(f, '.md'), path: `${dir}/${f}`, text: read(root, `${dir}/${f}`) }))
-}
-
 /**
  * Читает все входы графа из корня репозитория.
  * @param {string} root корень репозитория
  */
 export function readSources(root) {
-  const days = readdirSync(join(root, INPUTS.daysDir))
+  const findings = []
+  const fail = (rel, error) => findings.push({ file: rel, line: 1, message: `вход не читается: ${error.message}` })
+
+  const text = (rel, fallback = '') => {
+    try {
+      return readFileSync(join(root, rel), 'utf8')
+    } catch (error) {
+      fail(rel, error)
+      return fallback
+    }
+  }
+  const json = (rel, fallback) => {
+    const raw = text(rel, null)
+    if (raw === null) return fallback
+    try {
+      return JSON.parse(raw)
+    } catch (error) {
+      findings.push({ file: rel, line: 1, message: `вход не разбирается как JSON: ${error.message}` })
+      return fallback
+    }
+  }
+  const names = (rel) => {
+    try {
+      return readdirSync(join(root, rel))
+    } catch (error) {
+      fail(rel, error)
+      return []
+    }
+  }
+
+  /** Файлы `*.md` каталога, кроме README. */
+  const markdownFiles = (dir) =>
+    names(dir)
+      .filter((f) => f.endsWith('.md') && f !== 'README.md')
+      .sort()
+      .map((f) => ({ key: basename(f, '.md'), path: `${dir}/${f}`, text: text(`${dir}/${f}`) }))
+
+  const days = names(INPUTS.daysDir)
     .filter((d) => /^day\d+$/.test(d))
     .sort((a, b) => Number(a.slice(3)) - Number(b.slice(3)))
 
-  const skillsDir = join(root, INPUTS.skillsDir)
-  const skills = readdirSync(skillsDir)
-    .filter((d) => existsSync(join(skillsDir, d, 'SKILL.md')))
+  const skills = names(INPUTS.skillsDir)
+    .filter((d) => existsSync(join(root, INPUTS.skillsDir, d, 'SKILL.md')))
     .sort()
-    .map((d) => ({ key: d, path: `${INPUTS.skillsDir}/${d}/SKILL.md`, text: read(root, `${INPUTS.skillsDir}/${d}/SKILL.md`) }))
+    .map((d) => ({ key: d, path: `${INPUTS.skillsDir}/${d}/SKILL.md`, text: text(`${INPUTS.skillsDir}/${d}/SKILL.md`) }))
 
-  const roles = readdirSync(join(root, INPUTS.rolesDir))
+  const roles = names(INPUTS.rolesDir)
     .filter((f) => f.endsWith('.md'))
     .sort()
-    .map((f) => ({ key: basename(f, '.md'), path: `${INPUTS.rolesDir}/${f}`, text: read(root, `${INPUTS.rolesDir}/${f}`) }))
+    .map((f) => ({ key: basename(f, '.md'), path: `${INPUTS.rolesDir}/${f}`, text: text(`${INPUTS.rolesDir}/${f}`) }))
 
   const guides = [
-    ...markdownFiles(root, INPUTS.guidesDir),
-    ...INPUTS.rootGuides.map((p) => ({ key: basename(p, '.md').toLowerCase(), path: p, text: read(root, p) })),
+    ...markdownFiles(INPUTS.guidesDir),
+    ...INPUTS.rootGuides.map((p) => ({ key: basename(p, '.md').toLowerCase(), path: p, text: text(p) })),
   ]
+
+  const overlayText = text(INPUTS.overlay, '{}')
+  // Пустые разделы overlay — не отсутствие полей, а честный «ничего нет»:
+  // иначе битый overlay падал бы стеком вместо находки.
+  const EMPTY_OVERLAY = { classes: [], phases: [], externals: [], calls: [], publishes: [], about: {} }
+  let overlay = EMPTY_OVERLAY
+  try {
+    overlay = { ...EMPTY_OVERLAY, ...JSON.parse(overlayText) }
+  } catch (error) {
+    findings.push({ file: INPUTS.overlay, line: 1, message: `вход не разбирается как JSON: ${error.message}` })
+  }
 
   return {
     root,
-    adr: markdownFiles(root, INPUTS.adrDir),
-    history: markdownFiles(root, INPUTS.historyDir),
-    design: markdownFiles(root, INPUTS.designDir),
+    findings,
+    adr: markdownFiles(INPUTS.adrDir),
+    history: markdownFiles(INPUTS.historyDir),
+    design: markdownFiles(INPUTS.designDir),
     guides,
     roles,
     skills,
     days,
-    invariants: read(root, INPUTS.invariants),
-    composeText: read(root, INPUTS.compose),
-    caddyText: read(root, INPUTS.caddyfile),
-    landingText: read(root, INPUTS.landing),
-    providers: JSON.parse(read(root, INPUTS.providers)),
-    skillsLock: JSON.parse(read(root, INPUTS.skillsLock)),
-    overlayText: read(root, INPUTS.overlay),
-    overlay: JSON.parse(read(root, INPUTS.overlay)),
+    invariants: text(INPUTS.invariants),
+    composeText: text(INPUTS.compose),
+    caddyText: text(INPUTS.caddyfile),
+    landingText: text(INPUTS.landing),
+    providers: json(INPUTS.providers, []),
+    skillsLock: json(INPUTS.skillsLock, { skills: {} }),
+    overlayText,
+    overlay,
   }
 }
 
 /** Существует ли файл входа — для проверки ссылок. */
 export function inputExists(root, rel) {
   return existsSync(join(root, rel))
-}
-
-/** Имена файлов каталога — для разрешения цитат по идентификатору. */
-export function listNames(root, dir) {
-  const abs = join(root, dir)
-  return existsSync(abs) ? readdirSync(abs) : []
 }
