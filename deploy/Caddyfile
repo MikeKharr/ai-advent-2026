@@ -93,6 +93,17 @@ challenge.zpq.ai {
 
 	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
 
+	# --- атлас проекта ---
+	# Статика в своём контейнере (ADR 2026-09-13-2000). noindex — из блока
+	# header выше: он накрывает и /atlas/.
+	redir /atlas /atlas/ permanent
+	handle_path /atlas/* {
+		reverse_proxy atlas:8080 {
+			health_uri /healthz
+			health_interval 30s
+		}
+	}
+
 	# --- лендинг ---
 	handle {
 		root * /srv/site

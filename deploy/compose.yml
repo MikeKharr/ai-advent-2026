@@ -208,6 +208,17 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Атлас проекта (ADR 2026-09-13-2000): статика схемы проекта, маршрут
+  # /atlas/ в Caddyfile. Секретов у него нет, поэтому нет и env_file.
+  atlas:
+    image: ghcr.io/mikekharr/advent-atlas:${ATLAS_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
 volumes:
   caddy_data:
   caddy_config:

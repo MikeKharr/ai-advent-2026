@@ -2,10 +2,10 @@ name: ci
 
 on:
   pull_request:
-    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
+    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/ci.yml']
   push:
     branches: [main]
-    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', '.github/workflows/ci.yml']
+    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/ci.yml']
 
 permissions:
   contents: read
@@ -27,8 +27,11 @@ jobs:
             base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
           fi
           changed=$(git diff --name-only "$base" HEAD || true)
-          # Единица сборки — день (days/dayN) или сервис (router, agents).
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; } | sort -u | jq -R . | jq -sc .)
+          # Единица сборки — день (days/dayN), сервис (router, agents) или атлас.
+          # Граф атласа строится из входов atlas/lib/sources.js: правка любого
+          # из них пересобирает атлас, и только его.
+          atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -58,6 +61,7 @@ jobs:
           case "${{ matrix.day }}" in
             router) echo "dir=router" >> "$GITHUB_OUTPUT"; echo "port=8081" >> "$GITHUB_OUTPUT" ;;
             agents) echo "dir=agents" >> "$GITHUB_OUTPUT"; echo "port=8082" >> "$GITHUB_OUTPUT" ;;
+            atlas) echo "dir=atlas" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
             *) echo "dir=days/${{ matrix.day }}" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -73,6 +77,11 @@ jobs:
           else
             echo "тестов нет — пропуск"
           fi
+
+      # В образ атласа идёт собранный atlas/dist/site, поэтому сборка — до docker build.
+      - name: Сборка витрины атласа
+        if: matrix.day == 'atlas'
+        run: node atlas/build.js
 
       - name: Сборка образа (без публикации)
         run: docker build -t ci-check:${{ matrix.day }} ${{ steps.unit.outputs.dir }}

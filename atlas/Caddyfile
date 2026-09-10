@@ -1,0 +1,12 @@
+# Caddy внутри образа атласа: только раздача файлов. TLS, заголовки
+# безопасности и noindex — у внешнего Caddy (deploy/Caddyfile), он же
+# срезает префикс /atlas.
+{
+	admin off
+}
+
+:8080 {
+	respond /healthz 200
+	root * /srv
+	file_server
+}

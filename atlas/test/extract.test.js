@@ -57,7 +57,8 @@ test('структурные числа: они заданы устройств�
   assert.equal(of('phase').length, 10, 'десять фаз /day-cycle')
   assert.equal(of('day').length, dayDirs.length)
   assert.equal(of('volume').length, parseCompose(src.composeText).volumes.length)
-  assert.equal(of('service').length, 4, 'router, agents, caddy и лендинг site')
+  const services = parseCompose(src.composeText).services.filter((s) => !/^day\d+$/.test(s.name))
+  assert.equal(of('service').length, services.length + 1, 'сервисы compose, кроме дней, и лендинг site')
   assert.equal(of('external').length, src.providers.length + src.overlay.externals.length)
   assert.equal(
     of('external').some((n) => n.key === 'google-drive'),
