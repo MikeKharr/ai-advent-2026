@@ -173,16 +173,27 @@ test('каждый узел несёт координаты в единично�
       assert.ok((String(v).split('.')[1] ?? '').length <= 6, `${node.id}: ${v}`)
     }
   }
-  // Габарит меряется по связной части: изолированные узлы стоят по краю и
-  // масштаб не задают (иначе связная часть сжимается — так было до правки).
-  const linked = new Set()
-  for (const e of graph.edges) {
-    linked.add(e.from)
-    linked.add(e.to)
+  // Меряется заполненность, а не габаритная рамка: рамка была здоровой ровно
+  // тогда, когда 150 узлов сидели в 2.7 % площади, а натягивала её пара из
+  // двух узлов в противоположном углу (находка Б6 ревью этапа 3).
+  const cells = 20
+  const busy = new Set()
+  for (const n of graph.nodes) {
+    busy.add(`${Math.min(cells - 1, Math.floor(n.x * cells))},${Math.min(cells - 1, Math.floor(n.y * cells))}`)
   }
-  const core = graph.nodes.filter((n) => linked.has(n.id))
-  const span = (axis) => Math.max(...core.map((n) => n[axis])) - Math.min(...core.map((n) => n[axis]))
-  assert.ok(span('x') * span('y') >= 0.85, `связная часть занимает ${(span('x') * span('y') * 100).toFixed(1)} % квадрата`)
+  // Доля от числа узлов, а не от числа ячеек: порог должен ловить слипание,
+  // а не зависеть от того, сколько документов в проекте.
+  assert.ok(
+    busy.size / Math.min(graph.nodes.length, cells * cells) >= 0.5,
+    `в своей ячейке сетки 20×20 ${busy.size} узлов из ${graph.nodes.length}`,
+  )
+
+  const nearest = graph.nodes
+    .map((a) => Math.min(...graph.nodes.filter((b) => b !== a).map((b) => Math.hypot(a.x - b.x, a.y - b.y))))
+    .sort((a, b) => a - b)
+  const median = nearest[Math.floor(nearest.length / 2)]
+  assert.ok(median >= 0.02, `медиана расстояния до ближайшего соседа ${median.toFixed(4)}`)
+
   assert.equal(new Set(graph.nodes.map((n) => `${n.x},${n.y}`)).size, graph.nodes.length)
 })
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { LAYOUT_SEED, layout } from '../lib/layout.js'
+import { LAYOUT_SEED, MAX_STRETCH, components, layout } from '../lib/layout.js'
 
 // Контракт 1 этапа 3: координаты приходят из сборки, а не считаются в
 // браузере посетителя (раскладка 2026-09-13-2100).
@@ -12,6 +12,21 @@ function sample(n = 40) {
   for (let i = 1; i < n; i += 1) edges.push({ from: `n${i - 1}`, to: `n${i}` })
   for (let i = 0; i + 7 < n; i += 7) edges.push({ from: `n${i}`, to: `n${i + 7}` })
   return { nodes, edges }
+}
+
+/**
+ * Заполненность: доля узлов, попавших каждый в свою ячейку сетки 20×20, и
+ * медиана расстояния до ближайшего соседа. Доля считается от числа узлов, а
+ * не от числа ячеек: иначе порог зависел бы от размера графа, а не от того,
+ * слиплись узлы или нет.
+ */
+function density(points, cells = 20) {
+  const busy = new Set()
+  for (const p of points) busy.add(`${Math.min(cells - 1, Math.floor(p.x * cells))},${Math.min(cells - 1, Math.floor(p.y * cells))}`)
+  const nearest = points
+    .map((a) => Math.min(...points.filter((b) => b !== a).map((b) => Math.hypot(a.x - b.x, a.y - b.y))))
+    .sort((a, b) => a - b)
+  return { filled: busy.size / Math.min(points.length, cells * cells), median: nearest[Math.floor(nearest.length / 2)] }
 }
 
 test('координаты лежат в единичном квадрате с шестью знаками после точки', () => {
@@ -41,51 +56,65 @@ test('семя задаёт картинку: другое семя — друг
   assert.ok(same < nodes.length / 2, `совпало ${same} позиций — семя ни на что не влияет`)
 })
 
-test('граф не схлопывается в точку и не кладёт узлы друг на друга', () => {
-  const { nodes, edges } = sample()
-  const placed = [...layout(nodes, edges).values()]
-  const xs = placed.map((p) => p.x)
-  const ys = placed.map((p) => p.y)
-  assert.ok(Math.max(...xs) - Math.min(...xs) > 0.5, 'разброс по x меньше половины квадрата')
-  assert.ok(Math.max(...ys) - Math.min(...ys) > 0.5, 'разброс по y меньше половины квадрата')
-  assert.equal(new Set(placed.map((p) => `${p.x},${p.y}`)).size, nodes.length, 'узлы совпали позициями')
+test('граф заполняет квадрат, а не собирается в клубок', () => {
+  // Габаритная рамка мерит рамку, а не заполненность: она была здоровой ровно
+  // тогда, когда 150 узлов сидели в 2.7 % площади, а рамку натягивала пара из
+  // двух узлов в противоположном углу (находка Б6 ревью этапа 3). Поэтому
+  // меряются занятые ячейки сетки и расстояние между соседями.
+  const { nodes, edges } = sample(60)
+  const loose = Array.from({ length: 20 }, (_, i) => ({ id: `сам-по-себе-${i}` }))
+  const all = [...nodes, ...loose, { id: 'пара-1' }, { id: 'пара-2' }]
+  const withPair = [...edges, { from: 'пара-1', to: 'пара-2' }]
+
+  const { filled, median } = density([...layout(all, withPair).values()])
+  assert.ok(filled >= 0.5, `в своей ячейке сетки ${(filled * 100).toFixed(1)} % узлов`)
+  assert.ok(median >= 0.02, `медиана расстояния до соседа ${median.toFixed(4)}`)
+  assert.equal(new Set([...layout(all, withPair).values()].map((p) => `${p.x},${p.y}`)).size, all.length)
 })
 
-test('связная часть занимает почти весь квадрат', () => {
-  const { nodes, edges } = sample()
-  const placed = [...layout(nodes, edges).values()]
-  const span = (axis) => Math.max(...placed.map((p) => p[axis])) - Math.min(...placed.map((p) => p[axis]))
-  // Нормировка по каждой оси отдельно: витрина вписывает окрестность в канву,
-  // и вытянутое облако означало бы пустую половину экрана.
-  assert.ok(span('x') * span('y') >= 0.85, `габарит ${(span('x') * span('y') * 100).toFixed(1)} %`)
-})
-
-test('изолированные узлы не влияют на масштаб связной части', () => {
-  // Причина Б1/Б2: к изолированным применялось только отталкивание, они
-  // улетали к границам и задавали габарит за всех — связная часть сжималась
-  // до 7.7 % квадрата, и в окрестностях пропадали подписи.
-  const { nodes, edges } = sample()
-  const alone = layout(nodes, edges)
-  const withLoose = layout([...nodes, { id: 'один' }, { id: 'другой' }, { id: 'третий' }], edges)
-  for (const node of nodes) assert.deepEqual(withLoose.get(node.id), alone.get(node.id), node.id)
-})
-
-test('изолированные узлы стоят по краю квадрата', () => {
-  const { nodes, edges } = sample()
-  const loose = ['один', 'другой', 'третий', 'четвёртый']
-  const placed = layout([...nodes, ...loose.map((id) => ({ id }))], edges)
-  for (const id of loose) {
-    const { x, y } = placed.get(id)
-    const onEdge = x <= 0.02 || x >= 0.98 || y <= 0.02 || y >= 0.98
-    assert.ok(onEdge, `${id} не на краю: ${x}, ${y}`)
+test('маленькая компонента не задаёт габарит за всех', () => {
+  // Отталкивание уносило пару из двух узлов в угол, потому что притягивать её
+  // к остальным нечем, и нормировка считала по ней.
+  const { nodes, edges } = sample(60)
+  const alone = [...layout(nodes, edges).values()]
+  const withPair = [
+    ...layout([...nodes, { id: 'пара-1' }, { id: 'пара-2' }], [...edges, { from: 'пара-1', to: 'пара-2' }]).values(),
+  ]
+  const spread = (pts, axis) => Math.max(...pts.map((p) => p[axis])) - Math.min(...pts.map((p) => p[axis]))
+  for (const axis of ['x', 'y']) {
+    assert.ok(spread(withPair, axis) > spread(alone, axis) * 0.6, `ось ${axis} схлопнулась из-за пары`)
   }
-  assert.equal(new Set(loose.map((id) => JSON.stringify(placed.get(id)))).size, loose.length, 'изолированные совпали')
+})
+
+test('компоненты связности находятся и идут от большой к малой', () => {
+  const { nodes, edges } = sample(10)
+  const parts = components([...nodes, { id: 'один' }, { id: 'два' }, { id: 'три' }], [...edges, { from: 'два', to: 'три' }])
+  assert.deepEqual(
+    parts.map((p) => p.length),
+    [10, 2, 1],
+  )
+})
+
+test('искажение расстояний ограничено порогом', () => {
+  // Пооcевая нормировка — осознанный размен: страница масштабирует обе оси
+  // одним коэффициентом (`fit` берёт Math.min по осям), поэтому растяжение
+  // доезжает до экрана и должно быть ограничено, а не оставлено на самотёк.
+  assert.equal(MAX_STRETCH, 1.3, 'порог искажения зафиксирован в коде')
+
+  // Цепь из тридцати узлов ложится вытянутой — выше порога, поэтому
+  // нормировка изотропная и коробка заполняется не целиком.
+  const chain = Array.from({ length: 30 }, (_, i) => ({ id: `ц${i}` }))
+  const line = chain.slice(1).map((n, i) => ({ from: chain[i].id, to: n.id }))
+  const placed = [...layout(chain, line).values()]
+  const spanX = Math.max(...placed.map((p) => p.x)) - Math.min(...placed.map((p) => p.x))
+  const spanY = Math.max(...placed.map((p) => p.y)) - Math.min(...placed.map((p) => p.y))
+  assert.ok(Math.max(spanX, spanY) / Math.min(spanX, spanY) > 1.05, `цепь легла квадратом: ${spanX} × ${spanY}`)
 })
 
 test('вырожденные случаи не роняют сборку', () => {
   assert.equal(layout([], []).size, 0)
   assert.deepEqual(layout([{ id: 'a' }], []).get('a'), { x: 0.5, y: 0.5 })
-  // Узлы без единого ребра — обычное дело: 24 таких есть на main.
+  // Узлы без единого ребра — обычное дело: два десятка таких есть на main.
   const loose = layout(
     [{ id: 'a' }, { id: 'b' }],
     [{ from: 'a', to: 'нет-такого' }],

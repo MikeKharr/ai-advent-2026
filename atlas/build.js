@@ -163,7 +163,13 @@ export function serve(dir, port = 8080) {
       res.writeHead(404).end('нет такого файла')
     }
   })
-  server.listen(port, () => console.log(`витрина на http://localhost:${port}/ из ${root}`))
+  // Только локальный интерфейс: без адреса Node слушает `::`, то есть
+  // отдаёт статику всей сети, включая tailnet владельца.
+  server.on('error', (error) => {
+    console.error(error.code === 'EADDRINUSE' ? `порт ${port} занят` : `витрина не поднялась: ${error.message}`)
+    process.exitCode = 1
+  })
+  server.listen(port, '127.0.0.1', () => console.log(`витрина на http://127.0.0.1:${port}/ из ${root}`))
   return server
 }
 

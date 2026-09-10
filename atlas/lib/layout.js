@@ -28,9 +28,23 @@ export const LAYOUT_SEED = 20260913
 /** Разрежение после силовой модели: сколько проходов и с какого расстояния. */
 const DECLUTTER_STEPS = 250
 const DECLUTTER_NEAR = 2.5
+/**
+ * Предел искажения расстояний пооcевой нормировкой. Выше него компонента
+ * нормируется изотропно: лучше пустое место в коробке, чем молча растянутая
+ * в разы картина.
+ */
+export const MAX_STRETCH = 1.3
 
 /**
- * Силовая раскладка Фрухтермана — Рейнгольда.
+ * Раскладка графа по компонентам связности.
+ *
+ * Компоненты раскладываются каждая отдельно и потом укладываются в квадрат
+ * коробками со стороной, пропорциональной корню из числа узлов. Общая
+ * симуляция для этого не годится: отталкивание уносит маленькую компоненту в
+ * угол, потому что притягивать её к остальным нечем, — на main пара из двух
+ * узлов улетала в противоположный угол и одна задавала габарит, а главная
+ * компонента из 150 узлов сжималась в 2.7 % площади. Габаритная рамка при
+ * этом выглядела здоровой: она мерит рамку, а не заполненность.
  *
  * Стартовый вид витрины («Цикл дня») сюда не входит: раскладка задаёт его
  * сама, слева направо на широком экране и сверху вниз на узком, то есть
@@ -48,53 +62,112 @@ export function layout(nodes, edges, options = {}) {
   if (nodes.length === 0) return placed
   if (nodes.length === 1) return placed.set(nodes[0].id, { x: 0.5, y: 0.5 })
 
-  const known = new Set(nodes.map((node) => node.id))
-  const linked = new Set()
-  for (const e of edges) {
-    if (!known.has(e.from) || !known.has(e.to) || e.from === e.to) continue
-    linked.add(e.from)
-    linked.add(e.to)
+  const parts = components(nodes, edges)
+
+  // Коробка компоненты: сторона по корню из числа узлов, то есть площадь
+  // пропорциональна размеру. Компонента из одного узла — точка, из ста —
+  // в десять раз шире.
+  const boxes = parts.map((part, i) => ({
+    nodes: part,
+    side: Math.sqrt(part.length),
+    // Семя своё у каждой компоненты, иначе одинаковые по форме компоненты
+    // легли бы одинаково и читались как одна.
+    local: part.length >= 2 ? simulate(part, edges, seed + i, iterations, options) : new Map([[part[0].id, { x: 0.5, y: 0.5 }]]),
+  }))
+
+  const packed = pack(boxes)
+  for (const box of boxes) {
+    for (const node of box.nodes) {
+      const local = box.local.get(node.id)
+      placed.set(node.id, {
+        x: packed.scale * (box.x + local.x * box.side - packed.minX) + packed.offsetX,
+        y: packed.scale * (box.y + local.y * box.side - packed.minY) + packed.offsetY,
+      })
+    }
   }
-
-  // Изолированные узлы в симуляции не участвуют и на масштаб не влияют.
-  // К ним применялось бы только отталкивание — они улетали бы к границам и
-  // задавали габарит за всех остальных: на main 24 таких узла ужимали
-  // связную часть до 7.7 % квадрата, и в окрестностях пропадали подписи.
-  const core = nodes.filter((node) => linked.has(node.id))
-  const loose = nodes.filter((node) => !linked.has(node.id))
-
-  if (core.length >= 2) {
-    for (const [id, point] of simulate(core, edges, seed, iterations, options)) placed.set(id, point)
-  } else {
-    for (const node of core) placed.set(node.id, { x: 0.5, y: 0.5 })
-  }
-
-  // Изолированные раскладываются по краю квадрата, ровным шагом по периметру:
-  // они видны, подписаны и не мешают связной части.
-  for (const [i, node] of loose.entries()) placed.set(node.id, onBorder(i, loose.length))
 
   for (const [id, point] of placed) placed.set(id, { x: round6(point.x), y: round6(point.y) })
   return placed
 }
 
-/** Поля: связная часть занимает центр, изолированные стоят по краю. */
+/** Поля квадрата: узел у самой границы обрезался бы подписью. */
 const BORDER = 0.03
 const INNER = 1 - 2 * BORDER
+/** Просвет между коробками компонент, в тех же единицах, что сторона. */
+const GAP = 0.6
 
 /**
- * Точка на периметре квадрата по доле пути. Без тригонометрии: обход четырёх
- * сторон сравнениями, чтобы раскладка оставалась побитово воспроизводимой.
+ * Компоненты связности, от большой к малой. Порядок детерминирован: узлы
+ * обходятся в порядке графа, компоненты сортируются по размеру, а при равном
+ * размере — по первому идентификатору в порядке кодовых единиц (не
+ * `localeCompare`: он зависит от локали и версии ICU).
  */
-function onBorder(i, total) {
-  const t = ((i + 0.5) / total) * 4
-  const side = Math.floor(t)
-  const u = t - side
-  const lo = BORDER / 2
-  const hi = 1 - BORDER / 2
-  if (side === 0) return { x: lo + u * (hi - lo), y: lo }
-  if (side === 1) return { x: hi, y: lo + u * (hi - lo) }
-  if (side === 2) return { x: hi - u * (hi - lo), y: hi }
-  return { x: lo, y: hi - u * (hi - lo) }
+export function components(nodes, edges) {
+  const near = new Map(nodes.map((node) => [node.id, []]))
+  for (const e of edges) {
+    if (!near.has(e.from) || !near.has(e.to) || e.from === e.to) continue
+    near.get(e.from).push(e.to)
+    near.get(e.to).push(e.from)
+  }
+
+  const seen = new Set()
+  const parts = []
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue
+    const part = []
+    const queue = [node.id]
+    seen.add(node.id)
+    while (queue.length > 0) {
+      const id = queue.shift()
+      part.push(id)
+      for (const other of near.get(id)) {
+        if (seen.has(other)) continue
+        seen.add(other)
+        queue.push(other)
+      }
+    }
+    const byId = new Map(nodes.map((n) => [n.id, n]))
+    parts.push(part.map((id) => byId.get(id)))
+  }
+
+  return parts.sort((a, b) => b.length - a.length || (a[0].id < b[0].id ? -1 : a[0].id > b[0].id ? 1 : 0))
+}
+
+/**
+ * Полочная укладка коробок: строка заполняется слева направо, следующая
+ * начинается, когда строка переросла целевую ширину. Целевая ширина — корень
+ * из суммарной площади, поэтому укладка выходит примерно квадратной.
+ * Масштаб общий для обеих осей: разный исказил бы размеры компонент
+ * относительно друг друга.
+ */
+function pack(boxes) {
+  const area = boxes.reduce((sum, b) => sum + b.side * b.side, 0)
+  const target = Math.sqrt(area) * 1.1
+  let x = 0
+  let y = 0
+  let rowHeight = 0
+  let width = 0
+  for (const box of boxes) {
+    if (x > 0 && x + box.side > target) {
+      y += rowHeight + GAP
+      x = 0
+      rowHeight = 0
+    }
+    box.x = x
+    box.y = y
+    x += box.side + GAP
+    if (box.side > rowHeight) rowHeight = box.side
+    if (x - GAP > width) width = x - GAP
+  }
+  const height = y + rowHeight
+  const scale = INNER / Math.max(width, height, 1e-9)
+  return {
+    scale,
+    minX: 0,
+    minY: 0,
+    offsetX: BORDER + (INNER - width * scale) / 2,
+    offsetY: BORDER + (INNER - height * scale) / 2,
+  }
 }
 
 /** Силовая раскладка связной части с последующей нормировкой по ней же. */
@@ -206,10 +279,16 @@ function simulate(nodes, edges, seed, iterations, { declutterSteps = DECLUTTER_S
     }
   }
 
-  // Нормировка — по связной части и по каждой оси отдельно: витрина
-  // показывает окрестность, вписанную в канву, и вытянутое облако в
-  // единичном квадрате означало бы, что половина канвы пуста, а узлы
-  // окрестности сидят друг на друге.
+  // Нормировка коробки компоненты — по каждой оси отдельно. Это осознанное
+  // искажение расстояний: страница масштабирует обе оси одним коэффициентом
+  // (`fit` в `web/app.js` берёт `Math.min` по осям и центрирует), поэтому
+  // растяжение доезжает до экрана, а не снимается отрисовкой. Размен — на
+  // main облако связной части 14.61 × 16.69, то есть расстояния искажаются в
+  // 1.14 раза, и за это коробка заполняется целиком вместо 77 %.
+  //
+  // Порог обязателен: без него искажение может незаметно вырасти в разы на
+  // другом наборе документов. Выше MAX_STRETCH нормировка изотропная —
+  // компонента займёт свою коробку не целиком, но форма не соврёт.
   let minX = px[0]
   let maxX = px[0]
   let minY = py[0]
@@ -222,12 +301,25 @@ function simulate(nodes, edges, seed, iterations, { declutterSteps = DECLUTTER_S
   }
   const spanX = maxX - minX || 1
   const spanY = maxY - minY || 1
+  const stretch = Math.max(spanX, spanY) / Math.min(spanX, spanY)
+
+  let scaleX = 1 / spanX
+  let scaleY = 1 / spanY
+  let shiftX = 0
+  let shiftY = 0
+  if (stretch > MAX_STRETCH) {
+    const common = 1 / Math.max(spanX, spanY)
+    scaleX = common
+    scaleY = common
+    shiftX = (1 - spanX * common) / 2
+    shiftY = (1 - spanY * common) / 2
+  }
 
   const out = new Map()
   for (let i = 0; i < n; i += 1) {
     out.set(nodes[i].id, {
-      x: BORDER + ((px[i] - minX) / spanX) * INNER,
-      y: BORDER + ((py[i] - minY) / spanY) * INNER,
+      x: shiftX + (px[i] - minX) * scaleX,
+      y: shiftY + (py[i] - minY) * scaleY,
     })
   }
   return out
