@@ -594,6 +594,68 @@ export function viewLine({ full, selected, ids, links, stats, depth, byId }) {
   return `Цикл дня: ${count(of('phase'), 'фаза', 'фазы', 'фаз')}, ${count(of('role'), 'роль', 'роли', 'ролей')}, ${count(of('class'), 'класс', 'класса', 'классов')} гейтов`
 }
 
+// Путь посещений — agent_docs/design/2026-09-14-0900-atlas-visit-trail.md.
+// Путь — идентификаторы узлов без корня: корень стоит первым всегда.
+
+/**
+ * Одно правило шага: узел уже есть в пути — всё после него отрезается; нет —
+ * добавляется в конец. `null` — корень. Повторов в пути поэтому не бывает, и
+ * длина ограничена числом узлов без искусственного предела.
+ */
+export function stepTrail(trail, id) {
+  if (id === null) return []
+  const at = trail.indexOf(id)
+  return at === -1 ? [...trail, id] : trail.slice(0, at + 1)
+}
+
+/**
+ * Путь при загрузке страницы. Адрес называет только узел; сохранённый путь
+ * верится, лишь если кончается на нём, — иначе он чужой этому заходу.
+ * Звенья, которых нет в этой сборке, выбрасываются: путь не притворяется
+ * целым. `raw` — адрес без `#`; пустой или мёртвый — один корень.
+ */
+export function restoreTrail(saved, raw, addresses) {
+  const id = addresses.get(raw)
+  if (!id) return []
+  const known = new Set(addresses.values())
+  const kept = Array.isArray(saved) ? saved.filter((x) => known.has(x)) : []
+  return kept[kept.length - 1] === id ? kept : [id]
+}
+
+/**
+ * Сколько звеньев свернуть в «… ещё N». Звенья скрываются от старых к новым,
+ * пока строка не встанет в `room`; корень, предыдущее и текущее не
+ * скрываются никогда — не встают и они, строка переносится.
+ * @param {number} root ширина корня
+ * @param {number[]} links стоимость звеньев пути по порядку, с разделителем и зазором
+ * @param {(n:number)=>number} more стоимость кнопки «… ещё n»
+ * @returns {number} число скрытых звеньев — первых в пути
+ */
+export function foldTrail(root, links, more, room) {
+  const sum = (from) => links.slice(from).reduce((a, b) => a + b, 0)
+  if (root + sum(0) <= room) return 0
+  const most = Math.max(0, links.length - 2)
+  for (let n = 1; n < most; n += 1) if (root + more(n) + sum(n) <= room) return n
+  return most
+}
+
+/** Ярлык кнопки свёртки: видимая часть и продолжение для скринридера. */
+export function trailMore(n) {
+  const shown = `… ещё ${n}`
+  return { shown, rest: `${count(n, 'узел', 'узла', 'узлов').slice(String(n).length)} пути` }
+}
+
+/**
+ * Состояние переключателя глубины — верхняя подходящая строка таблицы
+ * раскладки: загрузка и ошибка, полный граф, узел не выбран, узел без связей.
+ */
+export function depthMode({ status, full, selected, alone }) {
+  if (status !== 'ready') return status
+  if (full) return 'full'
+  if (!selected) return 'none'
+  return alone ? 'alone' : 'on'
+}
+
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
@@ -635,6 +697,9 @@ const state = {
   reason: '',
   drawn: false,
   open: new Set(),
+  /** Путь посещений без корня и признак развёрнутой свёртки. */
+  trail: [],
+  trailOpen: false,
 }
 
 const node = (id) => state.index.byId.get(id)
@@ -944,8 +1009,9 @@ function wireCanvas(canvas) {
     if (!moved) {
       const hit = pick(canvas, ev)
       if (hit) {
-        select(hit)
+        // Карта — выборщик: касание закрывает её, и шаг пишется в путь.
         if (mapOpen()) $('map').close()
+        go(hit)
       }
     }
   })
@@ -966,6 +1032,161 @@ function wireCanvas(canvas) {
   )
 }
 
+// ── Путь посещений ─────────────────────────────────────────────────────
+// agent_docs/design/2026-09-14-0900-atlas-visit-trail.md. Путь хранится в
+// sessionStorage вкладки и в адрес не пишется: ссылка на узел передаёт узел,
+// а не чужой путь к нему.
+
+const TRAIL_KEY = 'atlas-trail'
+
+/** Хранилище может быть запрещено — тогда путь живёт в памяти страницы, молча. */
+function readTrail() {
+  try {
+    return JSON.parse(sessionStorage.getItem(TRAIL_KEY) ?? '[]')
+  } catch {
+    return []
+  }
+}
+
+function setTrail(trail) {
+  state.trail = trail
+  state.trailOpen = false
+  try {
+    sessionStorage.setItem(TRAIL_KEY, JSON.stringify(trail))
+  } catch {
+    // Молча, как и чтение: путь остаётся в памяти страницы.
+  }
+}
+
+function trailItem(child, first) {
+  const li = el('li')
+  if (!first) {
+    const sep = el('span', 'sep', '›')
+    sep.setAttribute('aria-hidden', 'true')
+    li.appendChild(sep)
+  }
+  li.appendChild(child)
+  return li
+}
+
+/** Звено-ссылка. `data-trail` пустой у корня: возврат к нему — `select(null)`. */
+function trailLink(text, href, id, title) {
+  const a = el('a', undefined, text)
+  a.setAttribute('href', href)
+  a.dataset.trail = id
+  if (title) a.title = title
+  return a
+}
+
+/** Текущее звено — не ссылка: ссылка на место, где уже стоишь, ничего не делает. */
+function trailHere(text) {
+  const span = el('span', 'here', text)
+  span.setAttribute('aria-current', 'page')
+  span.tabIndex = -1
+  return span
+}
+
+function fillMore(button, n) {
+  if (n === null) {
+    button.textContent = 'Свернуть путь'
+    return
+  }
+  const { shown, rest } = trailMore(n)
+  button.textContent = shown
+  button.appendChild(el('span', 'vh', rest))
+}
+
+/**
+ * Строка пути. Порядок, чтобы строка не мигала: звенья раскладываются в одну
+ * строку без переноса, лишние скрываются от старых к новым, и только потом
+ * ниже 73rem включается перенос. Всё — в одной задаче, до отрисовки.
+ */
+function renderTrail() {
+  const nav = $('trail')
+  nav.classList.remove('idle')
+  const ol = clear($('trail-list'))
+  // Корень называет место, куда ведёт: при полном графе без узла на канве весь граф.
+  const rootName = state.full ? 'Весь граф' : 'Цикл дня'
+  const atRoot = state.trail.length === 0 && !state.missing
+  const rootLi = trailItem(atRoot ? trailHere(rootName) : trailLink(rootName, './', ''), true)
+  ol.appendChild(rootLi)
+  nav.classList.remove('open')
+  if (atRoot) return
+
+  const more = el('button')
+  more.type = 'button'
+  more.addEventListener('click', toggleTrail)
+  more.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || !state.trailOpen) return
+    ev.stopPropagation()
+    toggleTrail()
+  })
+  const moreLi = trailItem(more)
+  ol.appendChild(moreLi)
+
+  const before = state.missing ? state.trail : state.trail.slice(0, -1)
+  const linkLis = before.map((id) => {
+    const n = node(id)
+    return ol.appendChild(trailItem(trailLink(shortName(n), `#${addressOf(id)}`, id, plainTitle(n))))
+  })
+  const last = state.trail[state.trail.length - 1]
+  const hereLi = ol.appendChild(trailItem(trailHere(state.missing ? 'Узла нет в этой сборке' : shortName(node(last)))))
+
+  nav.classList.add('measure')
+  const gap = Number.parseFloat(getComputedStyle(ol).columnGap) || 0
+  const cost = (li) => li.getBoundingClientRect().width + gap
+  const hidden = foldTrail(
+    rootLi.getBoundingClientRect().width,
+    [...linkLis, hereLi].map(cost),
+    (n) => {
+      fillMore(more, n)
+      return cost(moreLi)
+    },
+    ol.clientWidth,
+  )
+  nav.classList.remove('measure')
+
+  moreLi.hidden = hidden === 0
+  if (hidden === 0) return
+  more.setAttribute('aria-expanded', String(state.trailOpen))
+  fillMore(more, state.trailOpen ? null : hidden)
+  nav.classList.toggle('open', state.trailOpen)
+  if (!state.trailOpen) for (const li of linkLis.slice(0, hidden)) li.hidden = true
+}
+
+/** Разворот и свёртка: фокус остаётся на кнопке, канва перевписывается под новую высоту. */
+function toggleTrail() {
+  state.trailOpen = !state.trailOpen
+  renderTrail()
+  $('trail-list').querySelector('button')?.focus()
+  reframe(false)
+}
+
+/**
+ * После шага посетителя путь встаёт у верхнего края окна, если он не виден
+ * целиком: на узком экране он над поиском, а посетитель читает панель ниже.
+ * Мгновенно — корпус ограничивает движение 120 мс.
+ */
+function showTrail() {
+  const box = $('trail').getBoundingClientRect()
+  if (box.top < 0 || box.bottom > innerHeight) $('trail').scrollIntoView({ block: 'start' })
+}
+
+/** Шаг внутри витрины: канва, ссылка, поиск, стрелки фаз, карта. */
+function go(id) {
+  setTrail(stepTrail(state.trail, id))
+  select(id)
+  showTrail()
+}
+
+/** Возврат по звену, по корню или «К началу»: фокус — на текущее звено пути. */
+function back(id) {
+  setTrail(stepTrail(state.trail, id))
+  select(id, false, true)
+  $('trail-list').querySelector('.here')?.focus()
+  showTrail()
+}
+
 // ── Колонка навигации ──────────────────────────────────────────────────
 
 function renderLede() {
@@ -977,12 +1198,48 @@ function renderLede() {
     `сервисы — всё остальное собрано из ссылок, которые документы проекта уже ставят друг на друга.`
 }
 
-function renderTools() {
+/** Пояснения недоступного переключателя глубины — таблица состояний раскладки пути. */
+const DEPTH_NOTE = {
+  loading: 'Схема ещё грузится',
+  error: 'Схема не загрузилась',
+  full: 'В полном графе глубина не действует: на схеме и так все узлы.',
+  none: 'Глубина действует, когда выбран узел. Сейчас не выбран ни один — выберите узел в списке, поиском или на схеме.',
+  alone: 'У этого узла нет связей: соседей нет ни в одном шаге, ни в двух.',
+}
+
+/**
+ * Переключатель глубины. Недоступен — атрибутом на `fieldset`, а не видом;
+ * запомненный выбор остаётся отмеченным и действует, как только появится
+ * узел со связями. Число в ярлыке — только у доступной кнопки: у недоступной
+ * оно обещало бы вид, который нажатие не построит.
+ */
+function renderDepth() {
+  const ready = state.status === 'ready' && state.selected
+  const mode = depthMode({
+    status: state.status,
+    full: state.full,
+    selected: state.selected,
+    alone: ready ? state.index.near.get(state.selected).size === 0 : false,
+  })
+  $('depth').disabled = mode !== 'on'
+  if (mode !== 'on') {
+    $('depth-2').textContent = '2 шага'
+    $('depth-note').textContent = DEPTH_NOTE[mode]
+    return
+  }
   const s = state.stats
   $('depth-note').textContent = `Два шага у самых связанных узлов доходят до ${count(s.twoStep, 'узла', 'узлов', 'узлов')} из ${s.nodes} — это уже почти весь граф`
-  // Ярлык «2 шага» несёт цену до нажатия, когда узел выбран.
-  const two = state.selected ? neighborhood(state.index.near, state.selected, 2).size : null
-  $('depth-2').textContent = two === null ? '2 шага' : `2 шага (${count(two, 'узел', 'узла', 'узлов')})`
+  // Ярлык «2 шага» несёт цену до нажатия.
+  const two = neighborhood(state.index.near, state.selected, 2).size
+  $('depth-2').textContent = `2 шага (${count(two, 'узел', 'узла', 'узлов')})`
+}
+
+/** Каждое изменение настройки вида объявляется ровно один раз. */
+const announceView = () => announce(`Вид: ${state.view.line}`)
+
+function renderTools() {
+  const s = state.stats
+  renderDepth()
   $('full-label').textContent = `Показать весь граф — ${count(s.nodes, 'узел', 'узла', 'узлов')}, ${count(s.edges, 'связь', 'связи', 'связей')}`
 
   const box = clear($('filters'))
@@ -1008,6 +1265,7 @@ function renderTools() {
       for (const t of types) if (famBox.checked) state.hidden.delete(t)
         else state.hidden.add(t)
       refresh()
+      announceView()
     })
     const famLabel = el('label')
     famLabel.append(famBox, el('span', undefined, all || none ? 'все типы' : 'часть типов'))
@@ -1023,6 +1281,7 @@ function renderTools() {
         if (box2.checked) state.hidden.delete(type)
         else state.hidden.add(type)
         refresh()
+        announceView()
       })
       label.append(box2, el('span', undefined, TYPE_PLURAL[type]), el('span', 'n', String(s.byType[type])))
       list.appendChild(label)
@@ -1149,10 +1408,10 @@ function renderMissing(panel) {
   const p = el('p', 'empty')
   p.append('Узла ', el('code', 'mono', state.missing), ' нет в этой сборке. Схема пересобирается при каждом мерже — документ мог быть переименован.')
   head.appendChild(p)
-  const back = el('button', undefined, 'К началу')
-  back.type = 'button'
-  back.addEventListener('click', () => select(null))
-  head.appendChild(back)
+  const start = el('button', undefined, 'К началу')
+  start.type = 'button'
+  start.addEventListener('click', () => back(null))
+  head.appendChild(start)
   panel.appendChild(head)
 }
 
@@ -1566,6 +1825,7 @@ function renderFooter() {
 function dropFilters() {
   state.hidden.clear()
   refresh(false)
+  announceView()
   $('filters').querySelector('input')?.focus()
 }
 
@@ -1604,6 +1864,7 @@ function refresh(animate) {
     state.drawn = true
     $('view-line').textContent = state.view.line
     $('map-title').textContent = state.view.line
+    renderTrail()
     // Пустая канва читается как «не загрузилось», поэтому у неё есть текст —
     // тот же механизм, что у загрузки и ошибки.
     if (state.status === 'ready') emptyCanvas(state.view.ids.size === 0)
@@ -1622,7 +1883,8 @@ function refresh(animate) {
   }
 }
 
-function select(id, fromHash) {
+/** `returned` — возврат по пути: «Вернулись» отличает его от шага вперёд. */
+function select(id, fromHash, returned) {
   state.missing = null
   state.selected = id
   state.open.clear()
@@ -1634,15 +1896,23 @@ function select(id, fromHash) {
   refresh(true)
   if (id) {
     $('panel').scrollTop = 0
-    announce(`Выбран узел: ${plainTitle(node(id))}, ${TYPE_NAME[node(id).type].toLowerCase()}. Вид: ${state.view.line}`)
-  } else announce(`Вид: ${state.view.line}`)
+    const what = `${plainTitle(node(id))}, ${TYPE_NAME[node(id).type].toLowerCase()}. Вид: ${state.view.line}`
+    announce(returned ? `Вернулись к узлу: ${what}` : `Выбран узел: ${what}`)
+  } else announce(returned ? `Вернулись к началу. Вид: ${state.view.line}` : `Вид: ${state.view.line}`)
 }
 
 /** Якоря страницы, а не адреса узлов: контракт `#`-адресов их не знает. */
 const PAGE_ANCHORS = new Set(['panel'])
 
-function fromHash() {
-  const raw = decodeURIComponent(location.hash.replace(/^#/, ''))
+const hashRaw = () => decodeURIComponent(location.hash.replace(/^#/, ''))
+
+/**
+ * `step` — смена адреса в открытой вкладке (правка адресной строки): это шаг
+ * посетителя, и путь меняется по тому же правилу. При загрузке путь уже
+ * восстановлен и не трогается.
+ */
+function fromHash(step) {
+  const raw = hashRaw()
   // Якоря самой страницы узлами не притворяются: пропуск-ссылка ведёт к
   // панели, а не «к отсутствию узла». Но заход прямо по такому адресу —
   // из новой вкладки или по скопированной ссылке — обязан построить вид:
@@ -1652,6 +1922,7 @@ function fromHash() {
     return
   }
   if (raw === '') {
+    if (step) setTrail([])
     state.missing = null
     state.selected = null
     refresh(false)
@@ -1659,10 +1930,13 @@ function fromHash() {
   }
   const id = state.addresses.get(raw)
   if (id) {
+    if (step) setTrail(stepTrail(state.trail, id))
     select(id, true)
     return
   }
   // Ссылки на витрину живут дольше сборок: адрес обязан сказать это словами.
+  // Путь — корень и «Узла нет в этой сборке», как при заходе по такой ссылке.
+  if (step) setTrail([])
   state.missing = raw
   state.selected = null
   refresh(false)
@@ -1694,6 +1968,9 @@ function setStatus(status, reason) {
     act.hidden = false
   }
   if (status === 'ready') msg.className = 'canvas-msg'
+  // Без графа ходить некуда: строка пути держит высоту, но невидима.
+  if (status !== 'ready') $('trail').classList.add('idle')
+  renderDepth()
   renderPanel()
 }
 
@@ -1721,6 +1998,7 @@ async function load() {
     setStatus('ready')
     renderLede()
     renderFooter()
+    setTrail(restoreTrail(readTrail(), hashRaw(), state.addresses))
     fromHash()
     if (!state.selected) announce(`Вид: ${state.view.line}`)
   } catch (err) {
@@ -1777,15 +2055,37 @@ function wire() {
     radio.addEventListener('change', () => {
       state.depth = Number(radio.value)
       refresh(true)
+      announceView()
     })
   }
   $('full').addEventListener('change', () => {
     state.full = $('full').checked
     refresh(true)
+    announceView()
   })
   $('filters-reset').addEventListener('click', dropFilters)
 
-  addEventListener('hashchange', fromHash)
+  // Выбор узла ссылкой — шаг внутри витрины, а не переход браузера: адрес
+  // обновляет replaceState, и «Назад» выводит с витрины за один шаг с любой
+  // глубины пути. Средний клик и клик с модификатором не перехватываются:
+  // `href` настоящий, и узел по-прежнему открывается в новой вкладке.
+  document.addEventListener('click', (ev) => {
+    if (ev.defaultPrevented || ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return
+    const a = ev.target.closest?.('a[href]')
+    if (!a || state.status !== 'ready') return
+    if (a.dataset.trail !== undefined) {
+      ev.preventDefault()
+      back(a.dataset.trail || null)
+      return
+    }
+    const href = a.getAttribute('href')
+    const id = href.startsWith('#') ? state.addresses.get(decodeURIComponent(href.slice(1))) : undefined
+    if (!id) return
+    ev.preventDefault()
+    go(id)
+  })
+
+  addEventListener('hashchange', () => fromHash(true))
   addEventListener('resize', () => refresh(false))
 
   // Единственная клавиатурная сокращённая команда, кроме поиска и Esc, — и
@@ -1817,7 +2117,7 @@ function wire() {
     const phases = state.graph.nodes.filter((n) => n.type === 'phase').sort((a, b) => a.n - b.n)
     const at = phases.findIndex((p) => p.id === state.selected)
     const next = phases[at + (ev.key === 'ArrowLeft' ? -1 : 1)]
-    if (next) select(next.id)
+    if (next) go(next.id)
   })
 
   // Своя колонка настроек есть только в трёхколоночной раскладке; при двух

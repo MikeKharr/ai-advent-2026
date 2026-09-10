@@ -26,6 +26,14 @@
     <!-- Описание с числами собирается из графа: ни одного счётчика литералом. -->
     <p class="sub" id="lede"></p>
 
+    <!-- Путь посещений — agent_docs/design/2026-09-14-0900-atlas-visit-trail.md.
+         Одна строка на все три элемента: они нарисованы по одному выбранному
+         узлу. До загрузки невидима, но держит высоту — канва не прыгает. -->
+    <nav class="trail idle" id="trail" aria-labelledby="trail-h">
+      <span class="trail-label" id="trail-h">Ваш путь</span>
+      <ol id="trail-list"></ol>
+    </nav>
+
     <div class="viewbar">
       <p class="view-line" id="view-line"></p>
       <div class="viewbar-acts">
@@ -66,11 +74,11 @@
     <details class="tools" id="tools">
       <summary>Фильтры и вид</summary>
 
-      <fieldset class="depth">
+      <fieldset class="depth" id="depth" disabled aria-describedby="depth-note">
         <legend>Соседи выбранного узла</legend>
         <label><input type="radio" name="depth" value="1" checked> <span id="depth-1">1 шаг</span></label>
         <label><input type="radio" name="depth" value="2"> <span id="depth-2">2 шага</span></label>
-        <p class="hint" id="depth-note"></p>
+        <p class="hint" id="depth-note">Схема ещё грузится</p>
       </fieldset>
 
       <p class="full"><label><input type="checkbox" id="full"> <span id="full-label"></span></label></p>
