@@ -44,6 +44,15 @@ jobs:
           done
           exit $fail
 
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Тесты атласа
+        run: node --test atlas/test/*.test.js
+
+      - name: Ссылки между документами разрешаются (атлас)
+        run: node atlas/build.js --check
+
       - name: Секреты не попали в репозиторий
         run: |
           if grep -rIn --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}' . ; then

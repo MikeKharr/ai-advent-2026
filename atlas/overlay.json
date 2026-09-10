@@ -1,0 +1,129 @@
+{
+  "_": "Единственный ручной файл атласа (ADR 2026-09-13-2000, п. 4). Здесь живёт только то, чего нет в машинно-читаемом виде ни в одном файле проекта: классы гейтов и фазы /day-cycle (их источник — таблицы скилла, проза), внешние сервисы вне providers.json и исключения привязки документов к дням. Всё остальное извлекается из файлов. Имена ролей и сервисов здесь проверяет `node atlas/build.js --check`.",
+
+  "classes": [
+    {
+      "id": "A",
+      "title": "Класс A — деньги, данные, ключи",
+      "what": "router/, agents/, лимитеры, ключи, разрешения, расход; workflow CI, ссылающиеся на secrets.*",
+      "gates": ["reviewer", "compliance", "design-review"],
+      "note": "design-review — при UI. Вето compliance действует поверх классов."
+    },
+    {
+      "id": "B",
+      "title": "Класс B — обычный код и прочий конфиг CI",
+      "what": "Код дня без изменения расхода; прочий конфиг CI",
+      "gates": ["reviewer", "design-review"],
+      "note": "design-review — при UI; compliance — если дифф касается env, лимитов или ключей."
+    },
+    {
+      "id": "C",
+      "title": "Класс C — документы и лендинг",
+      "what": "Документы, лендинг",
+      "gates": [],
+      "note": "Только механический CI. Сомнение между классами решается в сторону старшего."
+    }
+  ],
+
+  "phases": [
+    {
+      "n": 1,
+      "title": "Разбор задания",
+      "roles": ["product-analyst"],
+      "exit": "Проверяемые критерии успеха; неоднозначности перечислены, класс изменения определён.",
+      "human": false
+    },
+    {
+      "n": 2,
+      "title": "Проектирование",
+      "roles": ["architect"],
+      "exit": "ГЕЙТ владельца — принятие ADR. Без значимого решения фаза схлопывается в план с проверками.",
+      "human": true
+    },
+    {
+      "n": 3,
+      "title": "Раскладка",
+      "roles": ["design"],
+      "exit": "Спецификация в agent_docs/design/ с чек-листом ревью. Только для нового экрана или смены раскладки.",
+      "human": false
+    },
+    {
+      "n": 4,
+      "title": "Реализация",
+      "roles": ["backend", "frontend", "data", "platform"],
+      "exit": "Тесты и линты зелёные локально, живая проверка на локальной связке пройдена.",
+      "human": false
+    },
+    {
+      "n": 5,
+      "title": "Тесты от критериев",
+      "roles": ["qa"],
+      "exit": "Тесты выведены из критериев приёмки, не из кода. Обязательна, когда критерии сложнее написанных unit-тестов.",
+      "human": false
+    },
+    {
+      "n": 6,
+      "title": "Ревью по классу",
+      "roles": ["reviewer", "compliance", "design-review"],
+      "classes": ["A", "B", "C"],
+      "exit": "Блокирующих находок нет, вето снято. Каждый гейт — отдельным экземпляром, запускаются параллельно.",
+      "human": false
+    },
+    {
+      "n": 7,
+      "title": "Правки и перепроверка",
+      "roles": ["reviewer"],
+      "exit": "Исправленное вернулось тому же экземпляру ревьюера и перепроверено. Два круга не сняли блокирующих — вопрос владельцу.",
+      "human": false
+    },
+    {
+      "n": 8,
+      "title": "PR и CI",
+      "roles": [],
+      "exit": "Ветка по соглашению, PR со ссылкой на ADR, CI зелёный.",
+      "human": false
+    },
+    {
+      "n": 9,
+      "title": "Выкатка",
+      "roles": ["platform"],
+      "exit": "ГЕЙТ владельца — слово на деплой. Живая проверка в проде на значениях по умолчанию.",
+      "human": true
+    },
+    {
+      "n": 10,
+      "title": "Запись",
+      "roles": ["docs"],
+      "exit": "dev-history, snapshot, backlog обновлены; сверка с agent_docs/guides/dod.md.",
+      "human": false
+    }
+  ],
+
+  "externals": [
+    { "id": "anthropic-api", "title": "Anthropic Messages API", "kind": "llm", "note": "Дни 1–4 ходят в API напрямую своим ключом, мимо роутера. Провайдер anthropic-haiku в providers.json — тот же API за роутером." },
+    { "id": "ghcr", "title": "GitHub Container Registry", "kind": "registry", "note": "Образы единиц деплоя; сервер только тянет тег." },
+    { "id": "github-actions", "title": "GitHub Actions", "kind": "ci", "note": "Сборка образов и выкатка; секреты в secrets.*." },
+    { "id": "letsencrypt", "title": "Let's Encrypt", "kind": "tls", "note": "Сертификаты challenge.zpq.ai, выпускает Caddy." },
+    { "id": "tailscale", "title": "Tailscale", "kind": "network", "note": "Частная сеть до ноутбука владельца, где живёт Ollama." }
+  ],
+
+  "publishes": [
+    { "from": "github-actions", "to": "ghcr" }
+  ],
+
+  "calls": [
+    { "from": "day1", "to": "anthropic-api" },
+    { "from": "day2", "to": "anthropic-api" },
+    { "from": "day3", "to": "anthropic-api" },
+    { "from": "day4", "to": "anthropic-api" },
+    { "from": "caddy", "to": "letsencrypt" },
+    { "from": "router", "to": "tailscale" }
+  ],
+
+  "about": {
+    "2026-09-08-1345": {
+      "days": ["day4"],
+      "why": "Запись о переименовании дня 3 в день 4: `day3` в имени файла — прежний номер, к нынешнему дню 3 запись отношения не имеет."
+    }
+  }
+}
