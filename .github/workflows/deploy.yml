@@ -22,23 +22,35 @@ concurrency:
 jobs:
   detect:
     runs-on: ubuntu-latest
+    # Токену detect не нужно ничего, кроме чтения кода и списка запусков.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       days: ${{ steps.set.outputs.days }}
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - id: set
+        with: { fetch-depth: 0, persist-credentials: false }
+
+      # База diff — последняя успешная выкатка по push, а не HEAD^: очередь
+      # deploy-production отменяет ожидающий запуск, и его изменения должен
+      # подобрать следующий. По updated_at, чтобы учесть повторные запуски.
+      - id: base
+        if: ${{ !inputs.day }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -n "${{ inputs.day }}" ]; then
-            days=$(printf '%s' '${{ inputs.day }}' | jq -R . | jq -sc .)
-          else
-            base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
-            changed=$(git diff --name-only "$base" HEAD)
-            # Входы графа атласа — atlas/lib/sources.js; то же правило, что в ci.yml.
-            atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
-            days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | jq -R . | jq -sc .)
-            [ -z "$days" ] && days='[]'
-          fi
+          base=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?branch=main&event=push&status=success&per_page=20" \
+            --jq '.workflow_runs | max_by(.updated_at) | .head_sha // empty')
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          echo "последняя успешная выкатка: ${base:-нет}"
+
+      - id: set
+        env:
+          DAY: ${{ inputs.day }}
+          BASE: ${{ steps.base.outputs.sha }}
+        run: |
+          days=$(bash .github/scripts/deploy-units.sh "$DAY" "$BASE" HEAD)
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "к сборке: $days"
 
