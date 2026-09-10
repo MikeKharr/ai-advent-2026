@@ -5,8 +5,9 @@
 // ADR 2026-09-13-2000.
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { createServer } from 'node:http'
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildGraph } from './lib/extract.js'
 import { readSources } from './lib/sources.js'
@@ -70,6 +71,28 @@ export function readProvenance(root) {
   }
 }
 
+/**
+ * Происхождение для подвала витрины: короткий коммит, его дата и признак
+ * несохранённых правок. Отдельно от `readProvenance`, потому что странице
+ * нужны поля, а vault'у — готовые строки. Без git полей нет — подвал тогда
+ * честно говорит «из ветки main», а не показывает выдуманную дату.
+ */
+export function pageProvenance(root) {
+  try {
+    const git = (args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
+    return {
+      sha: git(['rev-parse', 'HEAD']),
+      dirty: git(['status', '--porcelain']) !== '',
+      date: git(['show', '-s', '--format=%cd', '--date=format:%d.%m.%Y', 'HEAD']),
+    }
+  } catch {
+    return { sha: null, dirty: false, date: null }
+  }
+}
+
+/** Файлы витрины: рядом со страницей ложится и `graph.json`. */
+const WEB_FILES = ['index.html', 'app.js', 'style.css']
+
 export function run({ root = join(HERE, '..'), check = false, out = join(HERE, 'dist/graph.json') } = {}) {
   const sources = readSources(root)
   const graph = buildGraph(sources)
@@ -79,7 +102,16 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
   if (graph.findings.length === 0 && !check) {
     const outDir = dirname(out)
     if (!isDistDir(outDir)) throw new Error(`каталог выхода не atlas/dist внутри пакета: ${outDir}`)
-    writeUnder(outDir, out, `${JSON.stringify({ nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`)
+    const json = `${JSON.stringify({ provenance: pageProvenance(root), nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`
+    writeUnder(outDir, out, json)
+
+    // Витрина — статика: страница, её код, стили и граф рядом. Собирается
+    // сюда, чтобы этап доставки клал в образ один каталог.
+    const siteDir = join(outDir, 'site')
+    if (!underDir(outDir, siteDir)) throw new Error(`сайт мимо каталога выхода ${outDir}: ${siteDir}`)
+    rmSync(siteDir, { recursive: true, force: true })
+    for (const file of WEB_FILES) writeUnder(outDir, join(siteDir, file), readFileSync(join(HERE, 'web', file)))
+    writeUnder(outDir, join(siteDir, 'graph.json'), json)
 
     vault = buildVault({ graph, sources, provenance: readProvenance(root) })
     // Чистятся только свои каталоги: `.obsidian/` создаёт сам Obsidian, там
@@ -92,7 +124,38 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
     for (const file of vault) writeUnder(outDir, join(vaultDir, file.path), file.text)
   }
 
-  return { ...graph, out, vault, vaultDir }
+  return { ...graph, out, vault, vaultDir, siteDir: join(dirname(out), 'site') }
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+}
+
+/**
+ * Статика витрины для локального просмотра: `npx serve` не нужен, стороннего
+ * пакета ради четырёх файлов здесь не будет (ADR 2026-09-07-1525).
+ */
+export function serve(dir, port = 8080) {
+  const root = resolve(dir)
+  const server = createServer((req, res) => {
+    const rel = normalize(decodeURIComponent(new URL(req.url, 'http://localhost').pathname)).replace(/^[/\\]+/, '')
+    const path = join(root, rel === '' ? 'index.html' : rel)
+    if (!underDir(root, path)) {
+      res.writeHead(403).end('мимо каталога витрины')
+      return
+    }
+    try {
+      const body = readFileSync(path)
+      res.writeHead(200, { 'content-type': MIME[extname(path)] ?? 'application/octet-stream' }).end(body)
+    } catch {
+      res.writeHead(404).end('нет такого файла')
+    }
+  })
+  server.listen(port, () => console.log(`витрина на http://localhost:${port}/ из ${root}`))
+  return server
 }
 
 /** В Actions находка — аннотация: тогда она видна прямо в diff'е PR. */
@@ -126,7 +189,7 @@ function isolated(nodes, edges) {
 
 function main(argv) {
   const check = argv.includes('--check')
-  const { nodes, edges, findings, out, vault, vaultDir } = run({ check })
+  const { nodes, edges, findings, out, vault, vaultDir, siteDir } = run({ check })
 
   for (const f of findings.slice(0, SHOWN)) console.error(format(f))
   if (findings.length > SHOWN) console.error(`…и ещё ${findings.length - SHOWN} находок`)
@@ -148,8 +211,17 @@ function main(argv) {
     console.log(`записано ${out}\n${nodes.length} узлов (${shape}), ${edges.length} рёбер`)
     console.log(`без рёбер: ${isolated(nodes, edges)}`)
     console.log(`vault: ${vault.length} заметок в ${vaultDir}`)
+    console.log(`витрина: ${siteDir}`)
+    if (argv.includes('--serve')) {
+      serve(siteDir)
+      return null
+    }
   }
   return 0
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) process.exit(main(process.argv.slice(2)))
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const code = main(process.argv.slice(2))
+  // `--serve` держит процесс: выход убил бы сервер сразу после запуска.
+  if (code !== null) process.exit(code)
+}
