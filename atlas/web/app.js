@@ -594,6 +594,68 @@ export function viewLine({ full, selected, ids, links, stats, depth, byId }) {
   return `Цикл дня: ${count(of('phase'), 'фаза', 'фазы', 'фаз')}, ${count(of('role'), 'роль', 'роли', 'ролей')}, ${count(of('class'), 'класс', 'класса', 'классов')} гейтов`
 }
 
+// Путь посещений — agent_docs/design/2026-09-14-0900-atlas-visit-trail.md.
+// Путь — идентификаторы узлов без корня: корень стоит первым всегда.
+
+/**
+ * Одно правило шага: узел уже есть в пути — всё после него отрезается; нет —
+ * добавляется в конец. `null` — корень. Повторов в пути поэтому не бывает, и
+ * длина ограничена числом узлов без искусственного предела.
+ */
+export function stepTrail(trail, id) {
+  if (id === null) return []
+  const at = trail.indexOf(id)
+  return at === -1 ? [...trail, id] : trail.slice(0, at + 1)
+}
+
+/**
+ * Путь при загрузке страницы. Адрес называет только узел; сохранённый путь
+ * верится, лишь если кончается на нём, — иначе он чужой этому заходу.
+ * Звенья, которых нет в этой сборке, выбрасываются: путь не притворяется
+ * целым. `raw` — адрес без `#`; пустой или мёртвый — один корень.
+ */
+export function restoreTrail(saved, raw, addresses) {
+  const id = addresses.get(raw)
+  if (!id) return []
+  const known = new Set(addresses.values())
+  const kept = Array.isArray(saved) ? saved.filter((x) => known.has(x)) : []
+  return kept[kept.length - 1] === id ? kept : [id]
+}
+
+/**
+ * Сколько звеньев свернуть в «… ещё N». Звенья скрываются от старых к новым,
+ * пока строка не встанет в `room`; корень, предыдущее и текущее не
+ * скрываются никогда — не встают и они, строка переносится.
+ * @param {number} root ширина корня
+ * @param {number[]} links стоимость звеньев пути по порядку, с разделителем и зазором
+ * @param {(n:number)=>number} more стоимость кнопки «… ещё n»
+ * @returns {number} число скрытых звеньев — первых в пути
+ */
+export function foldTrail(root, links, more, room) {
+  const sum = (from) => links.slice(from).reduce((a, b) => a + b, 0)
+  if (root + sum(0) <= room) return 0
+  const most = Math.max(0, links.length - 2)
+  for (let n = 1; n < most; n += 1) if (root + more(n) + sum(n) <= room) return n
+  return most
+}
+
+/** Ярлык кнопки свёртки: видимая часть и продолжение для скринридера. */
+export function trailMore(n) {
+  const shown = `… ещё ${n}`
+  return { shown, rest: `${count(n, 'узел', 'узла', 'узлов').slice(String(n).length)} пути` }
+}
+
+/**
+ * Состояние переключателя глубины — верхняя подходящая строка таблицы
+ * раскладки: загрузка и ошибка, полный граф, узел не выбран, узел без связей.
+ */
+export function depthMode({ status, full, selected, alone }) {
+  if (status !== 'ready') return status
+  if (full) return 'full'
+  if (!selected) return 'none'
+  return alone ? 'alone' : 'on'
+}
+
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
