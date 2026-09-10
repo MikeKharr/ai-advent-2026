@@ -77,9 +77,45 @@ test('единица привязки осталась строкой: фраз�
   assert.deepEqual(roles(text), [])
 })
 
-test('выдержка — строка целиком, обрезанная до 160 символов', () => {
+test('marks: смещения совпавшей единицы, роли и признака внутри выдержки', () => {
+  const [prose] = firedTraces('Ревью шло долго. Compliance вынес вето по расчёту цены.\n', ROLES)
+  assert.equal(prose.excerpt.slice(...prose.marks.unit), 'Compliance вынес вето по расчёту цены.')
+  assert.equal(prose.excerpt.slice(...prose.marks.role), 'Compliance')
+  assert.equal(prose.excerpt.slice(...prose.marks.sign), 'вето')
+
+  const [row] = firedTraces('| compliance | **Вето:** причина | итог |\n', ROLES)
+  // У строки таблицы единица — вся выдержка.
+  assert.deepEqual(row.marks.unit, [0, row.excerpt.length])
+  assert.equal(row.excerpt.slice(...row.marks.role), 'compliance')
+  assert.equal(row.excerpt.slice(...row.marks.sign), 'Вето')
+
+  // Роль и признак лежат внутри единицы, а единица — внутри выдержки.
+  for (const trace of [prose, row]) {
+    const { unit, role, sign } = trace.marks
+    assert.ok(unit[0] >= 0 && unit[1] <= trace.excerpt.length)
+    for (const inner of [role, sign]) assert.ok(inner[0] >= unit[0] && inner[1] <= unit[1], JSON.stringify(inner))
+  }
+})
+
+test('marks считаются по выдержке до обработки разметки', () => {
+  // Маркер пункта снят и из выдержки, и из смещений; `**` осталось на месте.
+  const [trace] = firedTraces('- **Ревью**: compliance ставил вето.\n', ROLES)
+  assert.equal(trace.excerpt, '**Ревью**: compliance ставил вето.')
+  assert.equal(trace.excerpt.slice(...trace.marks.role), 'compliance')
+  assert.equal(trace.excerpt.slice(...trace.marks.sign), 'вето')
+})
+
+test('выдержка следа не режется по длине', () => {
+  const long = `Compliance вынес вето, ${'и повод расписан подробно, '.repeat(20)}на этом всё.`
+  const [trace] = firedTraces(`${long}\n`, ROLES)
+  assert.equal(trace.excerpt, long)
+  assert.ok(trace.excerpt.length > 400)
+  assert.equal(trace.excerpt.endsWith('…'), false, 'предел длины у следа снят')
+})
+
+test('выдержка — строка целиком, без обрезки', () => {
   const line = `| compliance | **Вето:** ${'а'.repeat(300)} |`
   const [trace] = firedTraces(line, ROLES)
-  assert.ok(trace.excerpt.length <= 161, String(trace.excerpt.length))
+  assert.equal(trace.excerpt, line)
   assert.match(trace.excerpt, /^\| compliance \| \*\*Вето:\*\*/)
 })

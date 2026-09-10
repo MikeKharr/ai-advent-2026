@@ -154,12 +154,11 @@ test('раздел «Следы в записях» — ровно рёбра fi
   }
 })
 
-test('выдержка следа — целая фраза или строка таблицы', () => {
+test('выдержка следа — целая фраза или строка таблицы, обрезанных пределом нет', () => {
   const withTraces = new Set(edges('fired').map((e) => e.from.slice(e.from.indexOf('/') + 1)))
   assert.ok(withTraces.size >= 3, 'следы должны быть у нескольких ролей')
 
   let checked = 0
-  let clipped = 0
   for (const role of withTraces) {
     const text = readFileSync(join(VAULT, `roles/${role}.md`), 'utf8')
     const rows = text
@@ -171,13 +170,9 @@ test('выдержка следа — целая фраза или строка 
     for (const row of rows) {
       const quote = row.slice(row.indexOf('«') + 1, row.lastIndexOf('»'))
       checked += 1
+      // Предела длины у следа нет (контракт 3 этапа 3): обрезанных — ноль.
+      assert.equal(quote.endsWith('…'), false, `выдержка обрезана пределом: ${quote}`)
       if (quote.startsWith('|')) continue
-      if (quote.endsWith('…')) {
-        // Честная обрезка по пределу, а не обрыв по переносу: длина упёрлась.
-        clipped += 1
-        assert.ok(quote.length >= 140, `многоточие не от предела: ${quote}`)
-        continue
-      }
       // Фраза кончается знаком конца предложения либо концом пункта списка;
       // висячая запятая или двоеточие — признак обрыва по переносу.
       assert.doesNotMatch(quote, /[,:;(+—-]$/, `обрывок фразы: ${quote}`)
@@ -187,7 +182,6 @@ test('выдержка следа — целая фраза или строка 
   }
 
   assert.equal(checked, edges('fired').length)
-  assert.ok(clipped <= 6, `обрезанных по пределу выдержек ${clipped} — предел стоит пересмотреть`)
 })
 
 test('обратные ссылки инварианта — все документы, где он упомянут', () => {

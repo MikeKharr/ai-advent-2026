@@ -8,8 +8,6 @@
 // не знает, вынесено вето или снято. Поэтому и выдержка даётся целой фразой —
 // по обрывку читатель додумает то, чего в записи нет.
 
-import { clip } from './markdown.js'
-
 /** Буква слова — с кириллицей: `\b` в JS её не знает и режет «ответов» на «вето». */
 const W = 'A-Za-zА-Яа-яЁё0-9_'
 const word = (body) => new RegExp(`(?<![${W}])(?:${body})(?![${W}])`, 'i')
@@ -36,6 +34,9 @@ const NEGATIONS = [
 const roleRe = (role) => new RegExp(`(?<![${W}/-])${role}(?![${W}/-])`, 'i')
 
 const isTableRow = (line) => line.trimStart().startsWith('|')
+
+/** Маркер пункта или цитаты в начале строки — но не `**` выделения. */
+const LEADING_MARKER = /^\s*(?:[-*+]\s+|>\s*)+/
 
 /** Начало нового блока: пункт списка, цитата, заголовок, строка таблицы. */
 const startsBlock = (line) => /^\s*(?:[-*+]\s|\d+\.\s|>|#{1,6}\s|\|)/.test(line)
@@ -117,26 +118,58 @@ function unitsOf(text) {
   return units
 }
 
-const hasMark = (text) => MARKS.some((re) => re.test(text)) && !NEGATIONS.some((re) => re.test(text))
+const markOf = (text) => MARKS.map((re) => re.exec(text)).filter(Boolean).sort((a, b) => a.index - b.index)[0]
+const hasMark = (text) => markOf(text) !== undefined && !NEGATIONS.some((re) => re.test(text))
+
+/**
+ * Смещения совпавшего фрагмента внутри выдержки: полуинтервалы `[start, end)`
+ * в единицах кода UTF-16 по строке `excerpt` **до** любой обработки разметки
+ * (контракт `marks` раскладки 2026-09-13-2100). Считаются здесь, а не в
+ * браузере: второй экземпляр правила однажды разойдётся с первым.
+ *
+ * @returns {{unit:[number,number], role:[number,number], sign:[number,number]}|null}
+ */
+function marksIn(excerpt, unitText, role) {
+  // Строка таблицы — одна единица целиком; у прозы единица ищется в выдержке
+  // уже без ведущего маркера, потому что его сняли и из выдержки.
+  const cleaned = unitText.replace(LEADING_MARKER, '').trim()
+  const at = isTableRow(excerpt) ? 0 : excerpt.indexOf(cleaned)
+  const start = at === -1 ? 0 : at
+  const end = at === -1 ? excerpt.length : start + cleaned.length
+
+  const unit = excerpt.slice(start, end)
+  const roleMatch = roleRe(role).exec(unit)
+  const signMatch = markOf(unit)
+  if (!roleMatch || !signMatch) return null
+
+  return {
+    unit: [start, end],
+    role: [start + roleMatch.index, start + roleMatch.index + roleMatch[0].length],
+    sign: [start + signMatch.index, start + signMatch.index + signMatch[0].length],
+  }
+}
 
 /**
  * Следы в тексте записи истории.
  * @param {string} text
  * @param {Set<string>} roleNames имена ролей из .claude/agents/
- * @returns {Array<{role:string, line:number, excerpt:string}>}
+ * @returns {Array<{role:string, line:number, excerpt:string, marks:object|null}>}
  */
 export function firedTraces(text, roleNames) {
   const traces = []
   const seen = new Set()
   const lines = text.split('\n')
 
-  const hit = (role, line, excerpt) => {
+  const hit = (role, line, raw, unitText) => {
     const key = `${role}:${line}`
     if (seen.has(key)) return
     seen.add(key)
+    // Предела длины у выдержки следа нет: `clip` резал четыре из четырнадцати
+    // посреди фразы — ровно тот дефект, который правило запрещает.
     // Снимается маркер пункта или цитаты, но не `**`: ведущие звёздочки —
     // открывающее выделение, и без пары разметка ломается.
-    traces.push({ role, line, excerpt: clip(excerpt.replace(/^\s*(?:[-*+]\s+|>\s*)+/, '').trim()) })
+    const excerpt = raw.replace(LEADING_MARKER, '').trim()
+    traces.push({ role, line, excerpt, marks: marksIn(excerpt, unitText, role) })
   }
 
   for (const block of paragraphs(lines)) {
@@ -145,7 +178,7 @@ export function firedTraces(text, roleNames) {
     if (isTableRow(block[0].text)) {
       for (const line of block) {
         if (!hasMark(line.text)) continue
-        for (const role of roleNames) if (roleRe(role).test(line.text)) hit(role, line.n, line.text)
+        for (const role of roleNames) if (roleRe(role).test(line.text)) hit(role, line.n, line.text, line.text)
       }
       continue
     }
@@ -163,10 +196,8 @@ export function firedTraces(text, roleNames) {
           const at = startOf(line.n) + unit.at
           const bound = bounds.find((b) => at >= b.start && at < b.end) ?? { start: at, end: joined.length }
           // Номер — строка, где начинается совпавшая фраза; выдержка — всё
-          // предложение вокруг неё. Номер и единица привязки — одно и то же
-          // место: иначе след из «design — «правки»» встал бы на строку выше,
-          // где стоит «вето нет», и читался бы как след отрицания.
-          hit(role, line.n, joined.slice(bound.start, bound.end))
+          // предложение вокруг неё.
+          hit(role, line.n, joined.slice(bound.start, bound.end), unit.text)
         }
       }
     }
