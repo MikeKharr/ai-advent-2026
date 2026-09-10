@@ -33,7 +33,7 @@ const linesMatching = (text, ok) =>
 
 const routesInCaddy = src.caddyText
   .split('\n')
-  .filter((l) => !/^\s*#/.test(l) && /handle_path \/day\d+\/\*/.test(l)).length
+  .filter((l) => !/^\s*#/.test(l) && /reverse_proxy \S+:\d+/.test(l)).length
 
 test('на базовом состоянии репозитория находок нет', () => {
   assert.deepEqual(graph.findings, [])
@@ -97,10 +97,16 @@ test('предзагруженные скиллы роли ведут на су�
 
 test('топология деплоя: маршруты, зависимости и тома', () => {
   assert.equal(edges('routes').length, routesInCaddy)
-  assert.equal(edges('routes').length, dayDirs.length, 'у каждого дня — маршрут в Caddyfile')
+  const toDays = edges('routes').filter((e) => e.to.startsWith('day/'))
+  assert.equal(toDays.length, dayDirs.length, 'у каждого дня — маршрут в Caddyfile')
+  for (const e of toDays) assert.equal(e.from, 'service/caddy')
   assert.ok(edges('serves').some((e) => e.from === 'service/caddy' && e.to === 'service/site'))
   assert.ok(edges('depends').some((e) => e.from === 'day/day5' && e.to === 'service/router'))
   assert.ok(edges('mounts').some((e) => e.from === 'service/agents' && e.to === 'volume/agents_data'))
+})
+
+test('маршрут не-дневного сервиса: handle_path /atlas/* даёт ребро caddy → service/atlas', () => {
+  assert.ok(edges('routes').some((e) => e.from === 'service/caddy' && e.to === 'service/atlas'))
 })
 
 test('провайдеры попадают в граф без baseUrl: адрес tailnet не публикуется', () => {
