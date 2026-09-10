@@ -176,6 +176,58 @@ h3 { font-size:var(--t-md); line-height:1.4; margin:0; }
 .viewbar-acts { display:none; gap:var(--s-2); }
 @media (min-width: 73rem) { .viewbar-acts { display:flex; } }
 
+/* ── Путь посещений ──────────────────────────────────────────────────────
+   agent_docs/design/2026-09-14-0900-atlas-visit-trail.md, «Вид строки».
+   Одна строка текста --t-sm (21 px) без вертикальных отступов; на десктопе
+   не переносится — в строку укладывает свёртка «… ещё N». */
+.trail {
+  display:flex; align-items:baseline; gap:var(--s-2);
+  /* Высота строки держится и до загрузки, когда список пуст. */
+  min-height:calc(var(--t-sm) * 1.5);
+  scroll-margin-top:var(--s-2);
+}
+.trail.idle { visibility:hidden; }
+.trail-label {
+  flex:none; font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--fg-mut);
+}
+.trail ol {
+  display:flex; align-items:baseline; gap:var(--s-1); flex-wrap:wrap;
+  flex:1 1 0; min-width:0; list-style:none; margin:0; padding:0;
+}
+/* Звено целое: разделитель не отрывается от имени. */
+.trail li { display:flex; align-items:baseline; gap:var(--s-1); min-width:0; font-size:var(--t-sm); line-height:1.5; }
+.trail .sep { color:var(--fg-mut); }
+.trail a, .trail .here, .trail button { padding:0 var(--s-1); border-radius:var(--r-sm); overflow-wrap:anywhere; }
+.trail a {
+  color:var(--fg); text-decoration-color:var(--line-ctl); text-underline-offset:var(--s-1);
+}
+.trail a:hover { background:var(--surface); text-decoration-color:var(--fg); }
+.trail .here { font-weight:600; }
+.trail button {
+  border:0; background:none; color:var(--fg); font-size:var(--t-sm); line-height:1.5;
+  text-decoration:underline dotted var(--line-ctl); text-underline-offset:var(--s-1);
+}
+.trail button:hover { background:var(--surface); }
+.trail a:active, .trail button:active { background:var(--surface); opacity:.7; }
+@media (min-width: 73rem) {
+  .trail ol { flex-wrap:nowrap; }
+  .trail.open ol { flex-wrap:wrap; }
+  .trail li { flex:none; }
+  .trail a, .trail button, .trail .here { white-space:nowrap; overflow-wrap:normal; }
+  /* Предохранитель длины: сжимается только текущее звено — оно не ссылка,
+     и его полный заголовок стоит в h2 панели. Ссылки не обрезаются. */
+  .trail li:last-child { flex:0 1 auto; }
+  .trail .here { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+}
+/* Замер свёртки идёт в одну строку без переноса и без сжатия звеньев —
+   текущего тоже: иначе замер берёт сжатую ширину, и строка «встаёт» ценой
+   обрезанного текущего звена. Правила стоят после медиазапроса, чтобы
+   перебить его при равной специфичности. */
+.trail.measure ol { flex-wrap:nowrap; }
+.trail.measure li, .trail.measure li:last-child { flex:none; }
+.trail.measure a, .trail.measure .here, .trail.measure button { white-space:nowrap; }
+
 button {
   font:inherit; font-size:var(--t-sm); line-height:1.5;
   background:var(--surface); color:var(--fg);
@@ -244,6 +296,10 @@ legend, .fam-legend {
   font-size:var(--t-sm); line-height:1.5; padding:var(--s-1) 0; cursor:pointer;
 }
 .depth label:hover, .full label:hover, .types label:hover { color:var(--fg-mut); }
+/* Недоступный переключатель глубины: приглушены метки, а не пояснение —
+   причина недоступности читается лучше всего в блоке, а не хуже. */
+.depth[disabled] label { opacity:.5; cursor:default; }
+.depth[disabled] label:hover { color:var(--fg); }
 .depth { display:flex; flex-direction:column; }
 .depth legend { margin-bottom:var(--s-2); }
 .full { margin:0; }
