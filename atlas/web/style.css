@@ -326,10 +326,22 @@ a:active { opacity:.7; }
   margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch;
 }
 .empty { font-size:var(--t-sm); line-height:1.5; }
-.summary-table { width:100%; border-collapse:collapse; margin-top:var(--s-2); }
-.summary-table td { padding:var(--s-1) 0; font-size:var(--t-sm); line-height:1.5; vertical-align:baseline; }
-.summary-table .n { font-variant-numeric:tabular-nums; text-align:right; padding-left:var(--s-3); }
-.summary-table .span { color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; white-space:nowrap; }
+.summary { list-style:none; margin:var(--s-2) 0 0; padding:0; }
+.summary li + li { margin-top:var(--s-3); }
+/* Имя со счётчиком в строке, диапазон дат под ними: три колонки в панели
+   24rem не живут, а счётчик обрезать нельзя. */
+.summary-row { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-1); }
+/* Строка сводки идёт вплотную к краям панели: счётчику нужна вся её ширина. */
+.summary-row .node-link { padding-inline:0; flex:none; }
+.summary-row .counter { text-align:right; }
+/* Счётчик не переносится там, где панель заведомо его вмещает: он читается
+   как одна фраза, и «в 8» на второй строке — уже не тот факт. На 360 px он
+   шире всей колонки, и там перенос честнее горизонтальной прокрутки. */
+@media (min-width: 73rem) { .summary-row .counter { white-space:nowrap; } }
+.summary .span {
+  margin:0; text-align:right; color:var(--fg-mut);
+  font-size:var(--t-xs); line-height:1.4; font-variant-numeric:tabular-nums;
+}
 
 .rail { display:flex; flex-wrap:wrap; gap:var(--s-1); margin-top:var(--s-2); }
 .rail a {

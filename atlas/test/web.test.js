@@ -5,6 +5,11 @@ import { readSources } from '../lib/sources.js'
 import {
   FOLD_FROM,
   SLOTS,
+  TYPE_NAME,
+  dedupe,
+  factsOf,
+  statsOf,
+  viewLine,
   addressOf,
   addressTable,
   count,
@@ -393,10 +398,127 @@ test('подписи важнее по порядку важности, а не 
   assert.equal(placed.has('младший'), false)
 })
 
-test('позиций у подписи шесть, и первая — под узлом', () => {
+test('первая позиция подписи — под узлом, остальные различны', () => {
   assert.equal(SLOTS[0], 'below')
-  assert.equal(SLOTS.length, 6)
   assert.equal(new Set(SLOTS).size, SLOTS.length)
+  assert.ok(SLOTS.length >= 12, 'позиций хватает, чтобы пропуск был остатком, а не правилом')
+})
+
+test('подпись не накрывает чужой узел', () => {
+  const field = { width: 300, height: 200 }
+  // Второй узел стоит ровно там, где легла бы подпись первого.
+  const items = [
+    { id: 'свой', x: 150, y: 100, text: 'подпись', rank: 0, slots: ['below'] },
+    { id: 'чужой', x: 150, y: 112, text: 'x', rank: 1, slots: ['below'] },
+  ]
+  assert.equal(placeLabels(items, field, monoWidth).has('свой'), false)
+})
+
+test('дальняя позиция не подписывает соседа', () => {
+  const field = { width: 400, height: 300 }
+  // `below3` уводит подпись на полсотни пикселей вниз — прямо к чужому узлу.
+  const items = [
+    { id: 'свой', x: 200, y: 100, text: 'подпись', rank: 0, slots: ['below3'] },
+    { id: 'чужой', x: 200, y: 150, text: 'x', rank: 1, slots: ['below'] },
+  ]
+  assert.equal(placeLabels(items, field, monoWidth).has('свой'), false)
+  // Тот же узел без чужого рядом подпись получает.
+  assert.equal(placeLabels([items[0]], field, monoWidth).has('свой'), true)
+})
+
+test('позиция, прижатая краем к узлу, подписывает узел у самой границы', () => {
+  const field = { width: 200, height: 100 }
+  const at = { id: 'край', x: 196, y: 50, text: 'длинная подпись', rank: 0 }
+  const placed = placeLabels([at], field, monoWidth)
+  const box = placed.get('край')
+  assert.ok(box, 'узел у границы подписан')
+  assert.ok(box.x >= 2 && box.x + box.width + 4 <= field.width - 2, 'подпись целиком в поле')
+  // Подпись примыкает к узлу, а не висит отдельно: от узла до коробки — зазор.
+  const gap = Math.hypot(
+    Math.max(box.x - at.x, 0, at.x - (box.x + box.width + 4)),
+    Math.max(box.y - at.y, 0, at.y - (box.y + 16)),
+  )
+  assert.ok(gap <= 12, `подпись оторвана от узла на ${gap}`)
+})
+
+test('панель собирается для каждого узла графа', () => {
+  for (const node of graph.nodes) {
+    assert.ok(TYPE_NAME[node.type], `${node.id}: тип без имени словом`)
+    assert.equal(typeof shortName(node), 'string')
+    const facts = factsOf(node, graph)
+    for (const pair of facts) {
+      assert.equal(typeof pair.term, 'string', `${node.id}: пара без названия`)
+      // Пара с пустым значением — «Образ: undefined» на экране либо
+      // исключение при отрисовке; ни того, ни другого быть не должно.
+      if (pair.links) {
+        assert.ok(pair.links.length > 0, `${node.id}/${pair.term}: пустой список ссылок`)
+        for (const id of pair.links) assert.ok(byId.has(id), `${node.id}/${pair.term}: ссылка в никуда ${id}`)
+      } else {
+        assert.equal(typeof pair.text, 'string', `${node.id}/${pair.term}: значения нет`)
+        assert.notEqual(pair.text, '', `${node.id}/${pair.term}: значение пустое`)
+      }
+    }
+  }
+})
+
+test('узлы overlay без необязательных полей панель не роняют', () => {
+  // Пять узлов `external` из overlay.json не несут `tier`, `service/site` не
+  // несёт `image`: факта нет — пары нет, а не «undefined» и не исключение.
+  const bare = { id: 'external/x', type: 'external', key: 'x', title: 'x', kind: 'registry' }
+  assert.deepEqual(factsOf(bare, { nodes: [bare], edges: [] }), [{ term: 'Вид', text: 'registry', mono: undefined }])
+  const service = { id: 'service/y', type: 'service', key: 'y', title: 'y' }
+  assert.deepEqual(
+    factsOf(service, { nodes: [service], edges: [] }).map((p) => p.term),
+    ['Файлы окружения'],
+  )
+  for (const type of Object.keys(TYPE_NAME)) {
+    const empty = { id: `${type}/z`, type, key: 'z', title: 'z' }
+    assert.doesNotThrow(() => factsOf(empty, { nodes: [empty], edges: [] }), type)
+  }
+})
+
+test('сводка чисел считается по графу', () => {
+  const stats = statsOf(graph, index.near)
+  assert.equal(stats.nodes, graph.nodes.length)
+  assert.equal(stats.edges, graph.edges.length)
+  assert.equal(stats.byType.role, of('role').length)
+  assert.equal(stats.fired.length, fired.length)
+  assert.equal(stats.rolesWithout, of('role').filter((r) => !fired.some((e) => e.from === r.id)).length)
+  assert.equal(stats.alone, Object.values(stats.aloneBy).reduce((a, b) => a + b, 0))
+  assert.equal(stats.twoStep, maxTwoStep(index.near))
+})
+
+test('кратные рёбра между парой узлов сводятся к одной линии', () => {
+  const doubled = [
+    { from: 'a', to: 'b', kind: 'cites' },
+    { from: 'b', to: 'a', kind: 'relies' },
+    { from: 'a', to: 'c', kind: 'cites' },
+  ]
+  assert.deepEqual(dedupe(doubled).map((e) => e.kind), ['cites', 'cites'])
+  const all = dedupe(graph.edges)
+  assert.ok(all.length < graph.edges.length)
+  const pairs = all.map((e) => (e.from < e.to ? `${e.from} ${e.to}` : `${e.to} ${e.from}`))
+  assert.equal(new Set(pairs).size, pairs.length)
+})
+
+test('полоса вида называет вид и числа этого вида', () => {
+  const stats = statsOf(graph, index.near)
+  const base = { stats, byId, depth: 1, links: [] }
+  assert.match(
+    viewLine({ ...base, full: true, selected: null, ids: new Set() }),
+    /^Весь граф: \d+ узл\S+, \d+ связ\S+\. Подписи скрыты/,
+  )
+  assert.equal(viewLine({ ...base, full: false, selected: null, ids: new Set() }), 'Ни одного узла: скрыты все типы')
+  assert.equal(
+    viewLine({ ...base, full: false, selected: 'role/compliance', ids: new Set(['role/compliance']) }),
+    'У этого узла нет связей — на канве только он',
+  )
+  assert.equal(
+    viewLine({ ...base, full: false, selected: 'role/compliance', ids: new Set(['role/compliance', 'class/A']), links: [{}] }),
+    'Соседи узла compliance, 1 шаг: 2 узла, 1 связь',
+  )
+  const cycle = cycleView(graph, true)
+  assert.match(viewLine({ ...base, full: false, selected: null, ids: cycle.ids }), /^Цикл дня: \d+ фаз\S*, \d+ рол\S+, \d+ класс\S* гейтов$/)
 })
 
 test('у документов есть путь для ссылки на GitHub', () => {

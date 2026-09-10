@@ -439,30 +439,48 @@ const GAP = 8
  * пропадает при первом же соседе — а требование раскладки в видах до 40 узлов
  * противоположное: подписи не прячутся.
  */
-export const SLOTS = ['below', 'above', 'right', 'left', 'below2', 'above2']
+const ROWS = [1, 2, 3]
+const ALIGN = ['', '-start', '-end']
+
+/**
+ * Позиции подписи, от лучшей к худшей. Первая — «под узлом, по центру»
+ * (раскладка, «Подписи»); дальше тот же ряд над узлом, сбоку, прижатый краем
+ * к узлу, и то же вторым и третьим рядом. Одна позиция на узел означала бы,
+ * что подпись пропадает при первом же соседе, — а требование в видах до 40
+ * узлов противоположное: подписи не прячутся.
+ *
+ * `-start` и `-end` прижимают подпись краем к узлу: только так подписывается
+ * узел у самой границы канвы, чья подпись шире оставшегося поля.
+ */
+export const SLOTS = [
+  'below',
+  'above',
+  'right',
+  'left',
+  ...ROWS.flatMap((row) =>
+    ALIGN.flatMap((align) => (row === 1 && align === '' ? [] : [`below${row === 1 ? '' : row}${align}`, `above${row === 1 ? '' : row}${align}`])),
+  ),
+]
+
+/** Позиция первого ряда касается своего узла: между ними только зазор. */
+const adjacent = (slot) => !/[23]/.test(slot)
 
 function boxAt(slot, p, width) {
-  const half = width / 2 + 2
-  switch (slot) {
-    case 'above':
-      return { x1: p.x - half, y1: p.y - GAP - LABEL_H }
-    case 'below2':
-      return { x1: p.x - half, y1: p.y + GAP + LABEL_H + 2 }
-    case 'above2':
-      return { x1: p.x - half, y1: p.y - GAP - 2 * LABEL_H - 2 }
-    case 'right':
-      return { x1: p.x + GAP + 2, y1: p.y - LABEL_H / 2 }
-    case 'left':
-      return { x1: p.x - GAP - 2 - width - 4, y1: p.y - LABEL_H / 2 }
-    default:
-      return { x1: p.x - half, y1: p.y + GAP }
-  }
+  const full = width + 4
+  if (slot === 'right') return { x1: p.x + GAP + 2, y1: p.y - LABEL_H / 2 }
+  if (slot === 'left') return { x1: p.x - GAP - 2 - full, y1: p.y - LABEL_H / 2 }
+  const up = slot.startsWith('above')
+  const row = Number(/^(?:below|above)(\d)?/.exec(slot)[1] ?? 1)
+  const y1 = up ? p.y - GAP - row * LABEL_H - (row - 1) * 2 : p.y + GAP + (row - 1) * (LABEL_H + 2)
+  if (slot.endsWith('-start')) return { x1: p.x - GAP, y1 }
+  if (slot.endsWith('-end')) return { x1: p.x + GAP - full, y1 }
+  return { x1: p.x - full / 2, y1 }
 }
 
 /**
  * Расстановка подписей: узлы в порядке важности занимают первую свободную из
  * своих позиций. Подпись, которой не хватило места ни в одной, не рисуется —
- * но с шестью позициями это остаток, а не правило.
+ * но с двенадцатью позициями это остаток, а не правило.
  *
  * Чистая функция: измеритель приходит снаружи, поэтому расстановку можно
  * посчитать и проверить без канвы, а страница и замер считают её одинаково.
@@ -478,19 +496,102 @@ export function placeLabels(items, field, measure) {
   const free = (b) => boxes.every((o) => b.x2 <= o.x1 || b.x1 >= o.x2 || b.y2 <= o.y1 || b.y1 >= o.y2)
   const inside = (b) => b.x1 >= 2 && b.x2 <= field.width - 2 && b.y1 >= 2 && b.y2 <= field.height - 2
 
-  const order = [...items].sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id))
+  /** Расстояние от точки до прямоугольника: ноль, если точка внутри. */
+  const reach = (p, b) =>
+    Math.hypot(Math.max(b.x1 - p.x, 0, p.x - b.x2), Math.max(b.y1 - p.y, 0, p.y - b.y2))
+
+  /**
+   * К своему узлу подпись обязана быть ближе, чем к любому чужому: иначе
+   * дальняя позиция подпишет соседа, а подпись не на своём узле хуже
+   * отсутствия подписи — она не молчит, она врёт. Меряется до коробки, а не
+   * до её середины: подпись привязана краем, и «под узлом» — это восемь
+   * пикселей, сколько бы места ни занимала сама надпись. Равенство — не
+   * помеха: в цепи роль стоит на одной высоте со своей фазой, и подпись под
+   * фазой ровно так же отстоит от обеих, а читается по столбцу.
+   *
+   * Для первого ряда — только «не накрывает чужой узел»: подпись там
+   * примыкает к своему узлу, и примыкание сильнее близости. Соседство в
+   * шести пикселях не делает подпись чужой, а вот надпись поверх чужого
+   * узла делает.
+   */
+  const owned = (item, box, strict) => {
+    const mine = reach(item, box)
+    return items.every((other) => other === item || reach(other, box) >= (strict ? mine : 1))
+  }
+
+  // Порядок при равном ранге — по идентификатору побайтно, а не через
+  // `localeCompare`: тот зависит от локали и версии ICU, и «ноль пропущенных»
+  // перестал бы быть воспроизводимым числом.
+  const order = [...items].sort((a, b) => a.rank - b.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   for (const item of order) {
     const width = measure(item.text)
     for (const slot of item.slots ?? SLOTS) {
       const at = boxAt(slot, item, width)
       const box = { x1: at.x1, y1: at.y1, x2: at.x1 + width + 4, y2: at.y1 + LABEL_H }
-      if (!inside(box) || !free(box)) continue
+      if (!inside(box) || !free(box) || !owned(item, box, !adjacent(slot))) continue
       boxes.push(box)
       placed.set(item.id, { x: box.x1, y: box.y1, width })
       break
     }
   }
   return placed
+}
+
+/**
+ * Числа экрана — из графа, а не из разметки: граф растёт с каждым документом,
+ * и витрина с вбитым числом начинает врать на следующем же мерже.
+ */
+export function statsOf(graph, near) {
+  const byType = {}
+  for (const n of graph.nodes) byType[n.type] = (byType[n.type] ?? 0) + 1
+  const fired = graph.edges.filter((e) => e.kind === 'fired')
+  const roles = graph.nodes.filter((n) => n.type === 'role')
+  const traced = new Set(fired.map((e) => e.from))
+  const alone = graph.nodes.filter((n) => near.get(n.id).size === 0)
+  const aloneBy = {}
+  for (const n of alone) aloneBy[n.type] = (aloneBy[n.type] ?? 0) + 1
+  return {
+    nodes: graph.nodes.length,
+    edges: graph.edges.length,
+    byType,
+    fired,
+    roles,
+    rolesWithout: roles.filter((r) => !traced.has(r.id)).length,
+    alone: alone.length,
+    aloneBy,
+    twoStep: maxTwoStep(near),
+  }
+}
+
+const pairKey = (a, b) => (a < b ? `${a} ${b}` : `${b} ${a}`)
+
+/** Кратные рёбра между одной парой рисуются одной линией. Перечисляет их панель. */
+export function dedupe(edges) {
+  const seen = new Set()
+  return edges.filter((e) => {
+    const key = pairKey(e.from, e.to)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/**
+ * Строка полосы вида — тот же текст, что уходит скринридеру. Один источник
+ * фактов, два способа его получить.
+ */
+export function viewLine({ full, selected, ids, links, stats, depth, byId }) {
+  if (full) {
+    return `Весь граф: ${count(stats.nodes, 'узел', 'узла', 'узлов')}, ${count(stats.edges, 'связь', 'связи', 'связей')}. Подписи скрыты — узел называет панель`
+  }
+  if (ids.size === 0) return 'Ни одного узла: скрыты все типы'
+  if (selected) {
+    if (ids.size === 1 && links.length === 0) return 'У этого узла нет связей — на канве только он'
+    const step = depth === 1 ? '1 шаг' : '2 шага'
+    return `Соседи узла ${shortName(byId.get(selected))}, ${step}: ${count(ids.size, 'узел', 'узла', 'узлов')}, ${count(links.length, 'связь', 'связи', 'связей')}`
+  }
+  const of = (type) => [...ids].filter((id) => byId.get(id).type === type).length
+  return `Цикл дня: ${count(of('phase'), 'фаза', 'фазы', 'фаз')}, ${count(of('role'), 'роль', 'роли', 'ролей')}, ${count(of('class'), 'класс', 'класса', 'классов')} гейтов`
 }
 
 // ───────────────────────────── отрисовка ─────────────────────────────
@@ -532,30 +633,8 @@ const state = {
   t0: 0,
   status: 'loading',
   reason: '',
+  drawn: false,
   open: new Set(),
-}
-
-/** Числа экрана — из графа. Литералов в разметке нет: граф растёт каждый мерж. */
-function statsOf(graph) {
-  const byType = {}
-  for (const n of graph.nodes) byType[n.type] = (byType[n.type] ?? 0) + 1
-  const fired = graph.edges.filter((e) => e.kind === 'fired')
-  const roles = graph.nodes.filter((n) => n.type === 'role')
-  const traced = new Set(fired.map((e) => e.from))
-  const alone = graph.nodes.filter((n) => state.index.near.get(n.id).size === 0)
-  const aloneBy = {}
-  for (const n of alone) aloneBy[n.type] = (aloneBy[n.type] ?? 0) + 1
-  return {
-    nodes: graph.nodes.length,
-    edges: graph.edges.length,
-    byType,
-    fired,
-    roles,
-    rolesWithout: roles.filter((r) => !traced.has(r.id)).length,
-    alone: alone.length,
-    aloneBy,
-    twoStep: maxTwoStep(state.index.near),
-  }
 }
 
 const node = (id) => state.index.byId.get(id)
@@ -567,7 +646,10 @@ function nodeLink(n, note) {
   a.href = `#${addressOf(n.id)}`
   const dot = el('span', 'dot')
   dot.setAttribute('aria-hidden', 'true')
-  a.append(dot, el('span', 'name', shortName(n)), el('span', 'meta', note ?? TYPE_NAME[n.type]))
+  a.append(dot, el('span', 'name', shortName(n)))
+  // Пустая подпись — не «нет типа», а «тип здесь не нужен»: в сводке следов
+  // каждая строка и так роль, и слово «Роль» отняло бы место у счётчика.
+  if (note !== '') a.appendChild(el('span', 'meta', note ?? TYPE_NAME[n.type]))
   if (n.id === state.selected) a.setAttribute('aria-current', 'true')
   return a
 }
@@ -584,19 +666,6 @@ const mapOpen = () => $('map').open
 const horizontal = () => {
   const box = mapOpen() ? $('map-wrap') : $('canvas-wrap')
   return box.clientWidth >= box.clientHeight
-}
-
-const pairKey = (a, b) => (a < b ? `${a} ${b}` : `${b} ${a}`)
-
-/** Кратные рёбра между одной парой рисуются одной линией. Перечисляет их панель. */
-function dedupe(edges) {
-  const seen = new Set()
-  return edges.filter((e) => {
-    const key = pairKey(e.from, e.to)
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
 }
 
 function computeView() {
@@ -622,21 +691,16 @@ function computeView() {
   // уводил бы посетителя с узла, который он читает.
   const shown = new Set([...ids].filter((id) => !state.hidden.has(node(id).type)))
   const links = dedupe(edges.filter((e) => shown.has(e.from) && shown.has(e.to)))
-  state.view = { ids: shown, edges: links, place, line: viewLine(shown, links) }
-}
-
-function viewLine(ids, links) {
-  if (state.full) {
-    return `Весь граф: ${count(state.stats.nodes, 'узел', 'узла', 'узлов')}, ${count(state.stats.edges, 'связь', 'связи', 'связей')}. Подписи скрыты — узел называет панель`
-  }
-  if (ids.size === 0) return 'Ни одного узла: скрыты все типы'
-  if (state.selected) {
-    if (ids.size === 1 && links.length === 0) return 'У этого узла нет связей — на канве только он'
-    const step = state.depth === 1 ? '1 шаг' : '2 шага'
-    return `Соседи узла ${shortName(node(state.selected))}, ${step}: ${count(ids.size, 'узел', 'узла', 'узлов')}, ${count(links.length, 'связь', 'связи', 'связей')}`
-  }
-  const of = (type) => [...ids].filter((id) => node(id).type === type).length
-  return `Цикл дня: ${count(of('phase'), 'фаза', 'фазы', 'фаз')}, ${count(of('role'), 'роль', 'роли', 'ролей')}, ${count(of('class'), 'класс', 'класса', 'классов')} гейтов`
+  const line = viewLine({
+    full: state.full,
+    selected: state.selected,
+    ids: shown,
+    links,
+    stats: state.stats,
+    depth: state.depth,
+    byId: state.index.byId,
+  })
+  state.view = { ids: shown, edges: links, place, line }
 }
 
 // ── Канва ──────────────────────────────────────────────────────────────
@@ -718,17 +782,15 @@ function slotsOf(id) {
   const chain = state.view.place?.get(id)
   if (!chain) return SLOTS
   const isPhase = node(id).type === 'phase'
-  const first = !horizontal()
-    ? isPhase
-      ? 'below'
-      : 'above'
-    : isPhase
-      ? Math.abs(Math.round(chain.x)) % 2 === 1
-        ? 'above'
-        : 'below'
-      : Math.abs(Math.round(chain.x)) % 2 === 1
-        ? 'below2'
-        : 'below'
+  let first
+  if (!horizontal()) {
+    // Цепь сверху вниз: роли стоят сбоку от своей фазы, и подпись роли уходит
+    // наружу от столбца — иначе она ложится поперёк подписи фазы.
+    first = isPhase ? 'below' : chain.x < 0 ? 'left' : 'right'
+  } else {
+    const odd = Math.abs(Math.round(chain.x)) % 2 === 1
+    first = isPhase ? (odd ? 'above' : 'below') : odd ? 'below2' : 'below'
+  }
   return [first, ...SLOTS.filter((slot) => slot !== first)]
 }
 
@@ -978,6 +1040,7 @@ function renderNodeList() {
     return (
       order.get(familyOf(na.type)) - order.get(familyOf(nb.type)) ||
       na.type.localeCompare(nb.type) ||
+      // Порядок для чтения человеком — по русской раскладке алфавита.
       na.title.localeCompare(nb.title, 'ru')
     )
   })
@@ -1099,28 +1162,26 @@ function renderStart(panel) {
 
   const traces = block('Правила и их следы')
   traces.appendChild(el('p', 'trace-note', `имя роли рядом с признаком гейта в ${count(s.byType.history ?? 0, 'записи', 'записях', 'записях')} истории`))
-  const table = el('table', 'summary-table')
-  const body = el('tbody')
+  const list = el('ul', 'summary')
   const byRole = new Map()
   for (const e of s.fired) {
     if (!byRole.has(e.from)) byRole.set(e.from, [])
     byRole.get(e.from).push(e)
   }
   for (const [id, mine] of [...byRole].sort((a, b) => b[1].length - a[1].length)) {
-    const tr = el('tr')
-    const cell = el('td')
-    cell.appendChild(nodeLink(node(id)))
+    const li = el('li')
+    const row = el('div', 'summary-row')
+    row.append(nodeLink(node(id), ''), el('span', 'counter', traceCounter(mine)))
     const dates = mine.map((e) => node(e.to).date).filter(Boolean).sort()
-    const span = dates.length === 0 ? '' : dates[0] === dates[dates.length - 1] ? dayMonth(dates[0]) : `${dayMonth(dates[0])} – ${dayMonth(dates[dates.length - 1])}`
-    // Счётчик и диапазон дат в одной ячейке: в колонке 24rem три столбца
-    // текстом не живут, а число обрезать нельзя.
-    const right = el('td', 'n', traceCounter(mine))
-    right.append(el('br'), el('span', 'span', span))
-    tr.append(cell, right)
-    body.appendChild(tr)
+    li.append(row)
+    if (dates.length > 0) {
+      const first = dayMonth(dates[0])
+      const last = dayMonth(dates[dates.length - 1])
+      li.append(el('p', 'span', first === last ? first : `${first} – ${last}`))
+    }
+    list.appendChild(li)
   }
-  table.appendChild(body)
-  traces.append(table, el('p', 'trace-note', `У остальных ${count(s.rolesWithout, 'роли', 'ролей', 'ролей')} следов нет — почему, сказано на их узлах.`))
+  traces.append(list, el('p', 'trace-note', `У остальных ${count(s.rolesWithout, 'роли', 'ролей', 'ролей')} следов нет — почему, сказано на их узлах.`))
   panel.appendChild(traces)
 }
 
@@ -1152,18 +1213,18 @@ function renderNode(panel, n) {
   if (state.hidden.has(n.type)) head.appendChild(el('p', 'empty', `Тип «${TYPE_PLURAL[n.type]}» сейчас скрыт фильтром.`))
   panel.appendChild(head)
 
-  const facts = factsOf(n)
+  const facts = factsOf(n, state.graph)
   if (facts.length > 0) {
     const box = block('Факты')
     const dl = el('dl')
-    for (const [term, value, mono] of facts) {
-      dl.appendChild(el('dt', undefined, term))
-      const dd = el('dd', mono ? 'mono' : undefined)
-      if (Array.isArray(value)) value.forEach((link, i) => dd.append(i ? ', ' : '', link))
-      else if (mono) dd.append(value)
+    for (const pair of facts) {
+      dl.appendChild(el('dt', undefined, pair.term))
+      const dd = el('dd', pair.mono ? 'mono' : undefined)
+      if (pair.links) pair.links.forEach((id, i) => dd.append(i ? ', ' : '', nodeLink(node(id))))
+      else if (pair.mono) dd.append(pair.text)
       // Разметка в тексте документа разбирается тем же однопроходным разбором:
       // показать `**` и `` ` `` как есть — показать протёкший markdown.
-      else for (const run of excerptRuns(value, 0, value.length, null)) dd.appendChild(runNode(run))
+      else for (const run of excerptRuns(pair.text, 0, pair.text.length, null)) dd.appendChild(runNode(run))
       dl.appendChild(dd)
     }
     box.appendChild(dl)
@@ -1197,75 +1258,96 @@ function renderNode(panel, n) {
   if (n.type === 'role') panel.appendChild(tracesBlock(n))
 }
 
-function factsOf(n) {
-  const out = []
-  const link = (id) => nodeLink(node(id))
-  const targets = (kind) => state.graph.edges.filter((e) => e.from === n.id && e.kind === kind).map((e) => link(e.to))
-  const sources = (kind) => state.graph.edges.filter((e) => e.to === n.id && e.kind === kind).map((e) => link(e.from))
-  switch (n.type) {
+/**
+ * Пары «Фактов» узла: чистая функция от графа, без DOM. Значение — строка
+ * (`text`) или список идентификаторов узлов (`links`); пары без значения не
+ * попадают в вывод вовсе.
+ *
+ * Отбор пустых — здесь, а не у каждого поля по отдельности: пять узлов
+ * `external` из `overlay.json` не несут `tier`, `service/site` не несёт
+ * `image`, и любое новое поле overlay окажется в том же положении. Панель,
+ * которая печатает «Образ: undefined» или роняет страницу исключением, —
+ * один и тот же дефект: факт, которого нет, объявлен фактом.
+ *
+ * @returns {Array<{term:string, text?:string, links?:string[], mono?:boolean}>}
+ */
+export function factsOf(node, graph) {
+  const raw = []
+  const say = (term, text, mono) => raw.push({ term, text, mono })
+  const refs = (term, ids) => raw.push({ term, links: ids })
+  const type = (id) => graph.nodes.find((n) => n.id === id)?.type
+  const targets = (kind, only) =>
+    graph.edges.filter((e) => e.from === node.id && e.kind === kind && (!only || type(e.to) === only)).map((e) => e.to)
+  const sources = (kind) => graph.edges.filter((e) => e.to === node.id && e.kind === kind).map((e) => e.from)
+  const list = (values) => (Array.isArray(values) && values.length > 0 ? values.join(' ') : undefined)
+
+  switch (node.type) {
     case 'adr':
-      if (n.status) out.push(['Статус', n.status])
-      if (n.date) out.push(['Дата', n.date])
-      out.push(['Файл', n.file, true])
+      say('Статус', node.status)
+      say('Дата', node.date)
+      say('Файл', node.file, true)
       break
     case 'history':
     case 'design':
-      if (n.date) out.push(['Дата', n.date])
-      out.push(['Файл', n.file, true])
+      say('Дата', node.date)
+      say('Файл', node.file, true)
       break
     case 'guide':
-      out.push(['Файл', n.file, true])
+      say('Файл', node.file, true)
       break
     case 'invariant':
-      out.push(['Текст инварианта', n.text])
+      say('Текст инварианта', node.text)
       break
     case 'role':
-      if (n.model) out.push(['Модель', n.model])
-      if (n.effort) out.push(['Усилие', n.effort])
-      if (n.skills?.length) out.push(['Предзагруженные скиллы', targets('preloads')])
-      if (n.owns) out.push(['Владеет', n.owns])
-      if (n.never) out.push(['Никогда', n.never])
-      if (n.description) out.push(['Описание', n.description])
+      say('Модель', node.model)
+      say('Усилие', node.effort)
+      refs('Предзагруженные скиллы', targets('preloads'))
+      say('Владеет', node.owns)
+      say('Никогда', node.never)
+      say('Описание', node.description)
       break
     case 'tier':
-      out.push(['Модель', n.model], ['Усилие', n.effort], ['Роли этого яруса', sources('tier')])
+      say('Модель', node.model)
+      say('Усилие', node.effort)
+      refs('Роли этого яруса', sources('tier'))
       break
     case 'skill':
-      if (n.description) out.push(['Описание', n.description])
-      out.push(['Происхождение', n.vendored ? 'вендорный' : 'свой'], ['Файл', n.file, true])
+      say('Описание', node.description)
+      say('Происхождение', node.vendored ? 'вендорный' : 'свой')
+      say('Файл', node.file, true)
       break
     case 'class':
-      out.push(['Что входит', n.what])
-      if (n.note) out.push(['Примечание', n.note])
+      say('Что входит', node.what)
+      say('Примечание', node.note)
       break
-    case 'phase': {
-      out.push(['Номер', String(n.n)])
-      const runs = state.graph.edges.filter((e) => e.from === n.id && e.kind === 'runs')
-      const roles = runs.filter((e) => node(e.to).type === 'role').map((e) => link(e.to))
-      const classes = runs.filter((e) => node(e.to).type === 'class').map((e) => link(e.to))
-      if (roles.length > 0) out.push(['Роли', roles])
-      if (classes.length > 0) out.push(['Классы гейтов', classes])
-      out.push(['Критерий выхода', n.exit])
-      out.push(['Гейт владельца', n.human ? 'да' : 'нет'])
+    case 'phase':
+      say('Номер', node.n === undefined ? undefined : String(node.n))
+      refs('Роли', targets('runs', 'role'))
+      refs('Классы гейтов', targets('runs', 'class'))
+      say('Критерий выхода', node.exit)
+      say('Гейт владельца', node.human === undefined ? undefined : node.human ? 'да' : 'нет')
       break
-    }
     case 'day':
-      if (n.date) out.push(['Дата', n.date])
-      out.push(['Маршрут', n.route, true], ['Каталог', n.dir, true], ['Образ', n.image, true])
-      if (n.envFiles?.length) out.push(['Файлы окружения', n.envFiles.join(' '), true])
+      say('Дата', node.date)
+      say('Маршрут', node.route, true)
+      say('Каталог', node.dir, true)
+      say('Образ', node.image, true)
+      say('Файлы окружения', list(node.envFiles), true)
       break
     case 'service':
-      out.push(['Образ', n.image, true])
-      out.push(['Файлы окружения', n.envFiles?.length ? n.envFiles.join(' ') : 'нет', true])
+      say('Образ', node.image, true)
+      say('Файлы окружения', list(node.envFiles) ?? 'нет', true)
       break
     case 'external':
-      out.push(['Вид', n.kind], ['Ярус', n.tier], ['Модель', n.model ?? 'нет'])
-      if (n.note) out.push(['Примечание', n.note])
+      say('Вид', node.kind)
+      say('Ярус', node.tier)
+      say('Модель', node.model)
+      say('Примечание', node.note)
       break
     default:
       break
   }
-  return out
+  return raw.filter((pair) => (pair.links ? pair.links.length > 0 : typeof pair.text === 'string' && pair.text !== ''))
 }
 
 function phaseNav(n) {
@@ -1328,12 +1410,11 @@ function linkList(title, edges, outgoing, key) {
 // ── Следы в записях ────────────────────────────────────────────────────
 
 function tracesBlock(role) {
-  const box = block()
-  const head = el('div', 'panel-head')
-  head.append(el('h3', undefined, 'Следы в записях'))
+  const box = block('Следы в записях')
   const mine = state.stats.fired.filter((e) => e.from === role.id)
-  head.appendChild(el('p', 'counter', traceCounter(mine)))
-  box.append(head, el('p', 'trace-note', 'имя роли рядом с признаком гейта'))
+  // Порядок строк — заголовок, подзаголовок, счётчик: подзаголовок объясняет,
+  // что именно посчитано, и обязан стоять раньше числа.
+  box.append(el('p', 'trace-note', 'имя роли рядом с признаком гейта'), el('p', 'counter', traceCounter(mine)))
 
   if (mine.length === 0) {
     box.appendChild(el('p', 'empty', 'Следов нет: имя этой роли ни разу не встретилось в записях рядом с признаком гейта. Роль работает — просто записи описывают её работу другими словами.'))
@@ -1352,7 +1433,12 @@ function tracesBlock(role) {
 
   // Записи от новых к старым, внутри записи — по номеру строки: вопрос
   // посетителя «это ещё работает?», и свежий след отвечает на него лучше.
-  const sorted = [...mine].sort((a, b) => node(b.to).date.localeCompare(node(a.to).date) || node(b.to).key.localeCompare(node(a.to).key) || a.line - b.line)
+  // Даты и ключи сравниваются как строки байт за байтом: они в формате
+  // `2026-09-13`, порядок от этого не зависит ни от локали, ни от ICU.
+  const desc = (x, y) => (x < y ? 1 : x > y ? -1 : 0)
+  const sorted = [...mine].sort(
+    (a, b) => desc(node(a.to).date, node(b.to).date) || desc(node(a.to).key, node(b.to).key) || a.line - b.line,
+  )
   const ul = el('ul', 'traces')
   for (const e of sorted) ul.appendChild(traceCard(e))
   box.appendChild(ul)
@@ -1368,7 +1454,8 @@ function traceCard(e) {
   const where = el('span')
   where.append(`${dayMonth(record.date)} · `)
   const about = state.graph.edges.find((x) => x.from === record.id && x.kind === 'about')
-  // Три следа к дню не привязаны — тогда дня в строке просто нет.
+  // Запись может быть не привязана к дню — тогда дня в строке просто нет,
+  // без «—» и без «вне дня».
   if (about) where.append(`${node(about.to).key} · `)
   const key = el('a', 'plain', record.key)
   key.href = `#${addressOf(record.id)}`
@@ -1463,6 +1550,17 @@ function renderFooter() {
 
 // ── Состояния и события ────────────────────────────────────────────────
 
+/**
+ * Сброс фильтров. Обе кнопки сброса исчезают вместе со своим состоянием,
+ * поэтому фокус уходит на первый флажок типов: иначе клавиатурный посетитель
+ * оказывается в начале документа — тот же дефект, что с разворачиванием.
+ */
+function dropFilters() {
+  state.hidden.clear()
+  refresh(false)
+  $('filters').querySelector('input')?.focus()
+}
+
 function emptyCanvas(empty) {
   const msg = clear($('canvas-msg'))
   const act = clear($('canvas-act'))
@@ -1471,10 +1569,7 @@ function emptyCanvas(empty) {
   msg.textContent = 'Ни одного узла: скрыты все типы'
   const reset = el('button', undefined, 'Сбросить фильтры')
   reset.type = 'button'
-  reset.addEventListener('click', () => {
-    state.hidden.clear()
-    refresh(false)
-  })
+  reset.addEventListener('click', dropFilters)
   act.appendChild(reset)
 }
 
@@ -1484,6 +1579,7 @@ function announce(text) {
 
 function refresh(animate) {
   computeView()
+  state.drawn = true
   $('view-line').textContent = state.view.line
   $('map-title').textContent = state.view.line
   // Пустая канва читается как «не загрузилось», поэтому у неё есть текст —
@@ -1517,8 +1613,13 @@ const PAGE_ANCHORS = new Set(['panel'])
 function fromHash() {
   const raw = decodeURIComponent(location.hash.replace(/^#/, ''))
   // Якоря самой страницы узлами не притворяются: пропуск-ссылка ведёт к
-  // панели, а не «к отсутствию узла».
-  if (PAGE_ANCHORS.has(raw)) return
+  // панели, а не «к отсутствию узла». Но заход прямо по такому адресу —
+  // из новой вкладки или по скопированной ссылке — обязан построить вид:
+  // иначе страница открывается пустой.
+  if (PAGE_ANCHORS.has(raw)) {
+    if (!state.drawn) refresh(false)
+    return
+  }
   if (raw === '') {
     state.missing = null
     state.selected = null
@@ -1585,7 +1686,7 @@ async function load() {
     state.graph = graph
     state.index = indexGraph(graph)
     state.addresses = addressTable(graph.nodes)
-    state.stats = statsOf(graph)
+    state.stats = statsOf(graph, state.index.near)
     setStatus('ready')
     renderLede()
     renderFooter()
@@ -1651,10 +1752,7 @@ function wire() {
     state.full = $('full').checked
     refresh(true)
   })
-  $('filters-reset').addEventListener('click', () => {
-    state.hidden.clear()
-    refresh(false)
-  })
+  $('filters-reset').addEventListener('click', dropFilters)
 
   addEventListener('hashchange', fromHash)
   addEventListener('resize', () => refresh(false))
@@ -1675,7 +1773,9 @@ function wire() {
     ev.preventDefault()
     const panel = $('panel')
     panel.focus()
-    panel.scrollIntoView({ block: 'start', behavior: reduceMotion() ? 'auto' : 'smooth' })
+    // Без плавной прокрутки: корпус ограничивает движение 120 мс, а
+    // браузерная `smooth` длится дольше и этим сроком не управляется.
+    panel.scrollIntoView({ block: 'start' })
   })
 
   addEventListener('keydown', (ev) => {
