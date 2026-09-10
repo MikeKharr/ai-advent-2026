@@ -482,6 +482,13 @@ function boxAt(slot, p, width) {
  * своих позиций. Подпись, которой не хватило места ни в одной, не рисуется —
  * но с двенадцатью позициями это остаток, а не правило.
  *
+ * Внутри одного ранга порядок — по тесноте: первым встаёт узел, у которого
+ * свободных позиций осталось меньше всех. Порядок по идентификатору в плотном
+ * кусте отдавал единственную позицию одного узла соседу, у которого были
+ * другие. Если подписи всё равно негде встать, её единственную помеху того же
+ * ранга можно переставить на другую свою позицию. Более важную подпись не
+ * двигает никто: выбранному узлу остаётся «под узлом».
+ *
  * Чистая функция: измеритель приходит снаружи, поэтому расстановку можно
  * посчитать и проверить без канвы, а страница и замер считают её одинаково.
  *
@@ -491,9 +498,6 @@ function boxAt(slot, p, width) {
  * @returns {Map<string,{x:number, y:number, width:number}>} левый верхний угол коробки
  */
 export function placeLabels(items, field, measure) {
-  const placed = new Map()
-  const boxes = []
-  const free = (b) => boxes.every((o) => b.x2 <= o.x1 || b.x1 >= o.x2 || b.y2 <= o.y1 || b.y1 >= o.y2)
   const inside = (b) => b.x1 >= 2 && b.x2 <= field.width - 2 && b.y1 >= 2 && b.y2 <= field.height - 2
 
   /** Расстояние от точки до прямоугольника: ноль, если точка внутри. */
@@ -519,22 +523,57 @@ export function placeLabels(items, field, measure) {
     return items.every((other) => other === item || reach(other, box) >= (strict ? mine : 1))
   }
 
-  // Порядок при равном ранге — по идентификатору побайтно, а не через
-  // `localeCompare`: тот зависит от локали и версии ICU, и «ноль пропущенных»
-  // перестал бы быть воспроизводимым числом.
-  const order = [...items].sort((a, b) => a.rank - b.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  for (const item of order) {
-    const width = measure(item.text)
-    for (const slot of item.slots ?? SLOTS) {
-      const at = boxAt(slot, item, width)
-      const box = { x1: at.x1, y1: at.y1, x2: at.x1 + width + 4, y2: at.y1 + LABEL_H }
-      if (!inside(box) || !free(box) || !owned(item, box, !adjacent(slot))) continue
-      boxes.push(box)
-      placed.set(item.id, { x: box.x1, y: box.y1, width })
-      break
+  // Позиции, доступные узлу вообще: в поле и у своего узла. От соседних
+  // подписей это не зависит, поэтому считается один раз, в порядке `slots`.
+  const options = new Map(
+    items.map((item) => {
+      const width = measure(item.text)
+      const own = []
+      for (const slot of item.slots ?? SLOTS) {
+        const at = boxAt(slot, item, width)
+        const box = { x1: at.x1, y1: at.y1, x2: at.x1 + width + 4, y2: at.y1 + LABEL_H, width }
+        if (inside(box) && owned(item, box, !adjacent(slot))) own.push(box)
+      }
+      return [item.id, own]
+    }),
+  )
+  const rankOf = new Map(items.map((item) => [item.id, item.rank]))
+  const taken = new Map()
+  const cross = (a, b) => !(b.x2 <= a.x1 || b.x1 >= a.x2 || b.y2 <= a.y1 || b.y1 >= a.y2)
+  const freeOf = (box, skip) => {
+    for (const [id, o] of taken) if (id !== skip && cross(box, o)) return false
+    return true
+  }
+  const free = (item) => options.get(item.id).filter((box) => freeOf(box))
+
+  /** Позиция, освобождённая перестановкой единственной помехи того же ранга. */
+  const yielded = (item) => {
+    for (const box of options.get(item.id)) {
+      const hits = [...taken].filter(([, o]) => cross(box, o))
+      if (hits.length !== 1 || rankOf.get(hits[0][0]) !== item.rank) continue
+      const [other] = hits[0]
+      const moved = options.get(other).find((o) => !cross(box, o) && freeOf(o, other))
+      if (!moved) continue
+      taken.set(other, moved)
+      return box
+    }
+    return undefined
+  }
+
+  // Равная теснота — по идентификатору побайтно, а не через `localeCompare`:
+  // тот зависит от локали и версии ICU, и «ноль пропущенных» перестал бы быть
+  // воспроизводимым числом.
+  const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  for (const rank of [...new Set(items.map((item) => item.rank))].sort((a, b) => a - b)) {
+    const left = items.filter((item) => item.rank === rank).sort(byId)
+    while (left.length > 0) {
+      const room = left.map((item) => free(item).length)
+      const [item] = left.splice(room.indexOf(Math.min(...room)), 1)
+      const box = free(item)[0] ?? yielded(item)
+      if (box) taken.set(item.id, box)
     }
   }
-  return placed
+  return new Map([...taken].map(([id, box]) => [id, { x: box.x1, y: box.y1, width: box.width }]))
 }
 
 /**

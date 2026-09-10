@@ -445,6 +445,43 @@ test('позиция, прижатая краем к узлу, подписыв�
   assert.ok(gap <= 12, `подпись оторвана от узла на ${gap}`)
 })
 
+// Два узла одного ранга один над другим, в 32 px: подпись нижнего «над узлом»
+// и подпись верхнего «под узлом» — одна и та же коробка.
+test('узел с единственной позицией получает её раньше соседа того же ранга с запасом', () => {
+  const field = { width: 300, height: 200 }
+  const items = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', rank: 3, slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', rank: 3, slots: ['above'] },
+  ]
+  const placed = placeLabels(items, field, monoWidth)
+  assert.equal(placed.size, 2, 'подписаны оба')
+  assert.equal(placed.get('а').y, 80 - 8 - 16, 'верхний ушёл на свою вторую позицию')
+})
+
+test('сосед того же ранга уступает позицию, если у него есть другая', () => {
+  const field = { width: 300, height: 200 }
+  // Равный запас позиций, и по порядку идентификаторов первым встаёт верхний:
+  // его «под узлом» накрывает обе позиции нижнего.
+  const items = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', rank: 3, slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', rank: 3, slots: ['above', 'above-start'] },
+  ]
+  const placed = placeLabels(items, field, monoWidth)
+  assert.equal(placed.size, 2, 'подписаны оба')
+  assert.equal(placed.get('а').y, 80 - 8 - 16)
+})
+
+test('подпись важного узла не уступает позицию менее важному', () => {
+  const field = { width: 300, height: 200 }
+  const items = [
+    { id: 'а', x: 150, y: 80, text: 'верхний', rank: 0, slots: ['below', 'above'] },
+    { id: 'б', x: 150, y: 112, text: 'нижний', rank: 3, slots: ['above', 'above-start'] },
+  ]
+  const placed = placeLabels(items, field, monoWidth)
+  assert.equal(placed.get('а').y, 80 + 8, 'выбранный остаётся под узлом')
+  assert.equal(placed.has('б'), false)
+})
+
 test('панель собирается для каждого узла графа', () => {
   for (const node of graph.nodes) {
     assert.ok(TYPE_NAME[node.type], `${node.id}: тип без имени словом`)
