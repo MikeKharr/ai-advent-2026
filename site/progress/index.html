@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка и тексты — agent_docs/design/2026-09-14-1300-progress-page.md.
+     Пути к своим файлам относительные, <base> нет; ссылки на приложения —
+     от корня, как на лендинге. Ни одного числа из журнала литералом. -->
+<title>Прогресс — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+<noscript><style>.js-only { display: none !important; }</style></noscript>
+<script src="data.js" defer></script>
+<script src="validate.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <a class="back" href="/">← AI Advent 2026</a>
+    <h1>Прогресс AI Advent 2026</h1>
+    <p class="lede">Работающие приложения челленджа, текущая работа и журнал PR — зачем был нужен каждый и чем закончился.</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="apps-h">
+      <div class="sec-head"><h2 id="apps-h">Работающие приложения</h2></div>
+      <!-- Статичный список: работает без скрипта и без data.js. Новый день —
+           одна строка здесь, в feat-PR дня. -->
+      <ul class="apps">
+        <li><a class="app" href="/day1/"><span class="app-label">День 1</span><span class="app-text">Три свежие новости стартапов по сфере</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/day2/"><span class="app-label">День 2</span><span class="app-text">Параметры запроса к модели и подсчёт токенов</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/day3/"><span class="app-label">День 3</span><span class="app-text">Свой запрос к полным текстам статей</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/day4/"><span class="app-label">День 4</span><span class="app-text">Температура модели и как она меняет ответ</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/day5/"><span class="app-label">День 5</span><span class="app-text">Архив статей на сервере и выбор модели</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/day6/"><span class="app-label">День 6</span><span class="app-text">Агент как сервис: монитор его работы по шагам</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/day7/"><span class="app-label">День 7</span><span class="app-text">Чат с агентом: память диалога на сервере</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/day8/"><span class="app-label">День 8</span><span class="app-text">Разговор вместо темы: подборка по репликам</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+        <li><a class="app" href="/atlas/"><span class="app-label">Атлас</span><span class="app-text">Схема проекта: решения, роли, правила и их связи</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
+      </ul>
+      <p class="note">Дни 5–8 обращаются к моделям через роутер, дни 6–8 — ещё и через сервис агентов. Своих страниц у этих сервисов нет, поэтому ссылок на них здесь нет.</p>
+    </section>
+
+    <section class="js-only" aria-labelledby="now-h">
+      <div class="sec-head"><h2 id="now-h">Сейчас в работе</h2><p class="aside" id="now-updated"></p></div>
+      <div class="panel" id="now-body"><p class="msg" role="status">Читаю данные…</p></div>
+    </section>
+
+    <section aria-labelledby="log-h">
+      <div class="sec-head"><h2 id="log-h">Журнал PR</h2></div>
+      <noscript><p class="msg">Журнал и блок «Сейчас в работе» строит скрипт, а он отключён. Все PR — <a href="https://github.com/MikeKharr/ai-advent-2026/pulls?q=is%3Apr">на GitHub</a>.</p></noscript>
+      <div class="intro" id="log-intro"></div>
+      <div class="filter" id="filter" hidden>
+        <p class="filter-label" id="filter-label">Поток</p>
+        <div class="chips" id="chips" role="group" aria-labelledby="filter-label"></div>
+      </div>
+      <p class="status js-only" id="log-status" role="status">Читаю журнал…</p>
+      <p class="status partial" id="log-partial" hidden></p>
+      <div class="groups" id="groups"></div>
+    </section>
+  </main>
+
+  <footer class="foot">Журнал ведётся в репозитории: файл <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/site/progress/data.js">site/progress/data.js</a> дополняется в каждой итерации. Исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</footer>
+</div>
+</body>
+</html>
