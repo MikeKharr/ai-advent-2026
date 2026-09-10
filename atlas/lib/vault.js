@@ -401,6 +401,20 @@ export function buildVault({ graph, sources, provenance }) {
       '',
       `Производная копия репозитория на коммит \`${provenance.sha}\`. Правки — в репозиторий, не здесь.`,
       '',
+      '## Точки входа',
+      '',
+      // Из карты должно быть куда перейти: без ссылок она висит в графе
+      // Obsidian отдельным узлом.
+      list(
+        [
+          link('guide/agents') && `${link('guide/agents')} — правила работы над проектом`,
+          link('guide/architecture') && `${link('guide/architecture')} — архитектура`,
+          '[[guides/invariants]] — инварианты продукта',
+          phases[0] && `${link(phases[0].id)} — первая фаза цикла дня`,
+          ...graph.nodes.filter((n) => n.type === 'class').map((n) => `${link(n.id)} — ${n.what}`),
+        ].filter(Boolean),
+      ),
+      '',
       '## Разделы',
       '',
       list(

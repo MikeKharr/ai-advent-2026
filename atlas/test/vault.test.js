@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { test } from 'node:test'
-import { readProvenance, run } from '../build.js'
+import { execFileSync } from 'node:child_process'
+import { readProvenance, run, underDir } from '../build.js'
 import { readSources } from '../lib/sources.js'
 import { buildVault } from '../lib/vault.js'
 import { ROOT } from './helpers.js'
@@ -33,6 +34,8 @@ const all = notes()
 const nfc = (s) => s.normalize('NFC')
 const existing = new Set(all.map((n) => nfc(n.path)))
 const edges = (kind) => graph.edges.filter((e) => e.kind === kind)
+/** Заметки-сборки строятся из графа: тексты документов для них не нужны. */
+const EMPTY_SOURCES = { adr: [], history: [], design: [], guides: [], invariants: '' }
 
 /** Слепок содержимого всех входов: сборка не имеет права его изменить. */
 function snapshotSources() {
@@ -172,14 +175,41 @@ test('повторная сборка даёт побайтово тот же р
   }
 })
 
-test('запись мимо atlas/dist отвергается', () => {
-  assert.throws(() => run({ out: join(ROOT, 'agent_docs/graph.json') }), /мимо atlas\/dist/)
-  assert.equal(existsSync(join(ROOT, 'agent_docs/graph.json')), false)
+test('всё, что сборка пишет и удаляет, лежит под каталогом выхода', () => {
+  const dist = join(ROOT, 'atlas/dist')
+  assert.equal(underDir(dist, join(dist, 'vault/adr/x.md')), true)
+  assert.equal(underDir(dist, dist), true)
+  // Совпадения подстроки недостаточно: и выход вверх, и чужой «atlas/dist».
+  assert.equal(underDir(dist, join(dist, '../../../.ssh/id_ed25519')), false)
+  assert.equal(underDir(dist, '/tmp/atlas/dist/graph.json'), false)
+  assert.equal(underDir(dist, `${dist}-2/graph.json`), false)
+
+  for (const file of built.vault) assert.equal(underDir(built.vaultDir, join(built.vaultDir, file.path)), true, file.path)
+})
+
+test('--check ничего не пишет и не зовёт git', () => {
+  const out = join(ROOT, 'temp/atlas-check/graph.json')
+  const result = run({ check: true, out })
+  assert.deepEqual(result.vault, [])
+  assert.equal(existsSync(out), false)
+  assert.equal(existsSync(join(ROOT, 'temp/atlas-check')), false)
+})
+
+test('блок происхождения не скрывает несохранённых правок', () => {
+  const clean = { sha: 'abc', time: 'на коммит от 2026-09-10 14:10 +07' }
+  const [note] = buildVault({ graph, sources: EMPTY_SOURCES, provenance: clean })
+  assert.ok(note.text.includes('КОММИТ: abc'))
+  assert.ok(note.text.includes('СИНХРОНИЗИРОВАНО: на коммит от '), 'ярлык не должен читаться как «сейчас»')
+
+  // На грязном дереве копия собрана не из коммита, и блок обязан это сказать.
+  const provenance = readProvenance(ROOT)
+  const dirty = execFileSync('git', ['-C', ROOT, 'status', '--porcelain'], { encoding: 'utf8' }).trim() !== ''
+  assert.equal(/несохранённые правки рабочего дерева/.test(provenance.sha), dirty)
 })
 
 test('без git происхождение честно говорит, что коммит неизвестен', () => {
   const provenance = readProvenance('/')
   assert.equal(provenance.sha, 'вне git')
-  const files = buildVault({ graph, sources: { adr: [], history: [], design: [], guides: [], invariants: '' }, provenance })
+  const files = buildVault({ graph, sources: EMPTY_SOURCES, provenance })
   assert.ok(files.every((f) => f.text.includes('КОММИТ: вне git')))
 })

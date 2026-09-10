@@ -73,6 +73,10 @@ const CITE = new RegExp(
     // `[[ссылка]]` уже разрешена, и второй проход по ней дал бы
     // `[[invariants/[[invariants/I-4]]]]`.
     '(?<fence>^```[\\s\\S]*?^```)',
+    // Двойные обратные кавычки в проекте значат ровно одно: показать цитату
+    // буквально. Разобрав их, атлас переписал бы объяснение самого себя —
+    // «источник → копия» превратилось бы в «X → X».
+    '(?<dbl>``(?:[^`]|`(?!`))*``)',
     '(?<link>\\[\\[[^\\]\\n]*\\]\\])',
     'ADR\\s+`(?<adr>[^`\\n]+)`',
     '`(?<path>(?:agent_docs/)?(?:adr|development-history|design|guides)/[A-Za-z0-9._-]+)`',
@@ -94,7 +98,7 @@ export function atomicId(value) {
 
 /** Что за цитата попалась: вид и значение, либо null для заглушки шаблона. */
 function classify(groups) {
-  if (groups.fence !== undefined || groups.link !== undefined) return null
+  if (groups.fence !== undefined || groups.dbl !== undefined || groups.link !== undefined) return null
   if (groups.adr !== undefined) {
     if (PLACEHOLDER.test(groups.adr)) return null
     const id = atomicId(groups.adr)

@@ -18,32 +18,39 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const SHOWN = 50
 
 /**
- * Право записи — только внутрь `atlas/dist/`. Проверяется путь после
- * разрешения, а не строка от вызывающего: `dist/../../.ssh` — тоже строка,
- * начинающаяся с `dist`.
+ * Всё, что сборка пишет и удаляет, лежит под каталогом выхода. Предикат
+ * точный, а не совпадение подстроки: `dist/../../.ssh` — тоже строка,
+ * начинающаяся с `dist`, а `/tmp/atlas/dist` — тоже «atlas/dist».
  */
-function insideDist(path) {
+export function underDir(dir, path) {
+  const root = resolve(dir)
   const full = resolve(path)
-  return full.includes(`${sep}atlas${sep}dist${sep}`) || full.endsWith(`${sep}atlas${sep}dist`)
+  return full === root || full.startsWith(root + sep)
 }
 
-function writeInsideDist(path, text) {
-  if (!insideDist(path)) throw new Error(`запись мимо atlas/dist: ${path}`)
+function writeUnder(dir, path, text) {
+  if (!underDir(dir, path)) throw new Error(`запись мимо каталога выхода ${dir}: ${path}`)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, text)
 }
 
 /**
- * Коммит и его время — не «сейчас»: иначе каждый прогон давал бы diff во всех
- * заметках vault. Без git (например, на копии входов в тестах) происхождение
- * честно говорит, что коммит неизвестен.
+ * Коммит, его время и состояние дерева. Время — коммита, а не «сейчас»:
+ * иначе каждый прогон давал бы diff во всех заметках vault. Если в дереве
+ * есть несохранённые правки, копия собрана не из коммита, и блок
+ * происхождения обязан это сказать — иначе он врёт ровно тому, кто правит
+ * документ и пересобирает vault. Без git происхождение честно говорит,
+ * что коммит неизвестен.
  */
 export function readProvenance(root) {
   try {
     const git = (args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
+    const sha = git(['rev-parse', 'HEAD'])
+    const dirty = git(['status', '--porcelain']) !== ''
+    const time = git(['show', '-s', '--format=%cd', '--date=format:%Y-%m-%d %H:%M %z', 'HEAD']).replace(/([+-]\d{2})00$/, '$1')
     return {
-      sha: git(['rev-parse', 'HEAD']),
-      time: git(['show', '-s', '--format=%cd', '--date=format:%Y-%m-%d %H:%M %z', 'HEAD']).replace(/([+-]\d{2})00$/, '$1'),
+      sha: dirty ? `${sha} + несохранённые правки рабочего дерева` : sha,
+      time: `на коммит от ${time}`,
     }
   } catch {
     return { sha: 'вне git', time: 'не определено' }
@@ -57,17 +64,18 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
   let vault = []
 
   if (graph.findings.length === 0 && !check) {
-    writeInsideDist(out, `${JSON.stringify({ nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`)
+    const outDir = dirname(out)
+    writeUnder(outDir, out, `${JSON.stringify({ nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`)
 
     vault = buildVault({ graph, sources, provenance: readProvenance(root) })
     // Чистятся только свои каталоги: `.obsidian/` создаёт сам Obsidian, там
     // состояние окна пользователя, и сборка его не трогает.
     for (const dir of VAULT_DIRS) {
       const path = join(vaultDir, dir)
-      if (!insideDist(path)) throw new Error(`очистка мимо atlas/dist: ${path}`)
+      if (!underDir(outDir, path)) throw new Error(`очистка мимо каталога выхода ${outDir}: ${path}`)
       rmSync(path, { recursive: true, force: true })
     }
-    for (const file of vault) writeInsideDist(join(vaultDir, file.path), file.text)
+    for (const file of vault) writeUnder(outDir, join(vaultDir, file.path), file.text)
   }
 
   return { ...graph, out, vault, vaultDir }

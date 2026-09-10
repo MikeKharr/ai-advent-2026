@@ -46,6 +46,13 @@ test('цитата ADR без файла — находка с именем фа
   assert.match(found[0].message, /2026-01-01-0000/)
 })
 
+test('битая цитата внутри блока кода находкой не становится', () => {
+  const fenced = ['', '```sh', '# пример: ADR `2026-01-01-0000`', '```', ''].join('\n')
+  assert.deepEqual(appended(GUIDE, fenced), [], 'образец в блоке кода гейт не проверяет')
+  // Та же строка без блока — находка: сужение касается формы, не смысла.
+  assert.equal(appended(GUIDE, '\nпример: ADR `2026-01-01-0000`\n').length, 1)
+})
+
 test('путь к записи истории без файла — находка', () => {
   const found = appended(GUIDE, '\nСм. `development-history/2026-01-01-0000-nothing.md`.\n')
   assert.equal(found.length, 1)
