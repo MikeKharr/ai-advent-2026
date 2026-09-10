@@ -1045,8 +1045,10 @@ function renderNodeList() {
     const nb = node(b)
     return (
       order.get(familyOf(na.type)) - order.get(familyOf(nb.type)) ||
-      na.type.localeCompare(nb.type) ||
-      // Порядок для чтения человеком — по русской раскладке алфавита.
+      // Порядок для чтения человеком, поэтому локаль задана явно у обоих
+      // сравнений: без неё порядок зависит от локали среды и версии ICU —
+      // ровно то, что убрано из расстановки подписей.
+      na.type.localeCompare(nb.type, 'ru') ||
       na.title.localeCompare(nb.title, 'ru')
     )
   })
@@ -1125,7 +1127,7 @@ function renderPanel() {
     return
   }
   if (state.status === 'error') {
-    panel.appendChild(el('p', 'empty', `Схему не удалось загрузить. ${state.reason}`))
+    panel.appendChild(el('p', 'empty', state.reason))
     return
   }
   if (state.missing) {
@@ -1583,18 +1585,41 @@ function announce(text) {
   $('live').textContent = text
 }
 
+/** Стереть картинку: после отказа на канве не должно остаться прошлого вида. */
+function wipe() {
+  for (const id of ['canvas', 'map-canvas']) {
+    const canvas = $(id)
+    if (canvas?.width) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+  }
+}
+
 function refresh(animate) {
-  computeView()
-  state.drawn = true
-  $('view-line').textContent = state.view.line
-  $('map-title').textContent = state.view.line
-  // Пустая канва читается как «не загрузилось», поэтому у неё есть текст —
-  // тот же механизм, что у загрузки и ошибки.
-  if (state.status === 'ready') emptyCanvas(state.view.ids.size === 0)
-  renderTools()
-  renderNodeList()
-  renderPanel()
-  reframe(animate)
+  // После отказа страница не перерисовывается: иначе следующий же вызов
+  // отрисует вид поверх сообщения о поломке, и канва снова покажет картинку
+  // там, где показывать нечего. Выход из этого состояния один — «Попробовать
+  // снова», то есть перезагрузка схемы.
+  if (state.status === 'error') return
+  try {
+    computeView()
+    state.drawn = true
+    $('view-line').textContent = state.view.line
+    $('map-title').textContent = state.view.line
+    // Пустая канва читается как «не загрузилось», поэтому у неё есть текст —
+    // тот же механизм, что у загрузки и ошибки.
+    if (state.status === 'ready') emptyCanvas(state.view.ids.size === 0)
+    renderTools()
+    renderNodeList()
+    renderPanel()
+    reframe(animate)
+  } catch (err) {
+    // Пояс поверх причины. Сборка панели под Node не выполняется и ни одним
+    // тестом не достижима, поэтому её отказ обязан быть виден: без этого
+    // исключение обрывало refresh до reframe и оставляло канву с картинкой
+    // предыдущего узла — страница молча показывала не то.
+    wipe()
+    $('view-line').textContent = ''
+    setStatus('error', `Схему не удалось показать. ${err?.message ?? err}`)
+  }
 }
 
 function select(id, fromHash) {
@@ -1659,7 +1684,7 @@ function setStatus(status, reason) {
   if (status === 'loading') msg.textContent = 'Читаю схему проекта…'
   if (status === 'error') {
     msg.className = 'canvas-msg canvas-err'
-    msg.textContent = `Схему не удалось загрузить. ${state.reason}`
+    msg.textContent = state.reason
     const again = el('button', undefined, 'Попробовать снова')
     again.type = 'button'
     again.addEventListener('click', load)
@@ -1680,14 +1705,14 @@ async function load() {
     try {
       res = await fetch('graph.json', { cache: 'no-cache' })
     } catch {
-      throw new Error('файл graph.json не получен: сети нет или адрес не отвечает.')
+      throw new Error('Схему не удалось загрузить. Файл graph.json не получен: сети нет или адрес не отвечает.')
     }
-    if (!res.ok) throw new Error(`на graph.json пришёл ответ ${res.status}.`)
+    if (!res.ok) throw new Error(`Схему не удалось загрузить. На graph.json пришёл ответ ${res.status}.`)
     let graph
     try {
       graph = await res.json()
     } catch {
-      throw new Error('файл graph.json получен, но это не JSON.')
+      throw new Error('Схему не удалось загрузить. Файл graph.json получен, но это не JSON.')
     }
     state.graph = graph
     state.index = indexGraph(graph)
