@@ -4,6 +4,7 @@
 
 ## 2026-09
 
+- [x] 2026-09-13 — атлас проекта, этап 3: страница витрины `atlas/web/` по раскладке `design`, контракты генератора (координаты, `marks` у следов, выдержка без предела, происхождение), `design-review` и `reviewer` — `ГОТОВО` (PR #54). → `development-history/2026-09-13-2300-atlas-stage-3.md`
 - [x] 2026-09-13 — атлас проекта, этапы 1 и 2: граф `atlas/dist/graph.json`, гейт связности ссылок в `guard`, vault Obsidian `atlas/dist/vault/` (ADR `2026-09-13-2000`). → `development-history/2026-09-13-2100-atlas-stages-1-2.md`
 
 - [x] 2026-09-12 — день 7 выкачен и проверен в проде: чат с агентом, память диалога в SQLite, сессии по cookie (ADR `2026-09-12-0930`). → `development-history/2026-09-12-1400-day7-chat-memory.md`
