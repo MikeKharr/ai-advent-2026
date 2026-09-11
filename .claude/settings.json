@@ -28,12 +28,6 @@
       "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose ps')",
       "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose restart caddy')"
     ],
-    "ask": [
-      "Bash(gh run rerun *)",
-      "Bash(gh run cancel *)",
-      "Bash(git push --force*)",
-      "Bash(git push -f*)"
-    ],
     "deny": [
       "Read(./deploy/*.env)",
       "Read(./**/.env)",
