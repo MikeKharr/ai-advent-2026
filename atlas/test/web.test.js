@@ -9,24 +9,19 @@ import {
   dedupe,
   factsOf,
   statsOf,
-  viewLine,
   addressOf,
   addressTable,
   count,
-  cycleView,
   excerptRuns,
   fit,
   foldExcerpt,
   indexGraph,
   labelRank,
-  maxTwoStep,
-  neighborhood,
   parseMarkup,
   placeLabels,
   plainTitle,
   plural,
   relation,
-  searchNodes,
   segments,
   shortName,
   statusChip,
@@ -272,17 +267,6 @@ test('вид отношения называет отношение, а не в�
   }
 })
 
-test('окрестность: один шаг читаем, два — почти весь граф', () => {
-  const { near } = index
-  const hub = 'role/compliance'
-  assert.equal(neighborhood(near, hub, 0).size, 1)
-  assert.equal(neighborhood(near, hub, 1).size, near.get(hub).size + 1)
-  assert.ok(neighborhood(near, hub, 2).size > neighborhood(near, hub, 1).size)
-  // Ради этого числа в раскладке и стоит переключатель глубины с ценой на
-  // ярлыке: два шага у самых связанных узлов доходят до половины графа.
-  assert.ok(maxTwoStep(near) > graph.nodes.length / 2)
-})
-
 test('след — такая же связь: на канве он есть, в панели показан иначе', () => {
   const { near } = index
   for (const e of fired) assert.equal(near.get(e.from).has(e.to), true, `${e.from} → ${e.to}`)
@@ -298,43 +282,8 @@ test('след — такая же связь: на канве он есть, в
 test('узлы без рёбер видны как узлы без рёбер', () => {
   const { near } = index
   const alone = graph.nodes.filter((n) => near.get(n.id).size === 0)
-  for (const n of alone) assert.equal(neighborhood(near, n.id, 1).size, 1)
+  for (const n of alone) assert.equal(near.get(n.id).size, 0)
   assert.equal(alone.length < graph.nodes.length, true)
-})
-
-test('поиск идёт по заголовкам и коротким именам, не по тексту документов', () => {
-  const { hits } = searchNodes(graph.nodes, 'COMPLI', 12)
-  assert.ok(hits.some((n) => n.id === 'role/compliance'))
-  assert.deepEqual(searchNodes(graph.nodes, '   ', 12), { hits: [], total: 0 })
-  // Слово из тела документа, которого нет ни в одном заголовке.
-  assert.equal(searchNodes(graph.nodes, 'непривязывающим', 12).total, 0)
-  const many = searchNodes(graph.nodes, '2026', 12)
-  assert.equal(many.hits.length, 12)
-  assert.ok(many.total > 12, 'выдача обрезается до 12, остаток называется числом')
-})
-
-test('стартовый вид — цепь фаз с ролями, а не клубок', () => {
-  const view = cycleView(graph, true)
-  const runs = graph.edges.filter((e) => e.kind === 'runs')
-  const expected = new Set([...of('phase').map((p) => p.id), ...runs.map((e) => e.to)])
-  assert.deepEqual([...view.ids].sort(), [...expected].sort())
-  assert.ok(view.ids.size * 4 < graph.nodes.length, 'стартовый вид — не весь граф')
-  // Связки «фаза → следующая фаза» страница рисует сама: в графе их нет.
-  assert.equal(view.edges.filter((e) => e.kind === 'next').length, of('phase').length - 1)
-  assert.equal(graph.edges.some((e) => e.kind === 'next'), false)
-  assert.equal(view.place.size, view.ids.size)
-  assert.deepEqual(view.place.get('phase/01'), { x: 0, y: 0 })
-  assert.equal(view.place.get(`phase/${String(of('phase').length).padStart(2, '0')}`).x, of('phase').length - 1)
-  // Узел стоит в одном месте, даже если его ведут две фазы.
-  assert.equal(view.place.get('role/reviewer').x, view.place.get('phase/06').x)
-})
-
-test('на узком экране цепь идёт сверху вниз', () => {
-  const down = cycleView(graph, false)
-  const last = `phase/${String(of('phase').length).padStart(2, '0')}`
-  assert.deepEqual(down.place.get('phase/01'), { x: 0, y: 0 })
-  assert.equal(down.place.get(last).y, of('phase').length - 1)
-  assert.equal(down.place.get(last).x, 0)
 })
 
 test('камера вписывает вид в поле и не искажает расстояний', () => {
@@ -492,7 +441,7 @@ test('наведение в виде до 40 узлов не меняет поз
   ]
   const layout = (hover) =>
     placeLabels(
-      view.map((n) => ({ ...n, rank: labelRank({ id: n.id, sel: null, near: null, hover, phase: false, always: true }) })),
+      view.map((n) => ({ ...n, rank: labelRank({ id: n.id, sel: null, near: null, hover, always: true }) })),
       field,
       monoWidth,
     )
@@ -504,7 +453,7 @@ test('наведение в виде до 40 узлов не меняет поз
 
 test('в большом виде наведённый узел поднимается в порядке подписей', () => {
   const near = new Set(['сосед'])
-  const args = { sel: 'выбранный', near, hover: 'под курсором', phase: false, always: false }
+  const args = { sel: 'выбранный', near, hover: 'под курсором', always: false }
   assert.equal(labelRank({ ...args, id: 'под курсором' }), 2)
   assert.equal(labelRank({ ...args, id: 'сосед' }), 3)
   assert.equal(labelRank({ ...args, id: 'выбранный' }), 0)
@@ -565,7 +514,6 @@ test('сводка чисел считается по графу', () => {
   assert.equal(stats.fired.length, fired.length)
   assert.equal(stats.rolesWithout, of('role').filter((r) => !fired.some((e) => e.from === r.id)).length)
   assert.equal(stats.alone, Object.values(stats.aloneBy).reduce((a, b) => a + b, 0))
-  assert.equal(stats.twoStep, maxTwoStep(index.near))
 })
 
 test('кратные рёбра между парой узлов сводятся к одной линии', () => {
@@ -579,55 +527,6 @@ test('кратные рёбра между парой узлов сводятс�
   assert.ok(all.length < graph.edges.length)
   const pairs = all.map((e) => (e.from < e.to ? `${e.from} ${e.to}` : `${e.to} ${e.from}`))
   assert.equal(new Set(pairs).size, pairs.length)
-})
-
-test('полоса вида называет вид и числа этого вида', () => {
-  const stats = statsOf(graph, index.near)
-  const base = { stats, byId, depth: 1, links: [] }
-  assert.match(
-    viewLine({ ...base, full: true, selected: null, ids: new Set() }),
-    /^Весь граф: \d+ (?:узел|узла|узлов), \d+ (?:связь|связи|связей)\. Подписи скрыты/,
-  )
-  assert.equal(viewLine({ ...base, full: false, selected: null, ids: new Set() }), 'Ни одного узла: скрыты все типы')
-  assert.equal(
-    viewLine({ ...base, full: false, selected: 'role/compliance', ids: new Set(['role/compliance']) }),
-    'У этого узла нет связей — на канве только он',
-  )
-  assert.equal(
-    viewLine({ ...base, full: false, selected: 'role/compliance', ids: new Set(['role/compliance', 'class/A']), links: [{}] }),
-    'Соседи узла compliance, 1 шаг: 2 узла, 1 связь',
-  )
-  const cycle = cycleView(graph, true)
-  assert.match(viewLine({ ...base, full: false, selected: null, ids: cycle.ids }), /^Цикл дня: \d+ фаз\S*, \d+ рол\S+, \d+ класс\S* гейтов$/)
-})
-
-test('полоса всего графа согласует число и форму слова', () => {
-  // Числа живого графа меняются с каждым мержем: форму проверяет таблица, а не
-  // текущий размер графа. 181 — число, на котором упала прежняя регулярка.
-  const line = (nodes, edges) =>
-    viewLine({ full: true, selected: null, ids: new Set(), links: [], depth: 1, byId: new Map(), stats: { nodes, edges } })
-  const nodeForms = [
-    [1, 'узел'],
-    [21, 'узел'],
-    [181, 'узел'],
-    [2, 'узла'],
-    [22, 'узла'],
-    [5, 'узлов'],
-    [11, 'узлов'],
-    [111, 'узлов'],
-  ]
-  for (const [n, form] of nodeForms)
-    assert.equal(line(n, 5), `Весь граф: ${n} ${form}, 5 связей. Подписи скрыты — узел называет панель`)
-  const edgeForms = [
-    [1, 'связь'],
-    [21, 'связь'],
-    [2, 'связи'],
-    [22, 'связи'],
-    [11, 'связей'],
-    [628, 'связей'],
-  ]
-  for (const [m, form] of edgeForms)
-    assert.equal(line(5, m), `Весь граф: 5 узлов, ${m} ${form}. Подписи скрыты — узел называет панель`)
 })
 
 test('у документов есть путь для ссылки на GitHub', () => {

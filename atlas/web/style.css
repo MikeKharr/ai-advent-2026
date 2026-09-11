@@ -259,6 +259,11 @@ button[disabled], button[aria-disabled="true"] { opacity:.5; cursor:default; }
   position:absolute; inset-inline:0; bottom:var(--s-5);
   display:flex; gap:var(--s-2); justify-content:center; flex-wrap:wrap;
 }
+/* Строка под канвой: «Плоский вид» и подсказка. Канвы в потоке узкой
+   страницы нет — нет и строки; там флажок живёт в карте. */
+.canvas-foot { display:none; align-items:center; gap:var(--s-4); flex-wrap:wrap; }
+@media (min-width: 73rem) { .canvas-foot { display:flex; } }
+.flat-note { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
 
 /* ── Поиск ───────────────────────────────────────────────────────────── */
 .field-label {
@@ -275,8 +280,15 @@ input[type="search"]:hover { background:var(--bg); }
 input[disabled] { opacity:.5; cursor:default; }
 .results { list-style:none; margin:var(--s-3) 0 0; padding:0; }
 .results li + li { margin-top:var(--s-1); }
+.texts-retry { margin-top:var(--s-2); }
+/* Результат — одна ссылка в две строки: имя с типом, под ними отрывок. */
+.node-link.result { flex-wrap:wrap; row-gap:var(--s-1); }
+.snippet {
+  flex-basis:100%; max-width:52ch;
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+}
 
-/* ── Фильтры и вид ───────────────────────────────────────────────────── */
+/* ── Фильтры по типу ─────────────────────────────────────────────────── */
 .tools {
   background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
   padding:var(--s-4);
@@ -290,18 +302,15 @@ legend, .fam-legend {
   font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
   letter-spacing:.06em; color:var(--fg-mut); padding:0;
 }
-.depth label, .full label, .volume label, .types label {
+.types label, label.flat {
   display:flex; align-items:center; gap:var(--s-2);
   font-size:var(--t-sm); line-height:1.5; padding:var(--s-1) 0; cursor:pointer;
 }
-.depth label:hover, .full label:hover, .volume label:hover, .types label:hover { color:var(--fg-mut); }
-/* Недоступный переключатель глубины: приглушены метки, а не пояснение —
-   причина недоступности читается лучше всего в блоке, а не хуже. */
-.depth[disabled] label { opacity:.5; cursor:default; }
-.depth[disabled] label:hover { color:var(--fg); }
-.depth { display:flex; flex-direction:column; }
-.depth legend { margin-bottom:var(--s-2); }
-.full { margin:0; }
+.types label:hover, label.flat:hover { color:var(--fg-mut); }
+/* Пока схемы нет, «Плоский вид» недоступен: приглушена метка целиком. */
+label.flat:has(input[disabled]) { opacity:.5; cursor:default; }
+label.flat:has(input[disabled]):hover { color:var(--fg); }
+label.flat input[disabled] { opacity:1; }
 .fam + .fam { margin-top:var(--s-3); }
 .fam-head { display:flex; align-items:center; gap:var(--s-2); }
 .types { margin:var(--s-1) 0 0; padding-left:var(--s-5); }
@@ -336,6 +345,18 @@ legend, .fam-legend {
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 .node-link[aria-current="true"] .name { font-weight:600; }
+/* Строка выбранного в списке — рамкой, как текущий номер рельса: фон --bg
+   на --surface глазом не виден. Прозрачная рамка у остальных держит строки
+   на месте. */
+#nodes .node-link { border:1px solid transparent; }
+#nodes .node-link[aria-current="true"] { border-color:var(--line-ctl); }
+/* Найденный поиском — то же кольцо, что на канве; словом его называет .vh. */
+.node-link.found .dot { outline:1px solid var(--fg); outline-offset:1px; }
+/* Ниже 100rem у списка своя прокрутка: колонка и страница несут панель, и
+   прокрутка к строке не должна уводить её из обзора. Отступ — место кольцу
+   фокуса строки. В трёх колонках прокручивается колонка целиком. */
+#nodes { max-height:60dvh; overflow-y:auto; padding:var(--s-1); }
+@media (min-width: 100rem) { #nodes { max-height:none; overflow:visible; padding:0; } }
 .results .node-link:hover, .panel .node-link:hover { background:var(--bg); }
 
 /* ── Панель ──────────────────────────────────────────────────────────── */
@@ -470,6 +491,7 @@ dialog {
 dialog[open] { display:flex; }
 dialog::backdrop { background:var(--overlay); }
 .map-head, .map-foot { display:flex; align-items:center; gap:var(--s-3); }
+.map-foot { flex-wrap:wrap; }
 .map-head { justify-content:space-between; }
 .map-foot { justify-content:center; }
 #map-wrap { flex:1; min-height:0; }

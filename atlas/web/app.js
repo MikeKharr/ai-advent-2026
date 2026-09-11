@@ -359,74 +359,198 @@ export function indexGraph(graph) {
   return { byId, near }
 }
 
-/** Окрестность узла заданной глубины, включая сам узел. */
-export function neighborhood(near, id, depth) {
-  const seen = new Set([id])
-  let front = [id]
-  for (let step = 0; step < depth; step += 1) {
-    const next = []
-    for (const at of front) {
-      for (const to of near.get(at) ?? []) {
-        if (seen.has(to)) continue
-        seen.add(to)
-        next.push(to)
-      }
-    }
-    front = next
-  }
-  return seen
+// Полнотекстовый поиск — agent_docs/design/2026-09-14-2300-atlas-3d-fullgraph-search.md,
+// раздел 4. Заголовки, ключ и короткое имя ищутся с первого знака, текст
+// документа и текстовые поля узла — с третьего.
+
+/** С какого знака запроса ищется текст: два знака подсвечивали бы две трети графа. */
+export const TEXT_FROM = 3
+
+/**
+ * Сравнение без регистра и с «ё» = «е»: в документах пишется «объём», а
+ * набирают «объем». Длина строки сохраняется, поэтому позиция совпадения в
+ * сложенной строке — позиция в исходной, и отрывок режется по исходной.
+ */
+export function fold(s) {
+  const low = s.toLowerCase()
+  const same =
+    low.length === s.length
+      ? low
+      : [...s].map((c) => (c.toLowerCase().length === c.length ? c.toLowerCase() : c)).join('')
+  return same.replaceAll('ё', 'е')
 }
 
-/** Самая большая окрестность в два шага: цена второго шага фактом, а не предупреждением. */
-export function maxTwoStep(near) {
-  let max = 0
-  for (const id of near.keys()) max = Math.max(max, neighborhood(near, id, 2).size)
-  return max
+/** Текстовые поля узла, которые уже есть в `graph.json` и ищутся как текст. */
+const TEXT_FIELDS = {
+  invariant: ['text'],
+  role: ['description', 'owns', 'never'],
+  skill: ['description'],
+  phase: ['exit'],
+  class: ['what', 'note'],
+  external: ['note'],
 }
 
-/** Поиск подстрокой по заголовку и короткому имени. Не по тексту документов — их в витрине нет. */
-export function searchNodes(nodes, query, limit) {
-  const q = query.trim().toLowerCase()
-  if (q === '') return { hits: [], total: 0 }
-  const all = nodes.filter((n) => `${n.title} ${n.key} ${shortName(n)}`.toLowerCase().includes(q))
-  return { hits: all.slice(0, limit), total: all.length }
+const prep = (raw) => {
+  const text = raw.replace(/\s+/g, ' ').trim()
+  return { raw: text, norm: fold(text) }
 }
 
 /**
- * Стартовый вид: цепь фаз с ролями и классами гейтов, которые их ведут.
- * Раскладка задана здесь, а не силовой моделью: у неё нет причин ставить
- * фазу 1 слева. Связок «фаза → следующая фаза» в графе нет — порядок задаёт
- * поле `n`, и страница рисует их сама.
- * @returns {{ids:Set<string>, edges:Array, place:Map<string,{x:number,y:number}>}}
+ * Индекс поиска в порядке узлов графа. Тексты берутся только для узлов этой
+ * сборки: идентификатор, которого в графе нет (выкатка между двумя
+ * запросами), пропускается, а узел без текста ищется по заголовку и полям.
+ * @param {object} texts идентификатор узла → строка текста; `{}` — текстов нет
  */
-export function cycleView(graph, horizontal) {
-  const phases = graph.nodes.filter((n) => n.type === 'phase').sort((a, b) => a.n - b.n)
-  const runs = graph.edges.filter((e) => e.kind === 'runs')
-  const ids = new Set(phases.map((p) => p.id))
-  const place = new Map()
-  const owner = new Map()
-  for (const e of runs) if (!owner.has(e.to)) owner.set(e.to, e.from)
-
-  const around = new Map(phases.map((p) => [p.id, []]))
-  for (const [to, from] of owner) {
-    around.get(from)?.push(to)
-    ids.add(to)
-  }
-
-  phases.forEach((phase, col) => {
-    place.set(phase.id, { x: col, y: 0 })
-    around.get(phase.id).forEach((id, k) => {
-      const side = k % 2 === 0 ? -1 : 1
-      place.set(id, { x: col, y: side * (1 + Math.floor(k / 2)) })
-    })
+export function buildSearch(nodes, texts) {
+  return nodes.map((node, order) => {
+    const bodies = []
+    const own = Object.hasOwn(texts, node.id) ? texts[node.id] : undefined
+    if (typeof own === 'string' && own !== '') bodies.push(prep(own))
+    for (const field of TEXT_FIELDS[node.type] ?? []) if (typeof node[field] === 'string' && node[field] !== '') bodies.push(prep(node[field]))
+    return { node, order, head: fold(`${node.title} ${node.key} ${shortName(node)}`), title: prep(plainTitle(node)), bodies }
   })
-
-  const edges = [...runs, ...graph.edges.filter((e) => e.kind === 'gates')].filter((e) => ids.has(e.from) && ids.has(e.to))
-  for (let i = 0; i < phases.length - 1; i += 1) edges.push({ from: phases[i].id, to: phases[i + 1].id, kind: 'next' })
-
-  if (!horizontal) for (const p of place.values()) [p.x, p.y] = [p.y, p.x]
-  return { ids, edges, place }
 }
+
+function occurrences(norm, q) {
+  const at = []
+  for (let i = norm.indexOf(q); i !== -1; i = norm.indexOf(q, i + q.length)) at.push(i)
+  return at
+}
+
+/** Кусок строки, разложенный на отрезки: совпадение — `hit`. */
+function markRuns(raw, norm, q, from, to) {
+  const runs = []
+  let i = from
+  for (const at of occurrences(norm.slice(from, to), q)) {
+    if (from + at > i) runs.push({ text: raw.slice(i, from + at), hit: false })
+    runs.push({ text: raw.slice(from + at, from + at + q.length), hit: true })
+    i = from + at + q.length
+  }
+  if (i < to) runs.push({ text: raw.slice(i, to), hit: false })
+  return runs
+}
+
+/** До 40 знаков до совпадения и до 80 после, края — по границе слова. */
+const BEFORE = 40
+const AFTER = 80
+
+/**
+ * Отрывок вокруг первого совпадения. Многоточие — только там, где текст
+ * обрезан: это отрывок документа, а не выдержка следа, у которой обрезание
+ * запрещено.
+ */
+function snippetOf({ raw, norm }, q, at) {
+  let from = at - BEFORE
+  if (from <= 0) from = 0
+  else {
+    const space = raw.indexOf(' ', from - 1)
+    from = space !== -1 && space < at ? space + 1 : at
+  }
+  let to = at + q.length + AFTER
+  if (to >= raw.length) to = raw.length
+  else {
+    const space = raw.lastIndexOf(' ', to)
+    to = space >= at + q.length ? space : at + q.length
+  }
+  const runs = markRuns(raw, norm, q, from, to)
+  if (from > 0) runs.unshift({ text: '…', hit: false })
+  if (to < raw.length) runs.push({ text: '…', hit: false })
+  return runs
+}
+
+/**
+ * Поиск: сначала совпавшие по заголовку, ключу или имени — в порядке графа;
+ * затем совпавшие только по тексту — по числу вхождений от большего, при
+ * равенстве — в порядке графа. `found` — все найденные, `hits` — первые
+ * `limit` с отрывком.
+ * @returns {{hits:Array<{node:object, where:'title'|'text', snippet:Array<{text:string, hit:boolean}>}>, total:number, found:Set<string>, short:boolean}}
+ */
+export function searchAtlas(index, query, limit) {
+  const q = fold(query.replace(/\s+/g, ' ').trim())
+  const short = q.length < TEXT_FROM
+  if (q === '') return { hits: [], total: 0, found: new Set(), short }
+  const titled = []
+  const texted = []
+  for (const entry of index) {
+    if (entry.head.includes(q)) {
+      titled.push({ entry, where: 'title' })
+      continue
+    }
+    if (short) continue
+    let count = 0
+    let first = null
+    for (const body of entry.bodies) {
+      const at = occurrences(body.norm, q)
+      if (at.length > 0 && first === null) first = { body, at: at[0] }
+      count += at.length
+    }
+    if (count > 0) texted.push({ entry, where: 'text', count, first })
+  }
+  texted.sort((a, b) => b.count - a.count || a.entry.order - b.entry.order)
+  const all = [...titled, ...texted]
+  const hits = all.slice(0, limit).map(({ entry, where, first }) => ({
+    node: entry.node,
+    where,
+    snippet:
+      where === 'title'
+        ? markRuns(entry.title.raw, entry.title.norm, q, 0, entry.title.raw.length)
+        : snippetOf(first.body, q, first.at),
+  }))
+  return { hits, total: all.length, found: new Set(all.map(({ entry }) => entry.node.id)), short }
+}
+
+/** Подсказка под полем поиска по состоянию `texts.json`. */
+export function textsNote(texts) {
+  if (texts === 'loading') return 'Тексты документов ещё грузятся — пока ищу только в заголовках'
+  if (texts === 'error') return 'Тексты документов не загрузились — ищу только в заголовках'
+  return 'Ищет в заголовках сразу, в тексте документов — от трёх знаков'
+}
+
+/** Пустая выдача называет причину, а не только факт. */
+export function emptyNote({ texts, short }) {
+  if (short) return 'В заголовках ничего нет. По тексту документов ищу от трёх знаков.'
+  if (texts === 'ready') return 'Ничего не нашлось ни в заголовках, ни в тексте документов.'
+  if (texts === 'error') return 'В заголовках ничего нет, а тексты документов не загрузились.'
+  return 'В заголовках ничего нет. Тексты документов ещё грузятся — выдача обновится сама.'
+}
+
+/** Подпись под выдачей: объяснение кольца и ответ на «где остальные». */
+export const moreNote = (total, shown) =>
+  total > shown ? `Ещё ${total - shown} — выделены кольцом на схеме и в списке узлов.` : 'Все найденные выделены кольцом на схеме и в списке узлов.'
+
+/**
+ * Объявление исхода загрузки текстов. Успех с первой попытки молчит: выдача
+ * обновилась на месте. Номер попытки делает повторный отказ новым текстом.
+ */
+export function textsOutcome({ ok, attempt }) {
+  if (ok) return attempt > 1 ? 'Тексты документов загружены — поиск идёт и по тексту.' : null
+  const say = 'тексты документов не загрузились — поиск идёт только по заголовкам.'
+  return attempt > 1 ? `Попытка ${attempt}: ${say}` : `Т${say.slice(1)}`
+}
+
+/**
+ * Выделение на канве — таблица «Сочетание выбора и поиска». `sel` — выбранный
+ * узел, если он виден; `near` — его соседи; `found` — видимые найденные.
+ * Выбор и поиск складываются. Выбранный и найденный получает только кольцо
+ * `--acc`: состояние выбора важнее.
+ */
+export function highlight({ sel, near, found }) {
+  const lit = new Set(found)
+  if (sel !== null) {
+    lit.add(sel)
+    for (const id of near ?? []) lit.add(id)
+  }
+  const rings = new Set([...found].filter((id) => id !== sel))
+  return { on: sel !== null || found.size > 0, lit, rings }
+}
+
+/**
+ * Прокрутка списка к выбранному: верх строки — на `round(H/3)` от верха
+ * видимой области, в пределах `0 … scrollHeight − H`.
+ * @param {{top:number, height:number, scrollHeight:number}} at `top` — верх строки в координатах содержимого области
+ */
+export const listScrollTop = ({ top, height, scrollHeight }) =>
+  Math.min(Math.max(0, scrollHeight - height), Math.max(0, top - Math.round(height / 3)))
 
 /** Высота коробки подписи и зазор от узла — из шага сетки. */
 export const LABEL_H = 16
@@ -602,7 +726,6 @@ export function statsOf(graph, near) {
     rolesWithout: roles.filter((r) => !traced.has(r.id)).length,
     alone: alone.length,
     aloneBy,
-    twoStep: maxTwoStep(near),
   }
 }
 
@@ -623,21 +746,26 @@ export function dedupe(edges) {
  * Строка полосы вида — тот же текст, что уходит скринридеру. Один источник
  * фактов, два способа его получить.
  */
-export function viewLine({ full, selected, ids, links, stats, depth, byId, volume }) {
-  // «· объём» — последним сегментом и только там, где объём действует: не в
-  // цикле и не в пустом виде. Одиночный узел повернуть можно, увидеть — нет.
-  const tail = !volume || ids.size === 0 ? '' : ids.size === 1 ? ' · объём: вращать нечего' : ' · объём'
-  if (full) {
-    return `Весь граф: ${count(stats.nodes, 'узел', 'узла', 'узлов')}, ${count(stats.edges, 'связь', 'связи', 'связей')}. Подписи скрыты — узел называет панель${tail}`
-  }
+export function viewLine({ ids, links, hidden, selected, byId, near, found, volume }) {
   if (ids.size === 0) return 'Ни одного узла: скрыты все типы'
+  // «· объём» — последним сегментом и только в объёме. Одиночный узел
+  // повернуть можно, увидеть — нет.
+  const tail = !volume ? '' : ids.size === 1 ? ' · объём: вращать нечего' : ' · объём'
+  // Вид один — весь граф, поэтому строка называет, что на нём выделено.
+  let pick = null
   if (selected) {
-    if (ids.size === 1 && links.length === 0) return `У этого узла нет связей — на канве только он${tail}`
-    const step = depth === 1 ? '1 шаг' : '2 шага'
-    return `Соседи узла ${shortName(byId.get(selected))}, ${step}: ${count(ids.size, 'узел', 'узла', 'узлов')}, ${count(links.length, 'связь', 'связи', 'связей')}${tail}`
+    const name = shortName(byId.get(selected))
+    const k = [...(near.get(selected) ?? [])].filter((id) => ids.has(id)).length
+    if (!ids.has(selected)) pick = `${name} скрыт фильтром`
+    else if ((near.get(selected)?.size ?? 0) === 0) pick = `Выделен ${name}: у него нет связей`
+    else if (k === 0) pick = `Выделен ${name}, соседи скрыты`
+    else pick = `Выделены ${name} и ${count(k, 'сосед', 'соседа', 'соседей')}`
   }
-  const of = (type) => [...ids].filter((id) => byId.get(id).type === type).length
-  return `Цикл дня: ${count(of('phase'), 'фаза', 'фазы', 'фаз')}, ${count(of('role'), 'роль', 'роли', 'ролей')}, ${count(of('class'), 'класс', 'класса', 'классов')} гейтов`
+  if (pick && found > 0) return `${pick}; найдено ${found}${tail}`
+  if (pick) return `${pick}${tail}`
+  if (found > 0) return `Найдено по запросу: ${found}${tail}`
+  const sizes = `${count(ids.size, 'узел', 'узла', 'узлов')}, ${count(links.length, 'связь', 'связи', 'связей')}`
+  return hidden === 0 ? `Весь граф: ${sizes}${tail}` : `Скрыто ${count(hidden, 'тип', 'типа', 'типов')}: ${sizes}${tail}`
 }
 
 // Путь посещений — agent_docs/design/2026-09-14-0900-atlas-visit-trail.md.
@@ -689,17 +817,6 @@ export function foldTrail(root, links, more, room) {
 export function trailMore(n) {
   const shown = `… ещё ${n}`
   return { shown, rest: `${count(n, 'узел', 'узла', 'узлов').slice(String(n).length)} пути` }
-}
-
-/**
- * Состояние переключателя глубины — верхняя подходящая строка таблицы
- * раскладки: загрузка и ошибка, полный граф, узел не выбран, узел без связей.
- */
-export function depthMode({ status, full, selected, alone }) {
-  if (status !== 'ready') return status
-  if (full) return 'full'
-  if (!selected) return 'none'
-  return alone ? 'alone' : 'on'
 }
 
 // Режим «Объём» — agent_docs/design/2026-09-14-1200-atlas-3d-mode.md, ADR
@@ -850,12 +967,14 @@ export function blend(a, b, t) {
   return out
 }
 
-/** Строка под флажком «Объём»: что он сделает — до нажатия. */
-export function volumeHint(cycle, fine) {
-  if (cycle) return 'В цикле дня объём не действует: это схема по номерам фаз. Выберите узел или включите весь граф.'
-  return fine
-    ? 'Перетаскивание вращает граф, с Shift — сдвигает. Под углом часть подписей может пропасть — узлы называет список.'
-    : 'Палец вращает граф; сдвига нет — к центру вернёт «Сбросить вид». Под углом часть подписей может пропасть — узлы называет список.'
+/**
+ * Подсказка под канвой рядом с «Плоским видом» — по режиму и устройству
+ * ввода. На полном графе подписей нет у большинства узлов при любом угле:
+ * посетителю нужен способ узнать имя, а не предупреждение.
+ */
+export function flatHint(flat, fine) {
+  if (fine) return flat ? 'Перетаскивание сдвигает; имя узла — под указателем' : 'Перетаскивание вращает, с Shift — сдвигает; имя узла — под указателем'
+  return flat ? 'Палец сдвигает схему' : 'Палец вращает; к центру вернёт «Сбросить вид»'
 }
 
 // Фокус после шага — agent_docs/design/2026-09-14-1500-atlas-focus-after-step.md.
@@ -905,8 +1024,8 @@ export function retryPhase(status, attempt) {
   return { busy: false, line: `Попыток: ${attempt}` }
 }
 
-/** Кнопки, которые работают по графу: пока его нет, они `disabled`. */
-export const GRAPH_BUTTONS = ['map-open', 'zoom-out', 'zoom-in', 'view-reset']
+/** Кнопки и флажки, которые работают по графу: пока его нет, они `disabled`. */
+export const GRAPH_BUTTONS = ['map-open', 'zoom-out', 'zoom-in', 'view-reset', 'flat', 'map-flat']
 /** Блоки, чьё содержимое и есть граф: пока его нет, они скрыты. */
 export const GRAPH_BLOCKS = ['tools', 'nodelist']
 
@@ -960,15 +1079,42 @@ export async function fetchGraph(onHint, get = fetch) {
   }
 }
 
+/**
+ * Тексты документов для поиска — `texts.json`, объект «идентификатор узла →
+ * строка». Та же отмена по сроку, что у схемы, но без ступени 8 с: поиск по
+ * заголовкам работает с первой миллисекунды, и страница не молчит. Причину
+ * посетитель не читает — поле говорит «не загрузились», — поэтому отказ
+ * один на все случаи. `get` подменяется в тестах.
+ */
+export async function fetchTexts(get = fetch) {
+  const ctl = new AbortController()
+  const limit = setTimeout(() => ctl.abort(), LOAD_LIMIT_MS)
+  try {
+    const res = await get('texts.json', { cache: 'no-cache', signal: ctl.signal })
+    if (!res.ok) throw new Error(`На texts.json пришёл ответ ${res.status}.`)
+    const json = await res.json()
+    if (json === null || typeof json !== 'object' || Array.isArray(json)) throw new Error('texts.json — не объект.')
+    return json
+  } finally {
+    clearTimeout(limit)
+  }
+}
+
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
 const ATLAS_ADR = `${REPO}/blob/main/agent_docs/adr/2026-09-13-2000-project-atlas.md`
 /** До скольких узлов подписи видны всегда. */
 const LABELS_UPTO = 40
-/** Строк в списке до свёртки и в выдаче поиска. */
+/** Строк в списке до свёртки. */
 const LIST_UPTO = 10
-const SEARCH_UPTO = 12
+/**
+ * Результатов в выдаче поиска. Результат с отрывком занимает 3–4 строки
+ * отрывка в колонке 18rem, и при пяти блок поиска в трёх колонках вытеснял
+ * колонку фильтров и списка до 83 px (1600 × 900, «вето»). Остальные
+ * найденные — кольцами на схеме и в списке.
+ */
+export const SEARCH_UPTO = 3
 
 const $ = (id) => document.getElementById(id)
 const el = (tag, cls, text) => {
@@ -989,11 +1135,11 @@ const state = {
   stats: null,
   selected: null,
   missing: null,
-  depth: 1,
-  full: false,
   hidden: new Set(),
   hover: null,
-  view: { ids: new Set(), edges: [], place: null, line: '' },
+  view: { ids: new Set(), edges: [], line: '' },
+  /** Камера уже вписывала вид: выбор узла её не перевписывает. */
+  framed: false,
   cam: { base: 1, cx: 0, cy: 0, scale: 1, panX: 0, panY: 0 },
   from: null,
   t0: 0,
@@ -1008,14 +1154,26 @@ const state = {
   trail: [],
   trailOpen: false,
   /**
-   * Режим «Объём»: флажок, поза посетителя, смесь перехода плоский ⇄ объём
-   * и признак движения рукой — пока он есть, подписи только у выбранного и
-   * наведённого.
+   * Вид: объём по умолчанию, `flat` — флажок «Плоский вид». Поза посетителя,
+   * смесь перехода плоский ⇄ объём и признак движения рукой — пока он есть,
+   * подписи только у выбранного и наведённого.
    */
-  volume: false,
+  flat: false,
   pose: { ...POSE0 },
   morph: null,
   turning: false,
+  /**
+   * Поиск: индекс, найденные по текущему запросу, состояние `texts.json`
+   * (`idle` — не запрошены) и номер попытки его загрузки.
+   */
+  search: [],
+  found: new Set(),
+  texts: 'idle',
+  textsData: null,
+  textsAttempt: 0,
+  /** Строки списка «Узлы в этом виде» и набор, по которому они собраны. */
+  rows: new Map(),
+  listKey: null,
 }
 
 const node = (id) => state.index.byId.get(id)
@@ -1045,51 +1203,37 @@ function ghLink(file, line) {
 const mapOpen = () => $('map').open
 
 /**
- * Цепь фаз идёт вдоль длинной стороны поля: в альбомном — слева направо, в
- * портретном — сверху вниз, при равных сторонах — горизонтально. Правило по
- * форме канвы, а не по ширине окна: ширина была лишь приметой формы, и после
- * перехода на две колонки в диапазоне 73–100rem примета отвалилась бы.
+ * Вид один — весь граф; уменьшают его только фильтры типов. Фильтр убирает
+ * узлы с канвы, но не влияет на панель: иначе он молча уводил бы посетителя
+ * с узла, который он читает.
  */
-const horizontal = () => {
-  const box = mapOpen() ? $('map-wrap') : $('canvas-wrap')
-  return box.clientWidth >= box.clientHeight
+function computeView() {
+  const shown = new Set(state.graph.nodes.filter((n) => !state.hidden.has(n.type)).map((n) => n.id))
+  const links = dedupe(state.graph.edges.filter((e) => shown.has(e.from) && shown.has(e.to)))
+  state.view = { ids: shown, edges: links, line: '' }
+  state.view.line = lineNow()
 }
 
-function computeView() {
-  const { graph } = state
-  let ids
-  let place = null
-  let edges
+/** Найденные поиском, которые сейчас на канве. */
+const foundShown = () => new Set([...state.found].filter((id) => state.view.ids.has(id)))
 
-  if (state.full) {
-    ids = new Set(graph.nodes.map((n) => n.id))
-    edges = graph.edges
-  } else if (state.selected) {
-    ids = neighborhood(state.index.near, state.selected, state.depth)
-    edges = graph.edges
-  } else {
-    const cycle = cycleView(graph, horizontal())
-    ids = cycle.ids
-    place = cycle.place
-    edges = cycle.edges
-  }
-
-  // Фильтр убирает узлы с канвы, но не влияет на панель: иначе он молча
-  // уводил бы посетителя с узла, который он читает.
-  const shown = new Set([...ids].filter((id) => !state.hidden.has(node(id).type)))
-  const links = dedupe(edges.filter((e) => shown.has(e.from) && shown.has(e.to)))
-  const line = viewLine({
-    full: state.full,
+function lineNow() {
+  return viewLine({
+    ids: state.view.ids,
+    links: state.view.edges,
+    hidden: state.hidden.size,
     selected: state.selected,
-    ids: shown,
-    links,
-    stats: state.stats,
-    depth: state.depth,
     byId: state.index.byId,
-    // Цикл дня плоский при любом флажке: у схемы по номерам фаз нет глубины.
-    volume: state.volume && place === null,
+    near: state.index.near,
+    found: foundShown().size,
+    volume: volumeOn(),
   })
-  state.view = { ids: shown, edges: links, place, line }
+}
+
+/** Строка вида — в полосе и в заголовке карты: тот же текст, что уходит скринридеру. */
+function showLine() {
+  $('view-line').textContent = state.view.line
+  $('map-title').textContent = state.view.line
 }
 
 // ── Канва ──────────────────────────────────────────────────────────────
@@ -1102,22 +1246,21 @@ const colors = {}
 
 function readColors() {
   const css = getComputedStyle(document.documentElement)
-  for (const key of ['fam-dec', 'fam-rul', 'fam-rec', 'fam-act', 'fam-sys', 'fg', 'acc', 'line-ctl', 'surface'])
+  for (const key of ['fam-dec', 'fam-rul', 'fam-rec', 'fam-act', 'fam-sys', 'fg', 'acc', 'line', 'line-ctl', 'surface'])
     colors[key] = css.getPropertyValue(`--${key}`).trim()
 }
 
-/** Координаты приходят из сборки; стартовый вид считает их сам по номеру фазы. */
+/** Координаты приходят из сборки. */
 function points() {
   const map = new Map()
   for (const id of state.view.ids) {
-    const p = state.view.place?.get(id) ?? node(id)
+    const p = node(id)
     map.set(id, { x: p.x, y: p.y })
   }
   return map
 }
 
-/** Объём действует на окрестности и полном графе; цикл дня плоский всегда. */
-const volumeOn = () => state.volume && state.view.place === null
+const volumeOn = () => !state.flat
 
 /** Узлы вида с координатами из сборки — `x`, `y`, `z`. */
 const spatial = () => new Map([...state.view.ids].map((id) => [id, node(id)]))
@@ -1185,44 +1328,40 @@ function camNow() {
 const LABEL_FONT = '12px ui-sans-serif, system-ui, sans-serif'
 
 /**
- * Порядок важности: выбранный узел, фазы цепи (они и есть рассказ стартового
- * вида), узел под курсором, соседи выбранного, остальные. Важному узлу
- * достаётся позиция ближе к «под узлом», остальным — из оставшихся.
+ * Порядок важности: выбранный узел, узел под курсором, соседи выбранного и
+ * найденные поиском, остальные. Важному узлу достаётся позиция ближе к «под
+ * узлом», остальным — из оставшихся.
  *
  * Узел под курсором поднимается, только когда подписи показаны не у всех
  * (`always` ложно). В виде до 40 узлов его подпись и так есть, а повышение
  * переставляло бы соседние: подписи прыгали бы от движения мыши.
  */
-export const labelRank = ({ id, sel, near, hover, phase, always }) =>
-  id === sel ? 0 : phase ? 1 : id === hover && !always ? 2 : near?.has(id) ? 3 : 4
+export const labelRank = ({ id, sel, near, hover, found, always }) =>
+  id === sel ? 0 : id === hover && !always ? 2 : near?.has(id) || found?.has(id) ? 3 : 4
 
-/**
- * Наборы позиций подписи. В цепи первая позиция задана раскладкой цепи:
- * колонка на канве 864 px — это 86 px, а подпись до 24 знаков занимает до
- * 170 px, поэтому подписи соседних столбцов разводятся по высоте, а роли в
- * вертикальной цепи стоят сбоку от своей фазы и уходят подписью вверх.
- */
-function slotsOf(id) {
-  const chain = state.view.place?.get(id)
-  if (!chain) return SLOTS
-  const isPhase = node(id).type === 'phase'
-  let first
-  if (!horizontal()) {
-    // Цепь сверху вниз: роли стоят сбоку от своей фазы, и подпись роли уходит
-    // наружу от столбца — иначе она ложится поперёк подписи фазы.
-    first = isPhase ? 'below' : chain.x < 0 ? 'left' : 'right'
-  } else {
-    const odd = Math.abs(Math.round(chain.x)) % 2 === 1
-    first = isPhase ? (odd ? 'above' : 'below') : odd ? 'below2' : 'below'
-  }
-  return [first, ...SLOTS.filter((slot) => slot !== first)]
+/** Не больше одной перерисовки за кадр: движения указателя копятся до кадра. */
+let queued = false
+function requestPaint() {
+  if (queued) return
+  queued = true
+  requestAnimationFrame(() => {
+    queued = false
+    paint()
+  })
 }
 
-/** Перерисовка по событию, а не в цикле: статичная картинка не занимает процессор. */
+/**
+ * Перерисовка по событию, а не в цикле: статичная картинка не занимает
+ * процессор. Подсветка — таблица «Сочетание выбора и поиска» раскладки:
+ * выделенные в полном цвете, остальное приглушено, камера на месте.
+ */
 function paint() {
   const canvas = mapOpen() ? $('map-canvas') : $('canvas')
   if (!canvas || canvas.clientWidth === 0 || !state.graph) return
-  const dpr = devicePixelRatio || 1
+  // Пока палец или мышь тащат схему, канва считается с плотностью не больше 2:
+  // замер телефона (360 × 780, dpr 3, CPU ×4) без этого — 27,7 мс на кадр по
+  // p95 при бюджете 16. В покое — полная плотность.
+  const dpr = Math.min(devicePixelRatio || 1, state.turning ? 2 : Infinity)
   const w = canvas.clientWidth
   const h = canvas.clientHeight
   if (canvas.width !== Math.round(w * dpr)) canvas.width = Math.round(w * dpr)
@@ -1235,64 +1374,95 @@ function paint() {
   const at = transform({ width: w, height: h }, cam)
   const sel = state.view.ids.has(state.selected) ? state.selected : null
   // Объёмный путь рисует и объём, и переход в обе стороны; последний кадр
-  // выключения — уже плоский путь, байт-в-байт.
+  // выключения — уже плоский путь.
   const morph = morphNow(at, sel)
   const deep = morph !== null || volumeOn()
-  const screen = morph ?? (deep ? volumeScreen(at, sel) : new Map([...points()].map(([id, p]) => [id, at(p)])))
-  const selFam = sel ? colors[`fam-${familyOf(node(sel).type)}`] : null
+  const screen = morph ?? (deep ? volumeScreen(at, sel) : flatScreen(at, sel))
+  const near = sel ? state.index.near.get(sel) : null
+  const found = foundShown()
+  const hl = highlight({ sel, near, found })
 
   // Порядок отрисовки — рёбра, узлы, подписи: подпись всегда поверх всего,
-  // ребро никогда не поверх узла.
+  // ребро никогда не поверх узла. Рёбра одного вида — одним путём: на полном
+  // графе отдельный stroke на каждое ребро — сотни вызовов на кадр.
+  const mine = []
+  ctx.beginPath()
   for (const e of state.view.edges) {
     const a = screen.get(e.from)
     const b = screen.get(e.to)
     if (!a || !b) continue
-    const touches = sel !== null && (e.from === sel || e.to === sel)
-    ctx.strokeStyle = touches ? selFam : colors['line-ctl']
-    ctx.lineWidth = touches ? 1.5 : 1
-    ctx.beginPath()
+    if (sel !== null && (e.from === sel || e.to === sel)) {
+      mine.push(a, b)
+      continue
+    }
     ctx.moveTo(a.x, a.y)
     ctx.lineTo(b.x, b.y)
+  }
+  // Рёбра контекста при выделении — фон (`--line`): предмет выделенного вида —
+  // связи выбранного, они цветом его семейства и словами в панели.
+  ctx.strokeStyle = hl.on ? colors.line : colors['line-ctl']
+  ctx.lineWidth = 1
+  ctx.stroke()
+  if (mine.length > 0) {
+    ctx.beginPath()
+    for (let k = 0; k < mine.length; k += 2) {
+      ctx.moveTo(mine[k].x, mine[k].y)
+      ctx.lineTo(mine[k + 1].x, mine[k + 1].y)
+    }
+    ctx.strokeStyle = colors[`fam-${familyOf(node(sel).type)}`]
+    ctx.lineWidth = 1.5
     ctx.stroke()
   }
 
-  if (deep) {
-    paintDepth(ctx, screen, sel, morph !== null || state.from !== null || state.turning, { width: w, height: h })
-    if (state.from || state.morph) requestAnimationFrame(paint)
-    return
-  }
-
-  for (const [id, p] of screen) {
-    const isSel = id === sel
-    const r = isSel ? 8 : 5
+  // В объёме — от дальних к ближним, выбранный и наведённый последними. В
+  // плоском — контекст, затем выделенные, затем выбранный и наведённый.
+  const rest = [...screen.keys()].filter((id) => id !== sel && id !== state.hover)
+  const order = deep
+    ? drawOrder(screen, sel, state.hover)
+    : [
+        ...rest.filter((id) => !hl.lit.has(id)),
+        ...rest.filter((id) => hl.lit.has(id)),
+        ...[sel, state.hover].filter((id, k, both) => id !== null && screen.has(id) && both.indexOf(id) === k),
+      ]
+  for (const id of order) {
+    const p = screen.get(id)
     // Наведение меняет заливку, а не размер: подрастающий узел читается как
-    // сбой, а на плотном графе ещё и наезжает на соседей.
+    // сбой. Приглушение — 0,7: при нём все пять семейств держат 3:1.
+    ctx.globalAlpha = hl.on && !hl.lit.has(id) && id !== state.hover ? 0.7 : 1
     ctx.fillStyle = id === state.hover ? colors.fg : colors[`fam-${familyOf(node(id).type)}`]
     ctx.beginPath()
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
     ctx.fill()
-    if (!isSel) continue
-    // Кольцо --acc — единственный акцентный элемент экрана.
-    ctx.strokeStyle = colors.acc
-    ctx.lineWidth = 2
+    ctx.globalAlpha = 1
+    // Кольцо --acc — единственный акцентный элемент экрана; у найденных —
+    // кольцо --fg тоньше.
+    if (id !== sel && !hl.rings.has(id)) continue
+    ctx.strokeStyle = id === sel ? colors.acc : colors.fg
+    ctx.lineWidth = id === sel ? 2 : 1
     ctx.beginPath()
-    ctx.arc(p.x, p.y, r + 3, 0, Math.PI * 2)
+    ctx.arc(p.x, p.y, p.r + 3, 0, Math.PI * 2)
     ctx.stroke()
   }
 
+  // Подписи. В объёме в движении — только выбранного и наведённого:
+  // расстановка квадратична и считается один раз, в покое.
+  const moving = deep && (morph !== null || state.from !== null || state.turning)
   const always = state.view.ids.size <= LABELS_UPTO
-  const near = sel ? state.index.near.get(sel) : null
   ctx.font = LABEL_FONT
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
   const items = []
+  const depth = new Map()
   for (const [id, p] of screen) {
-    if (!always && id !== sel && id !== state.hover && !near?.has(id)) continue
-    const phase = state.view.place !== null && node(id).type === 'phase'
-    const rank = labelRank({ id, sel, near, hover: state.hover, phase, always })
-    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank, slots: slotsOf(id) })
+    const own = id === sel || id === state.hover
+    if (!own && (moving || (!always && !hl.lit.has(id)))) continue
+    const rank = labelRank({ id, sel, near, hover: state.hover, found, always })
+    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank })
+    depth.set(id, p.z ?? 0)
   }
-  const labels = placeLabels(items, { width: w, height: h }, (text) => ctx.measureText(text).width)
+  const field = { width: w, height: h }
+  const measure = (text) => ctx.measureText(text).width
+  const labels = deep ? placeDepthLabels(items, field, measure, depth, state.hover) : placeLabels(items, field, measure)
   for (const [id, box] of labels) {
     // Подложка в ширину текста плюс 2 px: без неё подпись на пересечении с
     // ребром нечитаема.
@@ -1302,53 +1472,7 @@ function paint() {
     ctx.fillText(shortName(node(id)), box.x + 2, box.y + 2)
   }
 
-  if (state.from) requestAnimationFrame(paint)
-}
-
-/**
- * Узлы и подписи объёма. Узлы — от дальних к ближним, выбранный и наведённый
- * последними; цвет и непрозрачность от глубины не зависят. Подписи в
- * движении — только выбранного и наведённого: расстановка квадратична и
- * считается один раз, в покое.
- */
-function paintDepth(ctx, screen, sel, moving, field) {
-  for (const id of drawOrder(screen, sel, state.hover)) {
-    const p = screen.get(id)
-    ctx.fillStyle = id === state.hover ? colors.fg : colors[`fam-${familyOf(node(id).type)}`]
-    ctx.beginPath()
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
-    ctx.fill()
-    if (id !== sel) continue
-    ctx.strokeStyle = colors.acc
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.arc(p.x, p.y, p.r + 3, 0, Math.PI * 2)
-    ctx.stroke()
-  }
-
-  const always = state.view.ids.size <= LABELS_UPTO
-  const near = sel ? state.index.near.get(sel) : null
-  ctx.font = LABEL_FONT
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'top'
-  const items = []
-  const depth = new Map()
-  for (const [id, p] of screen) {
-    const own = id === sel || id === state.hover
-    if (!own && (moving || (!always && !near?.has(id)))) continue
-    // Фаз цепи в объёме нет: цикл дня плоский. Наведение в виде до 40 узлов
-    // ранг не поднимает — чужие подписи не прыгают от движения мыши.
-    const rank = labelRank({ id, sel, near, hover: state.hover, phase: false, always })
-    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank })
-    depth.set(id, p.z)
-  }
-  const labels = placeDepthLabels(items, field, (text) => ctx.measureText(text).width, depth, state.hover)
-  for (const [id, box] of labels) {
-    ctx.fillStyle = colors.surface
-    ctx.fillRect(box.x, box.y, box.width + 4, LABEL_H)
-    ctx.fillStyle = colors.fg
-    ctx.fillText(shortName(node(id)), box.x + 2, box.y + 2)
-  }
+  if (state.from || state.morph) requestPaint()
 }
 
 function reframe(animate) {
@@ -1360,6 +1484,26 @@ function reframe(animate) {
   const pts = volumeOn() ? envelopePoints(spatial(), state.pose) : points()
   state.cam = { ...fit(fieldOf(canvas), pts), scale: 1, panX: 0, panY: 0 }
   state.from = animate && !reduceMotion() ? before : null
+  state.t0 = performance.now()
+  state.framed = true
+  paint()
+}
+
+/**
+ * Узел за краем канвы после «Крупнее», сдвига или поворота: камера сдвигается
+ * так, чтобы он встал в центр, масштаб не меняется. Узел на канве камеру не
+ * двигает — приближение посетителя остаётся.
+ */
+function bringIntoView(id) {
+  const canvas = mapOpen() ? $('map-canvas') : $('canvas')
+  if (!canvas || canvas.clientWidth === 0 || !state.view.ids.has(id)) return
+  const field = fieldOf(canvas)
+  const at = transform(field, state.cam)
+  const p = volumeOn() ? at(project(node(id), state.pose)) : at(node(id))
+  if (p.x >= 0 && p.x <= field.width && p.y >= 0 && p.y <= field.height) return
+  const before = { ...camNow() }
+  state.cam = { ...state.cam, panX: state.cam.panX + field.width / 2 - p.x, panY: state.cam.panY + field.height / 2 - p.y }
+  state.from = reduceMotion() ? null : before
   state.t0 = performance.now()
   paint()
 }
@@ -1433,8 +1577,9 @@ function wireCanvas(canvas) {
         state.cam.panX = drag.panX + dx
         state.cam.panY = drag.panY + dy
       }
-      if (drag.turn !== undefined && (dx !== 0 || dy !== 0)) state.turning = true
-      paint()
+      // Движение рукой — и поворот, и сдвиг: пока оно идёт, канва дешевле.
+      if (dx !== 0 || dy !== 0) state.turning = true
+      requestPaint()
       return
     }
     const hit = pick(canvas, ev)
@@ -1443,7 +1588,7 @@ function wireCanvas(canvas) {
     canvas.style.cursor = hit ? 'pointer' : volumeOn() && ev.shiftKey ? 'move' : 'grab'
     if (hit === state.hover) return
     state.hover = hit
-    paint()
+    requestPaint()
   })
   canvas.addEventListener('pointerup', (ev) => {
     const moved = drag !== null && drag.moved
@@ -1550,8 +1695,8 @@ function renderTrail() {
   const nav = $('trail')
   nav.classList.remove('idle')
   const ol = clear($('trail-list'))
-  // Корень называет место, куда ведёт: при полном графе без узла на канве весь граф.
-  const rootName = state.full ? 'Весь граф' : 'Цикл дня'
+  // Корень называет место, куда ведёт: канва показывает весь граф всегда.
+  const rootName = 'Весь граф'
   const atRoot = state.trail.length === 0 && !state.missing
   const rootLi = trailItem(atRoot ? trailHere(rootName) : trailLink(rootName, './', ''), true)
   ol.appendChild(rootLi)
@@ -1663,54 +1808,11 @@ function renderLede() {
     `сервисы — всё остальное собрано из ссылок, которые документы проекта уже ставят друг на друга.`
 }
 
-/**
- * Пояснения недоступного переключателя глубины — таблица состояний раскладки
- * пути. Для загрузки и ошибки пояснения нет: блок тогда скрыт целиком.
- */
-const DEPTH_NOTE = {
-  full: 'В полном графе глубина не действует: на схеме и так все узлы.',
-  none: 'Глубина действует, когда выбран узел. Сейчас не выбран ни один — выберите узел в списке, поиском или на схеме.',
-  alone: 'У этого узла нет связей: соседей нет ни в одном шаге, ни в двух.',
-}
-
-/**
- * Переключатель глубины. Недоступен — атрибутом на `fieldset`, а не видом;
- * запомненный выбор остаётся отмеченным и действует, как только появится
- * узел со связями. Число в ярлыке — только у доступной кнопки: у недоступной
- * оно обещало бы вид, который нажатие не построит.
- */
-function renderDepth() {
-  const ready = state.status === 'ready' && state.selected
-  const mode = depthMode({
-    status: state.status,
-    full: state.full,
-    selected: state.selected,
-    alone: ready ? state.index.near.get(state.selected).size === 0 : false,
-  })
-  $('depth').disabled = mode !== 'on'
-  if (mode !== 'on') {
-    $('depth-2').textContent = '2 шага'
-    $('depth-note').textContent = DEPTH_NOTE[mode] ?? ''
-    return
-  }
-  const s = state.stats
-  $('depth-note').textContent = `Два шага у самых связанных узлов доходят до ${count(s.twoStep, 'узла', 'узлов', 'узлов')} из ${s.nodes} — это уже почти весь граф`
-  // Ярлык «2 шага» несёт цену до нажатия.
-  const two = neighborhood(state.index.near, state.selected, 2).size
-  $('depth-2').textContent = `2 шага (${count(two, 'узел', 'узла', 'узлов')})`
-}
-
 /** Каждое изменение настройки вида объявляется ровно один раз. */
 const announceView = () => announce(`Вид: ${state.view.line}`)
 
 function renderTools() {
   const s = state.stats
-  renderDepth()
-  $('full-label').textContent = `Показать весь граф — ${count(s.nodes, 'узел', 'узла', 'узлов')}, ${count(s.edges, 'связь', 'связи', 'связей')}`
-  // Строка под «Объёмом» — по виду на канве и по устройству ввода, при каждой
-  // смене вида: в цикле она объясняет, почему клик ничего не меняет.
-  $('volume-note').textContent = volumeHint(state.view.place !== null, matchMedia('(any-pointer: fine)').matches)
-
   const box = clear($('filters'))
   for (const fam of FAMILIES) {
     const types = fam.types.filter((t) => s.byType[t] > 0)
@@ -1764,58 +1866,173 @@ function renderTools() {
   reset.textContent = `Сбросить фильтры (скрыто ${count(state.hidden.size, 'тип', 'типа', 'типов')})`
 }
 
+/**
+ * Область прокрутки списка: в трёх колонках — колонка фильтров и списка, в
+ * остальных раскладках — сам список (`max-height: 60dvh`).
+ */
+const listArea = () => (matchMedia('(min-width: 100rem)').matches ? document.querySelector('.area-rest') : $('nodes'))
+
+/**
+ * Список «Узлы в этом виде» в постоянном порядке: по семействам, внутри — по
+ * типу и заголовку. Пересобирается только при смене набора (фильтры), и
+ * прокрутка при этом не меняется; выбор и поиск лишь переставляют отметки.
+ */
 function renderNodeList() {
-  const order = new Map(FAMILIES.map((f, i) => [f.key, i]))
-  const ids = [...state.view.ids].sort((a, b) => {
-    if (a === state.selected) return -1
-    if (b === state.selected) return 1
-    const na = node(a)
-    const nb = node(b)
-    return (
-      order.get(familyOf(na.type)) - order.get(familyOf(nb.type)) ||
-      // Порядок для чтения человеком, поэтому локаль задана явно у обоих
-      // сравнений: без неё порядок зависит от локали среды и версии ICU —
-      // ровно то, что убрано из расстановки подписей.
-      na.type.localeCompare(nb.type, 'ru') ||
-      na.title.localeCompare(nb.title, 'ru')
-    )
-  })
-  $('nodelist-h').textContent = `Узлы в этом виде: ${ids.length}`
-  const ul = clear($('nodes'))
-  if (ids.length === 0) {
-    const li = el('li')
-    li.appendChild(el('p', 'empty', 'Ни одного узла: скрыты все типы'))
-    ul.appendChild(li)
-    return
+  const key = `${state.attempt}|${[...state.hidden].sort().join(',')}`
+  if (key !== state.listKey) {
+    state.listKey = key
+    const area = listArea()
+    const keep = area.scrollTop
+    const order = new Map(FAMILIES.map((f, i) => [f.key, i]))
+    const ids = [...state.view.ids].sort((a, b) => {
+      const na = node(a)
+      const nb = node(b)
+      return (
+        order.get(familyOf(na.type)) - order.get(familyOf(nb.type)) ||
+        // Порядок для чтения человеком, поэтому локаль задана явно у обоих
+        // сравнений: без неё порядок зависит от локали среды и версии ICU —
+        // ровно то, что убрано из расстановки подписей.
+        na.type.localeCompare(nb.type, 'ru') ||
+        na.title.localeCompare(nb.title, 'ru')
+      )
+    })
+    $('nodelist-h').textContent = `Узлы в этом виде: ${ids.length}`
+    const ul = clear($('nodes'))
+    state.rows = new Map()
+    if (ids.length === 0) {
+      const li = el('li')
+      li.appendChild(el('p', 'empty', 'Ни одного узла: скрыты все типы'))
+      ul.appendChild(li)
+    }
+    for (const id of ids) {
+      const li = el('li')
+      const a = nodeLink(node(id))
+      state.rows.set(id, a)
+      li.appendChild(a)
+      ul.appendChild(li)
+    }
+    area.scrollTop = keep
   }
-  for (const id of ids) {
-    const li = el('li')
-    li.appendChild(nodeLink(node(id)))
-    ul.appendChild(li)
+  markNodeList()
+}
+
+/** Выбранная строка — рамка и `aria-current`, найденные — кольцо у точки и слово для скринридера. */
+function markNodeList() {
+  for (const [id, a] of state.rows) {
+    if (id === state.selected) a.setAttribute('aria-current', 'true')
+    else a.removeAttribute('aria-current')
+    const on = state.found.has(id)
+    a.classList.toggle('found', on)
+    const said = a.querySelector('.found-vh')
+    if (on && !said) a.appendChild(el('span', 'vh found-vh', ', найдено'))
+    if (!on && said) said.remove()
   }
 }
 
+/**
+ * Строка выбранного — на треть высоты области прокрутки, прямым `scrollTop`:
+ * `scrollIntoView` прокрутил бы и `.side`, и страницу, а панель должна
+ * остаться в обзоре (#75). Вызывается после фокуса и прокрутки панели. `null`
+ * — возврат к корню: область в начало.
+ */
+function scrollList(id) {
+  if ($('nodelist').hidden) return
+  const area = listArea()
+  if (id === null) {
+    area.scrollTop = 0
+    return
+  }
+  const row = state.rows.get(id)
+  // Тип скрыт фильтром — строки нет. Фокус в той же области пережил шаг —
+  // область не прокручивается: фокус не уводится из обзора.
+  if (!row || area.contains(document.activeElement)) return
+  const box = area.getBoundingClientRect()
+  const top = row.getBoundingClientRect().top - box.top - area.clientTop + area.scrollTop
+  area.scrollTop = listScrollTop({ top, height: area.clientHeight, scrollHeight: area.scrollHeight })
+}
+
+/** Выдача поиска: до трёх результатов с отрывком, найденные — все. */
 function renderSearch() {
   const q = $('q').value
   const ul = clear($('results'))
-  if (q.trim() === '') return
-  const { hits, total } = searchNodes(state.graph.nodes, q, SEARCH_UPTO)
-  if (hits.length === 0) {
+  const res = q.trim() === '' ? null : searchAtlas(state.search, q, SEARCH_UPTO)
+  state.found = res?.found ?? new Set()
+  if (!res) return
+  if (res.total === 0) {
     const li = el('li')
-    li.appendChild(el('p', 'empty', 'Ничего не нашлось. Поиск идёт по заголовкам и коротким именам, не по тексту документов.'))
+    li.appendChild(el('p', 'empty', emptyNote({ texts: state.texts, short: res.short })))
     ul.appendChild(li)
     return
   }
-  for (const n of hits) {
+  for (const hit of res.hits) {
     const li = el('li')
-    li.appendChild(nodeLink(n, `${TYPE_NAME[n.type]} · ${plainTitle(n)}`))
+    const a = nodeLink(hit.node)
+    a.classList.add('result')
+    const snippet = el('span', 'snippet')
+    for (const run of hit.snippet) snippet.appendChild(run.hit ? el('span', 'hit', run.text) : document.createTextNode(run.text))
+    a.appendChild(snippet)
+    li.appendChild(a)
     ul.appendChild(li)
   }
-  if (total > hits.length) {
-    const li = el('li')
-    li.appendChild(el('p', 'empty', `Ещё ${count(total - hits.length, 'совпадение', 'совпадения', 'совпадений')}: уточните запрос`))
-    ul.appendChild(li)
+  const li = el('li')
+  li.appendChild(el('p', 'trace-note', moreNote(res.total, res.hits.length)))
+  ul.appendChild(li)
+}
+
+/**
+ * Смена запроса: выдача, кольца на канве и в списке, строка вида. Ни
+ * объявления, ни прокрутки списка: выдача — список рядом с полем.
+ */
+function showFound() {
+  renderSearch()
+  if (!redraws(state.status)) return
+  state.view.line = lineNow()
+  showLine()
+  markNodeList()
+  paint()
+}
+
+/**
+ * Подсказка под полем и кнопка повтора — по состоянию `texts.json`. Пока идёт
+ * повтор, кнопка `aria-disabled`, а не `disabled`: браузер снял бы с неё фокус.
+ */
+function showTexts() {
+  if (state.status === 'ready') $('q-note').textContent = textsNote(state.texts)
+  const retry = $('texts-retry')
+  retry.hidden = !(state.texts === 'error' || (state.texts === 'loading' && state.textsAttempt > 1))
+  if (state.texts === 'loading') retry.setAttribute('aria-disabled', 'true')
+  else retry.removeAttribute('aria-disabled')
+}
+
+/**
+ * Тексты документов — один раз за жизнь страницы, при первом фокусе в поле.
+ * В полёте одна попытка; исход не текущей попытки ничего не меняет.
+ */
+async function loadTexts() {
+  if (state.texts === 'loading' || state.texts === 'ready') return
+  const attempt = (state.textsAttempt += 1)
+  state.texts = 'loading'
+  showTexts()
+  let ok = false
+  try {
+    const texts = await fetchTexts()
+    if (attempt !== state.textsAttempt) return
+    state.textsData = texts
+    if (state.graph) state.search = buildSearch(state.graph.nodes, texts)
+    state.texts = 'ready'
+    ok = true
+  } catch {
+    if (attempt !== state.textsAttempt) return
+    state.texts = 'error'
   }
+  // Фокус на кнопке запоминается до того, как успех её спрячет.
+  const kept = document.activeElement === $('texts-retry')
+  showTexts()
+  if ($('q').value.trim() !== '') showFound()
+  const note = textsOutcome({ ok, attempt })
+  if (note) announce(note)
+  // Посетитель нажал кнопку, чтобы искать: после успеха фокус — в поле.
+  if (ok && kept) $('q').focus()
 }
 
 // ── Панель ─────────────────────────────────────────────────────────────
@@ -1936,9 +2153,22 @@ function renderStart(panel) {
   const h2 = el('h2', undefined, 'С чего начать')
   h2.id = 'panel-h'
   h2.tabIndex = -1
+  // Канва показывает весь проект, поэтому абзац объясняет, как выделить узел;
+  // вход в цикл дня — ссылка на фазу 1, сам проход — в панели фазы.
+  const lead = el('p', 'sub')
+  lead.append(
+    `На схеме — весь проект: ${count(s.nodes, 'узел', 'узла', 'узлов')}, цвет — семейство. ` +
+      'Выберите узел на схеме, в списке или поиском — он и его прямые связи выделятся, остальное станет бледнее.',
+  )
+  const phases = state.graph.nodes.filter((x) => x.type === 'phase').sort((a, b) => a.n - b.n)
+  if (phases.length > 0) {
+    const first = el('a', undefined, `фазы ${phases[0].n}`)
+    first.href = `#${addressOf(phases[0].id)}`
+    lead.append(` Цикл дня — ${count(phases.length, 'фаза', 'фазы', 'фаз')}, через которые проходит любая задача, — начинается с `, first, '.')
+  }
   head.append(
     h2,
-    el('p', 'sub', 'Слева — цикл дня: десять фаз, через которые проходит любая задача, и роли, которые их ведут. Одна фаза помечена как гейт владельца — принятие ADR: без его слова работа дальше не идёт.'),
+    lead,
     el('p', 'meta-row num', `${count(s.nodes, 'узел', 'узла', 'узлов')} · ${count(s.edges, 'связь', 'связи', 'связей')} · ${count(s.byType.history ?? 0, 'запись', 'записи', 'записей')} истории`),
   )
   panel.appendChild(head)
@@ -2382,13 +2612,18 @@ function wipe() {
  */
 export const redraws = (status) => status === 'ready'
 
-function refresh(animate) {
+/**
+ * `refit` — вписать вид заново. Фильтр, «Плоский вид», размер окна и карта
+ * перевписывают; выбор узла — нет: граф тот же, и приближение посетителя
+ * остаётся. Первое появление канвы вписывается всегда.
+ */
+function refresh(animate, refit = true) {
   if (!redraws(state.status)) return
   try {
     computeView()
     state.drawn = true
-    $('view-line').textContent = state.view.line
-    $('map-title').textContent = state.view.line
+    showLine()
+    $('flat-note').textContent = flatHint(state.flat, matchMedia('(any-pointer: fine)').matches)
     renderTrail()
     // Пустая канва читается как «не загрузилось», поэтому у неё есть текст —
     // тот же механизм, что у загрузки и ошибки.
@@ -2396,7 +2631,8 @@ function refresh(animate) {
     renderTools()
     renderNodeList()
     renderPanel()
-    reframe(animate)
+    if (refit || !state.framed) reframe(animate)
+    else paint()
   } catch (err) {
     // Пояс поверх причины. Сборка панели под Node не выполняется и ни одним
     // тестом не достижима, поэтому её отказ обязан быть виден: без этого
@@ -2413,30 +2649,26 @@ function refresh(animate) {
 }
 
 /**
- * Флажок «Объём». Включение ставит начальную позу; переход — смесь двух
- * конечных картинок за 120 мс, при `prefers-reduced-motion` мгновенно. Пока
- * схема не загружена, флажок только запоминается: рисовать нечего.
+ * «Плоский вид». Два флажка — под канвой и в карте — с одним состоянием.
+ * Возврат в объём ставит начальную позу; переход — смесь двух конечных
+ * картинок за 120 мс, при `prefers-reduced-motion` мгновенно. Режим не пишется
+ * ни в адрес, ни в хранилище: каждое открытие начинается с объёма.
  */
-function setVolume(on) {
+function setFlat(flat) {
   const canvas = mapOpen() ? $('map-canvas') : $('canvas')
   const ready = state.status === 'ready'
-  // Картинка, которая на канве сейчас, — начало смеси. В цикле смешивать
-  // нечего: он плоский при любом флажке.
+  // Картинка, которая на канве сейчас, — начало смеси.
   let from = null
-  if (ready && state.view.place === null && canvas.clientWidth > 0 && !reduceMotion()) {
+  if (ready && canvas.clientWidth > 0 && !reduceMotion()) {
     const at = transform(fieldOf(canvas), camNow())
     const sel = state.view.ids.has(state.selected) ? state.selected : null
     from = volumeOn() ? volumeScreen(at, sel) : flatScreen(at, sel)
   }
-  state.volume = on
-  if (on) state.pose = { ...POSE0 }
+  state.flat = flat
+  $('flat').checked = flat
+  $('map-flat').checked = flat
+  if (!flat) state.pose = { ...POSE0 }
   if (!ready) return
-  // В цикле флажок не действует: картинка, полоса вида и строка под ним те
-  // же, и вид не перевписывается — масштаб и сдвиг посетителя остаются.
-  if (state.view.place !== null) {
-    announce(on ? 'Объём включён, но в цикле дня не действует: это схема по номерам фаз. Выберите узел или включите весь граф.' : 'Объём выключен.')
-    return
-  }
   state.morph = from ? { from, t0: performance.now() } : null
   refresh(false)
   announceView()
@@ -2468,7 +2700,8 @@ function select(id, fromHash, returned, step) {
     // через двадцать шагов блуждания и никогда не выводит с витрины.
     history.replaceState(null, '', id ? `#${addressOf(id)}` : location.pathname + location.search)
   }
-  refresh(true)
+  // Выбор подсвечивает, а не перестраивает: вид не перевписывается.
+  refresh(false, false)
   const focused = step !== undefined && focusesPanel(step.source, !step.was.isConnected)
   showPanel()
   // Перерисовка упала: панель — блок ошибки, узел не показан, причину уже
@@ -2484,7 +2717,10 @@ function select(id, fromHash, returned, step) {
     if (focused) $('panel-h').focus({ preventScroll: true })
     const n = node(id)
     announce(selectNote({ title: plainTitle(n), type: TYPE_NAME[n.type], line: state.view.line, focused, returned }))
+    bringIntoView(id)
   } else announce(returned ? `Вернулись к началу. Вид: ${state.view.line}` : `Вид: ${state.view.line}`)
+  // Прокрутка списка — после фокуса и видимости панели по #75, в своей области.
+  scrollList(id)
 }
 
 /** Якоря страницы, а не адреса узлов: контракт `#`-адресов их не знает. */
@@ -2511,7 +2747,8 @@ function fromHash(step) {
     if (step) setTrail([])
     state.missing = null
     state.selected = null
-    refresh(false)
+    refresh(false, false)
+    scrollList(null)
     return
   }
   const id = state.addresses.get(raw)
@@ -2525,7 +2762,7 @@ function fromHash(step) {
   if (step) setTrail([])
   state.missing = raw
   state.selected = null
-  refresh(false)
+  refresh(false, false)
 }
 
 /**
@@ -2548,12 +2785,10 @@ function setStatus(status, reason, head) {
   const retrying = status === 'loading' && state.attempt > 1
   if (!retrying) {
     $('q-note').textContent =
-      status === 'ready'
-        ? 'Ищет по заголовку и короткому имени, не по тексту документов'
-        : status === 'error'
-          ? 'Схема не загрузилась — искать негде'
-          : 'Схема ещё грузится'
+      status === 'ready' ? textsNote(state.texts) : status === 'error' ? 'Схема не загрузилась — искать негде' : 'Схема ещё грузится'
   }
+  // Пока схемы нет, «Плоский вид» недоступен и подсказка пуста: переключать нечего.
+  if (!ready) $('flat-note').textContent = ''
   // Всё, что работает по графу, без графа не притворяется рабочим.
   for (const id of GRAPH_BUTTONS) $(id).disabled = !ready
   for (const id of GRAPH_BLOCKS) $(id).hidden = !ready
@@ -2562,7 +2797,6 @@ function setStatus(status, reason, head) {
   if (status === 'error') msg.textContent = 'Рисовать нечего. Причина и «Попробовать снова» — в панели справа.'
   // Без графа ходить некуда: строка пути держит высоту, но невидима.
   if (!ready) $('trail').classList.add('idle')
-  renderDepth()
   if (!ready && $('retry')) showRetry()
   else renderPanel()
 }
@@ -2590,6 +2824,7 @@ async function load() {
     state.index = indexGraph(graph)
     state.addresses = addressTable(graph.nodes)
     state.stats = statsOf(graph, state.index.near)
+    state.search = buildSearch(graph.nodes, state.textsData ?? {})
     // Посетитель остался на «Попробовать снова» — после успеха фокус встаёт
     // на заголовок новой панели. Ушёл с кнопки — фокус не трогается.
     const kept = $('retry') !== null && document.activeElement === $('retry')
@@ -2638,8 +2873,7 @@ function wire() {
   const map = $('map')
   $('map-open').addEventListener('click', () => {
     map.showModal()
-    // Пересчёт вида, а не только камеры: цепь фаз идёт сверху вниз или слева
-    // направо по пропорциям того поля, в котором она рисуется.
+    // Вид вписывается в поле карты: у него свои пропорции.
     refresh(false)
   })
   $('map-close').addEventListener('click', () => map.close())
@@ -2652,13 +2886,20 @@ function wire() {
     refresh(false)
   })
 
-  $('q').addEventListener('input', renderSearch)
+  // Тексты документов — при первом фокусе в поле, не при открытии страницы.
+  $('q').addEventListener('focus', () => {
+    if (state.texts === 'idle') loadTexts()
+  })
+  $('q').addEventListener('input', showFound)
+  $('texts-retry').addEventListener('click', () => {
+    if ($('texts-retry').getAttribute('aria-disabled') !== 'true') loadTexts()
+  })
   $('q').addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return
     ev.stopPropagation()
     if ($('q').value !== '') {
       $('q').value = ''
-      renderSearch()
+      showFound()
     } else {
       // На узком экране «Сбросить вид» не показывается: канвы в потоке нет.
       const back = [$('view-reset'), $('map-open')].find((b) => b.offsetParent !== null)
@@ -2666,19 +2907,7 @@ function wire() {
     }
   })
 
-  for (const radio of document.querySelectorAll('input[name="depth"]')) {
-    radio.addEventListener('change', () => {
-      state.depth = Number(radio.value)
-      refresh(true)
-      announceView()
-    })
-  }
-  $('full').addEventListener('change', () => {
-    state.full = $('full').checked
-    refresh(true)
-    announceView()
-  })
-  $('volume').addEventListener('change', () => setVolume($('volume').checked))
+  for (const id of ['flat', 'map-flat']) $(id).addEventListener('change', () => setFlat($(id).checked))
   $('filters-reset').addEventListener('click', dropFilters)
 
   // Выбор узла ссылкой — шаг внутри витрины, а не переход браузера: адрес
@@ -2741,7 +2970,7 @@ function wire() {
   })
 
   // Своя колонка настроек есть только в трёхколоночной раскладке; при двух
-  // «Фильтры и вид» — свёрнутый блок правой колонки, как на узком экране.
+  // «Фильтры по типу» — свёрнутый блок правой колонки, как на узком экране.
   const wide = matchMedia('(min-width: 100rem)')
   const setTools = () => {
     $('tools').open = wide.matches
