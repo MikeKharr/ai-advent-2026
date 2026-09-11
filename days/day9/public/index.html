@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Никакого <base>: redir /day6 -> /day6/ на Caddy делает относительные
      пути верными и в проде, и при локальном запуске (см. README дня 1). -->
-<title>Агент новостей стартапов — AI Advent 2026, день 8</title>
+<title>Агент новостей стартапов — AI Advent 2026, день 9</title>
 <style>
   /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
      Значения вне этих шкал — дефект, а не нюанс. */
@@ -92,6 +92,10 @@
     background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
   }
   input:hover, textarea:hover { border-color:var(--fg-mut); }
+  /* Порог сжатия выключается при контексте до 500: состояние видно и
+     запрещено в разметке, наведение его не оживляет. */
+  input[disabled] { opacity:.5; cursor:default; }
+  input[disabled]:hover { border-color:var(--line-ctl); }
   textarea { resize:vertical; }
 
   form { display:block; }
@@ -145,12 +149,20 @@
      а не на строке архива — иначе сжимался бы верхний зазор. */
   .monitor .panel { margin-top:calc(-1 * var(--s-1)); }
   .feed-head { display:flex; align-items:baseline; gap:var(--s-3); flex-wrap:wrap; }
-  /* Счётчик всей переписки: он обнуляется вместе с ней и стоит над логом,
-     который считает. Слова обязательны — иначе число путается с числом
-     одной итерации в сводке ответа. */
-  .spent {
+  /* Показ контекста и счётчик всей переписки — одна строка шапки: они
+     обнуляются вместе с перепиской и стоят над логом, который считают.
+     Слова обязательны — иначе числа путаются с числами одной итерации в
+     сводке ответа. Перенос — только по разделителю между частями. */
+  .meters {
     margin:0 0 0 auto; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
     font-variant-numeric:tabular-nums;
+  }
+  .meters .part { white-space:nowrap; }
+  /* На узком экране числа уходят второй строкой под «Диалог» и «очистить»:
+     в одну строку с ними не помещаются. */
+  @media (max-width: 72.99rem) {
+    .meters { order:3; flex-basis:100%; margin-left:0; }
+    .clear { margin-left:auto; }
   }
 
   /* Диалог — главный блок страницы: он занимает всю высоту левой колонки,
@@ -235,6 +247,33 @@
   .msg .params-d > summary:hover { color:var(--fg); }
   .msg .params-d > summary:active { background:var(--bg); }
   .msg .params-d > summary:focus-visible { outline-offset:-2px; }
+
+  /* Блок «Сводка разговора» — строка лога, отличная от сообщения
+     поверхностью, а не цветом: ступень вниз и линии сверху и снизу. Всё
+     выше него вошло в сводку, всё ниже модель получает дословно. */
+  .fold {
+    padding:var(--s-2) var(--s-4); background:var(--bg);
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  }
+  /* Линию перед репликой под блоком заменяет нижняя линия блока. */
+  .fold + .msg.is-user { border-top:0; }
+  .fold summary {
+    list-style:none; cursor:pointer; display:flex; align-items:baseline; gap:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .fold summary::-webkit-details-marker { display:none; }
+  .fold summary::before { content:"▸"; }
+  .fold details[open] > summary::before { content:"▾"; }
+  .fold summary:hover { color:var(--fg); }
+  /* Блок уже на --bg, поэтому нажатие — ступень вверх. */
+  .fold summary:active { background:var(--surface); }
+  /* Блок внутри прокручиваемого лога: снаружи кольцо срезал бы скролл. */
+  .fold summary:focus-visible { outline-offset:-2px; }
+  .fold-text {
+    margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg);
+    max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
 
   /* Параметры — свёрнутый блок над композитором: их меняют раз в сессию,
      и держать под них колонку значит платить из кармана диалога. */
@@ -534,7 +573,12 @@
     <section class="chat" aria-labelledby="chat-h">
       <div class="feed-head">
         <h2 id="chat-h">Диалог</h2>
-        <p class="spent" id="spent" hidden></p>
+        <!-- Разделители со скрытой запятой: без неё скринридер читает три
+             числа одной фразой. Живой областью строка не делается — очередь
+             polite занята статусами запуска. -->
+        <p class="meters" id="meters" hidden><span class="part" id="ctx" hidden></span><span
+          id="meters-sep" hidden><span aria-hidden="true"> · </span><span class="vh">, </span></span><span
+          class="part" id="spent" hidden></span></p>
         <button class="clear" id="clear" type="button" disabled
                 aria-label="Очистить переписку и начать новую">очистить</button>
       </div>
@@ -563,10 +607,28 @@
           <label class="field">
             <span class="name">Размер контекста</span>
             <input id="p-context" class="num" type="number" min="0" max="8000" step="100"
-                   value="2000" inputmode="numeric" aria-describedby="p-context-live">
-            <span class="hint">Сколько токенов хвоста переписки уходит модели (0–8000).
-            Смена значения действует со следующего сообщения и переписку не удаляет.</span>
+                   value="3000" inputmode="numeric" aria-describedby="p-context-live">
+            <span class="hint">Сколько токенов переписки уходит модели: сводка и свежие
+            реплики (0–8000). Смена значения действует со следующего сообщения и переписку
+            не удаляет.</span>
             <span class="hint" id="p-context-live" role="status"></span>
+          </label>
+
+          <!-- Порог живёт внутри окна контекста, поэтому поля стоят парой. -->
+          <label class="field">
+            <span class="name">Порог сжатия</span>
+            <input id="p-summarize-at" class="num" type="number" min="500" max="8000" step="100"
+                   value="2000" inputmode="numeric"
+                   aria-describedby="p-summarize-live p-summarize-note">
+            <span class="hint">Когда реплики после последней сводки наберут столько токенов,
+            агент сожмёт их вместе с прежней сводкой (500–8000, меньше размера контекста).
+            Сама сводка в счёт не идёт. Сжимает всегда Claude Haiku 4.5.</span>
+            <span class="hint" id="p-summarize-live" role="status"></span>
+            <!-- Требование compliance (ревью #120, F4): чат не на Anthropic, а
+                 реплики туда всё равно уходят — это говорится у самого поля. -->
+            <span class="hint" id="p-summarize-note" hidden>Сжатие отправляет реплики в
+            Anthropic (Claude Haiku 4.5) и при этой модели чата; Anthropic хранит их до 30
+            дней.</span>
           </label>
 
           <label class="field">
@@ -637,7 +699,9 @@
       Источники: <span id="sources">…</span>. Ссылки в ответах — только из лент
       изданий; ссылку не из списка агент вырезает. <span id="ttl-note">Переписка хранится
       у агента и удаляется кнопкой «очистить»</span>; события монитора живут до
-      перезагрузки страницы. Имя сессии — метка этой переписки, выведенная из её
+      перезагрузки страницы. Сводка переписки хранится вместе с ней столько же и
+      удаляется той же кнопкой. Сжимает переписку Claude Haiku 4.5 — при любой модели
+      чата. Имя сессии — метка этой переписки, выведенная из её
       идентификатора необратимо: восстановить по нему переписку нельзя, а сам
       идентификатор лежит в cookie и странице недоступен. После «очистить»
       начинается новая сессия — и имя другое.
@@ -801,8 +865,8 @@
       renderModels();
       showArchive(d.archive);
       $('sources').textContent = (d.sources ?? []).map((f) => f.source).join(', ');
-      // Умолчание контекста дня 8 стоит в разметке: в реестре оно общее
-      // с днём 7, и трогать его значило бы менять поведение сданного дня.
+      // Умолчание контекста дня 9 стоит в разметке: в реестре оно общее
+      // с днями 7–8, и трогать его значило бы менять поведение сданных дней.
       // Срок хранения приходит с сервера: обещание на странице должно
       // меняться вместе с настройкой, а не расходиться с ней молча.
       showSessionName(d.session?.name);
@@ -979,6 +1043,7 @@
       run.durationMs = run.durationMs ?? (Date.now() - Date.parse(run.startedAt));
       const tail = status === 'succeeded'
         ? `готово за ${fmtDuration(run.durationMs)}` +
+          (run.compressed ? ', история сжата' : '') +
           (run.warnings ? `, ${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}` : '')
         : 'ошибка';
       announce(`Запуск «${run.sphere}»: ${tail}`);
@@ -1034,11 +1099,39 @@
   // Сумму и имя сессии считает сервер: страница не знает ни идентификатора
   // сессии, ни того, что удалено по сроку хранения.
   let spentTokens = null;
+  // Сводку и контекст тоже считает агент (ADR 2026-09-11-1608): страница
+  // токенов не складывает — разошлась бы с сервером на первой ошибке записи.
+  let summaryState = null;   // { text, tokens, sourceTokens, updatedAt, throughId, model, truncated }
+  let contextState = null;   // { total, summaryTokens, dialogTokens } — что уйдёт со следующим сообщением
+  let foldOpen = false;      // раскрытие блока сводки переживает перерисовку лога
 
-  const showSpent = () => {
-    const box = $('spent');
-    box.hidden = spentTokens === null;
-    if (spentTokens !== null) box.textContent = `за всю переписку ${fmtInt(spentTokens)} токенов`;
+  /** Разделитель частей строки: точка видна, запятая — для скринридера. */
+  const meterSep = () => {
+    const dot = document.createElement('span');
+    dot.setAttribute('aria-hidden', 'true');
+    dot.textContent = ' · ';
+    const comma = document.createElement('span');
+    comma.className = 'vh';
+    comma.textContent = ', ';
+    return [dot, comma];
+  };
+
+  // Числа меняются только по концу запуска: показывается факт, а не прогноз.
+  // Нет чисел с сервера — нет и показа: нулём отсутствие не подменяется.
+  const showMeters = () => {
+    const ctx = $('ctx'), spent = $('spent');
+    const known = Number.isFinite(contextState?.total) && Number.isFinite(contextState?.summaryTokens);
+    ctx.hidden = !known;
+    if (known)
+      ctx.replaceChildren(
+        `в контексте ${fmtInt(contextState.total)}`,
+        ...meterSep(),
+        `из них сводка ${fmtInt(contextState.summaryTokens)}`,
+      );
+    spent.hidden = spentTokens === null;
+    if (spentTokens !== null) spent.textContent = `за всю переписку ${fmtInt(spentTokens)} токенов`;
+    $('meters-sep').hidden = ctx.hidden || spent.hidden;
+    $('meters').hidden = ctx.hidden && spent.hidden;
   };
 
   const showSessionName = (name) => {
@@ -1083,9 +1176,22 @@
     if (s.systemOverridden) did.push('системный промпт изменён');
 
     const numbers = [];
-    if (s.totalTokens !== undefined) numbers.push(`${fmtInt(s.totalTokens)} токенов`);
+    // В сводке ответа агент держит цену самого ответа, а цену сжатия —
+    // отдельно, в `summarized`: запуск обошёлся в их сумму.
+    const squeeze = s.summarized?.totalTokens;
+    if (s.totalTokens !== undefined)
+      numbers.push(
+        Number.isFinite(squeeze)
+          ? `${fmtInt(s.totalTokens + squeeze)} токенов, из них сжатие ${fmtInt(squeeze)}`
+          : `${fmtInt(s.totalTokens)} токенов`,
+      );
     if (s.contextEffective !== undefined)
-      numbers.push(`контекст ${fmtInt(s.contextUsed)} из ${fmtInt(s.contextEffective)}`);
+      numbers.push(
+        `контекст ${fmtInt(s.contextUsed)} из ${fmtInt(s.contextEffective)}` +
+          (s.summaryTokens !== undefined
+            ? `: сводка ${fmtInt(s.summaryTokens)} + реплики ${fmtInt(s.freshTokens ?? 0)}`
+            : ''),
+      );
     if (s.durationMs !== undefined) numbers.push(fmtDuration(s.durationMs));
     return [did.join(' · '), numbers.join(' · ')];
   };
@@ -1131,6 +1237,10 @@
       warn.append(mark, prefix, 'Ответ обрезан лимитом токенов');
       li.append(warn);
     }
+    // Отказ сжатия запуск не валит, но модель видела только хвост: об этом
+    // говорится в самом ответе, а число выпавших реплик — строкой ниже.
+    if (meta.summarizeFailed)
+      li.append(warnLine('Историю сжать не удалось — модель видела только хвост переписки'));
     // Не поместившиеся реплики — не потеря: переписка цела, просто в этот
     // запрос ушёл хвост покороче. Считает их агент: разница заданного и
     // действующего размера сама по себе ещё ничего не значит.
@@ -1198,6 +1308,24 @@
         ? null
         : `задан ${fmtInt(meta.contextRequested)}, действует ${fmtInt(meta.contextEffective)}`,
     );
+    // Страница дня 9 не шлёт порог только при контексте до 500: его нет в
+    // сводке ответа — значит, сжатие было выключено.
+    row(
+      'порог сжатия',
+      meta.contextRequested === undefined
+        ? null
+        : Number.isFinite(meta.summarizeAt)
+          ? `${fmtInt(meta.summarizeAt)}, сводка до ${fmtInt(summaryCap(meta.summarizeAt))}`
+          : 'выключено',
+    );
+    row(
+      'сводка в контексте',
+      meta.contextRequested === undefined
+        ? null
+        : meta.summaryTokens > 0
+          ? `${fmtInt(meta.summaryTokens)} токенов`
+          : 'нет',
+    );
     row('сообщений в контексте', meta.contextMessages);
     row(
       'вход / выход',
@@ -1211,17 +1339,130 @@
     return li;
   };
 
+  /** Видимая строка предупреждения: маркер и начертание, префикс для скринридера. */
+  const warnLine = (text) => {
+    const warn = document.createElement('p');
+    warn.className = 'warned';
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = '!';
+    const prefix = document.createElement('span');
+    prefix.className = 'vh';
+    prefix.textContent = 'Предупреждение: ';
+    warn.append(mark, prefix, text);
+    return warn;
+  };
+
+  /* ---------- сводка разговора ---------- */
+
+  // Сжимает всегда Haiku, какую бы модель ни выбрали для чата (ADR 2026-09-11-1608, п. 5).
+  const SUMMARY_MODEL = 'Claude Haiku 4.5';
+  const SUMMARY_PROVIDER = 'anthropic-haiku';
+  /**
+   * Потолок сводки ⌈0,3 × N⌉ — формула от поля, которое страница сама
+   * отправляет, а не счёт токенов. Выражение то же, что у агента
+   * (agents/src/llm.js), чтобы число совпало с «сводка до …» в мониторе;
+   * меняются вместе.
+   */
+  const summaryCap = (n) => Math.ceil(n * 0.3);
+
+  /** Стрелка у скринридеров звучит «стрелка вправо»: у неё скрытая замена. */
+  const arrow = () => {
+    const shown = document.createElement('span');
+    shown.setAttribute('aria-hidden', 'true');
+    shown.textContent = '→';
+    const said = document.createElement('span');
+    said.className = 'vh';
+    said.textContent = 'в';
+    return [shown, said];
+  };
+
+  const renderFold = (s) => {
+    const li = document.createElement('li');
+    li.className = 'fold';
+    const pct = s.sourceTokens > 0 ? Math.round((s.tokens / s.sourceTokens) * 100) : null;
+
+    const d = document.createElement('details');
+    d.open = foldOpen;
+    d.addEventListener('toggle', () => { foldOpen = d.open; });
+    const summary = document.createElement('summary');
+    // Одна обёртка: у flex-строки каждый текстовый кусок стал бы отдельным
+    // элементом с зазором между ними.
+    const label = document.createElement('span');
+    label.append(
+      `Сводка разговора · ${fmtInt(s.sourceTokens)} `,
+      ...arrow(),
+      ` ${fmtInt(s.tokens)} токенов` + (pct === null ? '' : ` (${pct} %)`) +
+        ` · сжал ${SUMMARY_MODEL}`,
+    );
+    summary.append(label);
+
+    const text = document.createElement('p');
+    text.className = 'fold-text';
+    text.textContent = s.text;
+    const dl = document.createElement('dl');
+    dl.className = 'ev-dl';
+    const row = (term, value) => {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    row('исходник', `${fmtInt(s.sourceTokens)} токенов — прежняя сводка и реплики`);
+    row('сводка', `${fmtInt(s.tokens)} токенов` + (pct === null ? '' : `, ${pct} % исходника`));
+    // Обрезанная потолком сводка — это ровно потолок выходных токенов.
+    if (s.truncated) row('потолок', `${fmtInt(s.tokens)} токенов`);
+    if (s.model) row('модель', `${s.model} — при любой модели чата`);
+    if (s.updatedAt) row('обновлена', fmtTime(s.updatedAt));
+    d.append(summary, text, dl);
+    li.append(d);
+
+    // Потолок режет конец пересказа: узнавать об этом, открыв блок, поздно.
+    if (s.truncated)
+      li.append(warnLine(`Сводка обрезана потолком ${fmtInt(s.tokens)} токенов — конец пересказа потерян`));
+    return li;
+  };
+
+  /**
+   * Номера сообщений с сервера — локальным репликам, по ним встаёт блок
+   * сводки. Сверка с хвоста по роли и тексту: отказы самой страницы у агента
+   * не хранятся и пропускаются, реплики из другой вкладки — тоже.
+   */
+  const adoptIds = (server) => {
+    let j = server.length;
+    for (let i = messages.length - 1; i >= 0 && j > 0; i--) {
+      const m = messages[i];
+      let k = j - 1;
+      while (k >= 0 && !(server[k].role === m.role && server[k].text === m.text)) k--;
+      if (k < 0) continue;
+      m.id = server[k].id;
+      j = k;
+    }
+  };
+
   /** Прокрутка вниз только если пользователь и так внизу: иначе не мешаем. */
   const atBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
 
   const renderLog = ({ keepScroll = false } = {}) => {
     const stick = keepScroll ? atBottom() : true;
     const nodes = [];
+    // Блок сводки — сразу после последнего сообщения, вошедшего в неё.
+    let foldAt = -1;
     messages.forEach((m, i) => {
       try {
         nodes.push(m.role === 'user' ? renderUser(m) : renderAgent(m));
       } catch {}
+      if (summaryState && m.id === summaryState.throughId) foldAt = nodes.length;
     });
+    // Сообщение сводки не нашлось — она всё равно пересказ прежней части
+    // разговора, и её место — над ним.
+    if (summaryState && nodes.length > 0) {
+      try {
+        nodes.splice(foldAt === -1 ? 0 : foldAt, 0, renderFold(summaryState));
+      } catch {}
+    }
     log.replaceChildren(...(nodes.length > 0 ? nodes : [empty]));
     $('clear').disabled = messages.length === 0;
     $('restored').hidden = !(restoredFromServer && messages.length > 0);
@@ -1240,7 +1481,9 @@
       messages = d.messages ?? [];
       restoredFromServer = messages.length > 0;
       spentTokens = Number.isFinite(d.totalTokens) ? d.totalTokens : null;
-      showSpent();
+      summaryState = d.summary ?? null;
+      contextState = d.context ?? null;
+      showMeters();
       showSessionName(d.session?.name);
       // Сводка параметров — до отрисовки лога: она добавляет строку в панель
       // настроек, а значит меняет высоту лога. Прокрутка вниз должна считаться
@@ -1252,7 +1495,8 @@
       // Придумывать за сервер «переписки нет» нельзя — как и сумму токенов.
       restoredFromServer = false;
       spentTokens = null;
-      showSpent();
+      contextState = null;
+      showMeters();
       $('restored').hidden = false;
       $('restored').textContent =
         'Прежнюю переписку загрузить не удалось. Новое сообщение начнёт диалог заново.';
@@ -1267,13 +1511,87 @@
     return null;
   };
 
-  const showParamsSummary = () => {
-    const model = models.find((m) => m.id === chosenModel());
+  /* ---------- порог сжатия ---------- */
+
+  // Порог хранится в браузере и уходит с каждым запуском (ADR 2026-09-11-1608,
+  // п. 6). Хранилище отказало или значение чужое — берётся умолчание разметки.
+  const SUMMARIZE_STORE = 'day9-summarize-at';
+  const summarizeField = $('p-summarize-at');
+  try {
+    const kept = Number(localStorage.getItem(SUMMARIZE_STORE));
+    if (Number.isInteger(kept) && kept >= 500 && kept <= 8000) summarizeField.value = String(kept);
+  } catch {}
+  summarizeField.addEventListener('input', () => {
+    try { localStorage.setItem(SUMMARIZE_STORE, summarizeField.value); } catch {}
+  });
+
+  /**
+   * Окно модели из последнего ответа на выбранной модели. Известно, только
+   * если размер урезала модель: действующий размер, равный заданному тогда,
+   * говорит о настройке того запуска, а не о модели.
+   */
+  const modelWindow = () => {
     const last = lastSummary();
+    return last && last.provider === chosenModel() && last.contextEffective < last.contextRequested
+      ? last.contextEffective
+      : null;
+  };
+
+  /**
+   * Состояние поля и строка под ним. Контекст до 500 — сжатие выключено:
+   * порог от 500 и меньше контекста там невозможен, и без поля агент ведёт
+   * себя как в дне 8. Границы и шаг проверяет браузер, «меньше размера
+   * контекста» — эта проверка.
+   */
+  const showSummarizeLive = () => {
+    const requested = Number($('p-context').value) || 0;
+    const n = Number(summarizeField.value) || 0;
+    const live = $('p-summarize-live');
+    summarizeField.disabled = requested <= 500;
+    summarizeField.setCustomValidity(
+      !summarizeField.disabled && n >= requested
+        ? `Порог сжатия должен быть меньше размера контекста (${fmtInt(requested)}).`
+        : '',
+    );
+    // Реплики уходят поставщику, которого для чата не выбирали, — только
+    // когда сжатие включено и чат идёт не на Claude Haiku 4.5.
+    $('p-summarize-note').hidden = summarizeField.disabled || chosenModel() === SUMMARY_PROVIDER;
+    if (summarizeField.disabled) {
+      live.textContent = 'Сжатие выключено: при размере контекста до 500 сжимать нечего.';
+      return;
+    }
+    // Окно — из последнего ответа на выбранной модели; до ответа строка о нём молчит.
+    const model = models.find((m) => m.id === chosenModel());
+    const win = modelWindow();
+    live.textContent =
+      Number.isFinite(win) && win < Math.ceil(n * 1.3)
+        ? `Сводка — до ${fmtInt(summaryCap(n))} токенов. Окно ${model?.label ?? chosenModel()} — ` +
+          `${fmtInt(win)} токенов: старые реплики могут выпасть из запроса до сжатия ` +
+          'и войдут в следующую сводку.'
+        : `Сводка — до ${fmtInt(summaryCap(n))} токенов, сжимает ${SUMMARY_MODEL}.`;
+  };
+
+  // Строка значений показывает то, что задано: сколько ушло в прошлый раз,
+  // теперь в шапке диалога, и два разных «контекста» на экране путались бы.
+  const showParamsSummary = () => {
+    showSummarizeLive();
+    const model = models.find((m) => m.id === chosenModel());
     const requested = Number($('p-context').value) || 0;
     const parts = [];
     if (model) parts.push(model.label);
-    parts.push(`контекст ${fmtInt(last?.contextUsed ?? 0)} из ${fmtInt(requested)}`);
+    // «X из Y» — действует из заданного: окно модели из последнего ответа на
+    // ней, если оно меньше. Порог «из» не получает — он не урезается.
+    const effective = modelWindow();
+    parts.push(
+      Number.isFinite(effective) && effective < requested
+        ? `контекст ${fmtInt(effective)} из ${fmtInt(requested)}`
+        : `контекст ${fmtInt(requested)}`,
+    );
+    parts.push(
+      summarizeField.disabled
+        ? 'сжатие выкл.'
+        : `сжатие при ${fmtInt(Number(summarizeField.value) || 0)}`,
+    );
     // Число статей параметром больше не является: его место заняло самое
     // дорогое из умолчаний.
     parts.push(`ответ до ${fmtInt(Number($('p-max-tokens').value) || 0)} токенов`);
@@ -1304,7 +1622,10 @@
       : '';
   };
 
-  for (const id of ['p-context', 'p-max-tokens']) {
+  // До ответа сервера поле уже должно знать, выключено ли оно.
+  showSummarizeLive();
+
+  for (const id of ['p-context', 'p-summarize-at', 'p-max-tokens']) {
     $(id).addEventListener('input', () => {
       showParamsSummary();
       showContextLive();
@@ -1320,7 +1641,7 @@
   // Правка живёт в браузере и уходит с каждым запросом; реестр на сервере
   // она не меняет (ADR 2026-09-09-1623). Версия и исходник на момент правки
   // хранятся вместе с ней, чтобы заметить смену промпта у агента.
-  const PROMPT_STORE = 'day8-agent-prompt';
+  const PROMPT_STORE = 'day9-agent-prompt';
   let savedPrompt = null;   // { version, base, text } или null
   let promptInMemory = false; // хранилище отказало, правка живёт до перезагрузки
 
@@ -1363,7 +1684,9 @@
       return;
     }
 
-    const invalid = [$('p-per-source'), $('p-max-tokens'), $('p-context')]
+    showSummarizeLive();
+    // Выключенное поле порога браузер не проверяет — и не отправляет.
+    const invalid = [$('p-per-source'), $('p-max-tokens'), $('p-context'), summarizeField]
       .find((el) => !el.checkValidity());
     if (invalid) {
       // Поле может лежать в закрытом блоке параметров: показать сообщение
@@ -1388,6 +1711,8 @@
     // агента не меняется ни на байт.
     const mine = activePrompt();
     if (mine) params.system = mine;
+    // Без поля агент ведёт себя как в дне 8 — так и при контексте до 500.
+    if (!summarizeField.disabled) params.summarizeAt = Number(summarizeField.value);
 
     button.disabled = true;
     log.setAttribute('aria-busy', 'true');
@@ -1434,6 +1759,13 @@
     es.addEventListener('event', (m) => {
       let ev;
       try { ev = JSON.parse(m.data); } catch { return; }
+      // Отказ сжатия приходит только событием (ADR 2026-09-11-1608, п. 3.3):
+      // в сводке ответа такого поля нет, поэтому строка в ответе держится
+      // до перезагрузки, а в мониторе — warn.
+      if (ev.stage === 'warning' && ev.title === 'Историю не сжал') run.summarizeFailed = true;
+      // Статус «готово» приходит событием `done` раньше конца потока: признак
+      // сжатия для объявления нужен до него.
+      if (ev.stage === 'planning' && String(ev.title).startsWith('Сжал историю')) run.compressed = true;
       addEvent(run, ev);
     });
     es.addEventListener('end', (m) => {
@@ -1449,16 +1781,18 @@
           : { total: r.archive.total });
         // Сводка приходит от агента: она же лежит в базе и переживёт
         // перезагрузку страницы вместе с перепиской.
-        answered(r.answer, r.summary);
-        // Счётчик переписки растёт только на оплаченных итерациях.
+        answered(r.answer, run.summarizeFailed ? { ...r.summary, summarizeFailed: true } : r.summary);
+        // Счётчик переписки растёт только на оплаченных итерациях; сумма
+        // запуска у агента уже включает сжатие.
         if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
-        showSpent();
+        showMeters();
       } else if (end.error) {
         answered(end.error.message ?? 'агент не ответил', { error: true });
       }
       setStatus(run, end.status === 'succeeded' || end.status === 'failed' ? end.status
         : run.answered ? 'succeeded' : 'failed');
       finish();
+      syncChat();
     });
     es.onerror = () => {
       if (ended) return;
@@ -1477,7 +1811,31 @@
         answered('связь с агентом прервана', { error: true });
       }
       finish();
+      syncChat();
     };
+  };
+
+  /**
+   * По концу запуска — сводка, контекст и сумма с сервера: блок сводки мог
+   * переехать, а сжатие стоило токенов даже при отказе ответа. Сам лог не
+   * перечитывается: отказы страницы у агента не хранятся, и их пропажа из
+   * лога была бы неправдой.
+   */
+  const syncChat = async () => {
+    try {
+      const r = await fetch('./api/chat');
+      if (!r.ok) throw new Error(String(r.status));
+      const d = await r.json();
+      adoptIds(d.messages ?? []);
+      summaryState = d.summary ?? null;
+      contextState = d.context ?? null;
+      if (Number.isFinite(d.totalTokens)) spentTokens = d.totalTokens;
+    } catch {
+      // Что сейчас в контексте, без сервера неизвестно: прежние числа были бы неправдой.
+      contextState = null;
+    }
+    showMeters();
+    renderLog({ keepScroll: true });
   };
 
   // Cmd + Enter и Ctrl + Enter отправляют оба и на любой платформе; в поле
@@ -1513,7 +1871,9 @@
       messages = [];
       restoredFromServer = false;
       spentTokens = 0;
-      showSpent();
+      summaryState = null;
+      contextState = body.context ?? null;
+      showMeters();
       showSessionName(body.session?.name);
       renderLog();
       showParamsSummary();
