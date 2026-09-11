@@ -31,9 +31,13 @@ const linesMatching = (text, ok) =>
     .map((line, i) => ({ line: i + 1, text: line }))
     .filter((l) => ok(l.text))
 
-const routesInCaddy = src.caddyText
-  .split('\n')
-  .filter((l) => !/^\s*#/.test(l) && /handle_path \/day\d+\/\*/.test(l)).length
+/** Сервисы за действующими `reverse_proxy`: два блока на один сервис — один маршрут. */
+const routesInCaddy = new Set(
+  src.caddyText
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .flatMap((l) => [...l.matchAll(/reverse_proxy ([\w-]+):\d+/g)].map((m) => m[1])),
+).size
 
 test('на базовом состоянии репозитория находок нет', () => {
   assert.deepEqual(graph.findings, [])
@@ -97,10 +101,46 @@ test('предзагруженные скиллы роли ведут на су�
 
 test('топология деплоя: маршруты, зависимости и тома', () => {
   assert.equal(edges('routes').length, routesInCaddy)
-  assert.equal(edges('routes').length, dayDirs.length, 'у каждого дня — маршрут в Caddyfile')
+  const toDays = edges('routes')
+    .filter((e) => e.to.startsWith('day/'))
+    .map((e) => e.to)
+    .sort()
+  assert.deepEqual(toDays, dayDirs.map((d) => `day/${d}`).sort(), 'у каждого дня — маршрут в Caddyfile')
   assert.ok(edges('serves').some((e) => e.from === 'service/caddy' && e.to === 'service/site'))
   assert.ok(edges('depends').some((e) => e.from === 'day/day5' && e.to === 'service/router'))
   assert.ok(edges('mounts').some((e) => e.from === 'service/agents' && e.to === 'volume/agents_data'))
+})
+
+test('маршрут не-дневного сервиса: handle_path /atlas/* даёт ребро caddy → service/atlas', () => {
+  assert.ok(edges('routes').some((e) => e.from === 'service/caddy' && e.to === 'service/atlas'))
+})
+
+test('префикс handle_path не протекает в следующий блок `handle /x/*`', () => {
+  const caddyText = src.caddyText.replace('handle_path /day8/* {', 'handle /day8/* {')
+  assert.notEqual(caddyText, src.caddyText, 'в Caddyfile нет блока day8 — сценарий не собрался')
+  const g = buildGraph({ ...src, caddyText })
+  assert.equal(g.nodes.find((n) => n.id === 'day/day8').route, null, 'day8 получил префикс чужого блока')
+  assert.equal(g.nodes.find((n) => n.id === 'day/day7').route, '/day7/')
+  assert.ok(g.edges.some((e) => e.kind === 'routes' && e.to === 'day/day8'), 'сервис за reverse_proxy — всё равно маршрут')
+})
+
+test('префикс handle_path не протекает в следующий блок `handle {`', () => {
+  const caddyText = src.caddyText.replace('handle_path /day2/* {', 'handle {')
+  assert.notEqual(caddyText, src.caddyText, 'в Caddyfile нет блока day2 — сценарий не собрался')
+  const g = buildGraph({ ...src, caddyText })
+  assert.equal(g.nodes.find((n) => n.id === 'day/day2').route, null, 'day2 получил префикс чужого блока')
+  assert.equal(g.nodes.find((n) => n.id === 'day/day1').route, '/day1/')
+})
+
+test('два блока на один сервис дают одно ребро routes', () => {
+  const caddyText = src.caddyText.replace(
+    '\t# --- лендинг ---',
+    '\thandle_path /atlas2/* {\n\t\treverse_proxy atlas:8080\n\t}\n\n\t# --- лендинг ---',
+  )
+  assert.notEqual(caddyText, src.caddyText, 'в Caddyfile нет раздела лендинга — сценарий не собрался')
+  const g = buildGraph({ ...src, caddyText })
+  const toAtlas = g.edges.filter((e) => e.kind === 'routes' && e.to === 'service/atlas')
+  assert.equal(toAtlas.length, 1)
 })
 
 test('провайдеры попадают в граф без baseUrl: адрес tailnet не публикуется', () => {
