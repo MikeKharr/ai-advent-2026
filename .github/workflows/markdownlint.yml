@@ -1,11 +1,11 @@
 name: markdownlint
 
 on:
+  # Без фильтра путей: lint — обязательная проверка main. Линтуется весь
+  # репозиторий, поэтому PR без .md проходит так же, как с ними.
   pull_request:
-    paths: ['**.md']
   push:
     branches: [main]
-    paths: ['**.md']
 
 permissions:
   contents: read
