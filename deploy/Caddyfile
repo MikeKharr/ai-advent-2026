@@ -91,6 +91,14 @@ challenge.zpq.ai {
 		}
 	}
 
+	redir /day9 /day9/ permanent
+	handle_path /day9/* {
+		reverse_proxy day9:8080 {
+			health_uri /healthz
+			health_interval 30s
+		}
+	}
+
 	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
 
 	# --- атлас проекта ---

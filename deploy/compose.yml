@@ -21,6 +21,7 @@ services:
       - day6
       - day7
       - day8
+      - day9
 
   day1:
     # Тег приходит из .env, который переписывает workflow деплоя.
@@ -155,6 +156,25 @@ services:
     env_file:
       # Тот же ключ сервиса агентов, что у дней 6 и 7; своя cookie сессии.
       - path: ./day8.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  day9:
+    image: ghcr.io/mikekharr/advent-day9:${DAY9_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # Тот же ключ сервиса агентов, что у дней 6–8; своя cookie сессии.
+      # Сводку разговора делает агент (ADR 2026-09-11-1608): ключей к
+      # моделям у дня по-прежнему нет.
+      - path: ./day9.env
         required: false
     environment:
       - NODE_ENV=production
