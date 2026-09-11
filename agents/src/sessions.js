@@ -30,6 +30,21 @@ CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, id);
 -- Внешнего ключа нет намеренно: удаление идёт явными двумя операторами,
 -- и порядок «сначала сообщения, потом сессия» переживает обрыв между ними.
 -- Осиротевшую сессию подберёт уборка по сроку.
+
+-- Сводка разговора (ADR 2026-09-11-1608): одна строка на сессию,
+-- перезаписывается каждой суммаризацией, удаляется вместе с перепиской.
+-- spent_tokens копится: цена всех вызовов сводки входит в сумму сессии.
+CREATE TABLE IF NOT EXISTS summaries (
+  session_id    TEXT PRIMARY KEY,
+  text          TEXT NOT NULL,
+  tokens        INTEGER NOT NULL,
+  source_tokens INTEGER NOT NULL,
+  through_id    INTEGER NOT NULL,
+  model         TEXT,
+  truncated     INTEGER NOT NULL DEFAULT 0,
+  spent_tokens  INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
 `
 
 export function createSessions({ file, ttlMs, now = Date.now, log = console.error }) {
@@ -57,6 +72,27 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       `SELECT id, role, text, tokens, meta
        FROM messages WHERE session_id = ? ORDER BY id DESC`,
     ),
+    since: db.prepare(
+      `SELECT id, role, text, tokens, meta
+       FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC`,
+    ),
+    summary: db.prepare(
+      `SELECT text, tokens, source_tokens AS sourceTokens, through_id AS throughId,
+              model, truncated, spent_tokens AS spentTokens, updated_at AS updatedAt
+       FROM summaries WHERE session_id = ?`,
+    ),
+    saveSummary: db.prepare(
+      `INSERT INTO summaries
+         (session_id, text, tokens, source_tokens, through_id, model, truncated, spent_tokens, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         text = excluded.text, tokens = excluded.tokens,
+         source_tokens = excluded.source_tokens, through_id = excluded.through_id,
+         model = excluded.model, truncated = excluded.truncated,
+         updated_at = excluded.updated_at,
+         spent_tokens = summaries.spent_tokens + excluded.spent_tokens`,
+    ),
+    dropSummary: db.prepare('DELETE FROM summaries WHERE session_id = ?'),
     dropMessages: db.prepare('DELETE FROM messages WHERE session_id = ?'),
     dropSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
     stale: db.prepare('SELECT id FROM sessions WHERE last_seen_at < ?'),
@@ -143,8 +179,74 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       return { messages: chosen, tokens: used, dropped }
     },
 
+    /**
+     * Реплики после сводки, от старых к свежим, с номерами — из них
+     * считается порог и собирается следующая сводка. Записи об ошибках
+     * не идут, как и в `tail`.
+     */
+    since(sessionId, afterId) {
+      const out = []
+      for (const row of stmt.since.all(sessionId, afterId)) {
+        let failed = false
+        try {
+          failed = row.meta ? JSON.parse(row.meta).error === true : false
+        } catch {
+          failed = false
+        }
+        if (!failed) out.push({ id: row.id, role: row.role, text: row.text, tokens: row.tokens })
+      }
+      return out
+    },
+
+    /** Сводка разговора или null (ADR 2026-09-11-1608). */
+    summary(sessionId) {
+      const row = stmt.summary.get(sessionId)
+      return row ? { ...row, truncated: row.truncated === 1 } : null
+    },
+
+    /**
+     * Что уйдёт модели со следующим сообщением: сводка и реплики после неё.
+     * Без учёта окна модели — его знает только запуск; окно — страховка.
+     */
+    context(sessionId) {
+      const row = stmt.summary.get(sessionId)
+      const summaryTokens = row?.tokens ?? 0
+      const dialogTokens = this.since(sessionId, row?.throughId ?? 0).reduce(
+        (sum, m) => sum + m.tokens,
+        0,
+      )
+      return { total: summaryTokens + dialogTokens, summaryTokens, dialogTokens }
+    },
+
+    /** Новая сводка вместо прежней; цена вызова прибавляется к накопленной. */
+    saveSummary({
+      sessionId,
+      text,
+      tokens,
+      sourceTokens,
+      throughId,
+      model = null,
+      truncated = false,
+      spentTokens,
+      at = now(),
+    }) {
+      stmt.saveSummary.run(
+        sessionId,
+        text,
+        Math.max(0, Math.round(tokens)),
+        Math.max(0, Math.round(sourceTokens)),
+        throughId,
+        model,
+        truncated ? 1 : 0,
+        Math.max(0, Math.round(spentTokens)),
+        at,
+      )
+    },
+
     /** Удаляет переписку сессии целиком. Действие «очистить» на странице. */
     clear(sessionId) {
+      // Сводка — пересказ той же переписки: живёт и удаляется вместе с ней.
+      stmt.dropSummary.run(sessionId)
       const removed = stmt.dropMessages.run(sessionId)
       stmt.dropSession.run(sessionId)
       return Number(removed.changes)
@@ -176,6 +278,9 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
           log(`сводка сообщения ${row.id} не разобрана, сумма занижена`)
         }
       }
+      // Вызовы сводки стоили денег при любом исходе запуска, поэтому их цена
+      // копится в строке сводки, а не в ответах (ADR 2026-09-11-1608).
+      total += stmt.summary.get(sessionId)?.spentTokens ?? 0
       return total
     },
 
