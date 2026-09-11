@@ -111,7 +111,7 @@ test('упоминание префикса токена GitHub без хвос�
 // префиксы ключей. Но образцы с хвостом ключа у него те же, что у атласа.
 test('шаг секретов docs-guard ищет те же образцы с хвостом ключа', () => {
   const yml = readFileSync(join(ROOT, '.github/workflows/docs-guard.yml'), 'utf8')
-  const grep = yml.match(/grep -rIn --exclude-dir=\.git -E '([^']+)' \./)
+  const grep = yml.match(/grep -rIl --exclude-dir=\.git -E '([^']+)' \./)
   assert.ok(grep, 'в docs-guard.yml не найден шаг grep секретов')
   // Весь образец шага — ключ Anthropic и KEY_SAMPLES, ни знаком больше.
   const ANT_REPO = `${['sk', 'ant', ''].join('-')}[A-Za-z0-9_-]{10,}`

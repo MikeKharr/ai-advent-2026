@@ -50,8 +50,9 @@ jobs:
       # (совпадение проверяет atlas/test/secrets.test.js).
       - name: Секреты не попали в репозиторий
         run: |
-          if grep -rIn --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}|BEGIN [A-Z0-9 ]*PRIVATE KEY|gsk_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}' . ; then
-            echo "::error::в репозитории найден похожий на реальный API-ключ"
+          # Только имена файлов (-l): строка с ключом не уходит в публичный журнал Actions.
+          if files=$(grep -rIl --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}|BEGIN [A-Z0-9 ]*PRIVATE KEY|gsk_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}' .); then
+            echo "::error::в репозитории найден похожий на реальный API-ключ, файлы: $(printf '%s' "$files" | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')"
             exit 1
           fi
           echo "ok: ключей не найдено"
