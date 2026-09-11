@@ -15,14 +15,11 @@ import {
   fit,
   indexGraph,
   labelRank,
-  neighborhood,
   pickNode,
   placeDepthLabels,
   project,
   projectAll,
   transform,
-  viewLine,
-  volumeHint,
 } from '../web/app.js'
 import { ROOT } from './helpers.js'
 
@@ -33,6 +30,8 @@ import { ROOT } from './helpers.js'
 const graph = buildGraph(readSources(ROOT))
 const index = indexGraph(graph)
 const byId = new Map(graph.nodes.map((n) => [n.id, n]))
+/** Узел и его прямые соседи — часть графа для проверок «центр — куба, не вида». */
+const around = (id) => new Set([id, ...index.near.get(id)])
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `${a} ≠ ${b}`)
 
 // ── Проекция ───────────────────────────────────────────────────────────
@@ -87,7 +86,7 @@ test('тангаж ограничен ±90°, рыскание — нет', () =
 
 test('проекция узла не зависит от того, какие узлы в виде: центр — куба, не вида', () => {
   const all = projectAll(new Map(graph.nodes.map((n) => [n.id, n])), POSE0)
-  const ids = neighborhood(index.near, 'role/compliance', 1)
+  const ids = around('role/compliance')
   const part = projectAll(new Map([...ids].map((id) => [id, byId.get(id)])), POSE0)
   for (const id of ids) assert.deepEqual(part.get(id), all.get(id))
 })
@@ -113,7 +112,7 @@ test('вид, вписанный по огибающей, остаётся в к
   const field = { width: 816, height: 571 }
   const views = [
     new Map(graph.nodes.map((n) => [n.id, n])),
-    new Map([...neighborhood(index.near, 'role/compliance', 1)].map((id) => [id, byId.get(id)])),
+    new Map([...around('role/compliance')].map((id) => [id, byId.get(id)])),
     new Map([[graph.nodes[0].id, graph.nodes[0]]]),
   ]
   for (const pts of views) {
@@ -256,7 +255,7 @@ const crowded = (() => {
   const depth = new Map(nodes.map(({ id }, i) => [id, ((i * 7) % 30) / 30 - 0.5]))
   const layout = (hover) =>
     placeDepthLabels(
-      nodes.map((n) => ({ ...n, rank: labelRank({ id: n.id, sel, near, hover, phase: false, always: true }) })),
+      nodes.map((n) => ({ ...n, rank: labelRank({ id: n.id, sel, near, hover, always: true }) })),
       field,
       measure,
       depth,
@@ -312,60 +311,6 @@ test('подписи возвращаются по настоящим идент
   ]
   const labels = placeDepthLabels(items, field, measure, new Map([['role/compliance', 0], ['role/qa', 0]]))
   assert.deepEqual([...labels.keys()].sort(), ['role/compliance', 'role/qa'])
-})
-
-// ── Полоса вида и строка под флажком ───────────────────────────────────
-
-const stats = { nodes: 183, edges: 648 }
-const base = { stats, depth: 1, byId }
-
-test('суффикс «· объём» — последним сегментом у окрестности и полного графа', () => {
-  const ids = neighborhood(index.near, 'role/compliance', 1)
-  const links = graph.edges.filter((e) => ids.has(e.from) && ids.has(e.to))
-  const plain = viewLine({ ...base, full: false, selected: 'role/compliance', ids, links })
-  assert.equal(viewLine({ ...base, full: false, selected: 'role/compliance', ids, links, volume: true }), `${plain} · объём`)
-  const all = new Set(graph.nodes.map((n) => n.id))
-  assert.equal(
-    viewLine({ ...base, full: true, selected: null, ids: all, links: [], volume: true }),
-    'Весь граф: 183 узла, 648 связей. Подписи скрыты — узел называет панель · объём',
-  )
-})
-
-test('у узла без связей — «· объём: вращать нечего»', () => {
-  const line = viewLine({ ...base, full: false, selected: 'x', ids: new Set(['x']), links: [], volume: true })
-  assert.equal(line, 'У этого узла нет связей — на канве только он · объём: вращать нечего')
-})
-
-test('в цикле дня и при пустом виде суффикса нет', () => {
-  const cycle = new Set(graph.nodes.filter((n) => n.type === 'phase').map((n) => n.id))
-  const flat = viewLine({ ...base, full: false, selected: null, ids: cycle, links: [] })
-  assert.equal(viewLine({ ...base, full: false, selected: null, ids: cycle, links: [], volume: true }), flat)
-  assert.equal(
-    viewLine({ ...base, full: false, selected: 'x', ids: new Set(), links: [], volume: true }),
-    'Ни одного узла: скрыты все типы',
-  )
-})
-
-test('без флажка строка полосы вида прежняя', () => {
-  const ids = neighborhood(index.near, 'role/compliance', 1)
-  const line = viewLine({ ...base, full: false, selected: 'role/compliance', ids, links: [] })
-  assert.ok(!line.includes('объём'))
-})
-
-test('строка под флажком — дословно по виду и по указателю', () => {
-  assert.equal(
-    volumeHint(true, true),
-    'В цикле дня объём не действует: это схема по номерам фаз. Выберите узел или включите весь граф.',
-  )
-  assert.equal(volumeHint(true, false), volumeHint(true, true))
-  assert.equal(
-    volumeHint(false, true),
-    'Перетаскивание вращает граф, с Shift — сдвигает. Под углом часть подписей может пропасть — узлы называет список.',
-  )
-  assert.equal(
-    volumeHint(false, false),
-    'Палец вращает граф; сдвига нет — к центру вернёт «Сбросить вид». Под углом часть подписей может пропасть — узлы называет список.',
-  )
 })
 
 // ── Смесь перехода ─────────────────────────────────────────────────────

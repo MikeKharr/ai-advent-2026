@@ -49,6 +49,14 @@
       <p class="canvas-msg" id="canvas-msg"></p>
       <div class="canvas-act" id="canvas-act" hidden></div>
     </div>
+
+    <!-- «Плоский вид» — agent_docs/design/2026-09-14-2300-atlas-3d-fullgraph-search.md,
+         раздел 1. Под канвой, и только там, где канва есть: ниже 73rem его
+         экземпляр живёт в карте, состояние у двух одно. -->
+    <div class="canvas-foot">
+      <label class="flat"><input type="checkbox" id="flat" disabled aria-describedby="flat-note"> <span>Плоский вид</span></label>
+      <p class="flat-note" id="flat-note"></p>
+    </div>
   </main>
 
   <!-- Блоки правой половины: при трёх колонках и на узком экране `.side`
@@ -57,9 +65,11 @@
   <div class="side">
 
   <section class="area-search" aria-label="Поиск по схеме">
-    <label class="field-label" for="q">Поиск по заголовкам</label>
+    <label class="field-label" for="q">Поиск по заголовкам и тексту</label>
     <input type="search" id="q" autocomplete="off" disabled aria-describedby="q-note">
     <p class="hint" id="q-note">Схема ещё грузится</p>
+    <!-- Только при сбое texts.json: поиск по заголовкам при этом работает. -->
+    <button type="button" class="texts-retry" id="texts-retry" hidden>Загрузить тексты снова</button>
     <ul class="results" id="results"></ul>
   </section>
 
@@ -72,26 +82,10 @@
   </div>
 
   <section class="area-rest">
-    <!-- «Фильтры и вид» и список узлов — это и есть граф: пока его нет, они
+    <!-- «Фильтры по типу» и список узлов — это и есть граф: пока его нет, они
          скрыты (agent_docs/design/2026-09-14-1730-atlas-load-error.md). -->
     <details class="tools" id="tools" hidden>
-      <summary>Фильтры и вид</summary>
-
-      <fieldset class="depth" id="depth" disabled aria-describedby="depth-note">
-        <legend>Соседи выбранного узла</legend>
-        <label><input type="radio" name="depth" value="1" checked> <span id="depth-1">1 шаг</span></label>
-        <label><input type="radio" name="depth" value="2"> <span id="depth-2">2 шага</span></label>
-        <p class="hint" id="depth-note"></p>
-      </fieldset>
-
-      <p class="full"><label><input type="checkbox" id="full"> <span id="full-label"></span></label></p>
-
-      <!-- Режим «Объём» — agent_docs/design/2026-09-14-1200-atlas-3d-mode.md.
-           Никогда не disabled: строка под ним объясняет, где он не действует. -->
-      <div class="volume">
-        <label><input type="checkbox" id="volume" aria-describedby="volume-note"> <span>Объём</span></label>
-        <p class="hint" id="volume-note"></p>
-      </div>
+      <summary>Фильтры по типу</summary>
 
       <div id="filters"></div>
       <button type="button" id="filters-reset" hidden></button>
@@ -117,6 +111,7 @@
   </div>
   <div class="canvas-wrap" id="map-wrap"><canvas id="map-canvas" aria-hidden="true"></canvas></div>
   <div class="map-foot">
+    <label class="flat"><input type="checkbox" id="map-flat" disabled> <span>Плоский вид</span></label>
     <button type="button" id="map-zoom-out" aria-label="Мельче">−</button>
     <button type="button" id="map-zoom-in" aria-label="Крупнее">+</button>
     <button type="button" id="map-reset">Сбросить вид</button>
