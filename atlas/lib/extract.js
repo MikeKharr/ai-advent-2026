@@ -151,12 +151,14 @@ export function buildGraph(sources) {
   const composeByName = Object.fromEntries(compose.services.map((s) => [s.name, s]))
 
   const landing = {}
-  for (const block of sources.landingText.split('<a class="day"').slice(1)) {
+  // Карточка приложения на главной; атлас в том же списке отсеивается по href.
+  // Дата на странице не видна: она — атрибут data-date ссылки.
+  for (const block of sources.landingText.split('<a class="app"').slice(1)) {
     const href = block.match(/href="\/(day\d+)\/"/)
     if (!href) continue
     landing[href[1]] = {
-      title: (block.match(/class="t">([^<]*)</) ?? [])[1]?.trim() ?? '',
-      date: (block.match(/class="d">([^<]*)</) ?? [])[1]?.trim() ?? '',
+      title: (block.match(/class="app-text">([^<]*)</) ?? [])[1]?.trim() ?? '',
+      date: (block.match(/^[^>]*\sdata-date="([^"]*)"/) ?? [])[1]?.trim() ?? '',
     }
   }
 
