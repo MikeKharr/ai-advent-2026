@@ -140,7 +140,7 @@ export const PARAM_LIMITS = {
   systemChars: 4000,
   // Сколько токенов диалога пользователь может попросить взять в контекст.
   // Действующий размер меньше, если предел входа модели не позволяет
-  // (ADR 2026-09-12-0930).
+  // (ADR 2026-09-09-1906).
   contextTokens: 8000,
   stopSequences: 4,
   stopChars: 40,
@@ -160,7 +160,7 @@ export function isSessionId(value) {
 
 /**
  * Тема от пользователя. С дня 8 поле необязательно: релевантность считается
- * по репликам разговора (ADR 2026-09-13-0930). Дни 6 и 7 продолжают его
+ * по репликам разговора (ADR 2026-09-09-2134). Дни 6 и 7 продолжают его
  * присылать, поэтому проверка остаётся прежней.
  */
 export function parseSphere(value) {
@@ -301,7 +301,7 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
       maxTokens: maxTokens.value ?? defaults.maxTokens,
       perSource: perSource.value ?? defaults.perSource,
       // Число статей необязательно: без него подборку набирает агент под
-      // предел входа модели (ADR 2026-09-13-0930).
+      // предел входа модели (ADR 2026-09-09-2134).
       articles: articles.value ?? defaults.articles ?? null,
       contextTokens: contextTokens.value ?? defaults.contextTokens ?? 3000,
       temperature: temperature.value ?? defaults.temperature,

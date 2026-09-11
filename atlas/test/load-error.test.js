@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { GRAPH_BLOCKS, GRAPH_BUTTONS, outcomeNote, retryPhase } from '../web/app.js'
 
-// Сбой загрузки схемы — agent_docs/design/2026-09-14-1730-atlas-load-error.md.
+// Сбой загрузки схемы — agent_docs/design/2026-09-11-0153-atlas-load-error.md.
 // Чистая часть: что говорит `#live` на каждый исход попытки, как выглядит
 // повтор и что недоступно или скрыто, пока графа нет. Геометрия, фокус и
 // обход `Tab` — только в браузере.

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { firedTraces } from '../lib/fired.js'
 
 // Правило «правило → где сработало» уточнено после ревью этапа 1:
-// agent_docs/design/2026-09-13-2000-project-atlas.md, раздел
+// agent_docs/design/2026-09-10-0550-project-atlas.md, раздел
 // «Правило → где сработало».
 
 const ROLES = new Set(['compliance', 'reviewer', 'design', 'design-review', 'backend'])

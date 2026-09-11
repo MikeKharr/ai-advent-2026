@@ -1,4 +1,4 @@
-// HTTP-контракт сервиса агентов (ADR 2026-09-10-1000, п. 3). Один ключ,
+// HTTP-контракт сервиса агентов (ADR 2026-09-09-0854, п. 3). Один ключ,
 // `AGENT_KEY`, на все `/v1/*`; `/healthz` открыт — его проверяет compose.
 
 import { timingSafeEqual } from 'node:crypto'
@@ -195,7 +195,7 @@ export function createService({ agents, archive, runs, sessions = null, env, log
     }
 
     // Переписка сессии: читает и удаляет её только тот, кто знает
-    // идентификатор из cookie (ADR 2026-09-12-0930).
+    // идентификатор из cookie (ADR 2026-09-09-1906).
     const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/)
     if (sessionMatch) {
       const sessionId = sessionMatch[1]

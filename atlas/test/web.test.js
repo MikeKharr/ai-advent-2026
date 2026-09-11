@@ -205,7 +205,7 @@ test('ячейки строки таблицы без символов `|`', () 
 })
 
 test('адрес узла — идентификатор с `-` вместо `/`, обратно по таблице', () => {
-  assert.equal(addressOf('adr/2026-09-13-1800'), 'adr-2026-09-13-1800')
+  assert.equal(addressOf('adr/2026-09-10-0426'), 'adr-2026-09-10-0426')
   assert.equal(addressOf('invariant/I-4'), 'invariant-I-4')
   const table = addressTable(graph.nodes)
   // Адрес не разбирается: в ключах есть дефисы, и таблица обязана быть
@@ -225,9 +225,9 @@ test('короткое имя узла — не заголовок', () => {
   named('class/A', 'Класс A')
   named('phase/06', '6. Ревью по классу')
   named('design/corpus', 'corpus')
-  assert.equal(shortName({ type: 'adr', key: '2026-09-13-1800' }), 'ADR 13.09 18:00')
-  assert.equal(shortName({ type: 'history', key: '2026-09-13-1500' }), 'Запись 13.09 15:00')
-  assert.equal(shortName({ type: 'design', key: '2026-09-12-0900-day7-chat-layout' }), 'Дизайн 12.09 09:00')
+  assert.equal(shortName({ type: 'adr', key: '2026-09-10-0426' }), 'ADR 10.09 04:26')
+  assert.equal(shortName({ type: 'history', key: '2026-09-09-2135' }), 'Запись 09.09 21:35')
+  assert.equal(shortName({ type: 'design', key: '2026-09-09-1905-day7-chat-layout' }), 'Дизайн 09.09 19:05')
   assert.equal(shortName({ type: 'skill', key: 'browser-testing-with-devtools' }), 'browser-testing-with-dev…')
   // Обрезка по 24 знакам действует на любом наборе документов.
   for (const n of graph.nodes) assert.ok(shortName(n).length <= 25, `${n.id}: ${shortName(n)}`)

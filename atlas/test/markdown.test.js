@@ -128,6 +128,6 @@ test('«Заменено на» отличается от «Заменяет»',
 })
 
 test('идентификатор атомарного документа вынимается из имени файла', () => {
-  assert.equal(atomicId('2026-09-13-1800-framework-v2-model-routing.md'), '2026-09-13-1800')
+  assert.equal(atomicId('2026-09-10-0426-framework-v2-model-routing.md'), '2026-09-10-0426')
   assert.equal(atomicId('corpus.md'), null)
 })

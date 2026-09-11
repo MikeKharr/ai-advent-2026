@@ -7,7 +7,7 @@ import { readSources } from '../lib/sources.js'
 import { makeFixture } from './helpers.js'
 
 // Проверка ссылок должна падать закрыто: сломанная ссылка — красная проверка
-// в CI, а не тихо пропавшее ребро (ADR 2026-09-13-2000, п. 7).
+// в CI, а не тихо пропавшее ребро (ADR 2026-09-10-0550, п. 7).
 
 const fixture = makeFixture()
 after(() => fixture.cleanup())

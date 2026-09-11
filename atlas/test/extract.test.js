@@ -184,7 +184,7 @@ test('дни 1–4 ходят в Anthropic напрямую — это запи�
 })
 
 test('цитаты, замены и опоры на инварианты становятся рёбрами', () => {
-  assert.ok(edges('cites').some((e) => e.from === 'adr/2026-09-13-2000' && e.to === 'adr/2026-09-13-1800'))
+  assert.ok(edges('cites').some((e) => e.from === 'adr/2026-09-10-0550' && e.to === 'adr/2026-09-10-0426'))
   assert.ok(edges('replaces').some((e) => e.from === 'adr/2026-09-07-1700' && e.to === 'adr/2026-09-07-1535'))
   assert.ok(edges('relies').some((e) => e.to === 'invariant/I-4'))
   assert.ok(edges('mentions').some((e) => e.from === 'guide/agents' && e.to === 'role/compliance'))
@@ -229,7 +229,7 @@ test('каждый узел несёт координаты в единично�
 })
 
 test('каждый узел несёт z в 0…1, а x и y — ровно те, что даёт плоская раскладка', () => {
-  // ADR 2026-09-14-1000, п. 2: z добавляется, x и y не меняются.
+  // ADR 2026-09-10-1420, п. 2: z добавляется, x и y не меняются.
   const plane = layout(graph.nodes, graph.edges)
   const linked = new Set(graph.edges.flatMap((e) => (e.from === e.to ? [] : [e.from, e.to])))
   for (const node of graph.nodes) {
@@ -283,7 +283,7 @@ test('следы compliance на репозитории: строка табли
 
   // Две строки таблицы одной записи — два следа: дедупликации по паре
   // «роль → документ» нет.
-  const table = src.history.find((h) => h.key.startsWith('2026-09-13-1500'))
+  const table = src.history.find((h) => h.key.startsWith('2026-09-09-2135'))
   const rows = linesMatching(table.text, (l) => l.startsWith('| compliance |') && /Вето/.test(l))
   assert.equal(rows.length, 2, 'в записи изменилась таблица вето — проверьте якорь теста')
   assert.deepEqual(
@@ -292,7 +292,7 @@ test('следы compliance на репозитории: строка табли
   )
 
   // «вето нет» и «блокирующих нет» следа не дают.
-  for (const prefix of ['2026-09-10-1700', '2026-09-11-1200']) {
+  for (const prefix of ['2026-09-09-1535', '2026-09-09-1624']) {
     const record = src.history.find((h) => h.key.startsWith(prefix))
     const denials = linesMatching(record.text, (l) => /вето нет/i.test(l))
     assert.ok(denials.length > 0, `в ${prefix} пропала строка с «вето нет» — проверьте якорь теста`)
@@ -310,9 +310,9 @@ test('следы compliance на репозитории: строка табли
 })
 
 test('у ADR есть статус, у документов — выдержка и путь к файлу', () => {
-  const adr = graph.nodes.find((n) => n.id === 'adr/2026-09-13-2000')
+  const adr = graph.nodes.find((n) => n.id === 'adr/2026-09-10-0550')
   assert.match(adr.status, /^Принято/)
-  assert.equal(adr.file, 'agent_docs/adr/2026-09-13-2000-project-atlas.md')
+  assert.equal(adr.file, 'agent_docs/adr/2026-09-10-0550-project-atlas.md')
   assert.ok(adr.excerpt.length > 0)
   assert.ok(existsSync(join(ROOT, adr.file)))
 })

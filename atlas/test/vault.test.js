@@ -11,7 +11,7 @@ import { ROOT } from './helpers.js'
 
 // Vault — производное: источник не правится ни при каких условиях, ссылки
 // внутри копии обязаны вести в существующие заметки, а повторная сборка
-// обязана давать тот же результат (ADR 2026-09-13-2000, критерии этапа 2).
+// обязана давать тот же результат (ADR 2026-09-10-0550, критерии этапа 2).
 
 const built = run({})
 const VAULT = built.vaultDir
@@ -81,7 +81,7 @@ test('ни одна заметка не содержит нерешённой [[
 })
 
 test('образцы в блоках кода и в обратных кавычках копия не переписывает', () => {
-  const spec = readFileSync(join(VAULT, 'design/2026-09-13-2000-project-atlas.md'), 'utf8')
+  const spec = readFileSync(join(VAULT, 'design/2026-09-10-0550-project-atlas.md'), 'utf8')
   assert.ok(spec.includes('├── adr/<id>.md'), 'дерево каталогов в блоке кода изменилось')
   assert.equal(spec.includes('[[invariants/[['), false, 'замена прошла по уже готовой ссылке')
 })

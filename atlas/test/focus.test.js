@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { focusesPanel, selectNote } from '../web/app.js'
 
-// Фокус после шага — agent_docs/design/2026-09-14-1500-atlas-focus-after-step.md,
+// Фокус после шага — agent_docs/design/2026-09-10-1756-atlas-focus-after-step.md,
 // таблица «Куда встаёт фокус» и раздел «Объявления». Чистая часть: куда
 // встаёт фокус по источнику шага и что говорит `#live`. Остальное — только в
 // браузере.

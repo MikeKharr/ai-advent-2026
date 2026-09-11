@@ -164,7 +164,7 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  # Сервис агентов (ADR 2026-09-10-1000). Публичного адреса нет: к нему
+  # Сервис агентов (ADR 2026-09-09-0854). Публичного адреса нет: к нему
   # ходят контейнеры дней по сети compose, http://agents:8082. Сам он ходит
   # в роутер по ключу приложения `agents`.
   agents:
@@ -208,7 +208,7 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  # Атлас проекта (ADR 2026-09-13-2000): статика схемы проекта, маршрут
+  # Атлас проекта (ADR 2026-09-10-0550): статика схемы проекта, маршрут
   # /atlas/ в Caddyfile. Секретов у него нет, поэтому нет и env_file.
   atlas:
     image: ghcr.io/mikekharr/advent-atlas:${ATLAS_TAG:-latest}

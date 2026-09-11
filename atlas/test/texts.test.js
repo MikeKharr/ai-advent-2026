@@ -6,7 +6,7 @@ import { LIMITS, run, sizeFindings } from '../build.js'
 import { HIDDEN, buildTexts, plainText, redact } from '../lib/texts.js'
 import { makeFixture } from './helpers.js'
 
-// Контракт `texts.json` — ADR 2026-09-14-2330, раздел 3: объект «узел →
+// Контракт `texts.json` — ADR 2026-09-11-0745, раздел 3: объект «узел →
 // текст» в порядке узлов графа, разметка снята, образцы секретов скрыты,
 // потолок размера падает закрыто.
 
@@ -185,7 +185,7 @@ test('сборка пишет texts.json рядом с graph.json: ключи �
 test('адрес tailnet в записи истории скрыт в texts.json', () => {
   const result = run({ root: fixture.root, out })
   const texts = JSON.parse(readFileSync(join(result.siteDir, 'texts.json'), 'utf8'))
-  assert.ok(texts['history/2026-09-09-2400'].includes(HIDDEN))
+  assert.ok(texts['history/2026-09-09-0258'].includes(HIDDEN))
 })
 
 test('две сборки одного дерева дают texts.json байт-в-байт', () => {
