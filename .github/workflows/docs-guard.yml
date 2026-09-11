@@ -46,9 +46,11 @@ jobs:
       - name: Ссылки между документами разрешаются (атлас)
         run: node atlas/build.js --check
 
+      # Образцы с хвостом ключа — те же, что KEY_SAMPLES в atlas/lib/texts.js
+      # (совпадение проверяет atlas/test/secrets.test.js).
       - name: Секреты не попали в репозиторий
         run: |
-          if grep -rIn --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}' . ; then
+          if grep -rIn --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}|BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' . ; then
             echo "::error::в репозитории найден похожий на реальный API-ключ"
             exit 1
           fi

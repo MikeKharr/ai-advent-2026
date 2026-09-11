@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { LIMITS, run, sizeFindings } from '../build.js'
-import { HIDDEN, buildTexts, plainText, redact } from '../lib/texts.js'
+import { HIDDEN, SAMPLES, buildTexts, plainText, redact } from '../lib/texts.js'
 import { makeFixture } from './helpers.js'
 
 // Контракт `texts.json` — ADR 2026-09-11-0745, раздел 3: объект «узел →
@@ -11,14 +11,18 @@ import { makeFixture } from './helpers.js'
 // потолок размера падает закрыто.
 
 // Образцы собираются из кусков, как в secrets.test.js: файл теста не должен
-// выглядеть утечкой для docs-guard, который ищет `sk-ant-…` в репозитории.
+// выглядеть утечкой для docs-guard, который ищет ключи в репозитории.
 const ANT = ['sk', 'ant', ''].join('-')
 const GSK = `gs${'k'}_`
 const SSH = ['BEGIN', 'OPENSSH'].join(' ')
 const TAILNET = ['100', '101', '42', '7'].join('.')
+const PEM = (kind) => ['BEGIN', kind, 'PRIVATE', 'KEY'].filter(Boolean).join(' ')
+const TAIL = 'A1b2C3d4E5f6G7h8J9k0'
+const GH = (letter) => `gh${letter}_${TAIL}`
+const GH_PAT = `${'github'}_pat_${TAIL}_${TAIL}`
 
-// Те же четыре образца, что проверяет страж витрины.
-const GUARD = [new RegExp(ANT), /gsk_/, /BEGIN OPENSSH/, /\b100\.\d+\.\d+\.\d+\b/]
+// Тот же список, что проверяет страж витрины.
+const GUARD = SAMPLES.map((s) => new RegExp(s))
 
 test('фронтматтер снят, заголовок остаётся словами', () => {
   const md = '---\nname: qa\ndescription: Тесты.\n---\n# Роль QA\n\nТекст роли.\n'
@@ -49,6 +53,21 @@ test('каждый образец стража заменён на «[скрыт
   assert.equal(hidden, 4)
   assert.equal(out, `ключ ${HIDDEN}, ключ ${HIDDEN}, ${HIDDEN} PRIVATE KEY, адрес ${HIDDEN}.`)
   for (const re of GUARD) assert.equal(re.test(out), false, `образец ${re} остался`)
+})
+
+test('заголовки PEM и токены GitHub заменены на «[скрыто]» и посчитаны', () => {
+  const samples = [PEM('RSA'), PEM('EC'), PEM(''), PEM('ENCRYPTED'), ...['p', 'o', 'u', 's', 'r'].map(GH), GH_PAT]
+  const { text: out, hidden } = redact(samples.map((s) => `-----${s}-----`).join(' '))
+
+  assert.equal(hidden, samples.length)
+  assert.equal(out, samples.map(() => `-----${HIDDEN}-----`).join(' '))
+  for (const re of GUARD) assert.equal(re.test(out), false, `образец ${re} остался`)
+})
+
+test('префикс токена GitHub без хвоста не скрывается', () => {
+  // Хвост у этих образцов обязателен: слово о префиксе — не токен.
+  const text = `токен ${'gh'}p_ и префикс ${'github'}_pat_ в тексте, короткий ${'gh'}s_abc`
+  assert.deepEqual(redact(text), { text, hidden: 0 })
 })
 
 test('числа, не похожие на адрес tailnet, не скрываются', () => {

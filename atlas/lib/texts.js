@@ -7,14 +7,26 @@ import { parseFrontmatter } from './markdown.js'
 /** Чем заменяется образец секрета. */
 export const HIDDEN = '[скрыто]'
 
-// Образцы стража витрины `atlas/test/secrets.test.js` — те же четыре, по
-// образцу, а не по списку файлов: образцы называет каждый документ о страже.
-// У префиксов ключей скрывается и хвост ключа, а не только префикс. Префиксы
-// собраны из кусков, как в тесте: иначе этот файл сам выглядел бы утечкой.
-const SAMPLES = new RegExp(
-  [`${['sk', 'ant', ''].join('-')}[A-Za-z0-9_-]*`, `gs${'k'}_[A-Za-z0-9_]*`, 'BEGIN OPENSSH', '\\b100\\.\\d+\\.\\d+\\.\\d+\\b'].join('|'),
-  'g',
-)
+// Образцы с обязательным хвостом: заголовок PEM-ключа и токены GitHub. Этот
+// же текст ищет по репозиторию шаг секретов `docs-guard.yml` — совпадение
+// проверяет `atlas/test/secrets.test.js`. Упоминание префикса без хвоста с
+// ними не совпадает.
+export const KEY_SAMPLES = ['BEGIN [A-Z ]*PRIVATE KEY', 'gh[pousr]_[A-Za-z0-9]{20,}', 'github_pat_[A-Za-z0-9_]{20,}']
+
+// Один список на санитайз и страж витрины `atlas/test/secrets.test.js`: по
+// образцу, а не по списку файлов — образцы называет каждый документ о страже.
+// У префиксов ключей Anthropic и Groq скрывается и хвост ключа, а голый
+// префикс тоже совпадает. Префиксы собраны из кусков, как в тесте: иначе этот
+// файл сам выглядел бы утечкой. Новые образцы — после `BEGIN OPENSSH`: там,
+// где совпадают оба, остаётся прежняя замена.
+export const SAMPLES = [
+  `${['sk', 'ant', ''].join('-')}[A-Za-z0-9_-]*`,
+  `gs${'k'}_[A-Za-z0-9_]*`,
+  'BEGIN OPENSSH',
+  '\\b100\\.\\d+\\.\\d+\\.\\d+\\b',
+  ...KEY_SAMPLES,
+]
+const SAMPLES_RE = new RegExp(SAMPLES.join('|'), 'g')
 
 /** Типы узлов, чей файл — текст проекта. Вендорные скиллы — чужой текст. */
 const TEXT_TYPES = new Set(['adr', 'history', 'design', 'guide', 'role', 'skill'])
@@ -38,7 +50,7 @@ export function plainText(markdown) {
 /** Образцы секретов → «[скрыто]»; `hidden` — сколько мест заменено. */
 export function redact(text) {
   let hidden = 0
-  const out = text.replace(SAMPLES, () => {
+  const out = text.replace(SAMPLES_RE, () => {
     hidden += 1
     return HIDDEN
   })
