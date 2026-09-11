@@ -54,7 +54,7 @@ jobs:
           atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
           # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
           # идёт только [a-z0-9]+ с каталогом единицы в дереве.
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in router|agents|atlas) d=$u ;; *) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
