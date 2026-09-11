@@ -345,7 +345,7 @@ globalThis.PROGRESS = {
     { n: 113, merged: '2026-09-11', type: 'docs', stream: 'process', cls: 'C',
       result: 'Запись истории о моделях в ролях и датах документов, журнал пополнен #107–#112',
       goal: 'Держать документы и страницу прогресса синхронными со смерженными PR' },
-    { n: 114, merged: '2026-09-11', type: 'fix', stream: 'process',
+    { n: 114, merged: '2026-09-11', type: 'fix', stream: 'process', cls: 'A',
       result: 'Выкатка проверяет /healthz каждой единицы до 12 раз с паузой 4 с',
       goal: 'Убрать ложный красный выкатки после #110' },
     { n: 115, merged: '2026-09-11', type: 'docs', stream: 'process', cls: 'B',
