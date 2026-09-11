@@ -223,15 +223,14 @@ grep -o '^[A-Z_]*=' day8.env
 `/day9/healthz` отдаёт 503, и проверка живого адреса валит выкатку.
 
 ```sh
-cd ~/ai-advent-2026/deploy && umask 077
-grep '^AGENT_KEY=' agents.env > day9.env
-printf 'COOKIE_PATH=/day9/\n' >> day9.env
-chmod 600 day9.env
+cd ~/ai-advent-2026/deploy
+set -C; umask 077; grep '^AGENT_KEY=' agents.env > day9.env; chmod 600 day9.env
 grep -o '^[A-Z_]*=' day9.env
 ```
 
-Последняя строка печатает только имена переменных: `AGENT_KEY=` и
-`COOKIE_PATH=`. Первая выкатка дня добавляет маршрут в `Caddyfile` —
+Последняя строка печатает только имена переменных: `AGENT_KEY=`.
+`COOKIE_PATH` в файл не пишется: `days/day9/env.js` по умолчанию ставит
+`/day9/`. Первая выкатка дня добавляет маршрут в `Caddyfile` —
 после неё `docker compose restart caddy` и повтор упавшей проверки
 (`agent_docs/guides/new-day.md`).
 
