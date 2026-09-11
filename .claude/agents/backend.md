@@ -1,7 +1,7 @@
 ---
 name: backend
 description: Серверная логика, маршруты API, доменные сервисы, фоновые задачи. Вызывать для реализации server.js, digest.js, anthropic.js, cache.js, limits.js и их unit-тестов.
-model: opus
+model: claude-opus-5[1m]
 effort: medium
 skills:
   - incremental-implementation

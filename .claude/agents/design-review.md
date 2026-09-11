@@ -1,7 +1,7 @@
 ---
 name: design-review
 description: Ревью экрана против дизайн-корпуса перед мержем любого изменения UI. Обязательно другой экземпляр, чем автор раскладки и автор реализации. Работает по скиллу /design-review, выдаёт вердикт ГОТОВО / ПРАВКИ / ПЕРЕДЕЛАТЬ.
-model: opus
+model: claude-opus-5[1m]
 effort: high
 skills:
   - design-review

@@ -1,7 +1,7 @@
 ---
 name: frontend
 description: UI, формы, доступность, статика, отображение SSE-прогресса и карточек новостей. Вызывать для работы с public/index.html, app.js, style.css.
-model: opus
+model: claude-opus-5[1m]
 effort: medium
 skills:
   - incremental-implementation

@@ -90,9 +90,12 @@ test('у дня есть название и дата с главной, мар�
 test('у каждой роли ровно один ярус, и ярус собран из model и effort', () => {
   assert.equal(edges('tier').length, of('role').length)
   const architect = graph.nodes.find((n) => n.id === 'role/architect')
-  assert.equal(architect.model, 'fable')
+  assert.equal(architect.model, 'claude-fable-5-1')
   assert.equal(architect.effort, 'high')
-  assert.ok(edges('tier').some((e) => e.from === 'role/architect' && e.to === 'tier/fable-high'))
+  assert.ok(edges('tier').some((e) => e.from === 'role/architect' && e.to === 'tier/claude-fable-5-1-high'))
+  const opus = graph.nodes.find((n) => n.id === 'tier/claude-opus-5-1m-medium')
+  assert.equal(opus.title, 'opus-5[1m] / medium')
+  assert.equal(opus.model, 'claude-opus-5[1m]')
 })
 
 test('предзагруженные скиллы роли ведут на существующие скиллы', () => {
