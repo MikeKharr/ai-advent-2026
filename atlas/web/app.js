@@ -2492,12 +2492,18 @@ function setStatus(status, reason, head) {
   const msg = clear($('canvas-msg'))
   clear($('canvas-act')).hidden = true
   $('q').disabled = !ready
-  $('q-note').textContent =
-    status === 'ready'
-      ? 'Ищет по заголовку и короткому имени, не по тексту документов'
-      : status === 'error'
-        ? 'Схема не загрузилась — искать не по чему'
-        : 'Схема ещё грузится'
+  // Повтор не двигает ничего выше строки попытки: подсказка поиска держит
+  // последний исход. Иначе на узком экране она становится на строку короче,
+  // и панель с кнопкой в фокусе уезжает вверх.
+  const retrying = status === 'loading' && state.attempt > 1
+  if (!retrying) {
+    $('q-note').textContent =
+      status === 'ready'
+        ? 'Ищет по заголовку и короткому имени, не по тексту документов'
+        : status === 'error'
+          ? 'Схема не загрузилась — искать не по чему'
+          : 'Схема ещё грузится'
+  }
   // Всё, что работает по графу, без графа не притворяется рабочим.
   for (const id of GRAPH_BUTTONS) $(id).disabled = !ready
   for (const id of GRAPH_BLOCKS) $(id).hidden = !ready
