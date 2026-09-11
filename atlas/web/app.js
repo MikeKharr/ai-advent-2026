@@ -263,7 +263,7 @@ export const TYPE_MANY = {
 const LABEL_MAX = 24
 export const clipLabel = (s) => (s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX)}…` : s)
 
-/** Дата и время из ключа `2026-09-10-0426` → `13.09 18:00`. */
+/** Дата и время из ключа `2026-09-10-0426` → `10.09 04:26`. */
 function stampOf(key) {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:-(\d{2})(\d{2}))?/.exec(key)
   if (!m) return null
