@@ -72,8 +72,8 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
 /* ── Работающие приложения ───────────────────────────────────────────── */
 .apps { list-style:none; margin:0; padding:0; display:grid; gap:var(--s-2); }
 .app {
-  display:grid; grid-template-columns:minmax(0,1fr) auto auto;
-  grid-template-areas:"label date arrow" "text text text";
+  display:grid; grid-template-columns:minmax(0,1fr) auto;
+  grid-template-areas:"label arrow" "text text";
   column-gap:var(--s-4); row-gap:var(--s-1); align-items:baseline;
   padding:var(--s-3) var(--s-4);
   background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-md);
@@ -86,14 +86,9 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
   font-variant-numeric:tabular-nums;
 }
 .app-text { grid-area:text; }
-/* Дата дня — с лендинга, стилем подписи дня. */
-.app-date {
-  grid-area:date; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
-  font-variant-numeric:tabular-nums;
-}
 .app-arrow { grid-area:arrow; color:var(--fg-mut); }
 @media (min-width:36rem) {
-  .app { grid-template-columns:4.5rem minmax(0,1fr) auto auto; grid-template-areas:"label text date arrow"; }
+  .app { grid-template-columns:4.5rem minmax(0,1fr) auto; grid-template-areas:"label text arrow"; }
 }
 .note {
   margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
