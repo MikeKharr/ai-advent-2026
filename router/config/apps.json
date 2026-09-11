@@ -24,7 +24,7 @@
     {
       "id": "agents",
       "secretEnv": "APP_KEY_AGENTS",
-      "classes": ["news_answer"],
+      "classes": ["news_answer", "summarize"],
       "limits": {
         "dailyTokens": 2000000,
         "dailyCostUsd": 2
