@@ -270,7 +270,7 @@ async function handleChat(req, res) {
           totalTokens: 0,
           // Удаление подтвердил агент, новая сессия пуста: нули здесь — факт.
           summary: null,
-          context: { total: 0, summaryTokens: 0, dialogTokens: 0 },
+          context: { total: 0, summaryTokens: 0, freshTokens: 0 },
           session: { name: sessionName(fresh) },
         },
         { 'set-cookie': sessionCookie(fresh) },

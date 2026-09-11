@@ -75,8 +75,8 @@ const agent = http.createServer(async (req, res) => {
           }
         : null,
       context: withSummary
-        ? { total: 2560, summaryTokens: 560, dialogTokens: 2000 }
-        : { total: 0, summaryTokens: 0, dialogTokens: 0 },
+        ? { total: 2560, summaryTokens: 560, freshTokens: 2000 }
+        : { total: 0, summaryTokens: 0, freshTokens: 0 },
     })
   }
   if (req.url === '/v1/agents') {
@@ -311,7 +311,7 @@ test('переписка несёт сводку и контекст агент�
   assert.equal(chat.summary.model, 'claude-haiku-4-5')
   assert.equal(chat.summary.truncated, false)
   assert.equal(chat.summary.text, 'пересказ')
-  assert.deepEqual(chat.context, { total: 2560, summaryTokens: 560, dialogTokens: 2000 })
+  assert.deepEqual(chat.context, { total: 2560, summaryTokens: 560, freshTokens: 2000 })
 })
 
 test('сессия без сводки: summary null, контекст с сервера', async () => {
@@ -321,7 +321,7 @@ test('сессия без сводки: summary null, контекст с сер
     })
   ).json()
   assert.equal(chat.summary, null)
-  assert.deepEqual(chat.context, { total: 0, summaryTokens: 0, dialogTokens: 0 })
+  assert.deepEqual(chat.context, { total: 0, summaryTokens: 0, freshTokens: 0 })
 })
 
 test('после очистки сводки нет, контекст пуст', async () => {
@@ -332,5 +332,5 @@ test('после очистки сводки нет, контекст пуст',
     })
   ).json()
   assert.equal(cleared.summary, null)
-  assert.deepEqual(cleared.context, { total: 0, summaryTokens: 0, dialogTokens: 0 })
+  assert.deepEqual(cleared.context, { total: 0, summaryTokens: 0, freshTokens: 0 })
 })
