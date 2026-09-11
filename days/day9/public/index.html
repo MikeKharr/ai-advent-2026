@@ -619,7 +619,7 @@
             <span class="name">Порог сжатия</span>
             <input id="p-summarize-at" class="num" type="number" min="500" max="8000" step="100"
                    value="2000" inputmode="numeric"
-                   aria-describedby="p-summarize-live p-summarize-note">
+                   aria-describedby="p-summarize-live">
             <span class="hint">Когда реплики после последней сводки наберут столько токенов,
             агент сожмёт их вместе с прежней сводкой (500–8000, меньше размера контекста).
             Сама сводка в счёт не идёт. Сжимает всегда Claude Haiku 4.5.</span>
@@ -1102,7 +1102,7 @@
   // Сводку и контекст тоже считает агент (ADR 2026-09-11-1608): страница
   // токенов не складывает — разошлась бы с сервером на первой ошибке записи.
   let summaryState = null;   // { text, tokens, sourceTokens, updatedAt, throughId, model, truncated }
-  let contextState = null;   // { total, summaryTokens, dialogTokens } — что уйдёт со следующим сообщением
+  let contextState = null;   // { total, summaryTokens, freshTokens } — что уйдёт со следующим сообщением
   let foldOpen = false;      // раскрытие блока сводки переживает перерисовку лога
 
   /** Разделитель частей строки: точка видна, запятая — для скринридера. */
@@ -1240,7 +1240,13 @@
     // Отказ сжатия запуск не валит, но модель видела только хвост: об этом
     // говорится в самом ответе, а число выпавших реплик — строкой ниже.
     if (meta.summarizeFailed)
-      li.append(warnLine('Историю сжать не удалось — модель видела только хвост переписки'));
+      li.append(
+        warnLine(
+          meta.summaryTokens > 0
+            ? 'Историю сжать не удалось — модель видела прежнюю сводку и хвост переписки'
+            : 'Историю сжать не удалось — модель видела только хвост переписки',
+        ),
+      );
     // Не поместившиеся реплики — не потеря: переписка цела, просто в этот
     // запрос ушёл хвост покороче. Считает их агент: разница заданного и
     // действующего размера сама по себе ещё ничего не значит.
@@ -1555,7 +1561,14 @@
     );
     // Реплики уходят поставщику, которого для чата не выбирали, — только
     // когда сжатие включено и чат идёт не на Claude Haiku 4.5.
-    $('p-summarize-note').hidden = summarizeField.disabled || chosenModel() === SUMMARY_PROVIDER;
+    const noteShown = !summarizeField.disabled && chosenModel() !== SUMMARY_PROVIDER;
+    $('p-summarize-note').hidden = !noteShown;
+    // Скрытая строка в aria-describedby всё равно зачитывается: ссылка на
+    // неё — только пока она видна.
+    summarizeField.setAttribute(
+      'aria-describedby',
+      noteShown ? 'p-summarize-live p-summarize-note' : 'p-summarize-live',
+    );
     if (summarizeField.disabled) {
       live.textContent = 'Сжатие выключено: при размере контекста до 500 сжимать нечего.';
       return;
