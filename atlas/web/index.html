@@ -83,6 +83,13 @@
 
       <p class="full"><label><input type="checkbox" id="full"> <span id="full-label"></span></label></p>
 
+      <!-- Режим «Объём» — agent_docs/design/2026-09-14-1200-atlas-3d-mode.md.
+           Никогда не disabled: строка под ним объясняет, где он не действует. -->
+      <div class="volume">
+        <label><input type="checkbox" id="volume" aria-describedby="volume-note"> <span>Объём</span></label>
+        <p class="hint" id="volume-note"></p>
+      </div>
+
       <div id="filters"></div>
       <button type="button" id="filters-reset" hidden></button>
     </details>
