@@ -1,17 +1,17 @@
-// Проверка данных страницы прогресса. Правила — site/progress/validate.js,
+// Проверка данных страницы прогресса. Правила — site/validate.js,
 // тот же файл, которым страница отбирает строки; формат —
 // agent_docs/design/2026-09-14-1300-progress-page.md, раздел «Файл данных».
 // Тест лежит вне site/: каталог отдаётся Caddy целиком как корень сайта.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import '../site/progress/validate.js'
-import '../site/progress/data.js'
+import '../site/validate.js'
+import '../site/data.js'
 
 const { dataProblems, prProblems, prFieldProblems, itemProblems, publicProblems } = globalThis.PROGRESS_CHECK
 // Публичность проверяется по сырому тексту: Caddy отдаёт файл целиком,
 // с комментариями и любыми полями, а не только те, что рисует страница.
-const RAW = readFileSync(new URL('../site/progress/data.js', import.meta.url), 'utf8')
+const RAW = readFileSync(new URL('../site/data.js', import.meta.url), 'utf8')
 const KEYS = ['days', 'process']
 const good = () => ({
   n: 47,
@@ -231,7 +231,7 @@ test('обычный текст журнала — не утечка', () => {
     'Приложение ходит в Haiku 4.5 вместо Sonnet 5',
     'Формат — agent_docs/design/2026-09-14-1300-progress-page.md.',
     'Установлены 25 скиллов addyosmani/agent-skills',
-    'Файл site/progress/data.js, обновлено 10 сентября, 15:19 UTC',
+    'Файл site/data.js, обновлено 10 сентября, 15:19 UTC',
     "updated: '2026-09-10T15:19Z',",
     'Скилл /design-review и /day-cycle, запрет --no-index',
     'Скрипт bootstrap.sh готовит сервер',

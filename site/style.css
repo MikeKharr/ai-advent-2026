@@ -51,10 +51,9 @@ button[disabled] { opacity:.5; cursor:default; }
   .page { padding-block:var(--s-7); padding-inline:var(--s-5); }
 }
 .head { margin-bottom:var(--s-7); }
-.back { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
 h1 {
   font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; font-weight:600;
-  margin:var(--s-4) 0 0;
+  margin:0;
 }
 .lede { margin:var(--s-2) 0 0; color:var(--fg-mut); max-width:68ch; }
 main > section + section { margin-top:var(--s-7); }
