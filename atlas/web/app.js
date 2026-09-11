@@ -1106,9 +1106,15 @@ const REPO = 'https://github.com/mikekharr/ai-advent-2026'
 const ATLAS_ADR = `${REPO}/blob/main/agent_docs/adr/2026-09-13-2000-project-atlas.md`
 /** До скольких узлов подписи видны всегда. */
 const LABELS_UPTO = 40
-/** Строк в списке до свёртки и в выдаче поиска: результат с отрывком выше, и пять — это ≈ 430 px. */
+/** Строк в списке до свёртки. */
 const LIST_UPTO = 10
-const SEARCH_UPTO = 5
+/**
+ * Результатов в выдаче поиска. Результат с отрывком занимает 3–4 строки
+ * отрывка в колонке 18rem, и при пяти блок поиска в трёх колонках вытеснял
+ * колонку фильтров и списка до 83 px (1600 × 900, «вето»). Остальные
+ * найденные — кольцами на схеме и в списке.
+ */
+export const SEARCH_UPTO = 3
 
 const $ = (id) => document.getElementById(id)
 const el = (tag, cls, text) => {
@@ -1945,7 +1951,7 @@ function scrollList(id) {
   area.scrollTop = listScrollTop({ top, height: area.clientHeight, scrollHeight: area.scrollHeight })
 }
 
-/** Выдача поиска: до пяти результатов с отрывком, найденные — все. */
+/** Выдача поиска: до трёх результатов с отрывком, найденные — все. */
 function renderSearch() {
   const q = $('q').value
   const ul = clear($('results'))

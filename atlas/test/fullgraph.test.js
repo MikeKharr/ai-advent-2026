@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { afterEach, beforeEach, mock, test } from 'node:test'
 import {
   LOAD_LIMIT_MS,
+  SEARCH_UPTO,
   buildSearch,
   emptyNote,
   fetchTexts,
@@ -181,9 +182,13 @@ test('пустая выдача называет причину', () => {
   assert.equal(emptyNote({ texts: 'error', short: false }), 'В заголовках ничего нет, а тексты документов не загрузились.')
 })
 
-test('подпись под выдачей: все найденные или «ещё m − 5»', () => {
-  assert.equal(moreNote(3, 3), 'Все найденные выделены кольцом на схеме и в списке узлов.')
-  assert.equal(moreNote(47, 5), 'Ещё 42 — выделены кольцом на схеме и в списке узлов.')
+test('выдача страницы — до трёх результатов', () => {
+  assert.equal(SEARCH_UPTO, 3)
+})
+
+test('подпись под выдачей: все найденные или «ещё m − 3»', () => {
+  assert.equal(moreNote(3, SEARCH_UPTO), 'Все найденные выделены кольцом на схеме и в списке узлов.')
+  assert.equal(moreNote(47, SEARCH_UPTO), 'Ещё 44 — выделены кольцом на схеме и в списке узлов.')
 })
 
 test('объявления исхода загрузки текстов', () => {
@@ -261,10 +266,10 @@ test('идентификаторы текстов, которых нет в гр
   assert.equal(got.total, 0)
 })
 
-test('выдача до limit, найденные — все', () => {
+test('выдача до предела страницы, найденные — все', () => {
   const many = Array.from({ length: 9 }, (_, i) => ({ id: `history/h${i}`, type: 'history', key: `h${i}`, title: `Запись ${i}` }))
-  const got = searchAtlas(buildSearch(many, {}), 'запись', 5)
-  assert.equal(got.hits.length, 5)
+  const got = searchAtlas(buildSearch(many, {}), 'запись', SEARCH_UPTO)
+  assert.equal(got.hits.length, 3)
   assert.equal(got.total, 9)
   assert.equal(got.found.size, 9)
 })
