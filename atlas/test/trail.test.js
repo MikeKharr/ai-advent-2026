@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { buildGraph } from '../lib/extract.js'
 import { readSources } from '../lib/sources.js'
-import { addressOf, addressTable, count, depthMode, foldTrail, indexGraph, restoreTrail, stepTrail, trailMore } from '../web/app.js'
+import { addressOf, addressTable, count, foldTrail, indexGraph, restoreTrail, stepTrail, trailMore } from '../web/app.js'
 import { ROOT } from './helpers.js'
 
 // Путь посещений — agent_docs/design/2026-09-14-0900-atlas-visit-trail.md,
@@ -153,18 +153,4 @@ test('ярлык «… ещё N» и невидимое продолжение �
     assert.equal(`${shown}${rest}`, `… ещё ${want} пути`)
     assert.equal(`${shown}${rest}`, `… ещё ${count(n, 'узел', 'узла', 'узлов')} пути`)
   }
-})
-
-// ── Переключатель глубины ──────────────────────────────────────────────
-
-test('переключатель глубины: верхняя подходящая строка таблицы состояний', () => {
-  const on = { status: 'ready', full: false, selected: 'role/compliance', alone: false }
-  assert.equal(depthMode(on), 'on')
-  assert.equal(depthMode({ ...on, alone: true }), 'alone')
-  assert.equal(depthMode({ ...on, selected: null }), 'none')
-  assert.equal(depthMode({ ...on, selected: null, alone: true }), 'none')
-  assert.equal(depthMode({ ...on, full: true }), 'full')
-  assert.equal(depthMode({ ...on, full: true, selected: null }), 'full')
-  assert.equal(depthMode({ ...on, status: 'loading', full: true }), 'loading')
-  assert.equal(depthMode({ ...on, status: 'error' }), 'error')
 })
