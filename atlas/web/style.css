@@ -259,7 +259,6 @@ button[disabled], button[aria-disabled="true"] { opacity:.5; cursor:default; }
   position:absolute; inset-inline:0; bottom:var(--s-5);
   display:flex; gap:var(--s-2); justify-content:center; flex-wrap:wrap;
 }
-.canvas-err { color:var(--danger); }
 
 /* ── Поиск ───────────────────────────────────────────────────────────── */
 .field-label {
@@ -443,6 +442,13 @@ a:active { opacity:.7; }
 .rail a[aria-current="true"] { border-color:var(--line-ctl); font-weight:600; }
 .steps { display:flex; justify-content:space-between; gap:var(--s-3); margin-top:var(--s-3); flex-wrap:wrap; }
 .steps a { font-size:var(--t-sm); line-height:1.5; }
+
+/* Сбой загрузки — agent_docs/design/2026-09-14-1730-atlas-load-error.md.
+   Красный на экране один: строка причины. Кнопка — обычная кнопка витрины. */
+.cause { margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--danger); max-width:52ch; }
+.acts { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s-3); margin-top:var(--s-3); }
+.acts a { font-size:var(--t-sm); line-height:1.5; text-decoration-color:var(--line-ctl); text-underline-offset:var(--s-1); }
+.acts a:hover { text-decoration-color:var(--fg); }
 
 /* ── Подвал ──────────────────────────────────────────────────────────── */
 .area-foot {
