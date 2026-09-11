@@ -24,7 +24,11 @@ jobs:
       - name: Имена единиц выкатки
         run: |
           # -z: путь git не берёт в кавычки; `\n` в имени — `?`, имя падает ниже.
-          bad=$(git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n' | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ')
+          # pipefail — только в подстановке: сбой git не даёт «ok», а grep -v
+          # без совпадений ниже не валит шаг.
+          tree=$(set -o pipefail; git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n') || { echo "::error::git ls-tree упал — имена единиц не проверены"; exit 1; }
+          # Управляющие символы имени не уходят в команду workflow.
+          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr -c '[:print:]' '?')
           if [ -n "$bad" ]; then
             echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
             exit 1
@@ -38,7 +42,11 @@ jobs:
           else
             base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
           fi
-          changed=$(git diff --name-only "$base" HEAD || true)
+          # Разбор тот же, что в .github/scripts/deploy-units.sh: тесты на PR
+          # выбирают те же единицы, что выкатка для тех же путей. Без -z git
+          # берёт в кавычки путь с `"`, `\`, табом или не-ASCII, и такой путь
+          # не находит свою единицу.
+          changed=$(set -o pipefail; git diff -z --name-only "$base" HEAD | tr '\n\0' '?\n') || { echo "::error::git diff ${base}..HEAD упал — затронутые единицы не определены"; exit 1; }
           # Единица сборки — день (days/dayN), сервис (router, agents) или атлас.
           # Граф атласа строится из входов atlas/lib/sources.js: правка любого
           # из них пересобирает атлас, и только его.
