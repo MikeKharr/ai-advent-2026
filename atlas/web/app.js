@@ -1352,7 +1352,10 @@ function requestPaint() {
 function paint() {
   const canvas = mapOpen() ? $('map-canvas') : $('canvas')
   if (!canvas || canvas.clientWidth === 0 || !state.graph) return
-  const dpr = devicePixelRatio || 1
+  // Пока палец или мышь тащат схему, канва считается с плотностью не больше 2:
+  // замер телефона (360 × 780, dpr 3, CPU ×4) без этого — 27,7 мс на кадр по
+  // p95 при бюджете 16. В покое — полная плотность.
+  const dpr = Math.min(devicePixelRatio || 1, state.turning ? 2 : Infinity)
   const w = canvas.clientWidth
   const h = canvas.clientHeight
   if (canvas.width !== Math.round(w * dpr)) canvas.width = Math.round(w * dpr)
@@ -1568,7 +1571,8 @@ function wireCanvas(canvas) {
         state.cam.panX = drag.panX + dx
         state.cam.panY = drag.panY + dy
       }
-      if (drag.turn !== undefined && (dx !== 0 || dy !== 0)) state.turning = true
+      // Движение рукой — и поворот, и сдвиг: пока оно идёт, канва дешевле.
+      if (dx !== 0 || dy !== 0) state.turning = true
       requestPaint()
       return
     }
