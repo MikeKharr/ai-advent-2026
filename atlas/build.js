@@ -11,6 +11,7 @@ import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildGraph } from './lib/extract.js'
 import { readSources } from './lib/sources.js'
+import { buildTexts } from './lib/texts.js'
 import { VAULT_DIRS, buildVault } from './lib/vault.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -94,8 +95,36 @@ export function pageProvenance(root, facts = gitFacts(root)) {
   return { sha: facts.sha, dirty: facts.dirty, date: facts.date }
 }
 
-/** Файлы витрины: рядом со страницей ложится и `graph.json`. */
+/** Файлы витрины: рядом со страницей ложатся `graph.json` и `texts.json`. */
 const WEB_FILES = ['index.html', 'app.js', 'style.css']
+
+const KB = 1024
+
+/**
+ * Потолки размера витрины в байтах (ADR 2026-09-14-2330, раздел 5). При
+ * превышении сборка отказывает, а не усекает: усечённый поиск молча врёт.
+ * Поднять потолок — PR класса B с этой константой.
+ */
+export const LIMITS = {
+  texts: 3072 * KB,
+  graph: 1024 * KB,
+  // Код страницы — `WEB_FILES` вместе. Общего потолка на `dist/site` нет.
+  page: 256 * KB,
+}
+
+/** Размеры сверх потолков — находки, как битая ссылка: сборка не пишет ничего. */
+export function sizeFindings(sizes) {
+  const over = [
+    ['texts', 'texts.json'],
+    ['graph', 'graph.json'],
+    ['page', `код страницы (${WEB_FILES.join(' + ')})`],
+  ].filter(([key]) => sizes[key] > LIMITS[key])
+  return over.map(([key, name]) => ({
+    file: 'atlas/build.js',
+    line: 1,
+    message: `${name} — ${(sizes[key] / KB).toFixed(1)} КБ при потолке ${LIMITS[key] / KB} КБ. Усечения нет: поднять потолок — PR класса B с LIMITS в atlas/build.js, сузить набор — решение владельца (ADR 2026-09-14-2330)`,
+  }))
+}
 
 export function run({ root = join(HERE, '..'), check = false, out = join(HERE, 'dist/graph.json') } = {}) {
   const sources = readSources(root)
@@ -103,12 +132,25 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
   const vaultDir = join(dirname(out), 'vault')
   let vault = []
 
+  // Файлы витрины собираются и в `--check`: потолки проверяются на тех же
+  // байтах, которые записала бы сборка. Один опрос git на всю сборку.
+  const facts = gitFacts(root)
+  const json = `${JSON.stringify({ provenance: pageProvenance(root, facts), nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`
+  const { texts, hidden } = buildTexts(graph, sources)
+  const textsJson = `${JSON.stringify(texts)}\n`
+  const web = WEB_FILES.map((file) => [file, readFileSync(join(HERE, 'web', file))])
+  const bytes = (s) => Buffer.byteLength(s)
+  graph.findings.push(
+    ...sizeFindings({
+      texts: bytes(textsJson),
+      graph: bytes(json),
+      page: web.reduce((sum, [, body]) => sum + body.length, 0),
+    }),
+  )
+
   if (graph.findings.length === 0 && !check) {
     const outDir = dirname(out)
     if (!isDistDir(outDir)) throw new Error(`каталог выхода не atlas/dist внутри пакета: ${outDir}`)
-    // Один опрос git на всю сборку: подвалу нужны поля, vault'у — строки.
-    const facts = gitFacts(root)
-    const json = `${JSON.stringify({ provenance: pageProvenance(root, facts), nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`
     writeUnder(outDir, out, json)
 
     // Витрина — статика: страница, её код, стили и граф рядом. Собирается
@@ -119,8 +161,9 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
     // Собственные файлы пакета, а не входы графа: `isDeclaredInput` стережёт
     // границу публикуемого — что атлас читает из репозитория, — а свои
     // ассеты `atlas/web/` под неё не подпадают и мимо неё не проходят.
-    for (const file of WEB_FILES) writeUnder(outDir, join(siteDir, file), readFileSync(join(HERE, 'web', file)))
+    for (const [file, body] of web) writeUnder(outDir, join(siteDir, file), body)
     writeUnder(outDir, join(siteDir, 'graph.json'), json)
+    writeUnder(outDir, join(siteDir, 'texts.json'), textsJson)
 
     vault = buildVault({ graph, sources, provenance: readProvenance(root, facts) })
     // Чистятся только свои каталоги: `.obsidian/` создаёт сам Obsidian, там
@@ -133,7 +176,8 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
     for (const file of vault) writeUnder(outDir, join(vaultDir, file.path), file.text)
   }
 
-  return { ...graph, out, vault, vaultDir, siteDir: join(dirname(out), 'site') }
+  const textsInfo = { count: Object.keys(texts).length, bytes: bytes(textsJson), hidden }
+  return { ...graph, out, vault, vaultDir, siteDir: join(dirname(out), 'site'), texts: textsInfo }
 }
 
 const MIME = {
@@ -204,7 +248,7 @@ function isolated(nodes, edges) {
 
 function main(argv) {
   const check = argv.includes('--check')
-  const { nodes, edges, findings, out, vault, vaultDir, siteDir } = run({ check })
+  const { nodes, edges, findings, out, vault, vaultDir, siteDir, texts } = run({ check })
 
   for (const f of findings.slice(0, SHOWN)) console.error(format(f))
   if (findings.length > SHOWN) console.error(`…и ещё ${findings.length - SHOWN} находок`)
@@ -227,6 +271,9 @@ function main(argv) {
     console.log(`без рёбер: ${isolated(nodes, edges)}`)
     console.log(`vault: ${vault.length} заметок в ${vaultDir}`)
     console.log(`витрина: ${siteDir}`)
+    const hidden = Object.entries(texts.hidden)
+    const places = hidden.reduce((sum, [, n]) => sum + n, 0)
+    console.log(`texts.json: ${texts.count} документов, ${(texts.bytes / 1024).toFixed(1)} КБ; скрыто образцов: ${places} в ${hidden.length} документах`)
     if (argv.includes('--serve')) {
       serve(siteDir)
       return null
