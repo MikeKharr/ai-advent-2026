@@ -19,7 +19,9 @@ day=$1 base=$2 head=${3:-HEAD}
 name='^[a-z0-9]+$'
 
 # Отдельное присваивание: в конвейере без pipefail сбой git ls-tree пропал бы.
-tree=$(git ls-tree -r --name-only "$head")
+# core.quotePath=false: не-ASCII путь git иначе берёт в кавычки, он не проходит
+# фильтр ниже и пропадает молча, а не валится на белом списке.
+tree=$(git -c core.quotePath=false ls-tree -r --name-only "$head")
 all=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | sort -u)
 
 if [ -n "$day" ]; then
@@ -47,7 +49,7 @@ if ! git merge-base --is-ancestor "$base" "$head" 2>/dev/null; then
   exit 1
 fi
 
-changed=$(git diff --name-only "$base" "$head")
+changed=$(git -c core.quotePath=false diff --name-only "$base" "$head")
 # Входы графа атласа — atlas/lib/sources.js; то же правило, что в ci.yml.
 atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
 printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -Fx -f <(printf '%s\n' "$all" | grep -v '^$') | jq -R . | jq -sc .

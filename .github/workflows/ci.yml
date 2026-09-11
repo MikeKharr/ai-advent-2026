@@ -18,6 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      # Имя единицы уходит в команду на прод-сервере, и выкатка по push
+      # останавливается на имени вне [a-z0-9]+ (.github/scripts/deploy-units.sh,
+      # то же правило) — поэтому такое имя не должно попасть в main.
+      - name: Имена единиц выкатки
+        run: |
+          bad=$(git -c core.quotePath=false ls-tree -r --name-only HEAD | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ')
+          if [ -n "$bad" ]; then
+            echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
+            exit 1
+          fi
+          echo "имена единиц ok"
       - id: set
         name: Какие дни затронуты
         run: |
