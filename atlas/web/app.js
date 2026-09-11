@@ -623,15 +623,18 @@ export function dedupe(edges) {
  * Строка полосы вида — тот же текст, что уходит скринридеру. Один источник
  * фактов, два способа его получить.
  */
-export function viewLine({ full, selected, ids, links, stats, depth, byId }) {
+export function viewLine({ full, selected, ids, links, stats, depth, byId, volume }) {
+  // «· объём» — последним сегментом и только там, где объём действует: не в
+  // цикле и не в пустом виде. Одиночный узел повернуть можно, увидеть — нет.
+  const tail = !volume || ids.size === 0 ? '' : ids.size === 1 ? ' · объём: вращать нечего' : ' · объём'
   if (full) {
-    return `Весь граф: ${count(stats.nodes, 'узел', 'узла', 'узлов')}, ${count(stats.edges, 'связь', 'связи', 'связей')}. Подписи скрыты — узел называет панель`
+    return `Весь граф: ${count(stats.nodes, 'узел', 'узла', 'узлов')}, ${count(stats.edges, 'связь', 'связи', 'связей')}. Подписи скрыты — узел называет панель${tail}`
   }
   if (ids.size === 0) return 'Ни одного узла: скрыты все типы'
   if (selected) {
-    if (ids.size === 1 && links.length === 0) return 'У этого узла нет связей — на канве только он'
+    if (ids.size === 1 && links.length === 0) return `У этого узла нет связей — на канве только он${tail}`
     const step = depth === 1 ? '1 шаг' : '2 шага'
-    return `Соседи узла ${shortName(byId.get(selected))}, ${step}: ${count(ids.size, 'узел', 'узла', 'узлов')}, ${count(links.length, 'связь', 'связи', 'связей')}`
+    return `Соседи узла ${shortName(byId.get(selected))}, ${step}: ${count(ids.size, 'узел', 'узла', 'узлов')}, ${count(links.length, 'связь', 'связи', 'связей')}${tail}`
   }
   const of = (type) => [...ids].filter((id) => byId.get(id).type === type).length
   return `Цикл дня: ${count(of('phase'), 'фаза', 'фазы', 'фаз')}, ${count(of('role'), 'роль', 'роли', 'ролей')}, ${count(of('class'), 'класс', 'класса', 'классов')} гейтов`
@@ -699,6 +702,162 @@ export function depthMode({ status, full, selected, alone }) {
   return alone ? 'alone' : 'on'
 }
 
+// Режим «Объём» — agent_docs/design/2026-09-14-1200-atlas-3d-mode.md, ADR
+// 2026-09-14-1000. Поза — два угла в градусах: рыскание `yaw` и тангаж
+// `pitch`. Центр вращения — центр куба (0.5, 0.5, 0.5) для любого вида, и
+// сдвиг к центру канвы делается только при вписывании, не в кадре вращения.
+
+/** Поза при включении: наклон, а не ноль, — иначе флажок «не работает». */
+export const POSE0 = Object.freeze({ yaw: 30, pitch: 20 })
+/** Расстояние камеры — две стороны куба. */
+export const CAM_D = 2
+const RAD = Math.PI / 180
+
+export const clampPitch = (deg) => Math.min(90, Math.max(-90, deg))
+
+/**
+ * Проекция точки: поворот вокруг центра куба и перспектива. Больший `z` —
+ * дальше от камеры. Экранная точка до `fit`/`transform` — `(x, y)`.
+ * @returns {{x:number, y:number, z:number, f:number}}
+ */
+export function project(p, pose) {
+  const cy = Math.cos(pose.yaw * RAD)
+  const sy = Math.sin(pose.yaw * RAD)
+  const cp = Math.cos(pose.pitch * RAD)
+  const sp = Math.sin(pose.pitch * RAD)
+  const px = p.x - 0.5
+  const py = p.y - 0.5
+  const pz = p.z - 0.5
+  const x1 = px * cy + pz * sy
+  const z1 = -px * sy + pz * cy
+  const y2 = py * cp - z1 * sp
+  const z2 = py * sp + z1 * cp
+  const f = CAM_D / (CAM_D + z2)
+  return { x: x1 * f, y: y2 * f, z: z2, f }
+}
+
+export const projectAll = (pts, pose) => new Map([...pts].map(([id, p]) => [id, project(p, pose)]))
+
+/** 15 поз вокруг текущей: рыскание ±0, 30, 60, тангаж ±0, 20 с ограничением ±90°. */
+export function envelopePoses(pose) {
+  const out = []
+  for (const dy of [-60, -30, 0, 30, 60]) {
+    for (const dp of [-20, 0, 20]) out.push({ yaw: pose.yaw + dy, pitch: clampPitch(pose.pitch + dp) })
+  }
+  return out
+}
+
+/**
+ * Точки вида во всех позах огибающей — вход `fit`: вписанный по ним вид
+ * заранее оставляет место под умеренный поворот вокруг центра куба.
+ */
+export function envelopePoints(pts, pose) {
+  const out = new Map()
+  envelopePoses(pose).forEach((each, k) => {
+    for (const [id, p] of projectAll(pts, each)) out.set(`${k} ${id}`, p)
+  })
+  return out
+}
+
+/** Радиус по глубине: 5·f в пределах 3…7 px; выбранный — 8 px на любой глубине. */
+export const depthRadius = (f, selected = false) => (selected ? 8 : Math.min(7, Math.max(3, 5 * f)))
+
+const bytewise = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
+
+/**
+ * Порядок отрисовки узлов: от дальних к ближним, при равной глубине — по
+ * идентификатору побайтно; выбранный и наведённый — последними. Состояние
+ * важнее расстояния: закрытый соседом выбранный прятал бы единственный акцент.
+ * @param {Map<string,{z:number}>} screen
+ */
+export function drawOrder(screen, sel, hover) {
+  const order = [...screen.keys()]
+    .filter((id) => id !== sel && id !== hover)
+    .sort((a, b) => screen.get(b).z - screen.get(a).z || bytewise(a, b))
+  if (screen.has(sel)) order.push(sel)
+  if (hover !== sel && screen.has(hover)) order.push(hover)
+  return order
+}
+
+/**
+ * Выбор щелчком. Указатель внутри нарисованного круга — выигрывает круг,
+ * нарисованный последним: посетитель щёлкает то, что видит. Иначе —
+ * ближайший центр в 10 px; при разнице меньше 0.5 px — ближний к камере.
+ */
+export function pickNode(screen, order, x, y) {
+  let top = null
+  const near = []
+  for (const id of order) {
+    const p = screen.get(id)
+    const d = Math.hypot(p.x - x, p.y - y)
+    if (d <= p.r) top = id
+    if (d <= 10) near.push({ id, d, z: p.z })
+  }
+  if (top !== null) return top
+  if (near.length === 0) return null
+  const min = Math.min(...near.map((c) => c.d))
+  const tied = near.filter((c) => c.d - min < 0.5).sort((a, b) => a.z - b.z || bytewise(a.id, b.id))
+  return tied[0].id
+}
+
+/**
+ * Подписи в объёме — та же `placeLabels`. Глубина только упорядочивает узлы
+ * внутри их группы важности, ближние первыми, и в более важную группу не
+ * поднимает. `placeLabels` при равной тесноте берёт узлы в порядке
+ * идентификаторов, поэтому порядок по глубине приходит через них: ключ —
+ * номер узла от ближнего к дальнему. Ранг и позиции остаются как есть.
+ *
+ * Гарантии «подпись есть у всех» в объёме нет, поэтому наведённый узел,
+ * оставшийся без подписи, поднимается до ранга наведения (2) и расстановка
+ * повторяется: под курсором всегда видно имя. Наведение на узел с подписью
+ * ничего не переставляет.
+ * @param {Map<string,number>} depth глубина `z` по идентификатору
+ * @param {string|null} hover узел под курсором
+ */
+export function placeDepthLabels(items, field, measure, depth, hover = null) {
+  const place = (list) => {
+    const near = [...list].sort((a, b) => depth.get(a.id) - depth.get(b.id) || bytewise(a.id, b.id))
+    const real = new Map()
+    const keyed = near.map((item, i) => {
+      const key = `${String(i).padStart(6, '0')} ${item.id}`
+      real.set(key, item.id)
+      return { ...item, id: key }
+    })
+    return new Map([...placeLabels(keyed, field, measure)].map(([key, box]) => [real.get(key), box]))
+  }
+  const still = place(items)
+  const mine = items.find((item) => item.id === hover)
+  if (!mine || still.has(hover) || mine.rank <= 2) return still
+  return place(items.map((item) => (item === mine ? { ...item, rank: 2 } : item)))
+}
+
+/**
+ * Смесь двух конечных картинок перехода плоский ⇄ объём: положения и радиусы.
+ * При `t = 0` — ровно первая, при `t = 1` — ровно вторая. Глубина — у той,
+ * у которой она есть: порядок отрисовки в переходе — объёмный.
+ */
+export function blend(a, b, t) {
+  const out = new Map()
+  for (const [id, q] of b) {
+    const p = a.get(id) ?? q
+    out.set(id, {
+      x: p.x * (1 - t) + q.x * t,
+      y: p.y * (1 - t) + q.y * t,
+      r: p.r * (1 - t) + q.r * t,
+      z: q.z ?? p.z ?? 0,
+    })
+  }
+  return out
+}
+
+/** Строка под флажком «Объём»: что он сделает — до нажатия. */
+export function volumeHint(cycle, fine) {
+  if (cycle) return 'В цикле дня объём не действует: это схема по номерам фаз. Выберите узел или включите весь граф.'
+  return fine
+    ? 'Перетаскивание вращает граф, с Shift — сдвигает. Под углом часть подписей может пропасть — узлы называет список.'
+    : 'Палец вращает граф; сдвига нет — к центру вернёт «Сбросить вид». Под углом часть подписей может пропасть — узлы называет список.'
+}
+
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
@@ -743,6 +902,15 @@ const state = {
   /** Путь посещений без корня и признак развёрнутой свёртки. */
   trail: [],
   trailOpen: false,
+  /**
+   * Режим «Объём»: флажок, поза посетителя, смесь перехода плоский ⇄ объём
+   * и признак движения рукой — пока он есть, подписи только у выбранного и
+   * наведённого.
+   */
+  volume: false,
+  pose: { ...POSE0 },
+  morph: null,
+  turning: false,
 }
 
 const node = (id) => state.index.byId.get(id)
@@ -813,6 +981,8 @@ function computeView() {
     stats: state.stats,
     depth: state.depth,
     byId: state.index.byId,
+    // Цикл дня плоский при любом флажке: у схемы по номерам фаз нет глубины.
+    volume: state.volume && place === null,
   })
   state.view = { ids: shown, edges: links, place, line }
 }
@@ -839,6 +1009,37 @@ function points() {
     map.set(id, { x: p.x, y: p.y })
   }
   return map
+}
+
+/** Объём действует на окрестности и полном графе; цикл дня плоский всегда. */
+const volumeOn = () => state.volume && state.view.place === null
+
+/** Узлы вида с координатами из сборки — `x`, `y`, `z`. */
+const spatial = () => new Map([...state.view.ids].map((id) => [id, node(id)]))
+
+/** Картинка объёма: экранная точка, радиус по глубине и глубина для порядка. */
+function volumeScreen(at, sel) {
+  const out = new Map()
+  for (const [id, p] of projectAll(spatial(), state.pose)) {
+    const s = at(p)
+    out.set(id, { x: s.x, y: s.y, r: depthRadius(p.f, id === sel), z: p.z })
+  }
+  return out
+}
+
+/** Плоская картинка в той же форме — конец или начало смеси перехода. */
+const flatScreen = (at, sel) =>
+  new Map([...points()].map(([id, p]) => [id, { ...at(p), r: id === sel ? 8 : 5 }]))
+
+/** Смесь перехода на этот кадр; `null` — перехода нет, и кадр рисует свой путь. */
+function morphNow(at, sel) {
+  if (!state.morph) return null
+  const t = (performance.now() - state.morph.t0) / TWEEN
+  if (t >= 1) {
+    state.morph = null
+    return null
+  }
+  return blend(state.morph.from, volumeOn() ? volumeScreen(at, sel) : flatScreen(at, sel), t)
 }
 
 export function fit(field, pts) {
@@ -927,8 +1128,12 @@ function paint() {
 
   const cam = camNow()
   const at = transform({ width: w, height: h }, cam)
-  const screen = new Map([...points()].map(([id, p]) => [id, at(p)]))
   const sel = state.view.ids.has(state.selected) ? state.selected : null
+  // Объёмный путь рисует и объём, и переход в обе стороны; последний кадр
+  // выключения — уже плоский путь, байт-в-байт.
+  const morph = morphNow(at, sel)
+  const deep = morph !== null || volumeOn()
+  const screen = morph ?? (deep ? volumeScreen(at, sel) : new Map([...points()].map(([id, p]) => [id, at(p)])))
   const selFam = sel ? colors[`fam-${familyOf(node(sel).type)}`] : null
 
   // Порядок отрисовки — рёбра, узлы, подписи: подпись всегда поверх всего,
@@ -944,6 +1149,12 @@ function paint() {
     ctx.moveTo(a.x, a.y)
     ctx.lineTo(b.x, b.y)
     ctx.stroke()
+  }
+
+  if (deep) {
+    paintDepth(ctx, screen, sel, morph !== null || state.from !== null || state.turning, { width: w, height: h })
+    if (state.from || state.morph) requestAnimationFrame(paint)
+    return
   }
 
   for (const [id, p] of screen) {
@@ -989,11 +1200,60 @@ function paint() {
   if (state.from) requestAnimationFrame(paint)
 }
 
+/**
+ * Узлы и подписи объёма. Узлы — от дальних к ближним, выбранный и наведённый
+ * последними; цвет и непрозрачность от глубины не зависят. Подписи в
+ * движении — только выбранного и наведённого: расстановка квадратична и
+ * считается один раз, в покое.
+ */
+function paintDepth(ctx, screen, sel, moving, field) {
+  for (const id of drawOrder(screen, sel, state.hover)) {
+    const p = screen.get(id)
+    ctx.fillStyle = id === state.hover ? colors.fg : colors[`fam-${familyOf(node(id).type)}`]
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
+    ctx.fill()
+    if (id !== sel) continue
+    ctx.strokeStyle = colors.acc
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, p.r + 3, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+
+  const always = state.view.ids.size <= LABELS_UPTO
+  const near = sel ? state.index.near.get(sel) : null
+  ctx.font = LABEL_FONT
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  const items = []
+  const depth = new Map()
+  for (const [id, p] of screen) {
+    const own = id === sel || id === state.hover
+    if (!own && (moving || (!always && !near?.has(id)))) continue
+    // Фаз цепи в объёме нет: цикл дня плоский. Наведение в виде до 40 узлов
+    // ранг не поднимает — чужие подписи не прыгают от движения мыши.
+    const rank = labelRank({ id, sel, near, hover: state.hover, phase: false, always })
+    items.push({ id, x: p.x, y: p.y, text: shortName(node(id)), rank })
+    depth.set(id, p.z)
+  }
+  const labels = placeDepthLabels(items, field, (text) => ctx.measureText(text).width, depth, state.hover)
+  for (const [id, box] of labels) {
+    ctx.fillStyle = colors.surface
+    ctx.fillRect(box.x, box.y, box.width + 4, LABEL_H)
+    ctx.fillStyle = colors.fg
+    ctx.fillText(shortName(node(id)), box.x + 2, box.y + 2)
+  }
+}
+
 function reframe(animate) {
   const canvas = mapOpen() ? $('map-canvas') : $('canvas')
   if (!canvas || canvas.clientWidth === 0) return
   const before = { ...state.cam }
-  state.cam = { ...fit(fieldOf(canvas), points()), scale: 1, panX: 0, panY: 0 }
+  // В объёме — по огибающей поворота вокруг текущей позы: место под дугу
+  // отводится при смене вида, а не пересчитывается в кадре вращения.
+  const pts = volumeOn() ? envelopePoints(spatial(), state.pose) : points()
+  state.cam = { ...fit(fieldOf(canvas), pts), scale: 1, panX: 0, panY: 0 }
   state.from = animate && !reduceMotion() ? before : null
   state.t0 = performance.now()
   paint()
@@ -1021,6 +1281,11 @@ function pick(canvas, ev) {
   const x = ev.clientX - box.left
   const y = ev.clientY - box.top
   const at = transform(fieldOf(canvas), camNow())
+  if (volumeOn()) {
+    const sel = state.view.ids.has(state.selected) ? state.selected : null
+    const screen = volumeScreen(at, sel)
+    return pickNode(screen, drawOrder(screen, sel, state.hover), x, y)
+  }
   let best = null
   for (const [id, p] of points()) {
     const s = at(p)
@@ -1032,8 +1297,23 @@ function pick(canvas, ev) {
 
 function wireCanvas(canvas) {
   let drag = null
+  /** Конец движения рукой: подписи в покое расставляются один раз. */
+  const settle = (ev) => {
+    const was = state.turning
+    state.turning = false
+    // Касанию нечем «навестись» после отпускания: узел под пальцем был
+    // наведённым только на время перетаскивания.
+    if (volumeOn() && ev.pointerType !== 'mouse') state.hover = null
+    if (was || volumeOn()) paint()
+  }
   canvas.addEventListener('pointerdown', (ev) => {
     drag = { x: ev.clientX, y: ev.clientY, panX: state.cam.panX, panY: state.cam.panY, moved: false }
+    // Режим перетаскивания фиксируется в момент нажатия: Shift посреди
+    // движения его не переключает. Наведённый — тот, что под указателем.
+    if (volumeOn()) {
+      Object.assign(drag, { turn: !ev.shiftKey, yaw: state.pose.yaw, pitch: state.pose.pitch })
+      state.hover = pick(canvas, ev)
+    }
     canvas.setPointerCapture(ev.pointerId)
   })
   canvas.addEventListener('pointermove', (ev) => {
@@ -1041,20 +1321,29 @@ function wireCanvas(canvas) {
       const dx = ev.clientX - drag.x
       const dy = ev.clientY - drag.y
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true
-      state.cam.panX = drag.panX + dx
-      state.cam.panY = drag.panY + dy
+      if (drag.turn) {
+        // Ближняя к камере сторона идёт за указателем, 0.5° на пиксель.
+        state.pose = { yaw: drag.yaw - 0.5 * dx, pitch: clampPitch(drag.pitch + 0.5 * dy) }
+      } else {
+        state.cam.panX = drag.panX + dx
+        state.cam.panY = drag.panY + dy
+      }
+      if (drag.turn !== undefined && (dx !== 0 || dy !== 0)) state.turning = true
       paint()
       return
     }
     const hit = pick(canvas, ev)
+    // Курсор — на каждом движении, до выхода: иначе `move` из объёма
+    // оставался бы над фоном плоского вида до первого узла.
+    canvas.style.cursor = hit ? 'pointer' : volumeOn() && ev.shiftKey ? 'move' : 'grab'
     if (hit === state.hover) return
     state.hover = hit
-    canvas.style.cursor = hit ? 'pointer' : 'grab'
     paint()
   })
   canvas.addEventListener('pointerup', (ev) => {
     const moved = drag !== null && drag.moved
     drag = null
+    settle(ev)
     if (!moved) {
       const hit = pick(canvas, ev)
       if (hit) {
@@ -1064,8 +1353,9 @@ function wireCanvas(canvas) {
       }
     }
   })
-  canvas.addEventListener('pointercancel', () => {
+  canvas.addEventListener('pointercancel', (ev) => {
     drag = null
+    settle(ev)
   })
   // Колесо без модификатора прокручивает страницу: перехват ломает прокрутку
   // узкого экрана и раздражает на широком.
@@ -1290,6 +1580,9 @@ function renderTools() {
   const s = state.stats
   renderDepth()
   $('full-label').textContent = `Показать весь граф — ${count(s.nodes, 'узел', 'узла', 'узлов')}, ${count(s.edges, 'связь', 'связи', 'связей')}`
+  // Строка под «Объёмом» — по виду на канве и по устройству ввода, при каждой
+  // смене вида: в цикле она объясняет, почему клик ничего не меняет.
+  $('volume-note').textContent = volumeHint(state.view.place !== null, matchMedia('(any-pointer: fine)').matches)
 
   const box = clear($('filters'))
   for (const fam of FAMILIES) {
@@ -1932,6 +2225,36 @@ function refresh(animate) {
   }
 }
 
+/**
+ * Флажок «Объём». Включение ставит начальную позу; переход — смесь двух
+ * конечных картинок за 120 мс, при `prefers-reduced-motion` мгновенно. Пока
+ * схема не загружена, флажок только запоминается: рисовать нечего.
+ */
+function setVolume(on) {
+  const canvas = mapOpen() ? $('map-canvas') : $('canvas')
+  const ready = state.status === 'ready'
+  // Картинка, которая на канве сейчас, — начало смеси. В цикле смешивать
+  // нечего: он плоский при любом флажке.
+  let from = null
+  if (ready && state.view.place === null && canvas.clientWidth > 0 && !reduceMotion()) {
+    const at = transform(fieldOf(canvas), camNow())
+    const sel = state.view.ids.has(state.selected) ? state.selected : null
+    from = volumeOn() ? volumeScreen(at, sel) : flatScreen(at, sel)
+  }
+  state.volume = on
+  if (on) state.pose = { ...POSE0 }
+  if (!ready) return
+  // В цикле флажок не действует: картинка, полоса вида и строка под ним те
+  // же, и вид не перевписывается — масштаб и сдвиг посетителя остаются.
+  if (state.view.place !== null) {
+    announce(on ? 'Объём включён, но в цикле дня не действует: это схема по номерам фаз. Выберите узел или включите весь граф.' : 'Объём выключен.')
+    return
+  }
+  state.morph = from ? { from, t0: performance.now() } : null
+  refresh(false)
+  announceView()
+}
+
 /** `returned` — возврат по пути: «Вернулись» отличает его от шага вперёд. */
 function select(id, fromHash, returned) {
   state.missing = null
@@ -2065,12 +2388,17 @@ function wire() {
   wireCanvas($('canvas'))
   wireCanvas($('map-canvas'))
 
+  // «Сбросить вид» в объёме возвращает и начальную позу; в плоском поза не видна.
+  const resetView = () => {
+    state.pose = { ...POSE0 }
+    reframe(false)
+  }
   $('zoom-in').addEventListener('click', () => zoom(1.25))
   $('zoom-out').addEventListener('click', () => zoom(0.8))
-  $('view-reset').addEventListener('click', () => reframe(false))
+  $('view-reset').addEventListener('click', resetView)
   $('map-zoom-in').addEventListener('click', () => zoom(1.25))
   $('map-zoom-out').addEventListener('click', () => zoom(0.8))
-  $('map-reset').addEventListener('click', () => reframe(false))
+  $('map-reset').addEventListener('click', resetView)
 
   const map = $('map')
   $('map-open').addEventListener('click', () => {
@@ -2112,6 +2440,7 @@ function wire() {
     refresh(true)
     announceView()
   })
+  $('volume').addEventListener('change', () => setVolume($('volume').checked))
   $('filters-reset').addEventListener('click', dropFilters)
 
   // Выбор узла ссылкой — шаг внутри витрины, а не переход браузера: адрес
