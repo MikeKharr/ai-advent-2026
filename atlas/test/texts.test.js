@@ -94,6 +94,15 @@ test('голый префикс Groq и короткий хвост — не н�
   assert.deepEqual(redact(`префикс ${GSK} и ключ ${GSK}abcdef`), { text: `префикс ${HIDDEN} и ключ ${HIDDEN}`, hidden: 2 })
 })
 
+test('ключ Anthropic с хвостом от 10 знаков — находка', () => {
+  assert.equal(keyFindings(`ключ ${ANT}api03-abcdefghij в тексте`).length, 1)
+})
+
+test('голый префикс Anthropic и короткий хвост — не находка и скрываются, как раньше', () => {
+  assert.deepEqual(keyFindings(`префикс ${ANT} и ключ ${ANT}abc`), [])
+  assert.deepEqual(redact(`префикс ${ANT} и ключ ${ANT}abc`), { text: `префикс ${HIDDEN} и ключ ${HIDDEN}`, hidden: 2 })
+})
+
 test('заголовок SSH2 ENCRYPTED PRIVATE KEY — находка', () => {
   assert.equal(keyFindings(`---- ${PEM('SSH2 ENCRYPTED')} ----`).length, 1)
 })

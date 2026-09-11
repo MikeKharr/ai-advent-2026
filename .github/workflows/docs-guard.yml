@@ -51,8 +51,16 @@ jobs:
       - name: Секреты не попали в репозиторий
         run: |
           # Только имена файлов (-l): строка с ключом не уходит в публичный журнал Actions.
-          if files=$(grep -rIl --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}|BEGIN [A-Z0-9 ]*PRIVATE KEY|gsk_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}' .); then
+          # Код grep: 0 — найдено, 1 — чисто, 2 и выше — проверка не выполнилась.
+          # `|| rc=$?` сохраняет код и не даёт `bash -e` оборвать шаг.
+          rc=0
+          files=$(grep -rIl --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}|BEGIN [A-Z0-9 ]*PRIVATE KEY|gsk_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}' .) || rc=$?
+          if [ "$rc" -eq 0 ]; then
             echo "::error::в репозитории найден похожий на реальный API-ключ, файлы: $(printf '%s' "$files" | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')"
+            exit 1
+          fi
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::проверка секретов не выполнилась: grep вернул код $rc"
             exit 1
           fi
           echo "ok: ключей не найдено"
