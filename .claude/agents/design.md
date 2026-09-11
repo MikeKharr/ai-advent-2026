@@ -1,7 +1,7 @@
 ---
 name: design
 description: Визуальный язык, раскладка и иерархия экрана до кода. Вызывать до реализации нового экрана или смены раскладки. Ревью UI перед мержем ведёт отдельная роль design-review.
-model: opus
+model: claude-opus-5[1m]
 effort: high
 skills:
   - frontend-ui-engineering

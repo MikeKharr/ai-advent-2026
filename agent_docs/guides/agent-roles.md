@@ -27,10 +27,10 @@
 
 Полные описания и граничные правила — в `.claude/agents/<role>.md`. Модель
 и усилие — свойство роли в её фронтматтере (ADR `2026-09-13-1800`):
-fable/high — только высокоуровневое проектирование (`architect`);
-opus/high — прочее проектирование и гейты ревью (`design`,
-`design-review`, `reviewer`, `compliance`); opus/medium у реализации,
-opus/low у записи. Ключевые skills Османи предзагружены в роли через `skills:`.
+`claude-fable-5-1`/high — только высокоуровневое проектирование (`architect`);
+`claude-opus-5[1m]`/high — прочее проектирование и гейты ревью (`design`,
+`design-review`, `reviewer`, `compliance`); `claude-opus-5[1m]`/medium у реализации,
+`claude-opus-5[1m]`/low у записи. Ключевые skills Османи предзагружены в роли через `skills:`.
 
 ## Протокол передачи
 

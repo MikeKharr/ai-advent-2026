@@ -1,7 +1,7 @@
 ---
 name: docs
 description: agent_docs, журнал истории, ADR, snapshot и backlog. Вызывать в конце каждой нетривиальной итерации для записи истории и синхронизации состояния.
-model: opus
+model: claude-opus-5[1m]
 effort: low
 skills:
   - documentation-and-adrs
