@@ -33,7 +33,7 @@ export function makeFixture() {
     cpSync(join(ROOT, rel), join(root, rel), { recursive: true })
   }
   // Дни — только имена каталогов: содержимое приложений в граф не входит.
-  for (let n = 1; n <= 8; n += 1) mkdirSync(join(root, 'days', `day${n}`), { recursive: true })
+  for (let n = 1; n <= 9; n += 1) mkdirSync(join(root, 'days', `day${n}`), { recursive: true })
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
