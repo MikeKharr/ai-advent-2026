@@ -27,7 +27,12 @@ const SUMMARY_ANSWER = {
  * Роутер, отвечающий по классу задачи: сводке — своим ответом, ответу
  * агента — своим. Записывает все тела вызовов.
  */
-function routerByClass({ summary = SUMMARY_ANSWER, summaryStatus = 200, models } = {}) {
+function routerByClass({
+  summary = SUMMARY_ANSWER,
+  summaryStatus = 200,
+  models,
+  onSummary = () => {},
+} = {}) {
   const calls = []
   const impl = async (url, options = {}) => {
     const u = String(url)
@@ -37,6 +42,8 @@ function routerByClass({ summary = SUMMARY_ANSWER, summaryStatus = 200, models }
     const body = JSON.parse(options.body)
     calls.push(body)
     if (body.taskClass === 'summarize') {
+      // Пока «модель думает» — место для гонки с «очистить».
+      onSummary()
       if (summary instanceof Error) throw summary
       return {
         ok: summaryStatus < 300,
@@ -108,6 +115,65 @@ test('порог достигнут: одна сводка до ответа, Ha
   assert.equal(stored.tokens, 500)
   assert.equal(stored.sourceTokens, 2000)
   assert.equal(stored.throughId, 4, 'последняя реплика, вошедшая в сводку')
+  assert.equal(
+    snapshot.events.some((e) => e.title === 'Старые реплики не вошли в сводку'),
+    false,
+    'в обычном потоке потолок исходника не срабатывает',
+  )
+})
+
+test('обычный поток: порог и самая длинная пара умещаются в исходник целиком', async () => {
+  const { ask, seed, sessions, fetchImpl } = setup()
+  seed(2, 500) // 2000 — порог
+  // Самая длинная пара одного запуска: вопрос 1000 токенов и ответ до MAX_OUTPUT_TOKENS.
+  sessions.append({ sessionId: SID, role: 'user', text: 'длинный вопрос', tokens: 1000 })
+  sessions.append({ sessionId: SID, role: 'agent', text: 'длинный ответ', tokens: ENV.MAX_OUTPUT_TOKENS })
+
+  const { snapshot } = await ask({ prompt: 'вопрос', summarizeAt: 2000 })
+
+  const call = snapshot.events.find((e) => e.title === 'Сжимаю историю')
+  assert.equal(call.data.sourceTokens, 2000 + 1000 + ENV.MAX_OUTPUT_TOKENS)
+  assert.equal(call.data.droppedFromSource, 0)
+  assert.match(fetchImpl.summaries()[0].input, /старый вопрос 1 про Индию/)
+})
+
+test('накопленная история: вход сводки не больше потолка исходника', async () => {
+  const { ask, seed, fetchImpl, sessions } = setup()
+  seed(30, 500) // 30 000 токенов после сводки, 60 реплик
+
+  const { snapshot } = await ask({ prompt: 'вопрос', summarizeAt: 2000 })
+
+  const cap = 2000 + ENV.MAX_OUTPUT_TOKENS + 1000
+  const call = snapshot.events.find((e) => e.title === 'Сжимаю историю')
+  assert.ok(call.data.sourceTokens <= cap, `${call.data.sourceTokens} > ${cap}`)
+  const fit = Math.floor(cap / 500) // целых реплик по 500 под потолком
+  assert.equal(call.data.sourceTokens, fit * 500, 'свежие реплики до потолка')
+  assert.equal(call.data.droppedFromSource, 60 - fit)
+  const input = fetchImpl.summaries()[0].input
+  assert.match(input, /старый ответ 30/, 'свежие реплики вошли')
+  assert.equal(input.includes('старый вопрос 1 про'), false, 'старшие отброшены')
+  const warning = snapshot.events.find((e) => e.title === 'Старые реплики не вошли в сводку')
+  assert.equal(warning.level, 'warn')
+  assert.equal(sessions.summary(SID).throughId, 60, 'отброшенные в следующую сводку не вернутся')
+})
+
+test('после оплаченных отказов сводки вход всё равно ограничен', async () => {
+  const { ask, seed, runs } = setup({
+    router: routerByClass({
+      summaryStatus: 502,
+      summary: { ok: false, code: 'provider_error', message: 'провайдер не ответил', attempts: [{}] },
+    }),
+  })
+  const cap = 2000 + ENV.MAX_OUTPUT_TOKENS + 1000
+  seed(3, 1000)
+  await ask({ prompt: 'первый', summarizeAt: 2000 }) // сводка не удалась, реплики копятся
+  seed(3, 1000)
+
+  const { run } = await ask({ prompt: 'второй', summarizeAt: 2000 })
+
+  const call = runs.snapshot(run.id).events.find((e) => e.title === 'Сжимаю историю')
+  assert.ok(call.data.sourceTokens <= cap, `${call.data.sourceTokens} > ${cap}`)
+  assert.ok(call.data.droppedFromSource > 0)
 })
 
 test('ниже порога сводка не делается и не пишется', async () => {
@@ -192,13 +258,13 @@ test('отказ сводки: ответ по хвосту с предупре�
       summary: { ok: false, code: 'provider_error', message: 'провайдер не ответил', attempts: [{}] },
     }),
   })
+  sessions.append({ sessionId: SID, role: 'user', text: 'до сводки', tokens: 10 })
   sessions.saveSummary({
     sessionId: SID,
     text: 'прежняя сводка',
     tokens: 100,
     sourceTokens: 400,
-    throughId: 0,
-    spentTokens: 0,
+    throughId: 1,
   })
   seed(2, 500)
 
@@ -209,11 +275,12 @@ test('отказ сводки: ответ по хвосту с предупре�
   assert.equal(warning.level, 'warn')
   const stored = sessions.summary(SID)
   assert.equal(stored.text, 'прежняя сводка')
-  assert.equal(stored.throughId, 0)
+  assert.equal(stored.throughId, 1)
   // Прежняя сводка и хвост в пределах окна: 3000 − 100 = 2900, все четыре реплики.
   const input = fetchImpl.answers()[0].input
   assert.match(input, /<summary>\nпрежняя сводка/)
   assert.match(input, /<dialog>[\s\S]*старый вопрос 1[\s\S]*старый ответ 2/)
+  assert.equal(input.includes('до сводки'), false, 'сжатое в диалог не идёт')
   assert.equal(snapshot.result.summary.summarized, null)
   assert.equal(snapshot.result.context.dropped, 0)
 })
@@ -242,6 +309,93 @@ test('обрыв сети на сводке: предупреждение, и з
   // Отказ ответа сам денег не стоил, но вызов сводки мог дойти до провайдера:
   // слот лимитера дню не возвращается.
   assert.equal(snapshot.error.paidNothing, false)
+})
+
+test('сводку и ответ роутер отклонил до провайдера — запуск ничего не стоил', async () => {
+  const refused = {
+    ok: false,
+    code: 'budget_exceeded',
+    message: 'суточный лимит исчерпан',
+    attempts: [],
+  }
+  const fetchImpl = async (url) => {
+    if (String(url).includes('/v1/models'))
+      return { ok: true, status: 200, json: async () => ROUTER_MODELS }
+    return { ok: false, status: 429, json: async () => refused }
+  }
+  const { ask, seed } = setup({ router: fetchImpl })
+  seed(2, 500)
+
+  const { snapshot } = await ask({ prompt: 'вопрос', summarizeAt: 2000 })
+
+  assert.equal(snapshot.status, 'failed')
+  assert.ok(snapshot.events.some((e) => e.title === 'Историю не сжал'))
+  assert.equal(snapshot.error.paidNothing, true, 'слот лимитера дню возвращается')
+})
+
+test('пустая оплаченная сводка: цена в сумме сессии, сводки нет', async () => {
+  const { ask, seed, sessions } = setup({
+    router: routerByClass({
+      summary: { ...SUMMARY_ANSWER, text: '  ', usage: { inputTokens: 1300, outputTokens: 3 } },
+    }),
+  })
+  seed(2, 500)
+
+  const { snapshot } = await ask({ prompt: 'вопрос', summarizeAt: 2000 })
+
+  assert.equal(snapshot.status, 'succeeded')
+  assert.equal(sessions.summary(SID), null)
+  const warning = snapshot.events.find((e) => e.title === 'Историю не сжал')
+  assert.match(warning.detail, /пустую сводку/)
+  assert.equal(snapshot.result.summary.summarized, null)
+  assert.equal(snapshot.result.totalTokens, 540 + 1303, 'запуск: ответ плюс пустой вызов')
+  assert.equal(sessions.totalTokens(SID), 540 + 1303, 'сумма сессии: тоже')
+})
+
+test('«очистить» во время сжатия не воскрешает сводку стёртой переписки', async () => {
+  let clearNow = () => {}
+  const { ask, seed, sessions } = setup({ router: routerByClass({ onSummary: () => clearNow() }) })
+  clearNow = () => sessions.clear(SID) // так же чистит и уборка по сроку
+  seed(2, 500)
+
+  const { snapshot } = await ask({ prompt: 'вопрос', summarizeAt: 2000 })
+
+  assert.equal(snapshot.status, 'succeeded')
+  assert.equal(sessions.summary(SID), null, 'сводка стёртой переписки не записана')
+  const warning = snapshot.events.find((e) => e.title === 'Историю не сжал')
+  assert.match(warning.detail, /очистили во время сжатия/)
+  // После очистки в сессии только пара этого запуска, без цены чужой сводки.
+  assert.deepEqual(
+    sessions.history(SID).map((m) => m.text.slice(0, 6)),
+    ['вопрос', 'Ответ '],
+  )
+  assert.equal(sessions.totalTokens(SID), 540)
+})
+
+test('сводка, не поместившаяся в окно модели, не идёт — с предупреждением', async () => {
+  const models = {
+    providers: [
+      { id: 'groq-qwen3.6-27b', model: 'qwen/qwen3.6-27b', maxRequestTokens: 5000, quota: null },
+    ],
+  }
+  const { ask, sessions, fetchImpl } = setup({ router: routerByClass({ models }) })
+  sessions.append({ sessionId: SID, role: 'user', text: 'давно', tokens: 10 })
+  sessions.saveSummary({
+    sessionId: SID,
+    text: 'длинная сводка',
+    tokens: 1800,
+    sourceTokens: 6000,
+    throughId: 1,
+  })
+
+  // Окно Qwen: min(3000, ⌊0,4 × 4300⌋) = 1720 < 1800.
+  const { snapshot } = await ask({ prompt: 'вопрос', model: 'groq-qwen3.6-27b', summarizeAt: 2000 })
+
+  const warning = snapshot.events.find((e) => e.title === 'Сводка не поместилась в окно модели')
+  assert.equal(warning.level, 'warn')
+  assert.match(warning.detail, /1800 токенов, окно 1720/)
+  assert.equal(fetchImpl.answers()[0].input.includes('<summary>'), false)
+  assert.equal(snapshot.result.context.summaryTokens, 0)
 })
 
 test('обрезанная потолком сводка сохраняется с предупреждением', async () => {
@@ -330,13 +484,13 @@ test('GET сессии отдаёт сводку, DELETE удаляет её в�
   assert.equal(read.totalTokens, 540 + 1800)
   // Со следующим сообщением уйдут сводка (500) и пара после неё:
   // «вопрос» — оценка 3 токена, ответ — 40 выходных.
-  assert.deepEqual(read.context, { total: 543, summaryTokens: 500, dialogTokens: 43 })
+  assert.deepEqual(read.context, { total: 543, summaryTokens: 500, freshTokens: 43 })
 
   await fetch(url, { method: 'DELETE', headers: auth })
   const after = await (await fetch(url, { headers: auth })).json()
   assert.equal(after.summary, null)
   assert.equal(after.totalTokens, 0, 'цена сводок ушла вместе с ней')
-  assert.deepEqual(after.context, { total: 0, summaryTokens: 0, dialogTokens: 0 })
+  assert.deepEqual(after.context, { total: 0, summaryTokens: 0, freshTokens: 0 })
 })
 
 test('контекст истории без сводки — все реплики, ошибки не в счёт', () => {
@@ -344,7 +498,7 @@ test('контекст истории без сводки — все репли�
   sessions.append({ sessionId: SID, role: 'user', text: 'а', tokens: 10 })
   sessions.append({ sessionId: SID, role: 'agent', text: 'отказ', tokens: 7, meta: { error: true } })
   sessions.append({ sessionId: SID, role: 'user', text: 'б', tokens: 20 })
-  assert.deepEqual(sessions.context(SID), { total: 30, summaryTokens: 0, dialogTokens: 30 })
+  assert.deepEqual(sessions.context(SID), { total: 30, summaryTokens: 0, freshTokens: 30 })
   sessions.close()
 })
 
@@ -361,14 +515,37 @@ test('уборка по сроку удаляет сводку вместе с �
 
 test('повторная сводка перезаписывает строку и копит цену', () => {
   const sessions = createSessions({ file: ':memory:', ttlMs: 3600_000, log: () => {} })
+  for (let i = 1; i <= 6; i++)
+    sessions.append({ sessionId: SID, role: 'user', text: `реплика ${i}`, tokens: 1 })
   sessions.saveSummary({ sessionId: SID, text: 'раз', tokens: 1, sourceTokens: 10, throughId: 2, spentTokens: 100 })
   sessions.saveSummary({ sessionId: SID, text: 'два', tokens: 2, sourceTokens: 20, throughId: 6, spentTokens: 50 })
   const s = sessions.summary(SID)
   assert.equal(s.text, 'два')
   assert.equal(s.throughId, 6)
-  assert.equal(s.spentTokens, 150)
-  assert.equal(sessions.totalTokens(SID), 150)
+  assert.equal(sessions.totalTokens(SID), 150, 'цена копится: 100 + 50')
   sessions.close()
+})
+
+test('запись сводки продлевает жизнь сессии; в стёртую сессию не пишется ничего', () => {
+  let t = 1_000_000
+  const s = createSessions({ file: ':memory:', ttlMs: 30 * 3600_000, now: () => t, log: () => {} })
+  s.append({ sessionId: SID, role: 'user', text: 'давно', tokens: 10 })
+  t += 29 * 3600_000
+  assert.equal(s.saveSummary({ sessionId: SID, text: 'с', tokens: 1, sourceTokens: 10, throughId: 1 }), true)
+  t += 2 * 3600_000 // 31 час с реплики, 2 — со сводки
+  assert.equal(s.sweep(), 0, 'сводка без сессии не остаётся: сессия жива')
+  assert.notEqual(s.summary(SID), null)
+
+  s.clear(SID)
+  assert.equal(
+    s.saveSummary({ sessionId: SID, text: 'с', tokens: 1, sourceTokens: 10, throughId: 1, spentTokens: 9 }),
+    false,
+  )
+  assert.equal(s.addSummaryCost(SID, 100), false)
+  assert.equal(s.summary(SID), null)
+  assert.equal(s.totalTokens(SID), 0)
+  assert.equal(s.stats().sessions, 0, 'стёртая сессия не воскресла')
+  s.close()
 })
 
 test('целевой объём — 20–30 % от N; без сводки вход прежний; метка сводки обезврежена', () => {

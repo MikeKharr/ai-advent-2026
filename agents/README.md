@@ -44,9 +44,11 @@ node server.js
 `<dialog>` с репликами после неё. Отказ сводки запуск не валит: ответ идёт по
 хвосту с предупреждением. `GET /v1/sessions/:id` отдаёт `summary { text,
 tokens, sourceTokens, updatedAt, throughId, model, truncated }` или `null` и
-`context { total, summaryTokens, dialogTokens }` — что уйдёт модели со
+`context { total, summaryTokens, freshTokens }` — что уйдёт модели со
 следующим сообщением, без учёта окна модели; `DELETE` и уборка по сроку
-сводку удаляют. В `totalTokens` сессии и запуска входят вызовы сводки; в
+сводку удаляют, а сводка, полученная после очистки, не записывается.
+Исходник сводки ограничен `N + MAX_OUTPUT_TOKENS + 1000` токенами: старшие
+реплики сверх потолка отбрасываются с предупреждением. В `totalTokens` сессии и запуска входят вызовы сводки; в
 сводке ответа `totalTokens` — только сам ответ, цена сводки — в
 `summarized.totalTokens`. Без поля поведение прежнее.
 

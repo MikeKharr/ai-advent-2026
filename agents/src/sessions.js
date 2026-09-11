@@ -33,7 +33,6 @@ CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, id);
 
 -- Сводка разговора (ADR 2026-09-11-1608): одна строка на сессию,
 -- перезаписывается каждой суммаризацией, удаляется вместе с перепиской.
--- spent_tokens копится: цена всех вызовов сводки входит в сумму сессии.
 CREATE TABLE IF NOT EXISTS summaries (
   session_id    TEXT PRIMARY KEY,
   text          TEXT NOT NULL,
@@ -42,8 +41,13 @@ CREATE TABLE IF NOT EXISTS summaries (
   through_id    INTEGER NOT NULL,
   model         TEXT,
   truncated     INTEGER NOT NULL DEFAULT 0,
-  spent_tokens  INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
+);
+-- Цена вызовов сводки копится отдельно от неё: оплаченный вызов без
+-- годной сводки (пустой ответ) тоже входит в сумму сессии.
+CREATE TABLE IF NOT EXISTS summary_costs (
+  session_id TEXT PRIMARY KEY,
+  tokens     INTEGER NOT NULL
 );
 `
 
@@ -78,20 +82,27 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
     ),
     summary: db.prepare(
       `SELECT text, tokens, source_tokens AS sourceTokens, through_id AS throughId,
-              model, truncated, spent_tokens AS spentTokens, updated_at AS updatedAt
+              model, truncated, updated_at AS updatedAt
        FROM summaries WHERE session_id = ?`,
     ),
     saveSummary: db.prepare(
       `INSERT INTO summaries
-         (session_id, text, tokens, source_tokens, through_id, model, truncated, spent_tokens, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (session_id, text, tokens, source_tokens, through_id, model, truncated, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          text = excluded.text, tokens = excluded.tokens,
          source_tokens = excluded.source_tokens, through_id = excluded.through_id,
          model = excluded.model, truncated = excluded.truncated,
-         updated_at = excluded.updated_at,
-         spent_tokens = summaries.spent_tokens + excluded.spent_tokens`,
+         updated_at = excluded.updated_at`,
     ),
+    hasMessage: db.prepare('SELECT 1 AS yes FROM messages WHERE id = ? AND session_id = ?'),
+    hasSession: db.prepare('SELECT 1 AS yes FROM sessions WHERE id = ?'),
+    addCost: db.prepare(
+      `INSERT INTO summary_costs (session_id, tokens) VALUES (?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET tokens = summary_costs.tokens + excluded.tokens`,
+    ),
+    cost: db.prepare('SELECT tokens FROM summary_costs WHERE session_id = ?'),
+    dropCost: db.prepare('DELETE FROM summary_costs WHERE session_id = ?'),
     dropSummary: db.prepare('DELETE FROM summaries WHERE session_id = ?'),
     dropMessages: db.prepare('DELETE FROM messages WHERE session_id = ?'),
     dropSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
@@ -211,14 +222,22 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
     context(sessionId) {
       const row = stmt.summary.get(sessionId)
       const summaryTokens = row?.tokens ?? 0
-      const dialogTokens = this.since(sessionId, row?.throughId ?? 0).reduce(
+      const freshTokens = this.since(sessionId, row?.throughId ?? 0).reduce(
         (sum, m) => sum + m.tokens,
         0,
       )
-      return { total: summaryTokens + dialogTokens, summaryTokens, dialogTokens }
+      return { total: summaryTokens + freshTokens, summaryTokens, freshTokens }
     },
 
-    /** Новая сводка вместо прежней; цена вызова прибавляется к накопленной. */
+    /**
+     * Новая сводка вместо прежней; цена вызова прибавляется к накопленной.
+     * Пишется, только если реплика `throughId` этой сессии ещё есть: вызов
+     * сводки идёт секунды, и «очистить» или уборка по сроку за это время
+     * не должны получить обратно пересказ стёртой переписки. Проверка и
+     * запись — без await между ними и одной транзакцией. Сессия при записи
+     * отмечается живой: сводка не остаётся без сессии при уборке.
+     * Возвращает, записана ли сводка.
+     */
     saveSummary({
       sessionId,
       text,
@@ -227,26 +246,47 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       throughId,
       model = null,
       truncated = false,
-      spentTokens,
+      spentTokens = 0,
       at = now(),
     }) {
-      stmt.saveSummary.run(
-        sessionId,
-        text,
-        Math.max(0, Math.round(tokens)),
-        Math.max(0, Math.round(sourceTokens)),
-        throughId,
-        model,
-        truncated ? 1 : 0,
-        Math.max(0, Math.round(spentTokens)),
-        at,
-      )
+      if (!stmt.hasMessage.get(throughId, sessionId)) return false
+      db.exec('BEGIN')
+      try {
+        this.touch(sessionId, at)
+        stmt.saveSummary.run(
+          sessionId,
+          text,
+          Math.max(0, Math.round(tokens)),
+          Math.max(0, Math.round(sourceTokens)),
+          throughId,
+          model,
+          truncated ? 1 : 0,
+          at,
+        )
+        stmt.addCost.run(sessionId, Math.max(0, Math.round(spentTokens)))
+        db.exec('COMMIT')
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+      return true
+    },
+
+    /**
+     * Цена оплаченного вызова, не давшего сводки (пустой ответ). Только для
+     * живой сессии: очищенной переписке сумма не нужна.
+     */
+    addSummaryCost(sessionId, tokens) {
+      if (!stmt.hasSession.get(sessionId)) return false
+      stmt.addCost.run(sessionId, Math.max(0, Math.round(tokens)))
+      return true
     },
 
     /** Удаляет переписку сессии целиком. Действие «очистить» на странице. */
     clear(sessionId) {
       // Сводка — пересказ той же переписки: живёт и удаляется вместе с ней.
       stmt.dropSummary.run(sessionId)
+      stmt.dropCost.run(sessionId)
       const removed = stmt.dropMessages.run(sessionId)
       stmt.dropSession.run(sessionId)
       return Number(removed.changes)
@@ -279,8 +319,8 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
         }
       }
       // Вызовы сводки стоили денег при любом исходе запуска, поэтому их цена
-      // копится в строке сводки, а не в ответах (ADR 2026-09-11-1608).
-      total += stmt.summary.get(sessionId)?.spentTokens ?? 0
+      // копится отдельно, а не в ответах (ADR 2026-09-11-1608).
+      total += stmt.cost.get(sessionId)?.tokens ?? 0
       return total
     },
 
