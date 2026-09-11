@@ -2,6 +2,8 @@
 
 Файл: `agent_docs/development-history/YYYY-MM-DD-HHMM-short-title.md`
 
+<!-- Имя: `date -u +%Y-%m-%d-%H%M` в момент создания; занято — следующая минута; H1 повторяет имя. -->
+
 ## Что сделано
 
 - Конкретная задача 1

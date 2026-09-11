@@ -1,5 +1,5 @@
 // Данные страницы прогресса. Разметку не трогать: docs-PR итерации правит
-// только этот файл. Формат и правила — agent_docs/design/2026-09-14-1300-progress-page.md.
+// только этот файл. Формат и правила — agent_docs/design/2026-09-10-1553-progress-page.md.
 globalThis.PROGRESS = {
   now: {
     updated: '2026-09-11T09:01Z',

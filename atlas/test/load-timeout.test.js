@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, mock, test } from 'node:test'
 import { LOAD_HINT, LOAD_HINT_MS, LOAD_LIMIT_MS, LOAD_TIMEOUT, fetchGraph } from '../web/app.js'
 
-// Срок ожидания схемы — agent_docs/design/2026-09-14-1930-atlas-load-timeout.md.
+// Срок ожидания схемы — agent_docs/design/2026-09-11-0240-atlas-load-timeout.md.
 // Одна попытка загрузки без браузера: часы подменены, сервер — заглушка,
 // которая, как настоящий `fetch`, отклоняется по сигналу отмены. Что видно на
 // экране и что звучит в `#live` — только в браузере.

@@ -1,5 +1,5 @@
 /* Витрина атласа. Токены — agent_docs/design/corpus.md, раскладка —
-   agent_docs/design/2026-09-13-2100-atlas-page-layout.md.
+   agent_docs/design/2026-09-10-1155-atlas-page-layout.md.
    Значение вне шкалы — дефект, а не нюанс. */
 
 :root {
@@ -177,7 +177,7 @@ h3 { font-size:var(--t-md); line-height:1.4; margin:0; }
 @media (min-width: 73rem) { .viewbar-acts { display:flex; } }
 
 /* ── Путь посещений ──────────────────────────────────────────────────────
-   agent_docs/design/2026-09-14-0900-atlas-visit-trail.md, «Вид строки».
+   agent_docs/design/2026-09-10-1548-atlas-visit-trail.md, «Вид строки».
    Одна строка текста --t-sm (21 px) без вертикальных отступов; на десктопе
    не переносится — в строку укладывает свёртка «… ещё N». */
 .trail {
@@ -464,7 +464,7 @@ a:active { opacity:.7; }
 .steps { display:flex; justify-content:space-between; gap:var(--s-3); margin-top:var(--s-3); flex-wrap:wrap; }
 .steps a { font-size:var(--t-sm); line-height:1.5; }
 
-/* Сбой загрузки — agent_docs/design/2026-09-14-1730-atlas-load-error.md.
+/* Сбой загрузки — agent_docs/design/2026-09-11-0153-atlas-load-error.md.
    Красный на экране один: строка причины. Кнопка — обычная кнопка витрины. */
 .cause { margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--danger); max-width:52ch; }
 .acts { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s-3); margin-top:var(--s-3); }

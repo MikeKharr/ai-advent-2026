@@ -1,10 +1,10 @@
 // Страница прогресса: «Сейчас в работе», фильтр по потокам и журнал PR из
-// data.js. Раскладка и тексты — agent_docs/design/2026-09-14-1300-progress-page.md.
+// data.js. Раскладка и тексты — agent_docs/design/2026-09-10-1553-progress-page.md.
 // Правила строк — validate.js. Текст из данных — только через textContent.
 {
   const REPO = 'https://github.com/MikeKharr/ai-advent-2026'
   const PULLS = `${REPO}/pulls?q=is%3Apr`
-  const GATES = `${REPO}/blob/main/agent_docs/adr/2026-09-13-1800-framework-v2-model-routing.md`
+  const GATES = `${REPO}/blob/main/agent_docs/adr/2026-09-10-0426-framework-v2-model-routing.md`
   const KEY = 'progress-stream'
   const ALL = 'all'
 

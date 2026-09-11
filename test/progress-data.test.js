@@ -1,6 +1,6 @@
 // Проверка данных страницы прогресса. Правила — site/validate.js,
 // тот же файл, которым страница отбирает строки; формат —
-// agent_docs/design/2026-09-14-1300-progress-page.md, раздел «Файл данных».
+// agent_docs/design/2026-09-10-1553-progress-page.md, раздел «Файл данных».
 // Тест лежит вне site/: каталог отдаётся Caddy целиком как корень сайта.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -229,7 +229,7 @@ test('обычный текст журнала — не утечка', () => {
     'Сервис router/ без зависимостей в проде',
     'Атлас в проде на /atlas/ отдельной единицей',
     'Приложение ходит в Haiku 4.5 вместо Sonnet 5',
-    'Формат — agent_docs/design/2026-09-14-1300-progress-page.md.',
+    'Формат — agent_docs/design/2026-09-10-1553-progress-page.md.',
     'Установлены 25 скиллов addyosmani/agent-skills',
     'Файл site/data.js, обновлено 10 сентября, 15:19 UTC',
     "updated: '2026-09-10T15:19Z',",

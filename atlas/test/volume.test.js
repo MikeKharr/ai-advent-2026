@@ -23,7 +23,7 @@ import {
 } from '../web/app.js'
 import { ROOT } from './helpers.js'
 
-// Режим «Объём» — agent_docs/design/2026-09-14-1200-atlas-3d-mode.md, раздел
+// Режим «Объём» — agent_docs/design/2026-09-10-1517-atlas-3d-mode.md, раздел
 // «Тесты `qa` на чистую часть». Поза — два угла в градусах: рыскание `yaw`
 // и тангаж `pitch`.
 

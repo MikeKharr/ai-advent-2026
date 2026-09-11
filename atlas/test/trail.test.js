@@ -5,7 +5,7 @@ import { readSources } from '../lib/sources.js'
 import { addressOf, addressTable, count, foldTrail, indexGraph, restoreTrail, stepTrail, trailMore } from '../web/app.js'
 import { ROOT } from './helpers.js'
 
-// Путь посещений — agent_docs/design/2026-09-14-0900-atlas-visit-trail.md,
+// Путь посещений — agent_docs/design/2026-09-10-1548-atlas-visit-trail.md,
 // раздел «Что проверит ревью», критерии `qa`. Путь — список идентификаторов
 // без корня: корень стоит первым всегда, и хранить его незачем.
 

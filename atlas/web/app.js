@@ -1,6 +1,6 @@
 // Витрина атласа: страница `challenge.zpq.ai/atlas/`.
-// Раскладка — agent_docs/design/2026-09-13-2100-atlas-page-layout.md,
-// решение — ADR 2026-09-13-2000. Ноль зависимостей: только браузерные API
+// Раскладка — agent_docs/design/2026-09-10-1155-atlas-page-layout.md,
+// решение — ADR 2026-09-10-0550. Ноль зависимостей: только браузерные API
 // (ADR 2026-09-07-1525).
 //
 // Файл делится надвое. Сверху — чистая часть: всё, что считается из
@@ -263,7 +263,7 @@ export const TYPE_MANY = {
 const LABEL_MAX = 24
 export const clipLabel = (s) => (s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX)}…` : s)
 
-/** Дата и время из ключа `2026-09-13-1800` → `13.09 18:00`. */
+/** Дата и время из ключа `2026-09-10-0426` → `10.09 04:26`. */
 function stampOf(key) {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:-(\d{2})(\d{2}))?/.exec(key)
   if (!m) return null
@@ -359,7 +359,7 @@ export function indexGraph(graph) {
   return { byId, near }
 }
 
-// Полнотекстовый поиск — agent_docs/design/2026-09-14-2300-atlas-3d-fullgraph-search.md,
+// Полнотекстовый поиск — agent_docs/design/2026-09-11-0726-atlas-3d-fullgraph-search.md,
 // раздел 4. Заголовки, ключ и короткое имя ищутся с первого знака, текст
 // документа и текстовые поля узла — с третьего.
 
@@ -768,7 +768,7 @@ export function viewLine({ ids, links, hidden, selected, byId, near, found, volu
   return hidden === 0 ? `Весь граф: ${sizes}${tail}` : `Скрыто ${count(hidden, 'тип', 'типа', 'типов')}: ${sizes}${tail}`
 }
 
-// Путь посещений — agent_docs/design/2026-09-14-0900-atlas-visit-trail.md.
+// Путь посещений — agent_docs/design/2026-09-10-1548-atlas-visit-trail.md.
 // Путь — идентификаторы узлов без корня: корень стоит первым всегда.
 
 /**
@@ -819,8 +819,8 @@ export function trailMore(n) {
   return { shown, rest: `${count(n, 'узел', 'узла', 'узлов').slice(String(n).length)} пути` }
 }
 
-// Режим «Объём» — agent_docs/design/2026-09-14-1200-atlas-3d-mode.md, ADR
-// 2026-09-14-1000. Поза — два угла в градусах: рыскание `yaw` и тангаж
+// Режим «Объём» — agent_docs/design/2026-09-10-1517-atlas-3d-mode.md, ADR
+// 2026-09-10-1420. Поза — два угла в градусах: рыскание `yaw` и тангаж
 // `pitch`. Центр вращения — центр куба (0.5, 0.5, 0.5) для любого вида, и
 // сдвиг к центру канвы делается только при вписывании, не в кадре вращения.
 
@@ -977,7 +977,7 @@ export function flatHint(flat, fine) {
   return flat ? 'Палец сдвигает схему' : 'Палец вращает; к центру вернёт «Сбросить вид»'
 }
 
-// Фокус после шага — agent_docs/design/2026-09-14-1500-atlas-focus-after-step.md.
+// Фокус после шага — agent_docs/design/2026-09-10-1756-atlas-focus-after-step.md.
 
 /**
  * Ставит ли шаг фокус на заголовок новой панели. Ссылка — всегда: панель —
@@ -1000,7 +1000,7 @@ export function selectNote({ title, type, line, focused, returned }) {
   return returned ? `Вернулись к узлу: ${what}` : `Выбран узел: ${what}`
 }
 
-// Сбой загрузки — agent_docs/design/2026-09-14-1730-atlas-load-error.md.
+// Сбой загрузки — agent_docs/design/2026-09-11-0153-atlas-load-error.md.
 
 /**
  * Объявление исхода попытки — раздел «Объявления». `head` — заголовок блока
@@ -1031,7 +1031,7 @@ export const GRAPH_BLOCKS = ['tools', 'nodelist']
 
 /**
  * Срок попытки загрузки схемы — раскладка
- * `design/2026-09-14-1930-atlas-load-timeout.md`. На `LOAD_HINT_MS` строка
+ * `design/2026-09-11-0240-atlas-load-timeout.md`. На `LOAD_HINT_MS` строка
  * «Читаю схему проекта…» дополняется подсказкой, на `LOAD_LIMIT_MS` попытка
  * кончается отказом. Число в текстах — из той же константы, между ним и «с»
  * неразрывный пробел.
@@ -1103,7 +1103,7 @@ export async function fetchTexts(get = fetch) {
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
-const ATLAS_ADR = `${REPO}/blob/main/agent_docs/adr/2026-09-13-2000-project-atlas.md`
+const ATLAS_ADR = `${REPO}/blob/main/agent_docs/adr/2026-09-10-0550-project-atlas.md`
 /** До скольких узлов подписи видны всегда. */
 const LABELS_UPTO = 40
 /** Строк в списке до свёртки. */
@@ -1623,7 +1623,7 @@ function wireCanvas(canvas) {
 }
 
 // ── Путь посещений ─────────────────────────────────────────────────────
-// agent_docs/design/2026-09-14-0900-atlas-visit-trail.md. Путь хранится в
+// agent_docs/design/2026-09-10-1548-atlas-visit-trail.md. Путь хранится в
 // sessionStorage вкладки и в адрес не пишется: ссылка на узел передаёт узел,
 // а не чужой путь к нему.
 
@@ -2557,7 +2557,7 @@ function renderFooter() {
   const links = el('p')
   const repo = el('a', 'plain', 'Репозиторий')
   repo.href = REPO
-  const adr = el('a', 'plain', 'Как это устроено (ADR 2026-09-13-2000)')
+  const adr = el('a', 'plain', 'Как это устроено (ADR 2026-09-10-0550)')
   adr.href = ATLAS_ADR
   links.append(repo, ' · ', adr)
   foot.append(first, second, links)
