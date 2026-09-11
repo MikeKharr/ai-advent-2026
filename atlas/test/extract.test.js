@@ -78,9 +78,10 @@ test('каждое ребро упирается в существующий у�
   assert.deepEqual(dangling, [])
 })
 
-test('у дня есть название с лендинга, маршрут и каталог', () => {
+test('у дня есть название и дата с главной, маршрут и каталог', () => {
   for (const day of of('day')) {
-    assert.ok(day.title !== day.key, `у ${day.key} нет названия с лендинга`)
+    assert.ok(day.title !== day.key, `у ${day.key} нет названия с главной`)
+    assert.match(day.date ?? '', /^\d{2}\.\d{2}$/, `у ${day.key} нет даты с главной`)
     assert.equal(day.route, `/${day.key}/`)
     assert.ok(existsSync(join(ROOT, day.dir)), `нет каталога ${day.dir}`)
   }
