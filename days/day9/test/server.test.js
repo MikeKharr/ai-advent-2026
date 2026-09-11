@@ -10,6 +10,8 @@ import { after, before, test } from 'node:test'
 const agentLog = []
 let agentMode = 'ok'
 const stored = new Map()
+/** Сессия, у которой агент уже держит сводку. */
+const SUMMARIZED = '77777777-7777-4777-8777-777777777777'
 
 const agent = http.createServer(async (req, res) => {
   const chunks = []
@@ -55,7 +57,27 @@ const agent = http.createServer(async (req, res) => {
       stored.delete(session[1])
       return json(200, { ok: true, removed: had })
     }
-    return json(200, { ok: true, messages: stored.get(session[1]) ?? [], totalTokens: 4200 })
+    // Сводка и контекст сессии — поля агента дня 9 (ADR 2026-09-11-1608).
+    const withSummary = session[1] === SUMMARIZED
+    return json(200, {
+      ok: true,
+      messages: stored.get(session[1]) ?? [],
+      totalTokens: 4200,
+      summary: withSummary
+        ? {
+            text: 'пересказ',
+            tokens: 560,
+            sourceTokens: 2540,
+            updatedAt: '2026-09-11T14:05:10.000Z',
+            throughId: 7,
+            model: 'claude-haiku-4-5',
+            truncated: false,
+          }
+        : null,
+      context: withSummary
+        ? { total: 2560, summaryTokens: 560, dialogTokens: 2000 }
+        : { total: 0, summaryTokens: 0, dialogTokens: 0 },
+    })
   }
   if (req.url === '/v1/agents') {
     return json(200, {
@@ -113,7 +135,7 @@ after(async () => {
 /** Значение cookie сессии из ответа. */
 const sidOf = (response) => {
   const raw = response.headers.get('set-cookie')
-  const found = raw?.match(/day8_sid=([0-9a-f-]{36})/)
+  const found = raw?.match(/day9_sid=([0-9a-f-]{36})/)
   return found ? found[1] : null
 }
 
@@ -134,7 +156,7 @@ test('/healthz отвечает и не раскрывает ключ', async ()
 test('сессия заводится сервером и приходит в cookie, недоступной скриптам', async () => {
   const r = await fetch(`${base}/api/state`)
   const cookie = r.headers.get('set-cookie')
-  assert.match(cookie, /^day8_sid=[0-9a-f-]{36}/)
+  assert.match(cookie, /^day9_sid=[0-9a-f-]{36}/)
   assert.match(cookie, /HttpOnly/)
   assert.match(cookie, /SameSite=Lax/)
   assert.match(cookie, /Max-Age=108000/, 'срок cookie совпадает с 30 часами хранения')
@@ -154,13 +176,13 @@ test('идентификатор сессии добавляет сервер, �
   assert.equal(agentLog.at(-1).auth, 'Bearer agent-key')
 
   // Со второй попытки та же cookie — та же сессия.
-  const second = await ask({ prompt: 'ещё' }, { ip: '10.0.0.3', cookie: `day8_sid=${sid}` })
+  const second = await ask({ prompt: 'ещё' }, { ip: '10.0.0.3', cookie: `day9_sid=${sid}` })
   assert.equal(JSON.parse(agentLog.at(-1).body).input.sessionId, sid)
   assert.equal(second.status, 202)
 })
 
 test('подделанная cookie не принимается: заводится новая сессия', async () => {
-  const r = await ask({ prompt: 'x' }, { ip: '10.0.0.4', cookie: 'day8_sid=../../etc/passwd' })
+  const r = await ask({ prompt: 'x' }, { ip: '10.0.0.4', cookie: 'day9_sid=../../etc/passwd' })
   assert.equal(r.status, 202)
   const sid = JSON.parse(agentLog.at(-1).body).input.sessionId
   assert.match(sid, /^[0-9a-f-]{36}$/)
@@ -171,25 +193,25 @@ test('переписка читается по своей cookie и удаляе
   const started = await ask({ prompt: 'первый вопрос' }, { ip: '10.0.0.5' })
   const sid = sidOf(started)
 
-  const read = await fetch(`${base}/api/chat`, { headers: { cookie: `day8_sid=${sid}` } })
+  const read = await fetch(`${base}/api/chat`, { headers: { cookie: `day9_sid=${sid}` } })
   const body = await read.json()
   assert.equal(body.messages.at(-1).text, 'первый вопрос')
 
   // Чужая сессия своей переписки не отдаёт.
   const alien = await fetch(`${base}/api/chat`, {
-    headers: { cookie: 'day8_sid=99999999-9999-4999-8999-999999999999' },
+    headers: { cookie: 'day9_sid=99999999-9999-4999-8999-999999999999' },
   })
   assert.deepEqual((await alien.json()).messages, [])
 
   const cleared = await fetch(`${base}/api/chat`, {
     method: 'DELETE',
-    headers: { cookie: `day8_sid=${sid}` },
+    headers: { cookie: `day9_sid=${sid}` },
   })
   assert.equal((await cleared.json()).cleared, true)
   const fresh = sidOf(cleared)
   assert.notEqual(fresh, sid, 'после очистки начинается новая сессия')
 
-  const after = await fetch(`${base}/api/chat`, { headers: { cookie: `day8_sid=${sid}` } })
+  const after = await fetch(`${base}/api/chat`, { headers: { cookie: `day9_sid=${sid}` } })
   assert.deepEqual((await after.json()).messages, [], 'старая переписка удалена у агента')
 })
 
@@ -249,10 +271,10 @@ test('читаемое имя сессии выводится из иденти�
   assert.equal(JSON.stringify(body).includes(sid), false, 'идентификатора в ответе нет')
 
   // Имя устойчиво для одной сессии и другое у другой.
-  const again = await fetch(`${base}/api/state`, { headers: { cookie: `day8_sid=${sid}` } })
+  const again = await fetch(`${base}/api/state`, { headers: { cookie: `day9_sid=${sid}` } })
   assert.equal((await again.json()).session.name, name)
   const other = await fetch(`${base}/api/state`, {
-    headers: { cookie: 'day8_sid=55555555-5555-4555-8555-555555555555' },
+    headers: { cookie: 'day9_sid=55555555-5555-4555-8555-555555555555' },
   })
   assert.notEqual((await other.json()).session.name, name)
 })
@@ -261,14 +283,54 @@ test('сумма токенов переписки приходит с серв�
   const started = await ask({ prompt: 'вопрос' }, { ip: '10.0.0.11' })
   const sid = sidOf(started)
   const chat = await (
-    await fetch(`${base}/api/chat`, { headers: { cookie: `day8_sid=${sid}` } })
+    await fetch(`${base}/api/chat`, { headers: { cookie: `day9_sid=${sid}` } })
   ).json()
   assert.equal(chat.totalTokens, 4200, 'сумму считает агент')
   assert.match(chat.session.name, /^[а-яё]+-[а-яё]+-\d{1,2}$/)
 
   const cleared = await (
-    await fetch(`${base}/api/chat`, { method: 'DELETE', headers: { cookie: `day8_sid=${sid}` } })
+    await fetch(`${base}/api/chat`, { method: 'DELETE', headers: { cookie: `day9_sid=${sid}` } })
   ).json()
   assert.equal(cleared.totalTokens, 0)
   assert.notEqual(cleared.session.name, chat.session.name, 'новая сессия — новое имя')
+})
+
+test('порог сжатия уходит агенту как есть: проверяет его агент', async () => {
+  const r = await ask({ prompt: 'вопрос', contextTokens: 3000, summarizeAt: 2000 }, { ip: '10.0.0.12' })
+  assert.equal(r.status, 202)
+  const sent = JSON.parse(agentLog.at(-1).body).input
+  assert.equal(sent.summarizeAt, 2000)
+  assert.equal(sent.contextTokens, 3000)
+})
+
+test('переписка несёт сводку и контекст агента без изменений', async () => {
+  const chat = await (
+    await fetch(`${base}/api/chat`, { headers: { cookie: `day9_sid=${SUMMARIZED}` } })
+  ).json()
+  assert.equal(chat.summary.throughId, 7, 'блок сводки ставится по номеру сообщения')
+  assert.equal(chat.summary.model, 'claude-haiku-4-5')
+  assert.equal(chat.summary.truncated, false)
+  assert.equal(chat.summary.text, 'пересказ')
+  assert.deepEqual(chat.context, { total: 2560, summaryTokens: 560, dialogTokens: 2000 })
+})
+
+test('сессия без сводки: summary null, контекст с сервера', async () => {
+  const chat = await (
+    await fetch(`${base}/api/chat`, {
+      headers: { cookie: 'day9_sid=66666666-6666-4666-8666-666666666666' },
+    })
+  ).json()
+  assert.equal(chat.summary, null)
+  assert.deepEqual(chat.context, { total: 0, summaryTokens: 0, dialogTokens: 0 })
+})
+
+test('после очистки сводки нет, контекст пуст', async () => {
+  const cleared = await (
+    await fetch(`${base}/api/chat`, {
+      method: 'DELETE',
+      headers: { cookie: `day9_sid=${SUMMARIZED}` },
+    })
+  ).json()
+  assert.equal(cleared.summary, null)
+  assert.deepEqual(cleared.context, { total: 0, summaryTokens: 0, dialogTokens: 0 })
 })

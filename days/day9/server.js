@@ -1,5 +1,6 @@
-// День 8: чат без поля темы (ADR 2026-09-09-2134). Устройство дня 7: День отвечает за
-// публичный адрес, лимитер и сессию; память диалога живёт у агента.
+// День 9: чат дня 8 со сводкой разговора (ADR 2026-09-11-1608). Устройство дня 7:
+// день отвечает за публичный адрес, лимитер и сессию; память диалога и её
+// сводка живут у агента, порог сжатия страница шлёт во входе запуска.
 //
 // Идентификатор сессии выдаёт сервер в cookie `HttpOnly`: скрипты страницы
 // его не видят и в хранилище браузера он не лежит.
@@ -17,7 +18,7 @@ const PUBLIC = join(here, 'public')
 const MAX_BODY = 64 * 1024
 const RUN_ID = /^[0-9a-f-]{36}$/
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const COOKIE_NAME = 'day8_sid'
+const COOKIE_NAME = 'day9_sid'
 /** Сколько помним, чей запуск: чтобы вернуть слот лимитера, если агент денег не потратил. */
 const PENDING_TTL_MS = 10 * 60_000
 
@@ -263,7 +264,15 @@ async function handleChat(req, res) {
       return send(
         res,
         200,
-        { messages: [], cleared: true, totalTokens: 0, session: { name: sessionName(fresh) } },
+        {
+          messages: [],
+          cleared: true,
+          totalTokens: 0,
+          // Удаление подтвердил агент, новая сессия пуста: нули здесь — факт.
+          summary: null,
+          context: { total: 0, summaryTokens: 0, dialogTokens: 0 },
+          session: { name: sessionName(fresh) },
+        },
         { 'set-cookie': sessionCookie(fresh) },
       )
     }
@@ -285,6 +294,9 @@ async function handleChat(req, res) {
       {
         messages: json.messages ?? [],
         totalTokens: json.totalTokens ?? null,
+        // Сводку и контекст считает агент; не прислал — страница их не показывает.
+        summary: json.summary ?? null,
+        context: json.context ?? null,
         session: { name: sessionName(session.sessionId) },
       },
       session.headers,
@@ -472,7 +484,7 @@ const server = http.createServer(async (req, res) => {
 })
 
 if (process.env.NODE_ENV !== 'test') {
-  server.listen(env.PORT, () => console.log(`день 8 слушает :${env.PORT}`))
+  server.listen(env.PORT, () => console.log(`день 9 слушает :${env.PORT}`))
 }
 
 export { env, server }

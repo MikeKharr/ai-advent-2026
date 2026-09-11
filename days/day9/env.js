@@ -22,7 +22,7 @@ export function parseEnv(source = process.env) {
     AGENT_ID: source.AGENT_ID || 'news-analyst',
     // Публичный префикс дня: cookie не должна утекать на соседние дни того
     // же домена. Локально день работает на корне, поэтому значение задаётся.
-    COOKIE_PATH: source.COOKIE_PATH || '/day8/',
+    COOKIE_PATH: source.COOKIE_PATH || '/day9/',
     // Secure выключается только для локального запуска по http.
     COOKIE_SECURE: source.COOKIE_SECURE !== 'false',
   }
