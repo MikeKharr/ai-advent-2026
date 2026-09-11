@@ -23,7 +23,12 @@ export function nameProblem(name, now) {
   if (!m) return 'имя должно быть YYYY-MM-DD-HHMM-slug.md, slug латиницей в kebab-case'
   const [y, mo, d, h, mi] = m.slice(1).map(Number)
   if (h > 23 || mi > 59) return `время ${m[4]}${m[5]} невалидно: часы 00–23, минуты 00–59`
-  if (Date.UTC(y, mo - 1, d, h, mi) > now + SKEW_MS) {
+  // Date.UTC переносит 2026-02-30 в март, а 2025-13-01 в следующий год: сверяем компоненты.
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi))
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() + 1 !== mo || t.getUTCDate() !== d) {
+    return `дата ${m[1]}-${m[2]}-${m[3]} невалидна`
+  }
+  if (t.getTime() > now + SKEW_MS) {
     return `время в имени позже текущего UTC (${new Date(now).toISOString()}) больше чем на 10 минут; ` +
       'имя берётся из `date -u +%Y-%m-%d-%H%M` в момент создания'
   }
