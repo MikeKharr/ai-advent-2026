@@ -136,11 +136,13 @@ export function run({ root = join(HERE, '..'), check = false, out = join(HERE, '
   // байтах, которые записала бы сборка. Один опрос git на всю сборку.
   const facts = gitFacts(root)
   const json = `${JSON.stringify({ provenance: pageProvenance(root, facts), nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`
-  const { texts, hidden } = buildTexts(graph, sources)
+  const { texts, hidden, findings: keys } = buildTexts(graph, sources)
   const textsJson = `${JSON.stringify(texts)}\n`
   const web = WEB_FILES.map((file) => [file, readFileSync(join(HERE, 'web', file))])
   const bytes = (s) => Buffer.byteLength(s)
+  // Ключ в документе — отказ, как потолок размера: ничего не пишется.
   graph.findings.push(
+    ...keys,
     ...sizeFindings({
       texts: bytes(textsJson),
       graph: bytes(json),
