@@ -120,6 +120,10 @@ jobs:
           DAYS: ${{ needs.detect.outputs.days }}
           SHA: ${{ github.sha }}
         run: |
+          # Повторная проверка перед сервером: имена уходят в удалённую команду,
+          # поэтому список — строго ["имя",…] с именами [a-z0-9]+.
+          re='^\[("[a-z0-9]+"(,"[a-z0-9]+")*)?\]$'
+          [[ $DAYS =~ $re ]] || { echo "::error::список единиц не прошёл белый список"; exit 1; }
           ssh -p "${{ secrets.SSH_PORT || 22 }}" \
               "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
               "DAYS='$DAYS' SHA='$SHA' bash -s" <<'REMOTE'
@@ -168,6 +172,8 @@ jobs:
           REMOTE
 
       - name: Проверка живого сайта
+        env:
+          DAYS: ${{ needs.detect.outputs.days }}
         run: |
           ok=1
           for i in $(seq 1 15); do
@@ -178,7 +184,7 @@ jobs:
           [ "$ok" -eq 0 ] || { echo "::error::лендинг не отвечает 200"; exit 1; }
           echo "лендинг ok"
 
-          for day in $(printf '%s' '${{ needs.detect.outputs.days }}' | tr -d '[]"' | tr ',' ' '); do
+          for day in $(printf '%s' "$DAYS" | tr -d '[]"' | tr ',' ' '); do
             [ -z "$day" ] || [ "$day" = router ] || [ "$day" = agents ] && continue
             code=$(curl -sS -o /dev/null -w '%{http_code}' "https://challenge.zpq.ai/${day}/healthz" || echo 000)
             echo "${day}/healthz: ${code}"

@@ -11,16 +11,30 @@
 #        откат прода, а откат — действие владельца (operations.md).
 # Единица — только каталог с Dockerfile в дереве head: удалённый день не
 # попадает в матрицу и не валит сборку.
+# Белый список: имя единицы уходит в команду на прод-сервере, поэтому только
+# [a-z0-9]+ и только с Dockerfile в дереве head — и для ввода day тоже.
 set -eu
 
 day=$1 base=$2 head=${3:-HEAD}
+name='^[a-z0-9]+$'
+
+# Отдельное присваивание: в конвейере без pipefail сбой git ls-tree пропал бы.
+tree=$(git ls-tree -r --name-only "$head")
+all=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | sort -u)
 
 if [ -n "$day" ]; then
+  if ! [[ $day =~ $name ]] || ! printf '%s\n' "$all" | grep -qFx -- "$day"; then
+    echo "::error::ввод day — не единица выкатки: имя [a-z0-9]+ и Dockerfile в дереве ${head}" >&2
+    exit 1
+  fi
   printf '%s' "$day" | jq -R . | jq -sc .
   exit 0
 fi
 
-all=$(git ls-tree -r --name-only "$head" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | sort -u)
+if printf '%s\n' "$all" | grep -v '^$' | grep -qvE "$name"; then
+  echo "::error::в дереве ${head} есть единица с именем вне [a-z0-9]+" >&2
+  exit 1
+fi
 
 if [ -z "$base" ]; then
   echo "::warning::успешных выкаток по push нет — выкатываются все единицы" >&2
