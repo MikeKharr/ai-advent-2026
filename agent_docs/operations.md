@@ -153,16 +153,24 @@ advent-agents-1`; `/healthz` отдаёт число агентов, живых 
 
 День 7 (`days/day7/`) ходит к тому же сервису агентов и тем же ключом, что
 день 6, поэтому нового секрета не нужно: `deploy/day7.env` заводится копией
-строки из `agents.env`, значение при этом не печатается.
+строки из `agents.env`, значение при этом не печатается. Такую копию делает
+агент по закрытому списку (ADR `2026-09-11-1743`): только имя `AGENT_KEY`,
+только из `deploy/agents.env`, только в `deploy/dayN.env` единицы, которая
+ходит к сервису агентов. Ключи провайдеров (`ANTHROPIC_API_KEY`, ключ Groq
+и прочие из `router.env`), `ROUTER_ADMIN_KEY` и `APP_KEY_*` агент не
+копирует никуда; любая другая копия — владелец или новый ADR. Дословные
+формы, в `cd ai-advent-2026/deploy`: новый файл — `set -C; umask 077;
+grep '^AGENT_KEY=' agents.env > dayN.env; chmod 600 dayN.env`;
+существующий файл — `umask 077; grep '^AGENT_KEY=' agents.env >>
+dayN.env`; проверка — `grep -o '^[A-Z_]*=' dayN.env`. Новый секрет —
+только владелец через `deploy/put-secrets.sh`.
 
 **Файл нужен до мержа.** Без него `AGENT_KEY` у дня пуст, `/day7/healthz`
 отдаёт 503, и шаг проверки живого адреса валит выкатку.
 
 ```sh
-cd ~/ai-advent-2026/deploy && umask 077
-grep '^AGENT_KEY=' agents.env > day7.env
-printf 'COOKIE_PATH=/day7/\n' >> day7.env
-chmod 600 day7.env
+cd ~/ai-advent-2026/deploy
+set -C; umask 077; grep '^AGENT_KEY=' agents.env > day7.env; chmod 600 day7.env
 grep -o '^[A-Z_]*=' day7.env
 ```
 
@@ -193,10 +201,8 @@ db.prepare('select count(*) messages from messages').get())"
 и проверка живого адреса валит выкатку.
 
 ```sh
-cd ~/ai-advent-2026/deploy && umask 077
-grep '^AGENT_KEY=' agents.env > day8.env
-printf 'COOKIE_PATH=/day8/\n' >> day8.env
-chmod 600 day8.env
+cd ~/ai-advent-2026/deploy
+set -C; umask 077; grep '^AGENT_KEY=' agents.env > day8.env; chmod 600 day8.env
 grep -o '^[A-Z_]*=' day8.env
 ```
 
@@ -215,15 +221,14 @@ grep -o '^[A-Z_]*=' day8.env
 `/day9/healthz` отдаёт 503, и проверка живого адреса валит выкатку.
 
 ```sh
-cd ~/ai-advent-2026/deploy && umask 077
-grep '^AGENT_KEY=' agents.env > day9.env
-printf 'COOKIE_PATH=/day9/\n' >> day9.env
-chmod 600 day9.env
+cd ~/ai-advent-2026/deploy
+set -C; umask 077; grep '^AGENT_KEY=' agents.env > day9.env; chmod 600 day9.env
 grep -o '^[A-Z_]*=' day9.env
 ```
 
-Последняя строка печатает только имена переменных: `AGENT_KEY=` и
-`COOKIE_PATH=`. Первая выкатка дня добавляет маршрут в `Caddyfile` —
+Последняя строка печатает только имена переменных: `AGENT_KEY=`.
+`COOKIE_PATH` в файл не пишется: `days/day9/env.js` по умолчанию ставит
+`/day9/`. Первая выкатка дня добавляет маршрут в `Caddyfile` —
 после неё `docker compose restart caddy` и повтор упавшей проверки
 (`agent_docs/guides/new-day.md`).
 
