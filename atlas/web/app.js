@@ -910,6 +910,56 @@ export const GRAPH_BUTTONS = ['map-open', 'zoom-out', 'zoom-in', 'view-reset']
 /** Блоки, чьё содержимое и есть граф: пока его нет, они скрыты. */
 export const GRAPH_BLOCKS = ['tools', 'nodelist']
 
+/**
+ * Срок попытки загрузки схемы — раскладка
+ * `design/2026-09-14-1930-atlas-load-timeout.md`. На `LOAD_HINT_MS` строка
+ * «Читаю схему проекта…» дополняется подсказкой, на `LOAD_LIMIT_MS` попытка
+ * кончается отказом. Число в текстах — из той же константы, между ним и «с»
+ * неразрывный пробел.
+ */
+export const LOAD_HINT_MS = 8000
+export const LOAD_LIMIT_MS = 30000
+const LIMIT_TEXT = `${LOAD_LIMIT_MS / 1000}\u00a0с`
+export const LOAD_HINT = `Читаю схему проекта… Это дольше обычного, жду не дольше ${LIMIT_TEXT}.`
+export const LOAD_TIMEOUT = `Файл graph.json не пришёл за ${LIMIT_TEXT}: сервер не отвечает или сеть слишком медленная.`
+
+/**
+ * Одна попытка загрузки. У неё свой `AbortController`: сигнал действует и на
+ * заголовки, и на чтение тела, так что срок закрывает запрос, и поздний ответ
+ * странице не достаётся. Причину выбирает срок, а не имя ошибки: отмена
+ * посреди тела приходит как `AbortError` и иначе стала бы «это не JSON».
+ * Исход гасит оба таймера. `get` подменяется в тестах.
+ */
+export async function fetchGraph(onHint, get = fetch) {
+  const ctl = new AbortController()
+  let expired = false
+  const hint = setTimeout(onHint, LOAD_HINT_MS)
+  const limit = setTimeout(() => {
+    expired = true
+    ctl.abort()
+  }, LOAD_LIMIT_MS)
+  try {
+    // Относительный путь: страница едет под handle_path /atlas/*.
+    let res
+    try {
+      res = await get('graph.json', { cache: 'no-cache', signal: ctl.signal })
+    } catch {
+      throw new Error('Файл graph.json не получен: сети нет или адрес не отвечает.')
+    }
+    if (!res.ok) throw new Error(`На graph.json пришёл ответ ${res.status}.`)
+    try {
+      return await res.json()
+    } catch {
+      throw new Error('Файл graph.json получен, но это не JSON.')
+    }
+  } catch (err) {
+    throw expired ? new Error(LOAD_TIMEOUT) : err
+  } finally {
+    clearTimeout(hint)
+    clearTimeout(limit)
+  }
+}
+
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
@@ -2517,24 +2567,25 @@ function setStatus(status, reason, head) {
   else renderPanel()
 }
 
+/**
+ * Первая ступень срока: строка «Читаю схему проекта…» дополняется там, где
+ * она стоит в этой попытке, и больше нигде, — и один раз звучит в `#live`.
+ */
+function showSlow() {
+  for (const at of [$('canvas-msg'), $('panel').querySelector('.empty'), $('attempts')]) {
+    if (at?.textContent === 'Читаю схему проекта…') at.textContent = LOAD_HINT
+  }
+  announce(LOAD_HINT)
+}
+
 async function load() {
-  state.attempt += 1
+  const attempt = (state.attempt += 1)
   setStatus('loading')
   try {
-    // Относительный путь: страница едет под handle_path /atlas/*.
-    let res
-    try {
-      res = await fetch('graph.json', { cache: 'no-cache' })
-    } catch {
-      throw new Error('Файл graph.json не получен: сети нет или адрес не отвечает.')
-    }
-    if (!res.ok) throw new Error(`На graph.json пришёл ответ ${res.status}.`)
-    let graph
-    try {
-      graph = await res.json()
-    } catch {
-      throw new Error('Файл graph.json получен, но это не JSON.')
-    }
+    const graph = await fetchGraph(showSlow)
+    // Исход не текущей попытки ничего не меняет — страховка на случай, если
+    // отмена где-то не сработала.
+    if (attempt !== state.attempt) return
     state.graph = graph
     state.index = indexGraph(graph)
     state.addresses = addressTable(graph.nodes)
