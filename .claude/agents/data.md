@@ -1,7 +1,7 @@
 ---
 name: data
 description: Схема кэша, миграции, индексы, производительность запросов. Вызывать при изменении структуры SQLite-кэша или счётчиков расхода.
-model: opus
+model: claude-opus-5[1m]
 effort: medium
 ---
 

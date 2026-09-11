@@ -1,7 +1,7 @@
 ---
 name: qa
 description: Стратегия тестирования, e2e-сценарии, регрессии. Вызывать для написания тестов по критериям приёмки — до или параллельно с реализацией, но не по готовому коду.
-model: opus
+model: claude-opus-5[1m]
 effort: medium
 skills:
   - test-driven-development

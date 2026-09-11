@@ -102,7 +102,8 @@ export function buildGraph(sources) {
     const { data, body } = parseFrontmatter(entry.text)
     const owns = labeledParagraph(body, 'Владеет')
     const never = labeledParagraph(body, 'Никогда')
-    const tierKey = `${data.model}-${data.effort}`
+    // Полный id модели (`claude-opus-5[1m]`) несёт скобки — в ключ и адрес идёт безопасная форма.
+    const tierKey = `${String(data.model).replace(/[^a-z0-9]+/gi, '-').replace(/-$/, '')}-${data.effort}`
     add({
       id: `role/${entry.key}`,
       type: 'role',
@@ -117,7 +118,7 @@ export function buildGraph(sources) {
       never,
     })
     if (!has(`tier/${tierKey}`)) {
-      add({ id: `tier/${tierKey}`, type: 'tier', key: tierKey, title: `${data.model} / ${data.effort}`, model: data.model, effort: data.effort })
+      add({ id: `tier/${tierKey}`, type: 'tier', key: tierKey, title: `${String(data.model).replace(/^claude-/, '')} / ${data.effort}`, model: data.model, effort: data.effort })
     }
     link(`role/${entry.key}`, `tier/${tierKey}`, 'tier')
   }
