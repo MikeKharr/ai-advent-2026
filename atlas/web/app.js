@@ -881,6 +881,35 @@ export function selectNote({ title, type, line, focused, returned }) {
   return returned ? `Вернулись к узлу: ${what}` : `Выбран узел: ${what}`
 }
 
+// Сбой загрузки — agent_docs/design/2026-09-14-1730-atlas-load-error.md.
+
+/**
+ * Объявление исхода попытки — раздел «Объявления». `head` — заголовок блока
+ * ошибки, при успехе его нет; `attempt` — номер попытки вместе с первой.
+ * Номер делает текст повторного отказа новым: неизменный текст живая
+ * область не произносит.
+ */
+export function outcomeNote({ head = null, reason = '', attempt = 1, line = '' }) {
+  if (head === null) return attempt > 1 ? `Схема загружена. Вид: ${line}` : `Вид: ${line}`
+  return attempt > 1 ? `Попытка ${attempt}: ${lowerFirst(head)}. ${reason}` : `${head}. ${reason}`
+}
+
+/**
+ * «Попробовать снова» и строка под действиями — таблица «Повтор». До первого
+ * нажатия строки нет; пока идёт попытка, кнопка `aria-disabled`, а не
+ * `disabled`: браузер снимает фокус с недоступного элемента.
+ */
+export function retryPhase(status, attempt) {
+  if (attempt < 2) return { busy: false, line: null }
+  if (status === 'loading') return { busy: true, line: 'Читаю схему проекта…' }
+  return { busy: false, line: `Попыток: ${attempt}` }
+}
+
+/** Кнопки, которые работают по графу: пока его нет, они `disabled`. */
+export const GRAPH_BUTTONS = ['map-open', 'zoom-out', 'zoom-in', 'view-reset']
+/** Блоки, чьё содержимое и есть граф: пока его нет, они скрыты. */
+export const GRAPH_BLOCKS = ['tools', 'nodelist']
+
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
@@ -920,6 +949,9 @@ const state = {
   t0: 0,
   status: 'loading',
   reason: '',
+  /** Заголовок блока ошибки и номер попытки загрузки вместе с первой. */
+  head: '',
+  attempt: 0,
   drawn: false,
   open: new Set(),
   /** Путь посещений без корня и признак развёрнутой свёртки. */
@@ -1581,10 +1613,11 @@ function renderLede() {
     `сервисы — всё остальное собрано из ссылок, которые документы проекта уже ставят друг на друга.`
 }
 
-/** Пояснения недоступного переключателя глубины — таблица состояний раскладки пути. */
+/**
+ * Пояснения недоступного переключателя глубины — таблица состояний раскладки
+ * пути. Для загрузки и ошибки пояснения нет: блок тогда скрыт целиком.
+ */
 const DEPTH_NOTE = {
-  loading: 'Схема ещё грузится',
-  error: 'Схема не загрузилась',
   full: 'В полном графе глубина не действует: на схеме и так все узлы.',
   none: 'Глубина действует, когда выбран узел. Сейчас не выбран ни один — выберите узел в списке, поиском или на схеме.',
   alone: 'У этого узла нет связей: соседей нет ни в одном шаге, ни в двух.',
@@ -1607,7 +1640,7 @@ function renderDepth() {
   $('depth').disabled = mode !== 'on'
   if (mode !== 'on') {
     $('depth-2').textContent = '2 шага'
-    $('depth-note').textContent = DEPTH_NOTE[mode]
+    $('depth-note').textContent = DEPTH_NOTE[mode] ?? ''
     return
   }
   const s = state.stats
@@ -1767,12 +1800,12 @@ function block(title) {
 function renderPanel() {
   const panel = clear($('panel'))
   panel.classList.add('panel')
-  if (state.status === 'loading') {
+  if (state.status === 'loading' && state.attempt < 2) {
     panel.appendChild(el('p', 'empty', 'Читаю схему проекта…'))
     return
   }
-  if (state.status === 'error') {
-    panel.appendChild(el('p', 'empty', state.reason))
+  if (state.status !== 'ready') {
+    renderFailure(panel)
     return
   }
   if (state.missing) {
@@ -1784,6 +1817,51 @@ function renderPanel() {
     return
   }
   renderNode(panel, node(state.selected))
+}
+
+/**
+ * Блок ошибки — раздел «Блок ошибки в панели» раскладки сбоя загрузки. Место
+ * одно при любой ширине: панель есть во всех трёх раскладках.
+ */
+function renderFailure(panel) {
+  const head = block()
+  const h2 = el('h2', undefined, state.head)
+  h2.id = 'panel-h'
+  h2.tabIndex = -1
+  const cause = el('p', 'cause', state.reason)
+  cause.id = 'cause'
+  const acts = el('div', 'acts')
+  const again = el('button', undefined, 'Попробовать снова')
+  again.type = 'button'
+  again.id = 'retry'
+  again.addEventListener('click', () => {
+    if (again.getAttribute('aria-disabled') !== 'true') load()
+  })
+  const repo = el('a', undefined, 'Открыть репозиторий')
+  repo.href = REPO
+  acts.append(again, repo)
+  const attempts = el('p', 'hint num')
+  attempts.id = 'attempts'
+  head.append(h2, cause, acts, attempts)
+  panel.appendChild(head)
+  showRetry()
+}
+
+/**
+ * Повтор меняет блок на месте, а не пересобирает его: кнопка с фокусом
+ * остаётся той же, и всё выше строки попытки не двигается. Заголовок и
+ * причина — последнего известного исхода.
+ */
+function showRetry() {
+  const { busy, line } = retryPhase(state.status, state.attempt)
+  if (state.status === 'error') {
+    $('panel-h').textContent = state.head
+    $('cause').textContent = state.reason
+  }
+  if (busy) $('retry').setAttribute('aria-disabled', 'true')
+  else $('retry').removeAttribute('aria-disabled')
+  $('attempts').hidden = line === null
+  $('attempts').textContent = line ?? ''
 }
 
 function renderMissing(panel) {
@@ -2276,7 +2354,11 @@ function refresh(animate) {
     // предыдущего узла — страница молча показывала не то.
     wipe()
     $('view-line').textContent = ''
-    setStatus('error', `Схему не удалось показать. ${err?.message ?? err}`)
+    setStatus('error', String(err?.message ?? err), 'Схему не удалось показать')
+    announce(outcomeNote({ head: state.head, reason: state.reason }))
+    // «Карта» теперь недоступна: карта закрывается, фокус с неё уходит на
+    // «Попробовать снова» (обработчик `close`).
+    if (mapOpen()) $('map').close()
   }
 }
 
@@ -2339,10 +2421,10 @@ function select(id, fromHash, returned, step) {
   refresh(true)
   const focused = step !== undefined && focusesPanel(step.source, !step.was.isConnected)
   showPanel()
-  // Перерисовка упала: панель показывает причину без `h2`, узел не показан —
-  // объявлять выбор нечего.
+  // Перерисовка упала: панель — блок ошибки, узел не показан, причину уже
+  // объявил `refresh`.
   if (state.status === 'error') {
-    if (focused) $('panel').focus({ preventScroll: true })
+    if (focused) $('panel-h').focus({ preventScroll: true })
     return
   }
   if (id) {
@@ -2396,39 +2478,47 @@ function fromHash(step) {
   refresh(false)
 }
 
-function setStatus(status, reason) {
+/**
+ * `reason` и `head` — только у ошибки. Пока идёт повтор, блок ошибки держит
+ * причину прошлой попытки: заголовок и причина — последний известный исход.
+ */
+function setStatus(status, reason, head) {
   state.status = status
-  state.reason = reason ?? ''
-  const msg = clear($('canvas-msg'))
-  const act = clear($('canvas-act'))
-  act.hidden = true
-  $('q').disabled = status !== 'ready'
-  $('q-note').textContent =
-    status === 'ready'
-      ? 'Ищет по заголовку и короткому имени, не по тексту документов'
-      : status === 'error'
-        ? 'Схема не загрузилась — искать не по чему'
-        : 'Схема ещё грузится'
-  if (status === 'loading') msg.textContent = 'Читаю схему проекта…'
   if (status === 'error') {
-    msg.className = 'canvas-msg canvas-err'
-    msg.textContent = state.reason
-    const again = el('button', undefined, 'Попробовать снова')
-    again.type = 'button'
-    again.addEventListener('click', load)
-    const repo = el('a', 'plain', 'Открыть репозиторий')
-    repo.href = REPO
-    act.append(again, repo)
-    act.hidden = false
+    state.reason = reason
+    state.head = head
   }
-  if (status === 'ready') msg.className = 'canvas-msg'
+  const ready = status === 'ready'
+  const msg = clear($('canvas-msg'))
+  clear($('canvas-act')).hidden = true
+  $('q').disabled = !ready
+  // Повтор не двигает ничего выше строки попытки: подсказка поиска держит
+  // последний исход. Иначе на узком экране она становится на строку короче,
+  // и панель с кнопкой в фокусе уезжает вверх.
+  const retrying = status === 'loading' && state.attempt > 1
+  if (!retrying) {
+    $('q-note').textContent =
+      status === 'ready'
+        ? 'Ищет по заголовку и короткому имени, не по тексту документов'
+        : status === 'error'
+          ? 'Схема не загрузилась — искать негде'
+          : 'Схема ещё грузится'
+  }
+  // Всё, что работает по графу, без графа не притворяется рабочим.
+  for (const id of GRAPH_BUTTONS) $(id).disabled = !ready
+  for (const id of GRAPH_BLOCKS) $(id).hidden = !ready
+  if (status === 'loading') msg.textContent = 'Читаю схему проекта…'
+  // Причина и действия — в панели при любой ширине; на канве только указатель.
+  if (status === 'error') msg.textContent = 'Рисовать нечего. Причина и «Попробовать снова» — в панели справа.'
   // Без графа ходить некуда: строка пути держит высоту, но невидима.
-  if (status !== 'ready') $('trail').classList.add('idle')
+  if (!ready) $('trail').classList.add('idle')
   renderDepth()
-  renderPanel()
+  if (!ready && $('retry')) showRetry()
+  else renderPanel()
 }
 
 async function load() {
+  state.attempt += 1
   setStatus('loading')
   try {
     // Относительный путь: страница едет под handle_path /atlas/*.
@@ -2436,27 +2526,39 @@ async function load() {
     try {
       res = await fetch('graph.json', { cache: 'no-cache' })
     } catch {
-      throw new Error('Схему не удалось загрузить. Файл graph.json не получен: сети нет или адрес не отвечает.')
+      throw new Error('Файл graph.json не получен: сети нет или адрес не отвечает.')
     }
-    if (!res.ok) throw new Error(`Схему не удалось загрузить. На graph.json пришёл ответ ${res.status}.`)
+    if (!res.ok) throw new Error(`На graph.json пришёл ответ ${res.status}.`)
     let graph
     try {
       graph = await res.json()
     } catch {
-      throw new Error('Схему не удалось загрузить. Файл graph.json получен, но это не JSON.')
+      throw new Error('Файл graph.json получен, но это не JSON.')
     }
     state.graph = graph
     state.index = indexGraph(graph)
     state.addresses = addressTable(graph.nodes)
     state.stats = statsOf(graph, state.index.near)
+    // Посетитель остался на «Попробовать снова» — после успеха фокус встаёт
+    // на заголовок новой панели. Ушёл с кнопки — фокус не трогается.
+    const kept = $('retry') !== null && document.activeElement === $('retry')
     setStatus('ready')
     renderLede()
     renderFooter()
     setTrail(restoreTrail(readTrail(), hashRaw(), state.addresses))
     fromHash()
-    if (!state.selected) announce(`Вид: ${state.view.line}`)
+    // Сначала фокус, потом `#live` — порядок спецификации фокуса после шага.
+    if (kept) {
+      $('panel-h').focus({ preventScroll: true })
+      showPanel()
+      showPanelHead()
+    }
+    // Упавшая перерисовка уже объявила свою причину.
+    if (state.status !== 'ready') return
+    if (!state.selected || state.attempt > 1) announce(outcomeNote({ attempt: state.attempt, line: state.view.line }))
   } catch (err) {
-    setStatus('error', String(err.message ?? err))
+    setStatus('error', String(err.message ?? err), 'Схему не удалось загрузить')
+    announce(outcomeNote({ head: state.head, reason: state.reason, attempt: state.attempt }))
   }
 }
 
@@ -2491,8 +2593,11 @@ function wire() {
   })
   $('map-close').addEventListener('click', () => map.close())
   // Esc обрабатывает браузер: фокус захвачен, возврат на кнопку «Карта» — тоже.
+  // После отказа перерисовки «Карта» недоступна, и возврат на неё уронил бы
+  // фокус на `body`: тогда он встаёт на «Попробовать снова».
   map.addEventListener('close', () => {
-    $('map-open').focus()
+    const to = $('map-open').disabled ? $('retry') : $('map-open')
+    to?.focus()
     refresh(false)
   })
 
@@ -2545,7 +2650,11 @@ function wire() {
     go(id, 'link')
   })
 
-  addEventListener('hashchange', () => fromHash(true))
+  // Без графа адрес не читается: таблицы адресов ещё нет, а после загрузки
+  // адрес читается заново.
+  addEventListener('hashchange', () => {
+    if (state.status === 'ready') fromHash(true)
+  })
   addEventListener('resize', () => refresh(false))
 
   // Единственная клавиатурная сокращённая команда, кроме поиска и Esc, — и

@@ -37,15 +37,16 @@
     <div class="viewbar">
       <p class="view-line" id="view-line"></p>
       <div class="viewbar-acts">
-        <button type="button" id="zoom-out" aria-label="Мельче">−</button>
-        <button type="button" id="zoom-in" aria-label="Крупнее">+</button>
-        <button type="button" id="view-reset">Сбросить вид</button>
+        <button type="button" id="zoom-out" aria-label="Мельче" disabled>−</button>
+        <button type="button" id="zoom-in" aria-label="Крупнее" disabled>+</button>
+        <button type="button" id="view-reset" disabled>Сбросить вид</button>
       </div>
     </div>
 
     <div class="canvas-wrap" id="canvas-wrap">
       <canvas id="canvas" aria-hidden="true"></canvas>
-      <p class="canvas-msg" id="canvas-msg" role="status"></p>
+      <!-- Без живой роли: живая область страницы одна — #live. -->
+      <p class="canvas-msg" id="canvas-msg"></p>
       <div class="canvas-act" id="canvas-act" hidden></div>
     </div>
   </main>
@@ -67,18 +68,20 @@
        чей контейнер — вся колонка страницы, иначе кнопка уезжает вверх
        вместе со своей полосой и до карты не дотянуться. -->
   <div class="area-map">
-    <button type="button" id="map-open">Карта</button>
+    <button type="button" id="map-open" disabled>Карта</button>
   </div>
 
   <section class="area-rest">
-    <details class="tools" id="tools">
+    <!-- «Фильтры и вид» и список узлов — это и есть граф: пока его нет, они
+         скрыты (agent_docs/design/2026-09-14-1730-atlas-load-error.md). -->
+    <details class="tools" id="tools" hidden>
       <summary>Фильтры и вид</summary>
 
       <fieldset class="depth" id="depth" disabled aria-describedby="depth-note">
         <legend>Соседи выбранного узла</legend>
         <label><input type="radio" name="depth" value="1" checked> <span id="depth-1">1 шаг</span></label>
         <label><input type="radio" name="depth" value="2"> <span id="depth-2">2 шага</span></label>
-        <p class="hint" id="depth-note">Схема ещё грузится</p>
+        <p class="hint" id="depth-note"></p>
       </fieldset>
 
       <p class="full"><label><input type="checkbox" id="full"> <span id="full-label"></span></label></p>
@@ -94,7 +97,7 @@
       <button type="button" id="filters-reset" hidden></button>
     </details>
 
-    <section class="nodelist" aria-labelledby="nodelist-h">
+    <section class="nodelist" id="nodelist" aria-labelledby="nodelist-h" hidden>
       <h2 id="nodelist-h">Узлы в этом виде</h2>
       <ul id="nodes"></ul>
     </section>
