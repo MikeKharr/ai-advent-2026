@@ -23,7 +23,8 @@ jobs:
       # то же правило) — поэтому такое имя не должно попасть в main.
       - name: Имена единиц выкатки
         run: |
-          bad=$(git -c core.quotePath=false ls-tree -r --name-only HEAD | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ')
+          # -z: путь git не берёт в кавычки; `\n` в имени — `?`, имя падает ниже.
+          bad=$(git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n' | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ')
           if [ -n "$bad" ]; then
             echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
             exit 1
