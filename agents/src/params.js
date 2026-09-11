@@ -149,6 +149,34 @@ export const PARAM_LIMITS = {
 }
 
 /**
+ * Порог сводки N (ADR 2026-09-11-1608): когда реплики после последней
+ * сводки набирают N токенов, агент сжимает их вместе с ней в новую сводку.
+ * Отдельно от PARAM_LIMITS: те отдаются дням 6–8 в описании агента, и их
+ * ответ не меняется.
+ */
+export const SUMMARIZE_LIMITS = { min: 500, max: 8000 }
+
+/**
+ * Порог сводки из входа запуска. Без поля — null, и агент ведёт себя как
+ * в днях 7–8. Порог не больше окна контекста: иначе свежие реплики
+ * вытеснялись бы окном раньше, чем их успели бы сжать.
+ */
+export function parseSummarizeAt(value, contextTokens) {
+  const parsed = parseBoundedInt(value, SUMMARIZE_LIMITS.min, SUMMARIZE_LIMITS.max)
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      message: `Порог сводки: целое от ${SUMMARIZE_LIMITS.min} до ${SUMMARIZE_LIMITS.max}`,
+    }
+  }
+  if (parsed.value === undefined) return { ok: true, value: null }
+  if (parsed.value > contextTokens) {
+    return { ok: false, message: `Порог сводки не больше размера контекста (${contextTokens})` }
+  }
+  return { ok: true, value: parsed.value }
+}
+
+/**
  * Идентификатор сессии приходит из cookie дня. Проверяется по форме, а не
  * по содержимому: угадать чужой — то же, что угадать номер запуска.
  */

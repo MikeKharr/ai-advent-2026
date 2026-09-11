@@ -10,13 +10,18 @@ import { randomUUID } from 'node:crypto'
 import {
   articlesThatFit,
   askRouter,
+  askSummary,
+  buildSummaryRequest,
   effectiveBudget,
   effectiveContext,
   fetchLimits,
+  fitDialog,
   fitToBudget,
   guardLinks,
   estimateTokens,
   requestTokens,
+  SUMMARY_CLASS,
+  SUMMARY_PROVIDER,
 } from './llm.js'
 import {
   budgetFor,
@@ -27,6 +32,7 @@ import {
   isSessionId,
   parseParams,
   parseSphere,
+  parseSummarizeAt,
   parseSystem,
 } from './params.js'
 import { TERMINAL } from './runs.js'
@@ -44,6 +50,18 @@ const RECENT_USER_MESSAGES = 3
  * на издание (восемь лент по пять статей) и предел входа модели.
  */
 const FILL_LIMIT = 200
+
+/**
+ * Потолок исходника сводки в токенах (compliance F1, PR #120). До запуска
+ * реплик после сводки меньше N, запуск добавляет одну пару: вопрос до
+ * PARAM_LIMITS.promptChars знаков (по оценке роутера не больше половины в
+ * токенах) и ответ до MAX_OUTPUT_TOKENS. В обычном потоке потолок не
+ * срабатывает; после отказов сводки старшие реплики сверх него
+ * отбрасываются, как при усечении, — вход вызова не растёт с перепиской.
+ */
+function summarySourceCap(summarizeAt, maxOutputTokens) {
+  return summarizeAt + maxOutputTokens + Math.ceil(PARAM_LIMITS.promptChars / 2)
+}
 
 /** «2.0 с» / «320 мс» — для деталей события; страница форматирует сама. */
 function seconds(ms) {
@@ -122,6 +140,9 @@ export function createNewsAnalyst({
         return { ok: false, message: 'Напишите сообщение' }
       const system = parseSystem(body.system)
       if (!system.ok) return { ok: false, message: system.message }
+      // Порог сводки необязателен: без него агент ведёт себя как в днях 7–8.
+      const summarizeAt = parseSummarizeAt(body.summarizeAt, parsed.params.contextTokens)
+      if (!summarizeAt.ok) return { ok: false, message: summarizeAt.message }
       // Сессия необязательна: без неё агент ведёт себя как в дне 6.
       const sessionId = body.sessionId ?? null
       if (sessionId !== null && !isSessionId(sessionId))
@@ -135,6 +156,7 @@ export function createNewsAnalyst({
           params: parsed.params,
           system: system.system,
           sessionId,
+          summarizeAt: summarizeAt.value,
         },
       }
     },
@@ -183,8 +205,18 @@ export function createNewsAnalyst({
       const systemOverridden = run.input.system !== null && run.input.system !== undefined
       const startedAt = now()
       const memory = sessions !== null && sessionId !== null
+      const summarizeAt = run.input.summarizeAt ?? null
       /** Хвост диалога, ушедший модели. Заполняется после запроса пределов. */
       let transcript = []
+      /** Реплики для слов отбора, если они не совпадают с хвостом (режим сводки). */
+      let recentTalk = null
+      /** Текст сводки, ушедший модели, и итог сжатия в этом запуске. */
+      let summaryText = null
+      let summarized = null
+      /** Вызов сводки дошёл до провайдера — запуск уже стоил денег. */
+      let summaryPaid = false
+      /** Сколько токенов по usage стоил вызов сводки этого запуска, при любом исходе. */
+      let summarySpent = 0
       let context = {
         used: 0,
         effective: 0,
@@ -207,6 +239,156 @@ export function createNewsAnalyst({
         }
       }
       const emit = (fields) => runs.emit(run.id, fields)
+
+      /**
+       * Сжатие истории: прежняя сводка и реплики после неё → новая сводка,
+       * всегда Haiku (ADR 2026-09-11-1608). Отказ запуск не валит: сводка
+       * остаётся прежней, реплики идут хвостом, в мониторе предупреждение.
+       * Возвращает итог сжатия или null.
+       */
+      const compress = async (previous, fresh) => {
+        const cap = summarySourceCap(summarizeAt, env.MAX_OUTPUT_TOKENS)
+        const source = fitDialog(fresh, cap)
+        const sourceTokens = (previous?.tokens ?? 0) + source.tokens
+        const request = buildSummaryRequest(previous?.text ?? null, source.messages, summarizeAt)
+        const requestSize = estimateTokens(request.system) + estimateTokens(request.input)
+        const label = MODELS.find((m) => m.id === SUMMARY_PROVIDER)?.label ?? SUMMARY_PROVIDER
+        const started = now()
+        if (source.dropped > 0) {
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Старые реплики не вошли в сводку',
+            detail: `${source.dropped} реплик сверх потолка исходника ${cap} токенов отброшены`,
+            data: { dropped: source.dropped, capTokens: cap },
+          })
+        }
+        emit({
+          stage: 'llm_call',
+          title: 'Сжимаю историю',
+          detail: `${label} — при любой модели чата; ${sourceTokens} токенов исходника, сводка до ${request.answerTokens}`,
+          data: {
+            provider: SUMMARY_PROVIDER,
+            taskClass: SUMMARY_CLASS,
+            requestTokens: requestSize,
+            answerTokens: request.answerTokens,
+            sourceTokens,
+            summarizeAt,
+            droppedFromSource: source.dropped,
+          },
+        })
+        let answer
+        try {
+          answer = await askSummary(request, env, { fetchImpl })
+        } catch (error) {
+          if (!paidNothing(error)) summaryPaid = true
+          log(`запуск ${run.id}: сводка: ${error.code ?? ''} ${error.message}`)
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Историю не сжал',
+            detail: `${explainRouterError(error)}\nсводка прежняя, реплики идут хвостом в пределах окна`,
+            data: { code: error.code ?? null, status: error.status ?? null },
+            durationMs: now() - started,
+          })
+          return null
+        }
+        summaryPaid = true
+        const ms = now() - started
+        const text = answer.text.trim()
+        const tokens = answer.usage.outputTokens ?? estimateTokens(text)
+        const callTokens = (answer.usage.inputTokens ?? requestSize) + tokens
+        summarySpent = callTokens
+        emit({
+          stage: 'llm_result',
+          title: 'Получил сводку',
+          detail: `${answer.provider?.model ?? SUMMARY_PROVIDER}, ${seconds(ms)}, ${answer.usage.inputTokens ?? '?'} → ${answer.usage.outputTokens ?? '?'} токенов`,
+          data: {
+            provider: answer.provider,
+            usage: answer.usage,
+            truncated: answer.truncated,
+            providerDurationMs: answer.durationMs,
+          },
+          durationMs: ms,
+        })
+        if (text === '') {
+          // Пустой ответ оплачен: его цена входит в сумму сессии, хотя сводки нет.
+          try {
+            sessions.addSummaryCost(sessionId, callTokens)
+          } catch (error) {
+            log(`сессия ${sessionId.slice(0, 8)}…: цена сводки не записана: ${error.message}`)
+          }
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Историю не сжал',
+            detail: 'модель вернула пустую сводку\nсводка прежняя, реплики идут хвостом в пределах окна',
+            data: { code: 'empty_summary' },
+          })
+          return null
+        }
+        if (answer.truncated) {
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: `Сводка обрезана потолком ${request.answerTokens} токенов`,
+            detail: 'конец пересказа потерян',
+            data: { answerTokens: request.answerTokens },
+          })
+        }
+        let saved
+        try {
+          saved = sessions.saveSummary({
+            sessionId,
+            text,
+            tokens,
+            sourceTokens,
+            throughId: fresh.at(-1).id,
+            model: answer.provider?.model ?? null,
+            truncated: answer.truncated,
+            spentTokens: callTokens,
+          })
+        } catch (error) {
+          // Сводка получена и оплачена, но не сохранилась: в этот запуск она
+          // не идёт, чтобы экран и база не разошлись.
+          memoryFailed = true
+          log(`сессия ${sessionId.slice(0, 8)}…: сводка не записана: ${error.message}`)
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Историю не сжал',
+            detail: 'сводка не записалась, реплики идут хвостом в пределах окна',
+            data: { memory: 'failed' },
+          })
+          return null
+        }
+        if (!saved) {
+          // Переписку очистили или убрали по сроку, пока шёл вызов: пересказ
+          // стёртого разговора в базу не возвращается (reviewer, PR #120).
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Историю не сжал',
+            detail: 'переписку очистили во время сжатия — сводка не записана',
+            data: { code: 'session_cleared' },
+          })
+          return null
+        }
+        const ratio = Math.round((tokens / sourceTokens) * 100) / 100
+        emit({
+          stage: 'planning',
+          title: `Сжал историю: ${sourceTokens} → ${tokens} токенов (${Math.round(ratio * 100)} %)`,
+          detail: `сжал ${label}; порог ${summarizeAt}`,
+          data: {
+            sourceTokens,
+            tokens,
+            ratio,
+            messages: source.messages.length,
+            droppedFromSource: source.dropped,
+          },
+        })
+        return { text, tokens, sourceTokens, ratio, totalTokens: callTokens }
+      }
       // С момента запроса к роутеру вызов считается оплаченным, пока роутер
       // не сказал обратного: неожиданная ошибка после ответа модели не должна
       // возвращать дню слот за деньги, которые уже потрачены.
@@ -216,7 +398,7 @@ export function createNewsAnalyst({
         if (asked) remember('agent', message, 0, { error: true, code })
         return runs.finish(run.id, {
           status: 'failed',
-          error: { code, message, paidNothing: !paid },
+          error: { code, message, paidNothing: !(paid || summaryPaid) },
           event: {
             stage: 'error',
             level: 'error',
@@ -269,7 +451,67 @@ export function createNewsAnalyst({
         // остаток. Действующий размер меньше заданного, если предел входа
         // модели не позволяет (ADR 2026-09-09-1906).
         const effective = effectiveContext(params.contextTokens, budget.tokens)
-        if (memory && effective > 0) {
+        if (memory && effective > 0 && summarizeAt !== null) {
+          // Режим сводки (ADR 2026-09-11-1608): реплики после сводки копятся
+          // до порога N, затем один раз, до ответа, сжимаются вместе с ней.
+          let stored = sessions.summary(sessionId)
+          let fresh = sessions.since(sessionId, stored?.throughId ?? 0)
+          // Слова для отбора — из реплик до сжатия: после него хвост пуст,
+          // а тема разговора жива в последних сообщениях пользователя.
+          recentTalk = fresh
+          const freshTokens = fresh.reduce((sum, m) => sum + m.tokens, 0)
+          if (freshTokens >= summarizeAt) {
+            const done = await compress(stored, fresh)
+            if (done) {
+              stored = { text: done.text, tokens: done.tokens }
+              fresh = []
+              // Текст сводки — в её строке и в GET сессии; здесь только числа.
+              summarized = {
+                sourceTokens: done.sourceTokens,
+                tokens: done.tokens,
+                ratio: done.ratio,
+                totalTokens: done.totalTokens,
+              }
+            }
+          }
+          // Окно — страховка: сводка, не поместившаяся в него целиком, не идёт,
+          // а свежим репликам остаётся то, что сводка не заняла.
+          summaryText = stored && stored.tokens <= effective ? stored.text : null
+          const summaryTokens = summaryText === null ? 0 : stored.tokens
+          if (stored && summaryText === null) {
+            // Не подрезаем: обрезанный пересказ молча терял бы конец в памяти
+            // модели, а блок на странице показывал бы его целиком.
+            emit({
+              stage: 'warning',
+              level: 'warn',
+              title: 'Сводка не поместилась в окно модели',
+              detail: `сводка ${stored.tokens} токенов, окно ${effective}; модель получит только реплики после неё`,
+              data: { summaryTokens: stored.tokens, effective },
+            })
+          }
+          const tail = fitDialog(fresh, effective - summaryTokens)
+          transcript = tail.messages
+          context = {
+            used: summaryTokens + tail.tokens,
+            effective,
+            requested: params.contextTokens,
+            messages: tail.messages.length,
+            dropped: tail.dropped,
+            summaryTokens,
+            freshTokens: tail.tokens,
+            summarized,
+          }
+          if (summaryText !== null || tail.messages.length > 0) {
+            emit({
+              stage: 'planning',
+              title: 'Вспомнил разговор',
+              detail:
+                `сводка ${summaryTokens} и ${tail.messages.length} реплик, ` +
+                `${context.used} из ${effective} токенов контекста`,
+              data: { ...context },
+            })
+          }
+        } else if (memory && effective > 0) {
           const tail = sessions.tail(sessionId, effective)
           transcript = tail.messages
           context = {
@@ -305,7 +547,7 @@ export function createNewsAnalyst({
         const query = sphere
           ? params.prompt
           : [
-              ...transcript
+              ...(recentTalk ?? transcript)
                 .filter((m) => m.role === 'user')
                 .slice(-RECENT_USER_MESSAGES)
                 .map((m) => m.text),
@@ -391,8 +633,16 @@ export function createNewsAnalyst({
         asked = true
 
         const fitStarted = now()
-        const items = fitToBudget(system, sphere, params, found.items, budget.tokens, transcript)
-        const needed = requestTokens(system, sphere, params, items, transcript)
+        const items = fitToBudget(
+          system,
+          sphere,
+          params,
+          found.items,
+          budget.tokens,
+          transcript,
+          summaryText,
+        )
+        const needed = requestTokens(system, sphere, params, items, transcript, summaryText)
         emit({
           stage: 'planning',
           title: 'Подогнал под модель',
@@ -446,7 +696,15 @@ export function createNewsAnalyst({
         modelAsked = true
         try {
           answer = await askRouter(
-            { system, taskClass: agent.taskClass, sphere, params, items, transcript },
+            {
+              system,
+              taskClass: agent.taskClass,
+              sphere,
+              params,
+              items,
+              transcript,
+              summary: summaryText,
+            },
             env,
             { fetchImpl },
           )
@@ -504,9 +762,13 @@ export function createNewsAnalyst({
         const totalMs = now() - startedAt
         // Своя оценка, когда провайдер не сказал: Ollama `usage` не присылает,
         // а нулём такая итерация обнулила бы и сумму по всей переписке.
-        const totalTokens =
+        const answerTokens =
           (answer.usage.inputTokens ?? needed) +
           (answer.usage.outputTokens ?? estimateTokens(answer.text))
+        // Запуск обошёлся в ответ плюс вызов сводки. В сводке ответа —
+        // только ответ: цена сводки копится в её строке в базе, и сумма
+        // сессии сложила бы её дважды (ADR 2026-09-11-1608).
+        const totalTokens = answerTokens + summarySpent
         // Сводка переживает перезапуск вместе с перепиской: события монитора
         // живут до перезагрузки страницы, а «что было в этой итерации»
         // должно читаться и завтра (ADR 2026-09-09-1906).
@@ -522,7 +784,7 @@ export function createNewsAnalyst({
           strippedLinks: guard.stripped.length,
           inputTokens: answer.usage.inputTokens,
           outputTokens: answer.usage.outputTokens,
-          totalTokens,
+          totalTokens: answerTokens,
           durationMs: totalMs,
           budgetTokens: budget.tokens,
           budgetSource: budget.source,
@@ -538,6 +800,15 @@ export function createNewsAnalyst({
           perSource: params.perSource,
           articles: params.articles,
           stopSequences: params.stopSequences.length,
+          // Поля режима сводки — только в нём: у дней 7–8 сводка ответа прежняя.
+          ...(summarizeAt !== null
+            ? {
+                summarizeAt,
+                summaryTokens: context.summaryTokens ?? 0,
+                freshTokens: context.freshTokens ?? 0,
+                summarized,
+              }
+            : {}),
         }
         // Ответ модели — в переписку: он же станет контекстом следующего
         // сообщения. Считаем его выходными токенами, а не заново.
