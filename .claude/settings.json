@@ -29,7 +29,6 @@
       "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose restart caddy')"
     ],
     "ask": [
-      "Bash(gh pr merge *)",
       "Bash(gh run rerun *)",
       "Bash(gh run cancel *)",
       "Bash(git push --force*)",
