@@ -171,7 +171,6 @@ dayN.env`; проверка — `grep -o '^[A-Z_]*=' dayN.env`. Новый се�
 ```sh
 cd ~/ai-advent-2026/deploy
 set -C; umask 077; grep '^AGENT_KEY=' agents.env > day7.env; chmod 600 day7.env
-printf 'COOKIE_PATH=/day7/\n' >> day7.env
 grep -o '^[A-Z_]*=' day7.env
 ```
 
@@ -204,7 +203,6 @@ db.prepare('select count(*) messages from messages').get())"
 ```sh
 cd ~/ai-advent-2026/deploy
 set -C; umask 077; grep '^AGENT_KEY=' agents.env > day8.env; chmod 600 day8.env
-printf 'COOKIE_PATH=/day8/\n' >> day8.env
 grep -o '^[A-Z_]*=' day8.env
 ```
 
