@@ -858,6 +858,29 @@ export function volumeHint(cycle, fine) {
     : 'Палец вращает граф; сдвига нет — к центру вернёт «Сбросить вид». Под углом часть подписей может пропасть — узлы называет список.'
 }
 
+// Фокус после шага — agent_docs/design/2026-09-14-1500-atlas-focus-after-step.md.
+
+/**
+ * Ставит ли шаг фокус на заголовок новой панели. Ссылка — всегда: панель —
+ * результат шага. Стрелка фазы — только если перерисовка удалила элемент с
+ * фокусом. Канва и карта — нет: это работа указателем, `Tab` продолжается от
+ * канвы, а с карты фокус на «Карту» возвращает закрытие диалога.
+ */
+export const focusesPanel = (source, lost) => source === 'link' || (source === 'arrow' && lost)
+
+/** Тип внутри фразы: строчной только первая буква — «решение — ADR». */
+const lowerFirst = (s) => s.charAt(0).toLowerCase() + s.slice(1)
+
+/**
+ * Объявление выбора узла. Фокус на заголовке уже произнёс имя узла, поэтому
+ * `#live` добавляет только тип — в `h2` его нет — и вид.
+ */
+export function selectNote({ title, type, line, focused, returned }) {
+  if (focused) return `${type}. Вид: ${line}`
+  const what = `${title}, ${lowerFirst(type)}. Вид: ${line}`
+  return returned ? `Вернулись к узлу: ${what}` : `Выбран узел: ${what}`
+}
+
 // ───────────────────────────── отрисовка ─────────────────────────────
 
 const REPO = 'https://github.com/mikekharr/ai-advent-2026'
@@ -1348,8 +1371,9 @@ function wireCanvas(canvas) {
       const hit = pick(canvas, ev)
       if (hit) {
         // Карта — выборщик: касание закрывает её, и шаг пишется в путь.
-        if (mapOpen()) $('map').close()
-        go(hit)
+        const source = mapOpen() ? 'map' : 'canvas'
+        if (source === 'map') $('map').close()
+        go(hit, source)
       }
     }
   })
@@ -1511,11 +1535,31 @@ function showTrail() {
   if (box.top < 0 || box.bottom > innerHeight) $('trail').scrollIntoView({ block: 'start' })
 }
 
-/** Шаг внутри витрины: канва, ссылка, поиск, стрелки фаз, карта. */
-function go(id) {
+/**
+ * Узкий экран, фокус на заголовке панели. После прокрутки к пути заголовок
+ * может остаться за нижним краем окна (над панелью раскрыт поиск) или под
+ * липкой «Картой». Тогда верх панели встаёт на `--s-2` ниже полосы «Карта» —
+ * это её собственный отступ снизу.
+ */
+function showPanelHead() {
+  const bar = document.querySelector('.area-map')
+  if (getComputedStyle(bar).display === 'none') return
+  const head = $('panel-h').getBoundingClientRect()
+  const strip = bar.getBoundingClientRect()
+  if (head.top >= strip.bottom && head.bottom <= innerHeight) return
+  scrollBy(0, $('panel').getBoundingClientRect().top - strip.height - Number.parseFloat(getComputedStyle(bar).paddingBottom))
+}
+
+/**
+ * Шаг внутри витрины: `link` — ссылка списка, панели или поиска, `canvas`,
+ * `map`, `arrow` — стрелка фазы. Источник решает, куда встаёт фокус.
+ */
+function go(id, source) {
+  const was = document.activeElement
   setTrail(stepTrail(state.trail, id))
-  select(id)
+  select(id, false, false, { source, was })
   showTrail()
+  if (document.activeElement === $('panel-h')) showPanelHead()
 }
 
 /** Возврат по звену, по корню или «К началу»: фокус — на текущее звено пути. */
@@ -1746,6 +1790,7 @@ function renderMissing(panel) {
   const head = block()
   const h2 = el('h2', undefined, 'Узла нет в этой сборке')
   h2.id = 'panel-h'
+  h2.tabIndex = -1
   head.appendChild(h2)
   const p = el('p', 'empty')
   p.append('Узла ', el('code', 'mono', state.missing), ' нет в этой сборке. Схема пересобирается при каждом мерже — документ мог быть переименован.')
@@ -1762,6 +1807,7 @@ function renderStart(panel) {
   const head = block()
   const h2 = el('h2', undefined, 'С чего начать')
   h2.id = 'panel-h'
+  h2.tabIndex = -1
   head.append(
     h2,
     el('p', 'sub', 'Слева — цикл дня: десять фаз, через которые проходит любая задача, и роли, которые их ведут. Две фазы помечены как гейт владельца — без его слова работа дальше не идёт.'),
@@ -1807,6 +1853,8 @@ function renderNode(panel, n) {
   kicker.append(dot, el('span', undefined, TYPE_NAME[n.type]))
   const h2 = el('h2', undefined, plainTitle(n))
   h2.id = 'panel-h'
+  // Цель фокуса после шага, а не элемент управления: в обход `Tab` не входит.
+  h2.tabIndex = -1
   head.append(kicker, h2)
 
   const meta = []
@@ -2255,8 +2303,24 @@ function setVolume(on) {
   announceView()
 }
 
-/** `returned` — возврат по пути: «Вернулись» отличает его от шага вперёд. */
-function select(id, fromHash, returned) {
+/**
+ * Две колонки: прокручивается не панель, а `.side`, и сброс `scrollTop`
+ * панели там ничего не делает. Если заголовок панели не виден целиком, верх
+ * панели встаёт у верхнего края колонки — как у пропуск-ссылки.
+ */
+function showPanel() {
+  const side = document.querySelector('.side')
+  if (getComputedStyle(side).display === 'contents') return
+  const box = side.getBoundingClientRect()
+  const head = ($('panel-h') ?? $('panel')).getBoundingClientRect()
+  if (head.top < box.top || head.bottom > box.bottom) side.scrollTop += $('panel').getBoundingClientRect().top - box.top
+}
+
+/**
+ * `returned` — возврат по пути: «Вернулись» отличает его от шага вперёд.
+ * `step` — шаг из `go`: источник и элемент, на котором стоял фокус.
+ */
+function select(id, fromHash, returned, step) {
   state.missing = null
   state.selected = id
   state.open.clear()
@@ -2266,10 +2330,21 @@ function select(id, fromHash, returned) {
     history.replaceState(null, '', id ? `#${addressOf(id)}` : location.pathname + location.search)
   }
   refresh(true)
+  const focused = step !== undefined && focusesPanel(step.source, !step.was.isConnected)
+  showPanel()
+  // Перерисовка упала: панель показывает причину без `h2`, узел не показан —
+  // объявлять выбор нечего.
+  if (state.status === 'error') {
+    if (focused) $('panel').focus({ preventScroll: true })
+    return
+  }
   if (id) {
     $('panel').scrollTop = 0
-    const what = `${plainTitle(node(id))}, ${TYPE_NAME[node(id).type].toLowerCase()}. Вид: ${state.view.line}`
-    announce(returned ? `Вернулись к узлу: ${what}` : `Выбран узел: ${what}`)
+    // Сначала фокус, потом `#live`: вежливое объявление встаёт в очередь за
+    // тем, что произнёс фокус. Видимость — правила прокрутки, не браузер.
+    if (focused) $('panel-h').focus({ preventScroll: true })
+    const n = node(id)
+    announce(selectNote({ title: plainTitle(n), type: TYPE_NAME[n.type], line: state.view.line, focused, returned }))
   } else announce(returned ? `Вернулись к началу. Вид: ${state.view.line}` : `Вид: ${state.view.line}`)
 }
 
@@ -2460,7 +2535,7 @@ function wire() {
     const id = href.startsWith('#') ? state.addresses.get(decodeURIComponent(href.slice(1))) : undefined
     if (!id) return
     ev.preventDefault()
-    go(id)
+    go(id, 'link')
   })
 
   addEventListener('hashchange', () => fromHash(true))
@@ -2495,7 +2570,7 @@ function wire() {
     const phases = state.graph.nodes.filter((n) => n.type === 'phase').sort((a, b) => a.n - b.n)
     const at = phases.findIndex((p) => p.id === state.selected)
     const next = phases[at + (ev.key === 'ArrowLeft' ? -1 : 1)]
-    if (next) go(next.id)
+    if (next) go(next.id, 'arrow')
   })
 
   // Своя колонка настроек есть только в трёхколоночной раскладке; при двух
