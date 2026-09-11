@@ -1,11 +1,11 @@
 name: ci
 
 on:
+  # Без фильтра путей: ci-ok — обязательная проверка main и должна появиться
+  # на каждом PR. Нетронутые единицы отсекает detect (days=[] — test пропущен).
   pull_request:
-    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/ci.yml']
   push:
     branches: [main]
-    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/ci.yml']
 
 permissions:
   contents: read
@@ -148,3 +148,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Проверка Caddyfile
         run: docker run --rm -v "$PWD/deploy:/w" -w /w caddy:2-alpine caddy validate --config Caddyfile
+
+  # Единая обязательная проверка для защиты ветки: имя check run — id job.
+  # skipped (test при пустой матрице) — успех; failure или cancelled — провал.
+  ci-ok:
+    needs: [detect, test, caddyfile]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Итог зависимостей
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "detect/test/caddyfile: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) echo "::error::есть failure или cancelled"; exit 1 ;;
+          esac
