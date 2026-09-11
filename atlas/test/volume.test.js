@@ -239,31 +239,45 @@ test('группа важнее глубины: дальний сосед выб
   assert.ok(labels.get('nb').y > 150, 'сосед — под узлом')
 })
 
-test('в объёме в покое наведение в виде до 40 узлов не меняет позиции остальных подписей', () => {
-  // Окрестность compliance при начальной позе, вписанная по огибающей, как на странице.
-  const sel = 'role/compliance'
-  const ids = neighborhood(index.near, sel, 1)
-  assert.ok(ids.size <= 40)
-  const pts = new Map([...ids].map((id) => [id, byId.get(id)]))
-  const canvas = { width: 814, height: 538 }
-  const at = transform(canvas, { ...fit(canvas, envelopePoints(pts, POSE0)), scale: 1, panX: 0, panY: 0 })
-  const proj = projectAll(pts, POSE0)
-  const near = index.near.get(sel)
-  const depth = new Map([...proj].map(([id, p]) => [id, p.z]))
+// Вид до 40 узлов в покое — синтетический, а не окрестность из живого графа:
+// та растёт с каждым документом и однажды переходит порог 40 (PR #80: 41 узел
+// у compliance). Тесный куст из 18 узлов гарантирует, что в покое подпись
+// есть не у всех; 12 узлов вразброс — что она есть у многих. Ранг и вызов —
+// как у страницы (paintDepth): labelRank с always, наведённый — в расстановку.
+const crowded = (() => {
+  const sel = 'n00'
+  const near = new Set(['n01', 'n02', 'n03', 'n04', 'n05', 'n18', 'n19', 'n20'])
+  const nodes = Array.from({ length: 30 }, (_, i) => {
+    const id = `n${String(i).padStart(2, '0')}`
+    const x = i < 18 ? 200 + (i % 6) * 4 : 30 + (i - 18) * 30
+    const y = i < 18 ? 140 + Math.floor(i / 6) * 4 : i % 2 ? 40 : 260
+    return { id, x, y, text: `node-${id}` }
+  })
+  const depth = new Map(nodes.map(({ id }, i) => [id, ((i * 7) % 30) / 30 - 0.5]))
   const layout = (hover) =>
     placeDepthLabels(
-      [...proj].map(([id, p]) => ({
-        id,
-        ...at(p),
-        text: id,
-        rank: labelRank({ id, sel, near, hover, phase: false, always: true }),
-      })),
-      canvas,
+      nodes.map((n) => ({ ...n, rank: labelRank({ id: n.id, sel, near, hover, phase: false, always: true }) })),
+      field,
       measure,
       depth,
+      hover,
     )
   const still = layout(null)
-  for (const hover of ids) assert.deepEqual(layout(hover), still, `наведение на ${hover}`)
+  return { nodes, layout, still }
+})()
+
+test('в объёме в покое, в виде до 40 узлов, наведение на узел с подписью не меняет ни одной позиции', () => {
+  const { nodes, layout, still } = crowded
+  const labelled = nodes.filter(({ id }) => still.has(id))
+  assert.ok(labelled.length >= 10 && labelled.length < nodes.length, `с подписью ${labelled.length} из ${nodes.length}`)
+  for (const { id } of labelled) assert.deepEqual(layout(id), still, `наведение на ${id}`)
+})
+
+test('в объёме в покое, в виде до 40 узлов, наведённый узел без подписи получает имя', () => {
+  const { nodes, layout, still } = crowded
+  const silent = nodes.filter(({ id }) => !still.has(id))
+  assert.ok(silent.length >= 3, `без подписи ${silent.length}`)
+  for (const { id } of silent) assert.ok(layout(id).has(id), `наведение на ${id}`)
 })
 
 test('наведение на узел без подписи в покое показывает его имя', () => {
