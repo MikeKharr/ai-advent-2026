@@ -45,6 +45,9 @@ $RECYCLE.BIN/
 !.vscode/extensions.json
 *.code-workspace
 
+# Claude Code: личные разрешения владельца (ADR 2026-09-14-2200, п. 2)
+.claude/settings.local.json
+
 # Vim / Emacs / Sublime
 *.swp
 *.swo
