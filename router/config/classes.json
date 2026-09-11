@@ -28,6 +28,7 @@
     "requires": ["text_generation"],
     "thinking": "none",
     "answerTokens": 500,
+    "maxAnswerTokens": 2400,
     "dataClass": "public"
   },
   "translate": {

@@ -56,6 +56,23 @@ function sse(res, name, payload, id) {
   res.write(`${lines.join('\n')}\n\n`)
 }
 
+/**
+ * Сводка для страницы: без накопленной цены — она уже в `totalTokens`.
+ * `throughId` ставит блок сводки на место после перезагрузки.
+ */
+function summaryView(row) {
+  if (!row) return null
+  return {
+    text: row.text,
+    tokens: row.tokens,
+    sourceTokens: row.sourceTokens,
+    updatedAt: new Date(row.updatedAt).toISOString(),
+    throughId: row.throughId,
+    model: row.model,
+    truncated: row.truncated,
+  }
+}
+
 export function createService({ agents, archive, runs, sessions = null, env, log = console.error }) {
   /**
    * Счётчики сессий для /healthz: их отказ не должен валить проверку, но и
@@ -208,6 +225,10 @@ export function createService({ agents, archive, runs, sessions = null, env, log
           // Сумму считает тот, у кого данные: страница видит только
           // загруженное и не знает, что удалено по сроку.
           totalTokens: sessions.totalTokens(sessionId),
+          // Сводка разговора дня 9 или null (ADR 2026-09-11-1608).
+          summary: summaryView(sessions.summary(sessionId)),
+          // Что уйдёт модели со следующим сообщением: показ до первого ответа.
+          context: sessions.context(sessionId),
         })
       }
       if (req.method === 'DELETE') {
