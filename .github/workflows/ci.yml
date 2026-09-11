@@ -28,7 +28,7 @@ jobs:
           # без совпадений ниже не валит шаг.
           tree=$(set -o pipefail; git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n') || { echo "::error::git ls-tree упал — имена единиц не проверены"; exit 1; }
           # Управляющие символы имени не уходят в команду workflow.
-          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr -c '[:print:]' '?')
+          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
           if [ -n "$bad" ]; then
             echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
             exit 1
@@ -40,7 +40,8 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="${{ github.event.pull_request.base.sha }}"
           else
-            base="$(git rev-parse HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
+            # Без -q --verify rev-parse на корневом коммите печатает `HEAD^` в stdout.
+            base="$(git rev-parse -q --verify HEAD^ || git rev-list --max-parents=0 HEAD)"
           fi
           # Разбор тот же, что в .github/scripts/deploy-units.sh: тесты на PR
           # выбирают те же единицы, что выкатка для тех же путей. Без -z git
@@ -51,7 +52,9 @@ jobs:
           # Граф атласа строится из входов atlas/lib/sources.js: правка любого
           # из них пересобирает атлас, и только его.
           atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | jq -R . | jq -sc .)
+          # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
+          # идёт только [a-z0-9]+ с каталогом единицы в дереве.
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -64,13 +67,16 @@ jobs:
       fail-fast: false
       matrix:
         day: ${{ fromJSON(needs.detect.outputs.days) }}
+    # Имя единицы и производные от него попадают в shell только через env.
+    env:
+      DAY: ${{ matrix.day }}
     steps:
       - uses: actions/checkout@v4
       # Сервису агентов нужен Node 24: там встроенный SQLite без флага.
       - id: node
         name: Версия Node для единицы
         run: |
-          if [ "${{ matrix.day }}" = agents ]; then echo "version=24" >> "$GITHUB_OUTPUT"
+          if [ "$DAY" = agents ]; then echo "version=24" >> "$GITHUB_OUTPUT"
           else echo "version=22" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
         with: { node-version: '${{ steps.node.outputs.version }}' }
@@ -78,11 +84,11 @@ jobs:
       - id: unit
         name: Каталог единицы
         run: |
-          case "${{ matrix.day }}" in
+          case "$DAY" in
             router) echo "dir=router" >> "$GITHUB_OUTPUT"; echo "port=8081" >> "$GITHUB_OUTPUT" ;;
             agents) echo "dir=agents" >> "$GITHUB_OUTPUT"; echo "port=8082" >> "$GITHUB_OUTPUT" ;;
             atlas) echo "dir=atlas" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
-            *) echo "dir=days/${{ matrix.day }}" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
+            *) echo "dir=days/$DAY" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Синтаксис
@@ -104,9 +110,13 @@ jobs:
         run: node atlas/build.js
 
       - name: Сборка образа (без публикации)
-        run: docker build -t ci-check:${{ matrix.day }} ${{ steps.unit.outputs.dir }}
+        env:
+          DIR: ${{ steps.unit.outputs.dir }}
+        run: docker build -t "ci-check:$DAY" "$DIR"
 
       - name: Контейнер поднимается и отвечает на /healthz
+        env:
+          PORT: ${{ steps.unit.outputs.port }}
         run: |
           # Имя из одного символа docker больше не принимает.
           # Ключ фиктивный: проверяем, что контейнер поднимается и отвечает,
@@ -118,9 +128,9 @@ jobs:
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
             -e APP_KEY_DAY5=ci-dummy -e APP_KEY_AGENTS=ci-dummy \
             -e ROUTER_APP_KEY=ci-dummy -e AGENT_KEY=ci-dummy \
-            -p ${{ steps.unit.outputs.port }}:${{ steps.unit.outputs.port }} ci-check:${{ matrix.day }}
+            -p "$PORT:$PORT" "ci-check:$DAY"
           for i in $(seq 1 20); do
-            if curl -fsS http://127.0.0.1:${{ steps.unit.outputs.port }}/healthz >/dev/null 2>&1; then
+            if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
               echo "healthz ok"; docker rm -f ci-day; exit 0
             fi
             sleep 1
