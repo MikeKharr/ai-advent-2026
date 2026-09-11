@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { run } from '../build.js'
@@ -23,6 +23,7 @@ const PEM = (kind) => ['BEGIN', kind, 'PRIVATE', 'KEY'].filter(Boolean).join(' '
 const TAIL = 'A1b2C3d4E5f6G7h8J9k0'
 const GH = (letter) => `gh${letter}_${TAIL}`
 const GH_PAT = `${'github'}_pat_${TAIL}_${TAIL}`
+const GROQ = `gs${'k'}_${TAIL}`
 
 const fixture = makeFixture()
 after(() => fixture.cleanup())
@@ -81,11 +82,13 @@ const NEW_SAMPLES = [
   PEM('EC'),
   PEM(''),
   PEM('ENCRYPTED'),
+  PEM('SSH2 ENCRYPTED'),
   ...['p', 'o', 'u', 's', 'r'].map(GH),
   GH_PAT,
+  GROQ,
 ]
 
-test('страж ловит заголовки PEM и токены GitHub', () => {
+test('страж ловит заголовки PEM, токены GitHub и ключ Groq', () => {
   for (const sample of NEW_SAMPLES) {
     assert.ok(
       patterns.some((re) => re.test(`строка документа: ${sample}.`)),
@@ -110,11 +113,36 @@ test('шаг секретов docs-guard ищет те же образцы с х
   const yml = readFileSync(join(ROOT, '.github/workflows/docs-guard.yml'), 'utf8')
   const grep = yml.match(/grep -rIn --exclude-dir=\.git -E '([^']+)' \./)
   assert.ok(grep, 'в docs-guard.yml не найден шаг grep секретов')
-  for (const s of KEY_SAMPLES) assert.ok(grep[1].split('|').includes(s), `в docs-guard нет образца ${s}`)
+  // Весь образец шага — ключ Anthropic и KEY_SAMPLES, ни знаком больше.
+  const ANT_REPO = `${['sk', 'ant', ''].join('-')}[A-Za-z0-9_-]{10,}`
+  assert.equal(grep[1], [ANT_REPO, ...KEY_SAMPLES].join('|'))
 
   const re = new RegExp(grep[1])
   for (const sample of NEW_SAMPLES) assert.ok(re.test(sample), `docs-guard не ловит ${sample}`)
   assert.equal(re.test(`токен \`${'gh'}p_\` и ${'github'}_pat_`), false)
+  assert.equal(re.test(`слово x${GH('p')}`), false, 'префикс внутри слова')
+  assert.ok(re.test(`https://user:${GH('s')}@github.com/o/r.git`), 'токен в адресе')
+})
+
+test('ключ в документе — находка сборки и --check, витрина и vault не записаны', () => {
+  const leak = makeFixture()
+  try {
+    appendFileSync(join(leak.root, 'agent_docs/guides/dod.md'), `\n## Токен\n\n${GH('p')}\n`)
+    const leakOut = join(leak.root, 'atlas/dist/graph.json')
+
+    const checked = run({ root: leak.root, check: true, out: leakOut })
+    assert.equal(checked.findings.length, 1)
+    assert.equal(checked.findings[0].file, 'agent_docs/guides/dod.md')
+    assert.equal(checked.findings[0].message.includes(TAIL), false, 'ключ в сообщении')
+
+    const built = run({ root: leak.root, out: leakOut })
+    assert.equal(built.findings.length, 1)
+    assert.equal(existsSync(join(built.siteDir, 'texts.json')), false)
+    assert.equal(existsSync(join(built.siteDir, 'graph.json')), false)
+    assert.equal(existsSync(built.vaultDir), false)
+  } finally {
+    leak.cleanup()
+  }
 })
 
 test('секрет, дописанный в сам входной документ, — уже не наша граница', () => {

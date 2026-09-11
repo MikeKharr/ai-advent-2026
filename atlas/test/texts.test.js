@@ -20,9 +20,17 @@ const PEM = (kind) => ['BEGIN', kind, 'PRIVATE', 'KEY'].filter(Boolean).join(' '
 const TAIL = 'A1b2C3d4E5f6G7h8J9k0'
 const GH = (letter) => `gh${letter}_${TAIL}`
 const GH_PAT = `${'github'}_pat_${TAIL}_${TAIL}`
+const GROQ = `${GSK}${TAIL}`
 
 // Тот же список, что проверяет страж витрины.
 const GUARD = SAMPLES.map((s) => new RegExp(s))
+
+/** Находки образцов с хвостом ключа в одном документе-гайде. */
+const keyFindings = (text) =>
+  buildTexts(
+    { nodes: [{ id: 'guide/k', type: 'guide', file: 'agent_docs/guides/k.md' }] },
+    { guides: [{ path: 'agent_docs/guides/k.md', text }] },
+  ).findings
 
 test('фронтматтер снят, заголовок остаётся словами', () => {
   const md = '---\nname: qa\ndescription: Тесты.\n---\n# Роль QA\n\nТекст роли.\n'
@@ -55,18 +63,60 @@ test('каждый образец стража заменён на «[скрыт
   for (const re of GUARD) assert.equal(re.test(out), false, `образец ${re} остался`)
 })
 
-test('заголовки PEM и токены GitHub заменены на «[скрыто]» и посчитаны', () => {
+// Образцы с хвостом ключа — не маскировка, а находка сборки: законного
+// упоминания с хвостом не бывает, а маскировка спрятала бы инцидент.
+test('заголовок PEM и токен GitHub в документе — находка с файлом и строкой', () => {
   const samples = [PEM('RSA'), PEM('EC'), PEM(''), PEM('ENCRYPTED'), ...['p', 'o', 'u', 's', 'r'].map(GH), GH_PAT]
-  const { text: out, hidden } = redact(samples.map((s) => `-----${s}-----`).join(' '))
-
-  assert.equal(hidden, samples.length)
-  assert.equal(out, samples.map(() => `-----${HIDDEN}-----`).join(' '))
-  for (const re of GUARD) assert.equal(re.test(out), false, `образец ${re} остался`)
+  for (const sample of samples) {
+    const found = keyFindings(`# Ключ\n\nстрока\n-----${sample}-----\n`)
+    assert.equal(found.length, 1, sample)
+    assert.equal(found[0].file, 'agent_docs/guides/k.md')
+    assert.equal(found[0].line, 4)
+  }
 })
 
-test('префикс токена GitHub без хвоста не скрывается', () => {
+test('сообщение находки не повторяет ключ', () => {
+  const [found] = keyFindings(`токен ${GH('p')} и ключ ${GROQ}`)
+  assert.equal(found.message.includes(TAIL), false)
+})
+
+test('образец с хвостом ключа redact не маскирует: его ловит находка, а не замена', () => {
+  const text = `токен ${GH('p')}`
+  assert.deepEqual(redact(text), { text, hidden: 0 })
+})
+
+test('ключ Groq с хвостом от 20 знаков — находка', () => {
+  assert.equal(keyFindings(`ключ ${GROQ} в тексте`).length, 1)
+})
+
+test('голый префикс Groq и короткий хвост — не находка и скрываются, как раньше', () => {
+  assert.deepEqual(keyFindings(`префикс ${GSK} и ключ ${GSK}abcdef`), [])
+  assert.deepEqual(redact(`префикс ${GSK} и ключ ${GSK}abcdef`), { text: `префикс ${HIDDEN} и ключ ${HIDDEN}`, hidden: 2 })
+})
+
+test('заголовок SSH2 ENCRYPTED PRIVATE KEY — находка', () => {
+  assert.equal(keyFindings(`---- ${PEM('SSH2 ENCRYPTED')} ----`).length, 1)
+})
+
+test('префикс GitHub внутри слова — не находка', () => {
+  assert.deepEqual(keyFindings(`слово x${GH('p')} и y${GH_PAT}`), [])
+})
+
+test('токен GitHub в адресе после «:» и в начале строки — находка', () => {
+  assert.equal(keyFindings(`https://user:${GH('s')}@github.com/o/r.git`).length, 1)
+  const [found] = keyFindings(`# Токен\n\n${GH_PAT}\n`)
+  assert.equal(found.line, 3)
+})
+
+test('токен, склеенный снятием разметки, — тоже находка', () => {
+  // В тексте документа хвост отделён кавычкой, в texts.json — уже нет.
+  assert.equal(keyFindings(`токен \`${'gh'}p_\`${TAIL}`).length, 1)
+})
+
+test('префикс токена GitHub без хвоста — не находка и не скрывается', () => {
   // Хвост у этих образцов обязателен: слово о префиксе — не токен.
   const text = `токен ${'gh'}p_ и префикс ${'github'}_pat_ в тексте, короткий ${'gh'}s_abc`
+  assert.deepEqual(keyFindings(text), [])
   assert.deepEqual(redact(text), { text, hidden: 0 })
 })
 
