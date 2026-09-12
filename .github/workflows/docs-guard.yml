@@ -42,8 +42,15 @@ jobs:
       # Инструмент атласа — клон project-atlas на пине из atlas-tool.sh
       # (ADR 2026-09-12-0440). Путь уходит в окружение job: его читает и шаг
       # --check, и test/secrets-step.test.js для сверки образцов ключей.
+      # Сначала присваивание, потом запись: внутри `echo "…$(…)"` сбой скрипта
+      # дал бы пустую подстановку и код 0, шаг остался бы зелёным, а красное
+      # пришло бы через два шага невнятным «cannot find module /build.js» —
+      # и сверка образцов с инструментом молча пропустилась бы. Под `bash -e`
+      # присваивание обрывает шаг там, где сломалось.
       - name: Инструмент атласа
-        run: echo "ATLAS_TOOL=$(bash .github/scripts/atlas-tool.sh)" >> "$GITHUB_ENV"
+        run: |
+          tool=$(bash .github/scripts/atlas-tool.sh)
+          echo "ATLAS_TOOL=$tool" >> "$GITHUB_ENV"
 
       # site/ не единица CI, а строки data.js добавляют PR класса C без ревью.
       - name: Данные страницы прогресса

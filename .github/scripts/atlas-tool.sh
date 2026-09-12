@@ -8,7 +8,12 @@
 #   node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --out atlas/dist
 #   node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --check
 #
-# В stdout — только путь к клону; сообщения идут в stderr.
+# В stdout — только физический путь к клону (`pwd -P`); сообщения идут в stderr.
+# Путь разыменован намеренно. Пройди он через символическую ссылку (на macOS
+# /tmp → /private/tmp), `build.js` сравнил бы `process.argv[1]` с уже
+# разыменованным `import.meta.url`, не признал бы себя точкой входа и не вызвал
+# `main()`: `--check` завершился бы кодом 0, ничего не проверив, — гейт прошёл
+# бы молча. В CI не воспроизводится, локально — легко.
 # Смена версии — PR класса A по процедуре раздела 4 того же ADR: TOOL_SHA
 # берётся командой `git rev-parse v<tag>^{}` в клоне project-atlas, а не
 # копируется из описания релиза.
@@ -36,7 +41,7 @@ if [ -d "$dir/.git" ]; then
   head=$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo нет)
   dirt=$(git -C "$dir" status --porcelain 2>/dev/null || echo '?? проверка не выполнилась')
   if [ "$head" = "$TOOL_SHA" ] && [ -z "$dirt" ]; then
-    printf '%s\n' "$dir"
+    printf '%s\n' "$(cd "$dir" && pwd -P)"
     exit 0
   fi
   echo "клон в ${dir} не прошёл проверку (HEAD ${head}) — пересоздаётся" >&2
@@ -68,4 +73,4 @@ if [ "$head" != "$TOOL_SHA" ]; then
   exit 1
 fi
 
-printf '%s\n' "$dir"
+printf '%s\n' "$(cd "$dir" && pwd -P)"
