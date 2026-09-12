@@ -12,7 +12,10 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
+      # В job исполняется внешний код (инструмент атласа) — токену на диске
+      # делать нечего.
       - uses: actions/checkout@v4
+        with: { persist-credentials: false }
 
       - name: Лимит длины файлов состояния (300 строк)
         run: |
@@ -36,25 +39,30 @@ jobs:
       - name: Имена атомарных документов (формат, время, не в будущем)
         run: node .github/scripts/doc-names.mjs
 
-      - name: Тесты атласа
-        run: node --test atlas/test/*.test.js
+      # Инструмент атласа — клон project-atlas на пине из atlas-tool.sh
+      # (ADR 2026-09-12-0440). Путь уходит в окружение job: его читает и шаг
+      # --check, и test/secrets-step.test.js для сверки образцов ключей.
+      - name: Инструмент атласа
+        run: echo "ATLAS_TOOL=$(bash .github/scripts/atlas-tool.sh)" >> "$GITHUB_ENV"
 
       # site/ не единица CI, а строки data.js добавляют PR класса C без ревью.
       - name: Данные страницы прогресса
         run: node --test test/*.test.js
 
       - name: Ссылки между документами разрешаются (атлас)
-        run: node atlas/build.js --check
+        run: node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --check
 
-      # Образцы с хвостом ключа — те же, что KEY_SAMPLES в atlas/lib/texts.js
-      # (совпадение проверяет atlas/test/secrets.test.js).
+      # Образцы с хвостом ключа — те же, что KEY_SAMPLES инструмента
+      # (`node build.js --samples`); совпадение проверяет test/secrets-step.test.js.
+      # Буква префикса — в классе `[k]`, как в инструменте: выражение ловит те же
+      # ключи, а сам текст гейта не префикс ключа.
       - name: Секреты не попали в репозиторий
         run: |
           # Только имена файлов (-l): строка с ключом не уходит в публичный журнал Actions.
           # Код grep: 0 — найдено, 1 — чисто, 2 и выше — проверка не выполнилась.
           # `|| rc=$?` сохраняет код и не даёт `bash -e` оборвать шаг.
           rc=0
-          files=$(grep -rIl --exclude-dir=.git -E 'sk-ant-[A-Za-z0-9_-]{10,}|BEGIN [A-Z0-9 ]*PRIVATE KEY|gsk_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}' .) || rc=$?
+          files=$(grep -rIl --exclude-dir=.git -E 's[k]-ant-[A-Za-z0-9_-]{10,}|BEGIN [A-Z0-9 ]*PRIVATE KEY|gs[k]_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}' .) || rc=$?
           if [ "$rc" -eq 0 ]; then
             echo "::error::в репозитории найден похожий на реальный API-ключ, файлы: $(printf '%s' "$files" | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')"
             exit 1
