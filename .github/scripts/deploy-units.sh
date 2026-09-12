@@ -52,6 +52,7 @@ if ! git merge-base --is-ancestor "$base" "$head" 2>/dev/null; then
 fi
 
 changed=$(set -o pipefail; git diff -z --name-only "$base" "$head" | tr '\n\0' '?\n')
-# Входы графа атласа — atlas/lib/sources.js; то же правило, что в ci.yml.
-atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
+# Входы графа атласа — явный список в atlas/atlas.config.json; то же правило,
+# что в ci.yml. Версия инструмента — atlas-tool.sh: её смена пересобирает атлас.
+atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
 printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -Fx -f <(printf '%s\n' "$all" | grep -v '^$') | jq -R . | jq -sc .

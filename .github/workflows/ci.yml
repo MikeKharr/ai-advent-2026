@@ -49,9 +49,10 @@ jobs:
           # не находит свою единицу.
           changed=$(set -o pipefail; git diff -z --name-only "$base" HEAD | tr '\n\0' '?\n') || { echo "::error::git diff ${base}..HEAD упал — затронутые единицы не определены"; exit 1; }
           # Единица сборки — день (days/dayN), сервис (router, agents) или атлас.
-          # Граф атласа строится из входов atlas/lib/sources.js: правка любого
-          # из них пересобирает атлас, и только его.
-          atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$)'
+          # Граф атласа строится из входов atlas/atlas.config.json: правка любого
+          # из них пересобирает атлас, и только его. Версия инструмента живёт в
+          # atlas-tool.sh — её смена тоже пересобирает витрину.
+          atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
           # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
           # идёт только [a-z0-9]+ с каталогом единицы в дереве.
           days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
@@ -71,7 +72,10 @@ jobs:
     env:
       DAY: ${{ matrix.day }}
     steps:
+      # В job исполняется внешний код (инструмент атласа) — токену на диске
+      # делать нечего.
       - uses: actions/checkout@v4
+        with: { persist-credentials: false }
       # Сервису агентов нужен Node 24: там встроенный SQLite без флага.
       - id: node
         name: Версия Node для единицы
@@ -105,9 +109,12 @@ jobs:
           fi
 
       # В образ атласа идёт собранный atlas/dist/site, поэтому сборка — до docker build.
+      # Инструмент — клон project-atlas на пине из atlas-tool.sh (ADR 2026-09-12-0440).
       - name: Сборка витрины атласа
         if: matrix.day == 'atlas'
-        run: node atlas/build.js
+        run: |
+          ATLAS_TOOL=$(bash .github/scripts/atlas-tool.sh)
+          node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --out atlas/dist
 
       - name: Сборка образа (без публикации)
         env:

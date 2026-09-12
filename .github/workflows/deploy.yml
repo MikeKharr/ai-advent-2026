@@ -3,7 +3,7 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/deploy.yml']
+    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/deploy.yml', '.github/scripts/atlas-tool.sh']
   workflow_dispatch:
     inputs:
       day:
@@ -69,16 +69,23 @@ jobs:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
 
-      - uses: docker/setup-buildx-action@v3
-
       # Атлас: сначала витрина из репозитория, потом образ — в него идёт только
       # atlas/dist/site. Коммит в подвале страницы — HEAD этой сборки, github.sha.
+      # Инструмент — клон project-atlas на пине из atlas-tool.sh; шаг стоит выше
+      # входа в GHCR и setup-buildx: после логина на диске лежит
+      # ~/.docker/config.json с токеном, и внешнему коду незачем исполняться
+      # рядом. Границей остаётся job, а не порядок шагов (ADR 2026-09-12-0440,
+      # раздел 3); защита от подмены версии — пин TOOL_SHA и класс A.
       - uses: actions/setup-node@v4
         if: matrix.day == 'atlas'
         with: { node-version: '22' }
       - name: Сборка витрины атласа
         if: matrix.day == 'atlas'
-        run: node atlas/build.js
+        run: |
+          ATLAS_TOOL=$(bash .github/scripts/atlas-tool.sh)
+          node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --out atlas/dist
+
+      - uses: docker/setup-buildx-action@v3
 
       # Токен не лежит на диске, пока исполняется код репозитория: checkout
       # его не сохраняет (persist-credentials: false), вход в GHCR — после сборки.

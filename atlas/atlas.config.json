@@ -1,0 +1,44 @@
+{
+  "format": 2,
+  "project": {
+    "name": "AI Advent 2026",
+    "repo": "https://github.com/mikekharr/ai-advent-2026",
+    "about": "agent_docs/adr/2026-09-10-0550-project-atlas.md"
+  },
+  "docs": {
+    "root": "agent_docs",
+    "adr": "adr",
+    "history": "development-history",
+    "design": "design",
+    "guides": "guides",
+    "invariants": "invariants.md",
+    "rootDocs": ["agent_docs/architecture.md", "agent_docs/index.md", "agent_docs/glossary.md", "AGENTS.md"]
+  },
+  "agents": {
+    "roles": ".claude/agents",
+    "skills": ".agents/skills",
+    "skillsLock": "skills-lock.json",
+    "modelPrefix": "claude-"
+  },
+  "units": {
+    "dir": "days",
+    "prefix": "day"
+  },
+  "deploy": {
+    "compose": "deploy/compose.yml",
+    "proxy": "caddy",
+    "caddyfile": "deploy/Caddyfile",
+    "landing": "site/index.html",
+    "static": [
+      {
+        "name": "site",
+        "dir": "site",
+        "file": "site/index.html",
+        "note": "Лендинг: статика, которую caddy отдаёт из bind-монтирования ../site."
+      }
+    ],
+    "registry": { "prefix": "ghcr.io/", "external": "ghcr" },
+    "providers": { "file": "router/config/providers.json", "service": "router" }
+  },
+  "overlay": "atlas/overlay.json"
+}
