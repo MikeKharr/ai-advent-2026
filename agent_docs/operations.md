@@ -236,7 +236,9 @@ grep -o '^[A-Z_]*=' day9.env
 
 Контейнер `atlas` (`atlas/`, ADR `2026-09-10-0550`) отдаёт статику схемы
 проекта на `https://challenge.zpq.ai/atlas/`: внутри образа Caddy раздаёт
-файлы, которые собрал `node atlas/build.js` в workflow. Секретов, тома и
+файлы, которые в workflow собрал инструмент из `MikeKharr/project-atlas`
+(клон по закреплённому тегу, `.github/scripts/atlas-tool.sh`; ADR
+`2026-09-12-0440`). Секретов, тома и
 `env_file` у атласа нет. Он пересобирается при правке любого входа своего
 графа (документы в `agent_docs/`, роли, скиллы, `compose.yml`, `Caddyfile`,
 лендинг); дни при этом не пересобираются.
