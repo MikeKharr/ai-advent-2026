@@ -181,17 +181,27 @@ node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --check   
   «пропуск»); образ собирается и проверяется на `/healthz`, как сегодня.
   `actions/checkout` в `test` — `persist-credentials: false`.
 - `deploy.yml`: в `paths` добавляется `.github/scripts/atlas-tool.sh`;
-  шаг сборки витрины — те же две команды, и стоит **выше
-  `docker/setup-buildx-action`**, а не только выше `docker/login-action`:
-  после setup-buildx в окружении job есть токен кэша GHA, который читают
-  сборки всех единиц (`cache-from: type=gha`), и внешний код не должен
-  исполняться рядом с ним. Контекст `atlas` и теги образа без изменений.
+  шаг сборки витрины — те же две команды. Контекст `atlas` и теги образа
+  без изменений. Шаг сборки витрины стоит выше `docker/login-action` и
+  `docker/setup-buildx-action`. Это гигиена, а не граница: после логина
+  на диске лежит `~/.docker/config.json` с токеном GHCR, и внешнему коду
+  незачем исполняться рядом. Границей остаётся job — код в любом
+  `run:`-шаге читает окружение процесса раннера и может оставить фоновый
+  процесс до конца job, поэтому порядок шагов не защищает от враждебной
+  версии инструмента. Защита от подмены версии — пин `TOOL_SHA`, класс A
+  и процедура раздела 4. Триггер на ужесточение: **если у project-atlas
+  появятся участники с правом записи, которых нет в ai-advent, сборка
+  витрины выносится в отдельную джобу без `packages: write`** — тогда
+  это становится обязательным. Сейчас отдельная джоба не требуется:
+  сменить пин может только учётная запись владельца, которая и так
+  мержит в ai-advent.
 - `deploy-units.sh`: то же выражение входов, что в `ci.yml`.
 
-Инструмент исполняется только в jobs без секретов (`contents: read`,
-checkout без сохранённого токена; в `deploy` — до setup-buildx и до входа
-в GHCR). Что он читает — явный список из `atlas/atlas.config.json` плюс
-запретный список (ADR `2026-09-11-1852`); что пишет — только `atlas/dist`.
+Инструмент исполняется в jobs с `contents: read` и checkout без
+сохранённого токена; в `deploy` — в job `build` до логина в GHCR, где
+граница — сама job, а не порядок шагов (см. выше). Что он читает — явный
+список из `atlas/atlas.config.json` плюс запретный список (ADR
+`2026-09-11-1852`); что пишет — только `atlas/dist`.
 
 **Тесты шага секретов возвращаются в ai-advent.** Вместе с `atlas/test/`
 уходят тесты, исполнявшие тело шага «Секреты не попали в репозиторий»
@@ -379,7 +389,7 @@ node "$ATLAS_TOOL/test/rename-map.js" temp/before/atlas/dist atlas/dist  # гр�
 
 | # | Репозиторий, класс | Что | Проверка | Прод |
 |---|---|---|---|---|
-| P1 | project-atlas, PR | формат 2 по разделу 5; тест тегов статуса `en`; `compat` с картой и проверкой эталона по содержимому; `test/rename-map.js`; `node build.js --samples`; `package.json` 2.0.0; спецификация, README, пример; план `docs/migration-plan.md` | `test`, `secrets`, `compat` зелёные; на фикстурах `--check` 0 находок | не задет |
+| P1 | project-atlas, PR | формат 2 по разделу 5; тест тегов статуса `en`; `compat` с картой и проверкой эталона по содержимому; `test/rename-map.js`; `node build.js --samples`; `package.json` 2.0.0; спецификация, README, пример; план `docs/migration-plan.md` — первым коммитом PR | `test`, `secrets`, `compat` зелёные; на фикстурах `--check` 0 находок | не задет |
 | T | project-atlas, тег | `v2.0.0` на коммит мержа P1 после зелёного CI (агент); sha из `git rev-parse v2.0.0^{}` | ruleset `protect-version-tags` не даёт тег сдвинуть | не задет |
 | A1 | ai-advent, **класс A** | разделы 1–3: скрипт с критериями раздела 1, три workflow (порядок шагов и `persist-credentials: false`), `deploy-units.sh`, `atlas/atlas.config.json`, overlay `units`, удаление кода, `atlas/README.md`, `test/secrets-step.test.js` | критерий раздела 6 в описании PR; `ci-ok`, `guard`, `lint` зелёные; `reviewer` + `compliance` (снятие вето по условиям разделов 1, 3, 4) + `design-review` (подписи) | мерж → `deploy` пересобирает `atlas`; `/atlas/healthz` 200 |
 | A2 | ai-advent, класс C | `operations.md`, `architecture.md`, `index.md`, `snapshot.md`, `backlog`, запись истории, `site/data.js` | `guard` зелёный (`--check` инструментом) | docs-мерж пересобирает атлас, как сегодня |
