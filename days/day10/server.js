@@ -253,7 +253,7 @@ async function handleAnswer(req, res) {
  * поэтому они идут в запрос. Список закрытый: что не названо здесь, до агента
  * не доходит.
  */
-const CONTEXT_QUERY = ['strategy', 'model', 'window', 'summarizeAt', 'contextTokens']
+const CONTEXT_QUERY = ['strategy', 'model', 'window', 'summarizeAt', 'contextTokens', 'factsTokens']
 
 function contextQuery(req) {
   const from = new URL(req.url, 'http://local').searchParams
@@ -291,6 +291,7 @@ async function handleChat(req, res) {
           totalTokens: 0,
           // Удаление подтвердил агент, новая сессия пуста: нули здесь — факт.
           summary: null,
+          facts: null,
           context: { total: 0, summaryTokens: 0, freshTokens: 0 },
           session: { name: sessionName(fresh) },
         },
@@ -319,6 +320,9 @@ async function handleChat(req, res) {
         totalTokens: json.totalTokens ?? null,
         // Сводку и контекст считает агент; не прислал — страница их не показывает.
         summary: json.summary ?? null,
+        // Факты — такая же выжимка из переписки, как сводка, и странице нужны
+        // по той же причине: блок памяти показывает, что агент запомнил.
+        facts: json.facts ?? null,
         context: json.context ?? null,
         // Голова ветки — у агента: перезагрузка и второй таб видят одно и то же
         // (ADR 2026-09-14-0447, п. 8.5). Нет поля — дерева нет, путь линеен.
