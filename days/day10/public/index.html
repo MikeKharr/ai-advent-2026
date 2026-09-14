@@ -667,6 +667,7 @@
               <label class="strategy"><input type="radio" name="strategy" value="summary"
                 checked><span>Сводка при пороге</span></label>
               <label class="strategy"><input type="radio" name="strategy" value="window"><span>Скользящее окно</span></label>
+              <label class="strategy"><input type="radio" name="strategy" value="facts"><span>Липкие факты</span></label>
               <label class="strategy"><input type="radio" name="strategy" value="branches"><span>Ветки</span></label>
             </div>
             <span class="hint">Чем агент помнит разговор. Смена действует со следующего
@@ -731,6 +732,18 @@
             откажет.</span>
             <span class="hint" id="p-window-live" role="status"></span>
             <span class="hint" id="p-window-why" hidden></span>
+          </label>
+
+          <label class="field">
+            <span class="name">Лимит фактов<span class="na" id="p-facts-na"
+              hidden>не применяется</span></span>
+            <input id="p-facts-tokens" class="num" type="number" min="200" max="2000" step="100"
+                   value="600" inputmode="numeric" aria-describedby="p-facts-live">
+            <span class="hint">Сколько токенов отводится на выжимку фактов (200–2000).
+            Обновляет факты Claude Haiku 4.5 — при любой модели чата, и это платный вызов
+            после каждого ответа.</span>
+            <span class="hint" id="p-facts-live" role="status"></span>
+            <span class="hint" id="p-facts-why" hidden></span>
           </label>
 
           <label class="field">
@@ -801,10 +814,10 @@
 
     <footer>
       Источники: <span id="sources">…</span>. Ссылки в ответах — только из лент
-      изданий; ссылку не из списка агент вырезает. <span id="ttl-note">Переписка хранится
-      у агента и удаляется кнопкой «очистить»</span>; события монитора живут до
-      перезагрузки страницы. Сводка переписки хранится вместе с ней столько же и
-      удаляется той же кнопкой. Сжимает переписку Claude Haiku 4.5 — при любой модели
+      изданий; ссылку не из списка агент вырезает. <span id="ttl-note">Переписка
+      и выжимка из неё — сводка и факты — хранятся у агента и удаляются кнопкой
+      «очистить» вместе, одним действием</span>; события монитора живут до
+      перезагрузки страницы. Делает выжимку Claude Haiku 4.5 — при любой модели
       чата. Имя сессии — метка этой переписки, выведенная из её
       идентификатора необратимо: восстановить по нему переписку нельзя, а сам
       идентификатор лежит в cookie и странице недоступен. После «очистить»
@@ -817,7 +830,8 @@
 
 <dialog id="ask-clear" aria-labelledby="ask-clear-h" tabindex="-1">
   <p class="dlg-name" id="ask-clear-h">Очистить переписку?</p>
-  <p class="dlg-purpose">Переписка удалится у агента, и начнётся новая. Вернуть её будет нельзя.</p>
+  <p class="dlg-purpose">Переписка, сводка и факты будут удалены. Начнётся новая сессия.
+  Вернуть их будет нельзя.</p>
   <div class="dlg-actions">
     <button class="dlg-btn is-danger" id="ask-clear-yes" type="button">Очистить</button>
     <button class="dlg-btn is-second" id="ask-clear-no" type="button">Отмена</button>
@@ -985,8 +999,9 @@
       const hours = d.session?.ttlHours;
       if (hours) {
         $('ttl-note').textContent =
-          `Переписка хранится у агента ${hours} ${plural(hours, 'час', 'часа', 'часов')} ` +
-          'без новых сообщений и удаляется кнопкой «очистить»';
+          'Переписка и выжимка из неё — сводка и факты — хранятся у агента ' +
+          `${hours} ${plural(hours, 'час', 'часа', 'часов')} без новых сообщений ` +
+          'и удаляются кнопкой «очистить» вместе, одним действием';
         // Обещание о сроке живёт в футере: второй строкой в подсказке оно
         // стоило логу 46 px, а спецификация требует от лога не меньше 380.
       }
@@ -1214,8 +1229,12 @@
   // Сводку и контекст тоже считает агент (ADR 2026-09-11-1608): страница
   // токенов не складывает — разошлась бы с сервером на первой ошибке записи.
   let summaryState = null;   // { text, tokens, sourceTokens, updatedAt, throughId, model, truncated }
+  // Факты — состояние сессии, как сводка: { text, tokens, updatedAt, throughId,
+  // truncatedStreak, limitTokens, model } или null, пока вызова не было.
+  let factsState = null;
   let contextState = null;   // { total, summaryTokens, freshTokens } — что уйдёт со следующим сообщением
   let foldOpen = false;      // раскрытие блока сводки переживает перерисовку лога
+  let factsOpen = false;     // то же у блока фактов: блок другой, и память о нём своя
   // Дерево ведёт агент (ADR 2026-09-14-0447, п. 8.4): голова приходит с сервера,
   // поэтому перезагрузка и второй таб видят одну и ту же ветку.
   let headId = null;         // null — дерева нет, путь равен всей переписке
@@ -1259,6 +1278,20 @@
           have <= m
             ? `все ${have} ${plural(have, 'реплика', 'реплики', 'реплик')}`
             : `последние ${m} ${plural(m, 'реплика', 'реплики', 'реплик')} из ${have}`,
+        );
+      }
+      // Факты: подпись называет и выжимку, и реплики — в контекст идёт то и
+      // другое (ADR 2026-09-14-0447, п. 3). Фактов ещё нет — это честный ноль,
+      // а не пропуск: строка `facts` появляется только после первого вызова.
+      if (s === 'facts') {
+        const f = Number.isFinite(contextState.factsTokens) ? contextState.factsTokens : 0;
+        tail.push(`из них факты ${fmtInt(f)}`);
+        const m = Number($('p-window').value) || 0;
+        const have = pathMessages().length;
+        tail.push(
+          have <= m
+            ? `все ${have} ${plural(have, 'реплика', 'реплики', 'реплик')}`
+            : `последние ${m} ${plural(m, 'реплика', 'реплики', 'реплик')}`,
         );
       }
       if (s === 'branches') {
@@ -1573,6 +1606,84 @@
   };
 
   /**
+   * Блок фактов: что модель запомнила о разговоре. Текст — данные, а не
+   * разметка: ставится через textContent, в ссылки не превращается и на
+   * разметку не разбирается (ADR 2026-09-14-0447, п. 7.2).
+   *
+   * `behind` — сколько сообщений пути прошло после `throughId`; показывается
+   * только при неудачном последнем обновлении, иначе строка висела бы всегда.
+   */
+  const renderFactsFold = (f, behind) => {
+    const li = document.createElement('li');
+    li.className = 'fold';
+    // Лимит последнего вызова знает только агент, и в ответе его нет.
+    // Подставлять заданный на странице нельзя: подняв лимит, чтобы факты
+    // сдвинулись, пользователь прочитал бы, что вызов шёл уже с новым числом.
+    // Числа, которого страница не знает, в подписи нет вовсе.
+    const limit = Number.isFinite(f.limitTokens) ? f.limitTokens : null;
+    const streak = Number.isFinite(f.truncatedStreak) ? f.truncatedStreak : 0;
+    const text = String(f.text ?? '');
+    const lines = text.split('\n').filter((s) => s.trim()).length;
+
+    const d = document.createElement('details');
+    d.open = factsOpen;
+    d.addEventListener('toggle', () => { factsOpen = d.open; });
+    const summary = document.createElement('summary');
+    const label = document.createElement('span');
+    const stale =
+      streak >= 1 && behind >= 1
+        ? ` · не обновлялись ${behind} ${plural(behind, 'сообщение', 'сообщения', 'сообщений')}`
+        : '';
+    // Модель названа всегда: обновляет факты не та, что отвечает в чате.
+    label.append(
+      `Факты · ${lines} ${plural(lines, 'строка', 'строки', 'строк')} · ` +
+        (limit === null
+          ? `${fmtInt(f.tokens)} токенов`
+          : `${fmtInt(f.tokens)} из ${fmtInt(limit)} токенов`) +
+        ` · обновил ${SUMMARY_MODEL}${stale}`,
+    );
+    summary.append(label);
+
+    const body = document.createElement('p');
+    body.className = 'fold-text';
+    // Первый вызов не уложился в лимит — текста ещё нет. Пустая область без
+    // причины была бы дефектом, поэтому причина сказана словами.
+    body.textContent = text.trim()
+      ? text
+      : 'Фактов пока нет: первое обновление не уложилось в лимит.';
+    const dl = document.createElement('dl');
+    dl.className = 'ev-dl';
+    const row = (term, value) => {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    if (limit !== null) row('лимит', `${fmtInt(limit)} токенов`);
+    if (f.model) row('модель', `${f.model} — при любой модели чата`);
+    if (f.updatedAt) row('обновлены', fmtTime(f.updatedAt));
+    d.append(summary, body, dl);
+    li.append(d);
+
+    // Узнавать, что память перестала обновляться, раскрыв блок, поздно:
+    // строка видна и при закрытом блоке.
+    const named = limit === null ? '' : ` ${fmtInt(limit)}`;
+    if (streak >= 2)
+      li.append(
+        warnLine(
+          `Факты не обновляются: дважды не уложились в лимит${named}. ` +
+            'Поднимите лимит — обновление возобновится.',
+        ),
+      );
+    else if (streak === 1)
+      li.append(
+        warnLine(`Факты не уложились в лимит${named} и не обновлены — поднимите лимит`),
+      );
+    return li;
+  };
+
+  /**
    * Номера сообщений с сервера — локальным репликам, по ним встаёт блок
    * сводки. Сверка с хвоста по роли и тексту: отказы самой страницы у агента
    * не хранятся и пропускаются, реплики из другой вкладки — тоже.
@@ -1602,7 +1713,12 @@
     const list = pathMessages();
     // Блок сводки — сразу после последнего сообщения, вошедшего в неё.
     let foldAt = -1;
-    const branches = strategy() === 'branches';
+    const mode = strategy();
+    const branches = mode === 'branches';
+    // На экране живёт блок только текущей стратегии: строки сводки и фактов у
+    // одной сессии могут существовать обе, но два блока памяти рядом читались
+    // бы как два разных контекста.
+    const memory = mode === 'summary' ? summaryState : mode === 'facts' ? factsState : null;
     list.forEach((m) => {
       try {
         const node = m.role === 'user' ? renderUser(m) : renderAgent(m);
@@ -1610,7 +1726,7 @@
         if (branches && m.role === 'user') addActions(node, m);
         nodes.push(node);
       } catch {}
-      if (summaryState && m.id === summaryState.throughId) foldAt = nodes.length;
+      if (memory && m.id === memory.throughId) foldAt = nodes.length;
     });
     if (branchWarn) {
       const li = document.createElement('li');
@@ -1620,9 +1736,17 @@
     }
     // Сообщение сводки не нашлось — она всё равно пересказ прежней части
     // разговора, и её место — над ним.
-    if (summaryState && nodes.length > 0) {
+    if (memory && nodes.length > 0) {
       try {
-        nodes.splice(foldAt === -1 ? 0 : foldAt, 0, renderFold(summaryState));
+        // k считает страница по пути и throughId: нового поля контракта для
+        // «не обновлялись k сообщений» не нужно.
+        const idx = list.findIndex((m) => m.id === memory.throughId);
+        const behind = idx === -1 ? 0 : list.length - 1 - idx;
+        nodes.splice(
+          foldAt === -1 ? 0 : foldAt,
+          0,
+          mode === 'facts' ? renderFactsFold(memory, behind) : renderFold(memory),
+        );
       } catch {}
     }
     log.replaceChildren(...(nodes.length > 0 ? nodes : [empty]));
@@ -1644,6 +1768,7 @@
       restoredFromServer = messages.length > 0;
       spentTokens = Number.isFinite(d.totalTokens) ? d.totalTokens : null;
       summaryState = d.summary ?? null;
+      factsState = d.facts ?? null;
       contextState = d.context ?? null;
       headId = Number.isInteger(d.head) ? d.head : null;
       showMeters();
@@ -1696,12 +1821,15 @@
   // берётся умолчание разметки.
   const STRATEGY_STORE = 'day10-strategy';
   const WINDOW_STORE = 'day10-window';
+  const FACTS_STORE = 'day10-facts-tokens';
   const STRATEGY_LABEL = {
     summary: 'Сводка при пороге',
     window: 'Скользящее окно',
+    facts: 'Липкие факты',
     branches: 'Ветки',
   };
   const windowField = $('p-window');
+  const factsField = $('p-facts-tokens');
 
   const strategy = () =>
     document.querySelector('input[name=strategy]:checked')?.value ?? 'summary';
@@ -1712,30 +1840,48 @@
     if (radio) radio.checked = true;
     const m = Number(localStorage.getItem(WINDOW_STORE));
     if (Number.isInteger(m) && m >= 1 && m <= 40) windowField.value = String(m);
+    const t = Number(localStorage.getItem(FACTS_STORE));
+    if (Number.isInteger(t) && t >= 200 && t <= 2000) factsField.value = String(t);
   } catch {}
 
   /** Применимость полей — таблица ADR, п. 1. */
   const APPLIES = {
-    summary: { context: true, summarizeAt: true, window: false },
-    window: { context: false, summarizeAt: false, window: true },
-    branches: { context: true, summarizeAt: false, window: false },
+    summary: { context: true, summarizeAt: true, window: false, factsTokens: false },
+    window: { context: false, summarizeAt: false, window: true, factsTokens: false },
+    facts: { context: false, summarizeAt: false, window: true, factsTokens: true },
+    branches: { context: true, summarizeAt: false, window: false, factsTokens: false },
   };
   // Причина говорит, что работает вместо выключенного поля, а не только то,
-  // что оно выключено.
+  // что оно выключено. У «последних реплик» вместо них работает разное в
+  // разных режимах, поэтому причина зависит от стратегии.
   const WHY = {
     context: 'в контекст идут последние M реплик целиком, без потолка в токенах.',
     summarizeAt: 'сводка в этом режиме не делается.',
-    window: 'сколько реплик уйдёт модели, решает окно контекста.',
+    window: {
+      summary: 'сколько реплик уйдёт модели, решает сводка и окно контекста.',
+      branches: 'сколько реплик уйдёт модели, решает окно контекста.',
+    },
+    factsTokens: 'факты в этом режиме не собираются.',
   };
   const APPLY_LINE = {
-    summary: 'Применяются: размер контекста, порог сжатия. Не применяется: последние реплики.',
-    window: 'Применяются: последние реплики. Не применяются: размер контекста, порог сжатия.',
-    branches: 'Применяется: размер контекста. Не применяются: порог сжатия, последние реплики.',
+    summary:
+      'Применяются: размер контекста, порог сжатия. Не применяются: последние реплики, ' +
+      'лимит фактов.',
+    window:
+      'Применяются: последние реплики. Не применяются: размер контекста, порог сжатия, ' +
+      'лимит фактов.',
+    facts:
+      'Применяются: последние реплики, лимит фактов. Не применяются: размер контекста, ' +
+      'порог сжатия.',
+    branches:
+      'Применяется: размер контекста. Не применяются: порог сжатия, последние реплики, ' +
+      'лимит фактов.',
   };
   const FIELDS = [
     { key: 'context', at: 'p-context', input: 'p-context', live: 'p-context-live' },
     { key: 'summarizeAt', at: 'p-summarize', input: 'p-summarize-at', live: 'p-summarize-live' },
     { key: 'window', at: 'p-window', input: 'p-window', live: 'p-window-live' },
+    { key: 'factsTokens', at: 'p-facts', input: 'p-facts-tokens', live: 'p-facts-live' },
   ];
 
   /* ---------- путь и дерево ---------- */
@@ -1985,6 +2131,7 @@
     const model = chosenModel();
     if (model) q.set('model', model);
     if (APPLIES[s].window) q.set('window', windowField.value);
+    if (APPLIES[s].factsTokens) q.set('factsTokens', factsField.value);
     if (APPLIES[s].context) q.set('contextTokens', $('p-context').value);
     if (APPLIES[s].summarizeAt && !summarizeField.disabled)
       q.set('summarizeAt', summarizeField.value);
@@ -2020,7 +2167,9 @@
       $(`${f.at}-na`).hidden = ok;
       const why = $(`${f.at}-why`);
       why.hidden = ok;
-      if (!ok) why.textContent = `Не применяется при стратегии «${name}»: ${WHY[f.key]}`;
+      // У «последних реплик» вместо них работает разное в разных режимах.
+      const reason = typeof WHY[f.key] === 'string' ? WHY[f.key] : WHY[f.key][s];
+      if (!ok) why.textContent = `Не применяется при стратегии «${name}»: ${reason}`;
       // Строка действующего значения при неприменимости молчит: её место
       // заняла причина, и объявляет смену одна строка под контролом.
       $(f.live).hidden = !ok;
@@ -2049,6 +2198,9 @@
   }
   windowField.addEventListener('input', () => {
     try { localStorage.setItem(WINDOW_STORE, windowField.value); } catch {}
+  });
+  factsField.addEventListener('input', () => {
+    try { localStorage.setItem(FACTS_STORE, factsField.value); } catch {}
   });
 
   /**
@@ -2122,6 +2274,7 @@
     const parts = [STRATEGY_LABEL[s]];
     if (model) parts.push(model.label);
     showWindowLive();
+    showFactsLive();
     // «X из Y» — действует из заданного: окно модели из последнего ответа на
     // ней, если оно меньше. Порог «из» не получает — он не урезается.
     const effective = modelWindow();
@@ -2141,6 +2294,8 @@
       );
     if (APPLIES[s].window)
       parts.push(`последние ${fmtInt(Number(windowField.value) || 0)} реплик`);
+    if (APPLIES[s].factsTokens)
+      parts.push(`факты до ${fmtInt(Number(factsField.value) || 0)}`);
     // Число статей параметром больше не является: его место заняло самое
     // дорогое из умолчаний.
     parts.push(`ответ до ${fmtInt(Number($('p-max-tokens').value) || 0)} токенов`);
@@ -2155,6 +2310,17 @@
       have <= m
         ? `Сейчас в ветке ${have} ${plural(have, 'реплика', 'реплики', 'реплик')} — уйдут все.`
         : `Уйдут последние ${m} ${plural(m, 'реплика', 'реплики', 'реплик')} из ${have}.`;
+  };
+
+  /**
+   * Лимит фактов: потолок выхода вызова, который агент делает после каждого
+   * ответа. Модель названа всегда — обновляет факты не та, что отвечает в
+   * чате, и платит за это ключ (ADR 2026-09-14-0447, п. 7.1).
+   */
+  const showFactsLive = () => {
+    const t = Number(factsField.value) || 0;
+    $('p-facts-live').textContent =
+      `Факты — до ${fmtInt(t)} токенов, обновляет ${SUMMARY_MODEL}.`;
   };
 
   /**
@@ -2184,7 +2350,7 @@
   // До ответа сервера поля уже должны знать, применимы ли они.
   applyStrategy();
 
-  for (const id of ['p-context', 'p-summarize-at', 'p-max-tokens', 'p-window']) {
+  for (const id of ['p-context', 'p-summarize-at', 'p-max-tokens', 'p-window', 'p-facts-tokens']) {
     $(id).addEventListener('input', () => {
       showParamsSummary();
       showContextLive();
@@ -2249,7 +2415,8 @@
 
     showSummarizeLive();
     // Выключенное поле порога браузер не проверяет — и не отправляет.
-    const invalid = [$('p-per-source'), $('p-max-tokens'), $('p-context'), summarizeField, windowField]
+    const invalid = [$('p-per-source'), $('p-max-tokens'), $('p-context'), summarizeField,
+      windowField, factsField]
       .find((el) => !el.checkValidity());
     if (invalid) {
       // Поле может лежать в закрытом блоке параметров: показать сообщение
@@ -2274,6 +2441,7 @@
     // Неприменимые поля не отправляются вовсе (ADR 2026-09-14-0447, п. 1).
     if (APPLIES[mode].context) params.contextTokens = Number($('p-context').value);
     if (APPLIES[mode].window) params.window = Number(windowField.value);
+    if (APPLIES[mode].factsTokens) params.factsTokens = Number(factsField.value);
     // Правка рождает сестру: новый вопрос садится под того же родителя, что и
     // правимое сообщение. Родитель — корень, значит 0.
     if (mode === 'branches' && editing) params.parentId = editParent ?? 0;
@@ -2404,6 +2572,7 @@
       const d = await r.json();
       adoptIds(d.messages ?? []);
       summaryState = d.summary ?? null;
+      factsState = d.facts ?? null;
       contextState = d.context ?? null;
       if (Number.isInteger(d.head)) headId = d.head;
       if (Number.isFinite(d.totalTokens)) spentTokens = d.totalTokens;
@@ -2450,6 +2619,7 @@
       restoredFromServer = false;
       spentTokens = 0;
       summaryState = null;
+      factsState = null;
       contextState = body.context ?? null;
       headId = null;
       cancelEdit();

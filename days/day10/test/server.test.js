@@ -101,6 +101,15 @@ const agent = http.createServer(async (req, res) => {
             truncated: false,
           }
         : null,
+      facts: withSummary
+        ? {
+            text: 'цель: следить за раундами в финтехе',
+            tokens: 420,
+            updatedAt: '2026-09-14T14:05:10.000Z',
+            throughId: 7,
+            truncatedStreak: 2,
+          }
+        : null,
       // Контекст агент считает под ту стратегию, которую назвала страница.
       context:
         new URLSearchParams(query).get('strategy') === 'window'
@@ -367,6 +376,41 @@ test('стратегия и её поля уходят агенту как ес�
   assert.equal(sent.window, 10)
   // Неприменимое поле страница не отправляет, и день его не подставляет.
   assert.equal('contextTokens' in sent, false)
+})
+
+test('лимит фактов уходит агенту: и в запуске, и при чтении сессии', async () => {
+  const r = await ask(
+    { prompt: 'вопрос', strategy: 'facts', window: 10, factsTokens: 600 },
+    { ip: '10.0.0.15' },
+  )
+  assert.equal(r.status, 202)
+  const sent = JSON.parse(agentLog.at(-1).body).input
+  assert.equal(sent.strategy, 'facts')
+  assert.equal(sent.factsTokens, 600)
+  // Счётчик обязан описывать режим фактов, поэтому лимит идёт и в чтение.
+  await fetch(`${base}/api/chat?strategy=facts&window=10&factsTokens=600`, {
+    headers: { cookie: `day10_sid=${SUMMARIZED}` },
+  })
+  assert.match(agentLog.at(-1).url, /factsTokens=600/)
+})
+
+test('факты доходят до страницы: без них блок памяти нечем показать', async () => {
+  const chat = await (
+    await fetch(`${base}/api/chat?strategy=facts&factsTokens=600`, {
+      headers: { cookie: `day10_sid=${SUMMARIZED}` },
+    })
+  ).json()
+  assert.equal(chat.facts.tokens, 420)
+  assert.equal(chat.facts.throughId, 7)
+  assert.equal(chat.facts.truncatedStreak, 2)
+  // После очистки фактов нет: выжимка уходит вместе с перепиской.
+  const cleared = await (
+    await fetch(`${base}/api/chat`, {
+      method: 'DELETE',
+      headers: { cookie: 'day10_sid=99999999-9999-4999-8999-999999999999' },
+    })
+  ).json()
+  assert.equal(cleared.facts, null)
 })
 
 test('родитель ветки уходит агенту: правка рождает сестру', async () => {
