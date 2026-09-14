@@ -178,14 +178,19 @@ export function parseSummarizeAt(value, contextTokens) {
 
 /**
  * Стратегии управления контекстом дня 10 (ADR 2026-09-14-0447, п. 1).
- * `facts` в этом заходе не реализована и значением не принимается: мёртвого
- * кода в параметрах не заводим. Без поля `strategy` поведение прежнее
- * (дни 6–9), поэтому список не содержит «пусто».
+ * Без поля `strategy` поведение прежнее (дни 6–9), поэтому список не
+ * содержит «пусто».
  */
-export const STRATEGIES = ['summary', 'window', 'branches']
+export const STRATEGIES = ['summary', 'window', 'facts', 'branches']
 
 /** Скользящее окно: сколько последних реплик пути уходит модели. */
 export const WINDOW_LIMITS = { min: 1, max: 40, default: 10 }
+
+/**
+ * Лимит блока фактов в токенах (ADR 2026-09-14-0447, п. 1). Он же —
+ * потолок ответа вызова фактов: больше лимита модель не напишет.
+ */
+export const FACTS_LIMITS = { min: 200, max: 2000, default: 600 }
 
 /**
  * Стратегия из входа запуска. Без поля — null, и агент ведёт себя как в
@@ -212,6 +217,21 @@ export function parseWindow(value) {
     }
   }
   return { ok: true, value: parsed.value ?? WINDOW_LIMITS.default }
+}
+
+/**
+ * Лимит фактов в токенах для стратегии `facts`. Ограничение именно в
+ * токенах, а не в числе строк: потолок выхода вызова считается в них же.
+ */
+export function parseFactsTokens(value) {
+  const parsed = parseBoundedInt(value, FACTS_LIMITS.min, FACTS_LIMITS.max)
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      message: `Лимит фактов: целое от ${FACTS_LIMITS.min} до ${FACTS_LIMITS.max}`,
+    }
+  }
+  return { ok: true, value: parsed.value ?? FACTS_LIMITS.default }
 }
 
 /**

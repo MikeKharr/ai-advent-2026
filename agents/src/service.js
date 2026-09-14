@@ -74,6 +74,22 @@ function summaryView(row) {
   }
 }
 
+/**
+ * Факты для страницы: текст показывается простым текстом, в ссылки не
+ * превращается. `truncatedStreak` объясняет, почему факты перестали
+ * обновляться (ADR 2026-09-14-0447, п. 7.3).
+ */
+function factsView(row) {
+  if (!row) return null
+  return {
+    text: row.text,
+    tokens: row.tokens,
+    updatedAt: new Date(row.updatedAt).toISOString(),
+    throughId: row.throughId,
+    truncatedStreak: row.truncatedStreak,
+  }
+}
+
 export function createService({ agents, archive, runs, sessions = null, env, log = console.error }) {
   /**
    * Счётчики сессий для /healthz: их отказ не должен валить проверку, но и
@@ -262,6 +278,8 @@ export function createService({ agents, archive, runs, sessions = null, env, log
           totalTokens: sessions.totalTokens(sessionId),
           // Сводка разговора дня 9 или null (ADR 2026-09-11-1608).
           summary: summaryView(sessions.summary(sessionId)),
+          // Факты разговора дня 10 или null (ADR 2026-09-14-0447, п. 7.3).
+          facts: factsView(sessions.facts(sessionId)),
           // Голова текущей ветки; null у линейных сессий дней 6–9.
           head: sessions.head(sessionId),
           // Что накоплено к следующему сообщению. Без параметров — ответ
