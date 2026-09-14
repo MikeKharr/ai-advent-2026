@@ -1616,9 +1616,11 @@
   const renderFactsFold = (f, behind) => {
     const li = document.createElement('li');
     li.className = 'fold';
-    // Лимит — тот, с которым сделан последний вызов; пока агент его не
-    // прислал, честнее показать заданный на странице, чем не показать ничего.
-    const limit = Number.isFinite(f.limitTokens) ? f.limitTokens : Number(factsField.value) || 0;
+    // Лимит последнего вызова знает только агент, и в ответе его нет.
+    // Подставлять заданный на странице нельзя: подняв лимит, чтобы факты
+    // сдвинулись, пользователь прочитал бы, что вызов шёл уже с новым числом.
+    // Числа, которого страница не знает, в подписи нет вовсе.
+    const limit = Number.isFinite(f.limitTokens) ? f.limitTokens : null;
     const streak = Number.isFinite(f.truncatedStreak) ? f.truncatedStreak : 0;
     const text = String(f.text ?? '');
     const lines = text.split('\n').filter((s) => s.trim()).length;
@@ -1635,7 +1637,10 @@
     // Модель названа всегда: обновляет факты не та, что отвечает в чате.
     label.append(
       `Факты · ${lines} ${plural(lines, 'строка', 'строки', 'строк')} · ` +
-        `${fmtInt(f.tokens)} из ${fmtInt(limit)} токенов · обновил ${SUMMARY_MODEL}${stale}`,
+        (limit === null
+          ? `${fmtInt(f.tokens)} токенов`
+          : `${fmtInt(f.tokens)} из ${fmtInt(limit)} токенов`) +
+        ` · обновил ${SUMMARY_MODEL}${stale}`,
     );
     summary.append(label);
 
@@ -1655,7 +1660,7 @@
       dd.textContent = value;
       dl.append(dt, dd);
     };
-    row('лимит', `${fmtInt(limit)} токенов`);
+    if (limit !== null) row('лимит', `${fmtInt(limit)} токенов`);
     if (f.model) row('модель', `${f.model} — при любой модели чата`);
     if (f.updatedAt) row('обновлены', fmtTime(f.updatedAt));
     d.append(summary, body, dl);
@@ -1663,16 +1668,17 @@
 
     // Узнавать, что память перестала обновляться, раскрыв блок, поздно:
     // строка видна и при закрытом блоке.
+    const named = limit === null ? '' : ` ${fmtInt(limit)}`;
     if (streak >= 2)
       li.append(
         warnLine(
-          `Факты не обновляются: дважды не уложились в лимит ${fmtInt(limit)}. ` +
+          `Факты не обновляются: дважды не уложились в лимит${named}. ` +
             'Поднимите лимит — обновление возобновится.',
         ),
       );
     else if (streak === 1)
       li.append(
-        warnLine(`Факты не уложились в лимит ${fmtInt(limit)} и не обновлены — поднимите лимит`),
+        warnLine(`Факты не уложились в лимит${named} и не обновлены — поднимите лимит`),
       );
     return li;
   };

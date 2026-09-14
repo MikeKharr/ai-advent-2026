@@ -108,8 +108,6 @@ const agent = http.createServer(async (req, res) => {
             updatedAt: '2026-09-14T14:05:10.000Z',
             throughId: 7,
             truncatedStreak: 2,
-            limitTokens: 600,
-            model: 'claude-haiku-4-5',
           }
         : null,
       // Контекст агент считает под ту стратегию, которую назвала страница.
