@@ -1,10 +1,9 @@
 // Память агента по стратегиям дня 10 (ADR 2026-09-14-0447, п. 2).
 // Одна функция на стратегию, все возвращают одно и то же:
-// `{ summaryText, transcript, recentTalk, summarized, context }` — блок
-// памяти, реплики для `<dialog>`, слова для отбора статей и числа счётчика.
-// Вынесено из `execute`, чтобы ветвления памяти не росли внутри запуска.
-//
-// Стратегия `facts` в этом заходе не реализована (решение владельца 14.09).
+// `{ summaryText, factsText, transcript, recentTalk, summarized, context }` —
+// блок памяти, реплики для `<dialog>`, слова для отбора статей и числа
+// счётчика. Вынесено из `execute`, чтобы ветвления памяти не росли внутри
+// запуска.
 
 import { fitDialog } from './llm.js'
 
@@ -16,6 +15,7 @@ export function tailMemory({ sessions, sessionId, effective, requested }) {
   const tail = sessions.tail(sessionId, effective)
   return {
     summaryText: null,
+    factsText: null,
     transcript: tail.messages,
     recentTalk: null,
     summarized: null,
@@ -40,6 +40,7 @@ export function windowMemory({ sessions, sessionId, windowSize, requested, from 
   const used = messages.reduce((sum, m) => sum + m.tokens, 0)
   return {
     summaryText: null,
+    factsText: null,
     transcript: messages,
     recentTalk: null,
     summarized: null,
@@ -65,6 +66,7 @@ export function branchMemory({ sessions, sessionId, effective, requested, from }
   const tail = fitDialog(path, effective)
   return {
     summaryText: null,
+    factsText: null,
     transcript: tail.messages,
     recentTalk: null,
     summarized: null,
@@ -75,6 +77,44 @@ export function branchMemory({ sessions, sessionId, effective, requested, from }
       messages: tail.messages.length,
       dropped: tail.dropped,
       pathMessages: path.length,
+    },
+  }
+}
+
+/**
+ * Стратегия 3 — факты: блок фактов плюс последние M реплик пути целиком.
+ * Предыдущие реплики модели не идут — их заменяет выжимка. Как и у окна,
+ * порога в токенах здесь нет: `contextTokens` не читается (ADR, п. 2).
+ *
+ * Якорь фактов вне пути значит, что их писали в другой ветке: факты
+ * считаются отсутствующими, и стратегия стартует заново (ADR, п. 8.4).
+ * Обновляет факты не эта функция, а запуск: вызов модели живёт там, где
+ * считается его цена.
+ */
+export function factsMemory({ sessions, sessionId, windowSize, requested, from }) {
+  const messages = sessions.lastOnPath(sessionId, windowSize, from)
+  const stored = sessions.facts(sessionId)
+  const onPath = stored ? sessions.factsSource(sessionId, stored.throughId, from).onPath : false
+  // Пустой текст остаётся после обрезанного первого вызова: строка живёт
+  // ради счётчика обрезаний, а блока памяти из неё нет.
+  const factsText = onPath && stored.text !== '' ? stored.text : null
+  const factsTokens = factsText === null ? 0 : stored.tokens
+  const fresh = messages.reduce((sum, m) => sum + m.tokens, 0)
+  return {
+    summaryText: null,
+    factsText,
+    transcript: messages,
+    recentTalk: null,
+    summarized: null,
+    context: {
+      used: factsTokens + fresh,
+      // Окна в токенах у фактов нет — не показываем чужое число.
+      effective: null,
+      requested,
+      messages: messages.length,
+      dropped: 0,
+      windowSize,
+      factsTokens,
     },
   }
 }
@@ -144,6 +184,7 @@ export async function summaryMemory({
   const tail = fitDialog(fresh, effective - summaryTokens)
   return {
     summaryText,
+    factsText: null,
     transcript: tail.messages,
     recentTalk,
     summarized,
@@ -168,6 +209,7 @@ export async function recall(deps) {
   const { strategy, memory, effective, requested } = deps
   const empty = {
     summaryText: null,
+    factsText: null,
     transcript: [],
     recentTalk: null,
     summarized: null,
@@ -177,6 +219,9 @@ export async function recall(deps) {
   // У окна своего предела в токенах нет, поэтому нулевой `contextTokens`
   // его не выключает: пользователь этим полем в режиме окна не управляет.
   if (strategy === 'window') return windowMemory(deps)
+  // У фактов своего предела в токенах тоже нет: нулевой `contextTokens`
+  // их не выключает, этим полем пользователь в режиме фактов не управляет.
+  if (strategy === 'facts') return factsMemory(deps)
   if (effective <= 0) return empty
   if (strategy === 'branches') return branchMemory(deps)
   if (deps.summarizeAt !== null) return summaryMemory(deps)

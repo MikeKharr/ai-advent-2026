@@ -11,6 +11,7 @@ import {
   articlesThatFit,
   askRouter,
   askSummary,
+  buildFactsRequest,
   buildSummaryRequest,
   effectiveBudget,
   effectiveContext,
@@ -31,6 +32,7 @@ import {
   PARAM_LIMITS,
   PROMPT_PRESETS,
   isSessionId,
+  parseFactsTokens,
   parseParams,
   parseParentId,
   parseSphere,
@@ -65,6 +67,19 @@ const FILL_LIMIT = 200
  */
 function summarySourceCap(summarizeAt, maxOutputTokens) {
   return summarizeAt + maxOutputTokens + Math.ceil(PARAM_LIMITS.promptChars / 2)
+}
+
+/**
+ * Потолок исходника фактов в токенах (ADR 2026-09-14-0447, п. 7.1). В
+ * штатном ходе вызов получает одну пару «вопрос — ответ»: вопрос до
+ * PARAM_LIMITS.promptChars знаков (по оценке роутера не больше половины в
+ * токенах) и ответ до MAX_OUTPUT_TOKENS — 5096 при нынешних значениях.
+ * Потолок именно в токенах, а не в штуках: «последние M» при M до 40 дали бы
+ * до 40 × 4096 и промах оценки расхода в десятки раз. Порога сводки здесь
+ * нет — в факты идут только реплики после якоря, а не история целиком.
+ */
+function factsSourceCap(maxOutputTokens) {
+  return maxOutputTokens + Math.ceil(PARAM_LIMITS.promptChars / 2)
 }
 
 /** «2.0 с» / «320 мс» — для деталей события; страница форматирует сама. */
@@ -152,6 +167,9 @@ export function createNewsAnalyst({
       if (!strategy.ok) return { ok: false, message: strategy.message }
       const windowSize = parseWindow(body.window)
       if (!windowSize.ok) return { ok: false, message: windowSize.message }
+      // Лимит фактов в токенах: он же потолок ответа вызова фактов.
+      const factsTokens = parseFactsTokens(body.factsTokens)
+      if (!factsTokens.ok) return { ok: false, message: factsTokens.message }
       const parentId = parseParentId(body.parentId)
       if (!parentId.ok) return { ok: false, message: parentId.message }
       // Сессия необязательна: без неё агент ведёт себя как в дне 6.
@@ -180,6 +198,7 @@ export function createNewsAnalyst({
           summarizeAt: summarizeAt.value,
           strategy: strategy.value,
           window: windowSize.value,
+          factsTokens: factsTokens.value,
           parentId: parentId.value,
         },
       }
@@ -239,6 +258,10 @@ export function createNewsAnalyst({
       /** Текст сводки, ушедший модели, и итог сжатия в этом запуске. */
       let summaryText = null
       let summarized = null
+      /** Текст фактов, ушедший модели в этом запуске (стратегия 3). */
+      let factsText = null
+      /** Сколько токенов по usage стоил вызов фактов, при любом его исходе. */
+      let factsSpent = 0
       /** Вызов сводки дошёл до провайдера — запуск уже стоил денег. */
       let summaryPaid = false
       /** Сколько токенов по usage стоил вызов сводки этого запуска, при любом исходе. */
@@ -443,6 +466,184 @@ export function createNewsAnalyst({
         })
         return { text, tokens, sourceTokens, ratio, totalTokens: callTokens }
       }
+      /**
+       * Обновление фактов: прежние факты и новые реплики → весь список
+       * заново, всегда Haiku, один вызов на запуск, после ответа модели и
+       * до `finish` (ADR 2026-09-14-0447, п. 7). Отказ запуск не валит:
+       * факты остаются прежними, в мониторе предупреждение.
+       */
+      const updateFacts = async (answerId) => {
+        if (!memory || strategy !== 'facts' || answerId === null) return
+        const limit = run.input.factsTokens
+        let stored
+        try {
+          stored = sessions.facts(sessionId)
+        } catch (error) {
+          log(`сессия ${sessionId.slice(0, 8)}…: факты не прочитаны: ${error.message}`)
+          return
+        }
+        // Источник — по пути и после якоря. Якорь вне пути значит, что факты
+        // писали в другой ветке: они считаются отсутствующими, и источником
+        // становится весь путь (ADR, п. 8.4).
+        const source = sessions.factsSource(sessionId, stored?.throughId ?? 0)
+        if (!source.onPath) stored = null
+        // Правило остановки: после двух обрезаний подряд не тратим денег,
+        // пока не поднимут лимит (ADR, п. 7.4).
+        if (stored && stored.truncatedStreak >= 2 && limit <= stored.limitTokens) {
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Факты не обновляются',
+            detail: `дважды не уложились в лимит ${stored.limitTokens}, поднимите лимит фактов`,
+            data: { truncatedStreak: stored.truncatedStreak, limitTokens: stored.limitTokens },
+          })
+          return
+        }
+        // Два рубежа разом: не больше последних M реплик и не больше потолка
+        // исходника в токенах. Истории целиком в вызове нет никогда.
+        const cap = factsSourceCap(env.MAX_OUTPUT_TOKENS)
+        const fit = fitDialog(source.fresh.slice(-windowSize), cap)
+        if (fit.messages.length === 0) return
+        if (fit.dropped > 0) {
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Старые реплики не вошли в факты',
+            detail: `${fit.dropped} реплик сверх потолка исходника ${cap} токенов отброшены`,
+            data: { dropped: fit.dropped, capTokens: cap },
+          })
+        }
+        const previous = stored?.text ? stored.text : null
+        const request = buildFactsRequest(previous, fit.messages, limit)
+        const requestSize = estimateTokens(request.system) + estimateTokens(request.input)
+        const label = MODELS.find((m) => m.id === SUMMARY_PROVIDER)?.label ?? SUMMARY_PROVIDER
+        const started = now()
+        emit({
+          stage: 'llm_call',
+          title: 'Обновляю факты',
+          detail: `${label} — при любой модели чата; ${fit.messages.length} реплик, факты до ${limit}`,
+          data: {
+            provider: SUMMARY_PROVIDER,
+            taskClass: SUMMARY_CLASS,
+            requestTokens: requestSize,
+            answerTokens: limit,
+            messages: fit.messages.length,
+            droppedFromSource: fit.dropped,
+          },
+        })
+        let answer
+        try {
+          answer = await askSummary(request, env, { fetchImpl })
+        } catch (error) {
+          // Вызов, дошедший до провайдера, оплачен: слот лимитера дню не
+          // возвращается, даже если фактов мы не получили.
+          if (!paidNothing(error)) summaryPaid = true
+          log(`запуск ${run.id}: факты: ${error.code ?? ''} ${error.message}`)
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Факты не обновил',
+            detail: `${explainRouterError(error)}\nфакты прежние`,
+            data: { code: error.code ?? null, status: error.status ?? null },
+            durationMs: now() - started,
+          })
+          return
+        }
+        summaryPaid = true
+        const ms = now() - started
+        const text = answer.text.trim()
+        const tokens = answer.usage.outputTokens ?? estimateTokens(text)
+        const callTokens = (answer.usage.inputTokens ?? requestSize) + tokens
+        factsSpent = callTokens
+        emit({
+          stage: 'llm_result',
+          title: 'Получил факты',
+          detail: `${answer.provider?.model ?? SUMMARY_PROVIDER}, ${seconds(ms)}, ${answer.usage.inputTokens ?? '?'} → ${answer.usage.outputTokens ?? '?'} токенов`,
+          data: {
+            provider: answer.provider,
+            usage: answer.usage,
+            truncated: answer.truncated,
+            providerDurationMs: answer.durationMs,
+          },
+          durationMs: ms,
+        })
+        const through = fit.messages.at(-1).id
+        const save = (fields) => {
+          try {
+            return sessions.saveFacts({
+              sessionId,
+              model: answer.provider?.model ?? null,
+              limitTokens: limit,
+              spentTokens: callTokens,
+              // Живой проверяется реплика, которую вызов обработал: якорь при
+              // обрезке не двигается и может быть нулевым.
+              aliveId: through,
+              ...fields,
+            })
+          } catch (error) {
+            log(`сессия ${sessionId.slice(0, 8)}…: факты не записаны: ${error.message}`)
+            return null
+          }
+        }
+        if (answer.truncated) {
+          // Обрезанный выход отбрасывается целиком: обрезка хвоста молча
+          // теряла бы самое свежее — ровно то, что случилось со сводкой дня 9.
+          // Цена вызова при этом оплачена и записывается (ADR, п. 7.4).
+          const saved = save({
+            text: stored?.text ?? '',
+            tokens: stored?.tokens ?? 0,
+            throughId: stored?.throughId ?? 0,
+            truncatedStreak: (stored?.truncatedStreak ?? 0) + 1,
+          })
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: `Факты не уложились в лимит ${limit}, не обновлены`,
+            detail:
+              saved === false
+                ? 'переписку очистили во время вызова — факты не записаны'
+                : 'прежние факты остались; поднимите лимит фактов',
+            data: { answerTokens: limit, truncatedStreak: (stored?.truncatedStreak ?? 0) + 1 },
+          })
+          return
+        }
+        if (text === '') {
+          // Пустой ответ оплачен: цена входит в сумму сессии, фактов нет.
+          try {
+            sessions.addSummaryCost(sessionId, callTokens)
+          } catch (error) {
+            log(`сессия ${sessionId.slice(0, 8)}…: цена фактов не записана: ${error.message}`)
+          }
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Факты не обновил',
+            detail: 'модель вернула пустой ответ\nфакты прежние',
+            data: { code: 'empty_facts' },
+          })
+          return
+        }
+        const saved = save({ text, tokens, throughId: through, truncatedStreak: 0 })
+        if (saved === false) {
+          // Переписку очистили или убрали по сроку, пока шёл вызов: выжимка
+          // стёртого разговора в базу не возвращается (ADR, п. 7.3).
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Факты не обновил',
+            detail: 'переписку очистили во время вызова — факты не записаны',
+            data: { code: 'session_cleared' },
+          })
+          return
+        }
+        if (saved === null) return
+        emit({
+          stage: 'planning',
+          title: `Обновил факты: ${tokens} из ${limit} токенов`,
+          detail: `собрал ${label} по ${fit.messages.length} репликам`,
+          data: { tokens, limitTokens: limit, messages: fit.messages.length },
+        })
+      }
       // С момента запроса к роутеру вызов считается оплаченным, пока роутер
       // не сказал обратного: неожиданная ошибка после ответа модели не должна
       // возвращать дню слот за деньги, которые уже потрачены.
@@ -523,6 +724,7 @@ export function createNewsAnalyst({
         })
         transcript = recalled.transcript
         summaryText = recalled.summaryText
+        factsText = recalled.factsText ?? null
         recentTalk = recalled.recentTalk
         summarized = recalled.summarized
         context = recalled.context
@@ -532,6 +734,17 @@ export function createNewsAnalyst({
               stage: 'planning',
               title: 'Вспомнил разговор',
               detail: `${transcript.length} реплик окна, ${context.used} токенов; порога в токенах нет`,
+              data: { ...context },
+            })
+          }
+        } else if (memory && strategy === 'facts') {
+          if (factsText !== null || transcript.length > 0) {
+            emit({
+              stage: 'planning',
+              title: 'Вспомнил разговор',
+              detail:
+                `факты ${context.factsTokens} и ${transcript.length} реплик окна, ` +
+                `${context.used} токенов; порога в токенах нет`,
               data: { ...context },
             })
           }
@@ -678,8 +891,17 @@ export function createNewsAnalyst({
           budget.tokens,
           transcript,
           summaryText,
+          factsText,
         )
-        const needed = requestTokens(system, sphere, params, items, transcript, summaryText)
+        const needed = requestTokens(
+          system,
+          sphere,
+          params,
+          items,
+          transcript,
+          summaryText,
+          factsText,
+        )
         emit({
           stage: 'planning',
           title: 'Подогнал под модель',
@@ -705,7 +927,7 @@ export function createNewsAnalyst({
           // уменьшить было бы неправдой: рычаг у пользователя — M.
           const blame =
             context.used > 0
-              ? strategy === 'window'
+              ? strategy === 'window' || strategy === 'facts'
                 ? ` Из них ${context.used} занял разговор — уменьшите M (сейчас ${windowSize}).`
                 : ` Из них ${context.used} занял контекст разговора — его размер можно уменьшить.`
               : ''
@@ -745,6 +967,7 @@ export function createNewsAnalyst({
               items,
               transcript,
               summary: summaryText,
+              facts: factsText,
             },
             env,
             { fetchImpl },
@@ -806,10 +1029,6 @@ export function createNewsAnalyst({
         const answerTokens =
           (answer.usage.inputTokens ?? needed) +
           (answer.usage.outputTokens ?? estimateTokens(answer.text))
-        // Запуск обошёлся в ответ плюс вызов сводки. В сводке ответа —
-        // только ответ: цена сводки копится в её строке в базе, и сумма
-        // сессии сложила бы её дважды (ADR 2026-09-11-1608).
-        const totalTokens = answerTokens + summarySpent
         // Сводка переживает перезапуск вместе с перепиской: события монитора
         // живут до перезагрузки страницы, а «что было в этой итерации»
         // должно читаться и завтра (ADR 2026-09-09-1906).
@@ -846,6 +1065,9 @@ export function createNewsAnalyst({
             ? {
                 strategy,
                 ...(strategy === 'window' ? { windowSize } : {}),
+                ...(strategy === 'facts'
+                  ? { windowSize, factsTokens: context.factsTokens ?? 0 }
+                  : {}),
                 ...(strategy === 'branches' ? { pathMessages: context.pathMessages ?? 0 } : {}),
               }
             : {}),
@@ -864,12 +1086,21 @@ export function createNewsAnalyst({
         // Провайдер может не прислать usage (так делает Ollama). Ноль здесь
         // означал бы «реплика ничего не весит», и она никогда не вытеснялась
         // бы из контекста — считаем оценкой, той же, что у роутера.
-        remember(
+        const answerId = remember(
           'agent',
           guard.text,
           answer.usage.outputTokens ?? estimateTokens(guard.text),
           summary,
         )
+
+        // Факты обновляются после ответа и до `finish`: ответ уже входит в
+        // пару «вопрос — ответ», и задержка честно видна на экране.
+        await updateFacts(answerId)
+
+        // Запуск обошёлся в ответ плюс вызовы памяти. В сводке ответа —
+        // только ответ: цена вызовов памяти копится в `summary_costs`, и
+        // сумма сессии сложила бы её дважды (ADR 2026-09-11-1608).
+        const totalTokens = answerTokens + summarySpent + factsSpent
 
         if (memoryFailed) {
           // Память обещана, и её отказ не должен быть виден только в логе

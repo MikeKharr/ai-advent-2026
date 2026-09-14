@@ -49,6 +49,20 @@ CREATE TABLE IF NOT EXISTS summary_costs (
   session_id TEXT PRIMARY KEY,
   tokens     INTEGER NOT NULL
 );
+
+-- Факты разговора (ADR 2026-09-14-0447, п. 7.3): строка на сессию,
+-- перезаписывается каждым вызовом, живёт и удаляется вместе с перепиской.
+-- Цена вызовов копится в summary_costs — та же сумма «вызовы памяти».
+CREATE TABLE IF NOT EXISTS facts (
+  session_id       TEXT PRIMARY KEY,
+  text             TEXT NOT NULL,          -- '' после обрезанного первого вызова
+  tokens           INTEGER NOT NULL,
+  through_id       INTEGER NOT NULL,
+  model            TEXT,
+  limit_tokens     INTEGER NOT NULL,       -- лимит последнего вызова
+  truncated_streak INTEGER NOT NULL DEFAULT 0,  -- обрезаний подряд; ≥ 2 — стоп
+  updated_at       INTEGER NOT NULL
+);
 `
 
 /**
@@ -135,6 +149,26 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
          source_tokens = excluded.source_tokens, through_id = excluded.through_id,
          model = excluded.model, truncated = excluded.truncated,
          updated_at = excluded.updated_at`,
+    ),
+    facts: db.prepare(
+      `SELECT text, tokens, through_id AS throughId, model, limit_tokens AS limitTokens,
+              truncated_streak AS truncatedStreak, updated_at AS updatedAt
+       FROM facts WHERE session_id = ?`,
+    ),
+    saveFacts: db.prepare(
+      `INSERT INTO facts
+         (session_id, text, tokens, through_id, model, limit_tokens, truncated_streak, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         text = excluded.text, tokens = excluded.tokens,
+         through_id = excluded.through_id, model = excluded.model,
+         limit_tokens = excluded.limit_tokens,
+         truncated_streak = excluded.truncated_streak,
+         updated_at = excluded.updated_at`,
+    ),
+    dropFacts: db.prepare('DELETE FROM facts WHERE session_id = ?'),
+    orphanFacts: db.prepare(
+      'DELETE FROM facts WHERE session_id NOT IN (SELECT id FROM sessions)',
     ),
     hasMessage: db.prepare('SELECT 1 AS yes FROM messages WHERE id = ? AND session_id = ?'),
     message: db.prepare('SELECT id, role FROM messages WHERE id = ? AND session_id = ?'),
@@ -279,6 +313,22 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       return { onPath: true, fresh: path.slice(at + 1) }
     },
 
+    /**
+     * Источник фактов по пути — то же правило, что у сводки: якорь вне пути
+     * значит, что факты писали в другой ветке, и они считаются отсутствующими
+     * (ADR 2026-09-14-0447, п. 8.4). Сколько реплик из `fresh` реально уйдёт
+     * в вызов, решает запуск: не больше последних M и не больше потолка
+     * исходника в токенах.
+     */
+    factsSource(sessionId, throughId, fromId = undefined) {
+      return this.summarySource(sessionId, throughId, fromId)
+    },
+
+    /** Факты разговора или null (ADR 2026-09-14-0447, п. 7.3). */
+    facts(sessionId) {
+      return stmt.facts.get(sessionId) ?? null
+    },
+
     /** Последние M реплик пути — стратегия «окно» (ADR 2026-09-14-0447, п. 6). */
     lastOnPath(sessionId, count, fromId = undefined) {
       return this.path(sessionId, fromId).slice(-count)
@@ -359,6 +409,15 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
         const messages = this.lastOnPath(sessionId, windowSize)
         const total = messages.reduce((sum, m) => sum + m.tokens, 0)
         return { total, messages: messages.length, windowSize }
+      }
+      if (strategy === 'facts') {
+        const messages = this.lastOnPath(sessionId, windowSize)
+        const fresh = messages.reduce((sum, m) => sum + m.tokens, 0)
+        const row = stmt.facts.get(sessionId)
+        // Факты с якорем вне пути в счёт не идут — их не получит и запуск.
+        const onPath = row ? this.factsSource(sessionId, row.throughId).onPath : false
+        const factsTokens = onPath ? row.tokens : 0
+        return { total: factsTokens + fresh, factsTokens, messages: messages.length, windowSize }
       }
       if (strategy === 'branches') {
         const path = this.path(sessionId)
@@ -444,6 +503,55 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
     },
 
     /**
+     * Новые факты вместо прежних; цена вызова прибавляется к накопленной —
+     * в ту же сумму «вызовы памяти», что и сводка. Защита та же, что у
+     * `saveSummary`: вызов фактов идёт секунды после ответа, и «очистить»
+     * или уборка по сроку за это время не должны получить обратно выжимку
+     * стёртой переписки. Проверка и запись — без await между ними и одной
+     * транзакцией (ADR 2026-09-14-0447, п. 7.3).
+     *
+     * `throughId` — якорь, с которого начнётся источник следующего вызова;
+     * при обрезанном выходе он не двигается и может быть нулевым. Живой
+     * проверяется `aliveId` — реплика, которую этот вызов только что
+     * обработал: якорь 0 проверить нечем, а гонку с удалением ловить надо.
+     * Возвращает, записаны ли факты.
+     */
+    saveFacts({
+      sessionId,
+      text,
+      tokens,
+      throughId,
+      aliveId = throughId,
+      model = null,
+      limitTokens,
+      truncatedStreak = 0,
+      spentTokens = 0,
+      at = now(),
+    }) {
+      if (!stmt.hasMessage.get(aliveId, sessionId)) return false
+      db.exec('BEGIN')
+      try {
+        this.touch(sessionId, at)
+        stmt.saveFacts.run(
+          sessionId,
+          text,
+          Math.max(0, Math.round(tokens)),
+          throughId,
+          model,
+          limitTokens,
+          truncatedStreak,
+          at,
+        )
+        stmt.addCost.run(sessionId, Math.max(0, Math.round(spentTokens)))
+        db.exec('COMMIT')
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+      return true
+    },
+
+    /**
      * Цена оплаченного вызова, не давшего сводки (пустой ответ). Только для
      * живой сессии: очищенной переписке сумма не нужна.
      */
@@ -455,7 +563,9 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
 
     /** Удаляет переписку сессии целиком. Действие «очистить» на странице. */
     clear(sessionId) {
-      // Сводка — пересказ той же переписки: живёт и удаляется вместе с ней.
+      // Сводка и факты — выжимка из той же переписки: живут и удаляются
+      // вместе с ней (ADR 2026-09-14-0447, п. 7.3, решение владельца 5).
+      stmt.dropFacts.run(sessionId)
       stmt.dropSummary.run(sessionId)
       stmt.dropCost.run(sessionId)
       const removed = stmt.dropMessages.run(sessionId)
@@ -475,6 +585,7 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       for (const row of stale) this.clear(row.id)
       stmt.orphanMessages.run()
       stmt.orphanSummaries.run()
+      stmt.orphanFacts.run()
       stmt.orphanCosts.run()
       return stale.length
     },
