@@ -264,6 +264,21 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
         .map((row) => ({ id: row.id, role: row.role, text: row.text, tokens: row.tokens }))
     },
 
+    /**
+     * Источник сводки по пути: реплики после якоря `through_id`. Если якорь
+     * не на пути, сводку писали в другой ветке — она считается отсутствующей,
+     * и стратегия стартует заново со всего пути (ADR 2026-09-14-0447, п. 8.4,
+     * критерий 5). Иначе пересказ соседней ветки ушёл бы модели, осел бы в
+     * базе и наследовался всеми следующими сводками.
+     */
+    summarySource(sessionId, throughId, fromId = undefined) {
+      const path = this.path(sessionId, fromId)
+      if (!throughId) return { onPath: true, fresh: path }
+      const at = path.findIndex((m) => m.id === throughId)
+      if (at === -1) return { onPath: false, fresh: path }
+      return { onPath: true, fresh: path.slice(at + 1) }
+    },
+
     /** Последние M реплик пути — стратегия «окно» (ADR 2026-09-14-0447, п. 6). */
     lastOnPath(sessionId, count, fromId = undefined) {
       return this.path(sessionId, fromId).slice(-count)
@@ -364,25 +379,23 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
         }
       }
       const row = stmt.summary.get(sessionId)
-      const stored = row?.tokens ?? 0
-      const fresh = this.since(sessionId, row?.throughId ?? 0)
       if (strategy !== 'summary') {
-        // Дни 7–9: без учёта окна модели — его знает только запуск.
-        return {
-          total: stored + fresh.reduce((sum, m) => sum + m.tokens, 0),
-          summaryTokens: stored,
-          freshTokens: fresh.reduce((sum, m) => sum + m.tokens, 0),
-        }
+        // Дни 7–9: по номерам и без учёта окна модели — его знает только запуск.
+        const fresh = this.since(sessionId, row?.throughId ?? 0)
+        const freshTokens = fresh.reduce((sum, m) => sum + m.tokens, 0)
+        const summaryTokens = row?.tokens ?? 0
+        return { total: summaryTokens + freshTokens, summaryTokens, freshTokens }
       }
-      // Стратегия 1: то же правило, что в `memory.js → summaryMemory`. Сводка
-      // идёт, только если помещается в окно целиком (подрезать её нельзя),
-      // репликам достаётся остаток. Иначе счётчик обещал бы памяти больше,
-      // чем окно этой модели вместит (ADR 2026-09-14-0447, критерий 6).
+      // Стратегия 1 — по пути, тем же правилом, что в `memory.js`: сводка с
+      // якорем вне пути не считается, а оставшаяся идёт, только если
+      // помещается в окно целиком (подрезать её нельзя), репликам — остаток.
+      const source = this.summarySource(sessionId, row?.throughId ?? 0)
+      const stored = source.onPath ? (row?.tokens ?? 0) : 0
       const summaryTokens = stored <= effective ? stored : 0
       let freshTokens = 0
-      for (let i = fresh.length - 1; i >= 0; i--) {
-        if (freshTokens + fresh[i].tokens > effective - summaryTokens) break
-        freshTokens += fresh[i].tokens
+      for (let i = source.fresh.length - 1; i >= 0; i--) {
+        if (freshTokens + source.fresh[i].tokens > effective - summaryTokens) break
+        freshTokens += source.fresh[i].tokens
       }
       return { total: summaryTokens + freshTokens, summaryTokens, freshTokens }
     },

@@ -91,9 +91,22 @@ export async function summaryMemory({
   summarizeAt,
   compress,
   emit,
+  strategy = null,
+  from,
 }) {
   let stored = sessions.summary(sessionId)
-  let fresh = sessions.since(sessionId, stored?.throughId ?? 0)
+  let fresh
+  if (strategy === null) {
+    // Дни 7–9: переписка линейна, дерева нет — источник по номерам.
+    fresh = sessions.since(sessionId, stored?.throughId ?? 0)
+  } else {
+    // День 10: источник — только путь текущей ветки. Якорь вне пути значит,
+    // что сводку писали в другой ветке: она считается отсутствующей, и
+    // стратегия стартует заново с пути (ADR 2026-09-14-0447, п. 8.4).
+    const source = sessions.summarySource(sessionId, stored?.throughId ?? 0, from)
+    if (!source.onPath) stored = null
+    fresh = source.fresh
+  }
   // Слова для отбора — из реплик до сжатия: после него хвост пуст,
   // а тема разговора жива в последних сообщениях пользователя.
   const recentTalk = fresh
@@ -167,5 +180,7 @@ export async function recall(deps) {
   if (effective <= 0) return empty
   if (strategy === 'branches') return branchMemory(deps)
   if (deps.summarizeAt !== null) return summaryMemory(deps)
-  return tailMemory(deps)
+  // День 10 без порога сводки: хвост тоже берётся по пути — «последние по
+  // номеру» смешали бы соседние ветки. Дни 6–9 идут прежним путём.
+  return strategy === null ? tailMemory(deps) : branchMemory(deps)
 }

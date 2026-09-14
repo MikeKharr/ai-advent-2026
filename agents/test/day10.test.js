@@ -278,6 +278,52 @@ test('GET со стратегией считает счётчик по ней, �
   await http.close()
 })
 
+test('сводка и счётчик берут только путь ветки, соседнюю не подмешивают', async () => {
+  const ctx = setup()
+  const branches = { sphere: 'финтех', strategy: 'branches', contextTokens: 3000 }
+  await ctx.ask({ ...branches, prompt: 'вопрос А' })
+  const answerA = ctx.sessions.head(SID)
+  await ctx.ask({ ...branches, prompt: 'вопрос Б' })
+  // Сестра «вопроса Б»: ветка Б брошена, активна В.
+  await ctx.ask({ ...branches, prompt: 'вопрос В', parentId: answerA })
+
+  const source = ctx.sessions.summarySource(SID, 0)
+  assert.equal(source.onPath, true)
+  assert.deepEqual(
+    source.fresh.map((m) => m.text).filter((t) => t.startsWith('вопрос')),
+    ['вопрос А', 'вопрос В'],
+    'источник сводки — только путь',
+  )
+  assert.equal(
+    source.fresh.some((m) => m.text === 'вопрос Б'),
+    false,
+    'брошенная ветка в сводку не попадает — иначе платим за чужой материал',
+  )
+
+  // Сводка, записанная в брошенной ветке: её якорь не на пути.
+  const askedB = ctx.sessions.history(SID).find((m) => m.text === 'вопрос Б')
+  ctx.sessions.saveSummary({
+    sessionId: SID,
+    text: 'пересказ брошенной ветки Б',
+    tokens: 700,
+    sourceTokens: 900,
+    throughId: askedB.id,
+  })
+  assert.equal(ctx.sessions.summarySource(SID, askedB.id).onPath, false, 'якорь в другой ветке')
+
+  const http = await serve(ctx)
+  const body = await (
+    await http.get(`/v1/sessions/${SID}?strategy=summary&model=anthropic-haiku&contextTokens=8000`)
+  ).json()
+  assert.equal(body.context.summaryTokens, 0, 'сводка чужой ветки в счёт не идёт')
+  assert.equal(
+    body.context.total,
+    ctx.sessions.path(SID).reduce((sum, m) => sum + m.tokens, 0),
+    'счётчик показывает путь, а не путь плюс брошенную ветку',
+  )
+  await http.close()
+})
+
 test('счётчик сводки зажат действующим окном модели', async () => {
   const ctx = setup()
   // Реплики заведомо шире окна: считаем по базе, запуск не нужен.
