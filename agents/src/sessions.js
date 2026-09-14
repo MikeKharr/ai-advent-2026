@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS summary_costs (
 );
 `
 
+/**
+ * Столбцы дерева дня 10 (ADR 2026-09-14-0447, п. 9). Добавляются при старте
+ * идемпотентно: старые строки получают NULL, все операторы дней 6–9 называют
+ * столбцы явно, поэтому ни один их запрос не меняет ни текста, ни результата.
+ */
+function migrate(db) {
+  const has = (table, column) =>
+    db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)
+  if (!has('messages', 'parent_id')) db.exec('ALTER TABLE messages ADD COLUMN parent_id INTEGER')
+  if (!has('sessions', 'head_id')) db.exec('ALTER TABLE sessions ADD COLUMN head_id INTEGER')
+}
+
 export function createSessions({ file, ttlMs, now = Date.now, log = console.error }) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
@@ -58,6 +70,7 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA synchronous = NORMAL')
   db.exec(SCHEMA)
+  migrate(db)
 
   const stmt = {
     touch: db.prepare(
@@ -65,13 +78,41 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
        ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
     ),
     insert: db.prepare(
-      `INSERT INTO messages (session_id, role, text, tokens, at, run_id, meta)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (session_id, role, text, tokens, at, run_id, meta, parent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     history: db.prepare(
-      `SELECT id, role, text, tokens, at, run_id AS runId, meta
+      `SELECT id, role, text, tokens, at, run_id AS runId, meta, parent_id AS parentId
        FROM messages WHERE session_id = ? ORDER BY id ASC`,
     ),
+    // Путь ветки строится вверх от головы по parent_id. Фильтр по session_id
+    // стоит на каждом шаге обхода, а не только в стартовом узле: номера
+    // сообщений сквозные по общей базе дней 6–10, и обход без него, начатый
+    // с чужого узла, собрал бы чужую переписку (ADR 2026-09-14-0447, п. 8.3).
+    pathUp: db.prepare(
+      `WITH RECURSIVE up(id, role, text, tokens, meta, parent_id) AS (
+         SELECT id, role, text, tokens, meta, parent_id
+           FROM messages WHERE id = ? AND session_id = ?
+         UNION ALL
+         SELECT m.id, m.role, m.text, m.tokens, m.meta, m.parent_id
+           FROM messages m JOIN up ON m.id = up.parent_id
+          WHERE m.session_id = ?
+       )
+       SELECT id, role, text, tokens, meta FROM up ORDER BY id ASC`,
+    ),
+    // Самый поздний лист поддерева: наибольший номер в нём. Ребёнок всегда
+    // моложе родителя, поэтому узел с наибольшим номером детей не имеет.
+    subtreeLatest: db.prepare(
+      `WITH RECURSIVE down(id) AS (
+         SELECT id FROM messages WHERE id = ? AND session_id = ?
+         UNION ALL
+         SELECT m.id FROM messages m JOIN down ON m.parent_id = down.id
+          WHERE m.session_id = ?
+       )
+       SELECT max(id) AS id FROM down`,
+    ),
+    setHead: db.prepare('UPDATE sessions SET head_id = ? WHERE id = ?'),
+    head: db.prepare('SELECT head_id AS headId FROM sessions WHERE id = ?'),
     tail: db.prepare(
       `SELECT id, role, text, tokens, meta
        FROM messages WHERE session_id = ? ORDER BY id DESC`,
@@ -96,6 +137,7 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
          updated_at = excluded.updated_at`,
     ),
     hasMessage: db.prepare('SELECT 1 AS yes FROM messages WHERE id = ? AND session_id = ?'),
+    message: db.prepare('SELECT id, role FROM messages WHERE id = ? AND session_id = ?'),
     hasSession: db.prepare('SELECT 1 AS yes FROM sessions WHERE id = ?'),
     addCost: db.prepare(
       `INSERT INTO summary_costs (session_id, tokens) VALUES (?, ?)
@@ -107,6 +149,18 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
     dropMessages: db.prepare('DELETE FROM messages WHERE session_id = ?'),
     dropSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
     stale: db.prepare('SELECT id FROM sessions WHERE last_seen_at < ?'),
+    // Сироты: строки, чья сессия уже удалена. `sweep` идёт по строкам
+    // `sessions`, поэтому без отдельного прохода они не удалялись бы никогда
+    // (ADR 2026-09-14-0447, п. 9).
+    orphanMessages: db.prepare(
+      'DELETE FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)',
+    ),
+    orphanSummaries: db.prepare(
+      'DELETE FROM summaries WHERE session_id NOT IN (SELECT id FROM sessions)',
+    ),
+    orphanCosts: db.prepare(
+      'DELETE FROM summary_costs WHERE session_id NOT IN (SELECT id FROM sessions)',
+    ),
     counts: db.prepare(
       'SELECT (SELECT count(*) FROM sessions) AS sessions, (SELECT count(*) FROM messages) AS messages',
     ),
@@ -127,7 +181,18 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       tokens: row.tokens,
       at: row.at ? new Date(row.at).toISOString() : null,
       runId: row.runId ?? null,
+      // NULL у линейных сессий дней 6–9: у них дерева нет.
+      parentId: row.parentId ?? null,
       meta,
+    }
+  }
+
+  /** Запись об ошибке агента: в контекст не идёт, родителем быть может. */
+  const failed = (row) => {
+    try {
+      return row.meta ? JSON.parse(row.meta).error === true : false
+    } catch {
+      return false
     }
   }
 
@@ -137,7 +202,7 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       stmt.touch.run(sessionId, at, at)
     },
 
-    append({ sessionId, role, text, tokens, runId = null, meta = null, at = now() }) {
+    append({ sessionId, role, text, tokens, runId = null, meta = null, parentId = null, at = now() }) {
       this.touch(sessionId, at)
       const info = stmt.insert.run(
         sessionId,
@@ -147,8 +212,61 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
         at,
         runId,
         meta ? JSON.stringify(meta) : null,
+        parentId,
       )
       return Number(info.lastInsertRowid)
+    },
+
+    /** Голова текущей ветки или null у линейных сессий дней 6–9. */
+    head(sessionId) {
+      return stmt.head.get(sessionId)?.headId ?? null
+    },
+
+    /** Переставляет голову. Принадлежность сообщения сессии проверяет вызывающий. */
+    setHead(sessionId, messageId) {
+      stmt.setHead.run(messageId, sessionId)
+    },
+
+    /** Есть ли такое сообщение в этой сессии. Граница чтения чужой переписки. */
+    hasMessage(sessionId, messageId) {
+      return Boolean(stmt.hasMessage.get(messageId, sessionId))
+    },
+
+    /** Сообщение этой сессии или null — для проверки родителя на границе. */
+    message(sessionId, messageId) {
+      const row = stmt.message.get(messageId, sessionId)
+      return row ? { id: row.id, role: row.role } : null
+    },
+
+    /**
+     * Самый поздний лист поддерева — куда встаёт голова при переключении
+     * ветки: сестра грузится со всем своим нижним хвостом.
+     */
+    latestLeaf(sessionId, messageId) {
+      return stmt.subtreeLatest.get(messageId, sessionId, sessionId)?.id ?? null
+    },
+
+    /**
+     * Путь от корня до головы, без записей об ошибках. У сессий без головы
+     * (дни 6–9) путь — вся переписка по порядку номеров: дерева нет, и
+     * «последние M» считаются от неё.
+     */
+    path(sessionId, fromId = undefined) {
+      // Обычный запуск идёт от головы; запуск с явным родителем — от него:
+      // новая ветка наследует путь указанного предка, а не прежней головы.
+      const start = fromId === undefined ? this.head(sessionId) : fromId
+      // Явный корень: наследовать нечего.
+      if (start === null && fromId === null) return []
+      const rows =
+        start === null ? stmt.history.all(sessionId) : stmt.pathUp.all(start, sessionId, sessionId)
+      return rows
+        .filter((row) => !failed(row))
+        .map((row) => ({ id: row.id, role: row.role, text: row.text, tokens: row.tokens }))
+    },
+
+    /** Последние M реплик пути — стратегия «окно» (ADR 2026-09-14-0447, п. 6). */
+    lastOnPath(sessionId, count, fromId = undefined) {
+      return this.path(sessionId, fromId).slice(-count)
     },
 
     /** Вся переписка сессии, от старых к свежим — для показа в чате. */
@@ -216,10 +334,35 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
     },
 
     /**
-     * Что уйдёт модели со следующим сообщением: сводка и реплики после неё.
-     * Без учёта окна модели — его знает только запуск; окно — страховка.
+     * Что накоплено к следующему сообщению. Без стратегии — ответ дней 7–9,
+     * байт в байт: сводка и реплики после неё, без учёта окна модели.
+     * Со стратегией счётчик считается по ней и по действующему окну модели,
+     * иначе число на странице врало бы (ADR 2026-09-14-0447, п. 3).
      */
-    context(sessionId) {
+    context(sessionId, { strategy = null, windowSize = null, effective = null } = {}) {
+      if (strategy === 'window') {
+        const messages = this.lastOnPath(sessionId, windowSize)
+        const total = messages.reduce((sum, m) => sum + m.tokens, 0)
+        return { total, messages: messages.length, windowSize }
+      }
+      if (strategy === 'branches') {
+        const path = this.path(sessionId)
+        // Хвостом в окно, как в запуске: целыми репликами от свежих к старым.
+        let used = 0
+        let taken = 0
+        for (let i = path.length - 1; i >= 0; i--) {
+          if (used + path[i].tokens > effective) break
+          used += path[i].tokens
+          taken += 1
+        }
+        return {
+          total: used,
+          messages: taken,
+          pathMessages: path.length,
+          dropped: path.length - taken,
+          effective,
+        }
+      }
       const row = stmt.summary.get(sessionId)
       const summaryTokens = row?.tokens ?? 0
       const freshTokens = this.since(sessionId, row?.throughId ?? 0).reduce(
@@ -292,11 +435,19 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       return Number(removed.changes)
     },
 
-    /** Уборка по сроку хранения: сессии без активности дольше TTL. */
+    /**
+     * Уборка по сроку хранения: сессии без активности дольше TTL. Следом —
+     * сироты: строки, чья сессия уже удалена. `sweep` идёт по `sessions`,
+     * поэтому иначе к ним никто больше не пришёл бы никогда, а страница
+     * обещает 30 часов (ADR 2026-09-14-0447, п. 9).
+     */
     sweep(at = now()) {
       const cutoff = at - ttlMs
       const stale = stmt.stale.all(cutoff)
       for (const row of stale) this.clear(row.id)
+      stmt.orphanMessages.run()
+      stmt.orphanSummaries.run()
+      stmt.orphanCosts.run()
       return stale.length
     },
 

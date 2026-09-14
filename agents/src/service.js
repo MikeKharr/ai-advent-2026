@@ -2,7 +2,8 @@
 // `AGENT_KEY`, на все `/v1/*`; `/healthz` открыт — его проверяет compose.
 
 import { timingSafeEqual } from 'node:crypto'
-import { isSessionId } from './params.js'
+import { effectiveContext } from './llm.js'
+import { inputBudgetFor, isSessionId, STRATEGIES, WINDOW_LIMITS } from './params.js'
 import { TERMINAL } from './runs.js'
 
 const MAX_BODY = 64 * 1024
@@ -89,6 +90,37 @@ export function createService({ agents, archive, runs, sessions = null, env, log
     }
   }
 
+  /** Целое из строки запроса или `fallback`: чужие значения счётчик не ломают. */
+  const intParam = (params, name, fallback) => {
+    const n = Number(params.get(name))
+    return Number.isInteger(n) && n >= 0 ? n : fallback
+  }
+
+  /**
+   * Счётчик для страницы. Стратегию, её параметры и модель передаёт страница:
+   * без модели действующее окно на Groq и ноутбуке показывало бы больше,
+   * чем помещается (ADR 2026-09-14-0447, п. 3).
+   */
+  const contextFor = (sessionId, params) => {
+    const raw = params.get('strategy')
+    const strategy = STRATEGIES.includes(raw) ? raw : null
+    if (strategy === null) return sessions.context(sessionId)
+    const contextTokens = intParam(params, 'contextTokens', 3000)
+    const context = sessions.context(sessionId, {
+      strategy,
+      windowSize: intParam(params, 'window', WINDOW_LIMITS.default),
+      effective: effectiveContext(contextTokens, inputBudgetFor(params.get('model'))),
+    })
+    if (strategy !== 'summary') return context
+    // Сжатия при следующем сообщении страница обещать не может сама: порог
+    // знает запуск, а размер будущей сводки — никто.
+    const summarizeAt = intParam(params, 'summarizeAt', 0)
+    return {
+      ...context,
+      willCompress: summarizeAt > 0 && context.freshTokens >= summarizeAt,
+    }
+  }
+
   const startRun = (agent, run) => {
     // Запуск асинхронный: ответ 202 уходит до первого события. Исполнение
     // само не бросает, но страховка от ошибки в самой страховке — лог.
@@ -171,12 +203,13 @@ export function createService({ agents, archive, runs, sessions = null, env, log
   }
 
   async function route(req, res) {
-    let path
+    let url
     try {
-      path = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`).pathname
+      url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)
     } catch {
       return send(res, 400, { ok: false, code: 'bad_request' })
     }
+    const path = url.pathname
 
     if (path === '/healthz') {
       const state = archive.state()
@@ -221,20 +254,67 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       if (req.method === 'GET') {
         return send(res, 200, {
           ok: true,
+          // Для сессии дня 10 это все узлы дерева, у каждого `parentId`;
+          // путь, навигатор и обзор страница строит сама (ADR, п. 8.3).
           messages: sessions.history(sessionId),
           // Сумму считает тот, у кого данные: страница видит только
           // загруженное и не знает, что удалено по сроку.
           totalTokens: sessions.totalTokens(sessionId),
           // Сводка разговора дня 9 или null (ADR 2026-09-11-1608).
           summary: summaryView(sessions.summary(sessionId)),
-          // Что уйдёт модели со следующим сообщением: показ до первого ответа.
-          context: sessions.context(sessionId),
+          // Голова текущей ветки; null у линейных сессий дней 6–9.
+          head: sessions.head(sessionId),
+          // Что накоплено к следующему сообщению. Без параметров — ответ
+          // дней 7–9; со стратегией счётчик считается по ней и по
+          // действующему окну этой модели (ADR 2026-09-14-0447, п. 3).
+          context: contextFor(sessionId, url.searchParams),
         })
       }
       if (req.method === 'DELETE') {
         return send(res, 200, { ok: true, removed: sessions.clear(sessionId) })
       }
       return send(res, 404, { ok: false, code: 'not_found' })
+    }
+
+    // Переключение ветки: голова встаёт на самый поздний лист поддерева
+    // указанного сообщения (ADR 2026-09-14-0447, п. 8.3).
+    const headMatch = path.match(/^\/v1\/sessions\/([^/]+)\/head$/)
+    if (headMatch && req.method === 'PUT') {
+      const sessionId = headMatch[1]
+      if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
+      if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      // Пока в сессии идёт запуск, голову двигать нельзя: ответ сел бы под
+      // прежнего родителя. Замок тот же, что у второго сообщения.
+      if ([...agents.values()].some((a) => a.isBusy?.(sessionId))) {
+        return send(res, 409, {
+          ok: false,
+          code: 'busy',
+          message: 'Дождитесь ответа на предыдущее сообщение',
+        })
+      }
+      let body
+      try {
+        body = JSON.parse(await readBody(req))
+      } catch {
+        return send(res, 400, { ok: false, code: 'bad_json', message: 'тело не JSON' })
+      }
+      const messageId = Number(body?.messageId)
+      if (!Number.isInteger(messageId) || messageId <= 0) {
+        return send(res, 400, { ok: false, code: 'bad_input', message: 'Нужен messageId' })
+      }
+      // Сообщение обязано принадлежать этой сессии: номера сквозные по общей
+      // базе дней 6–10, и без проверки перебор соседних номеров открыл бы
+      // чтение чужой переписки — и отправил бы её модели.
+      if (!sessions.hasMessage(sessionId, messageId)) {
+        return send(res, 404, {
+          ok: false,
+          code: 'unknown_message',
+          message: 'Сообщение не найдено',
+        })
+      }
+      const head = sessions.latestLeaf(sessionId, messageId)
+      sessions.setHead(sessionId, head)
+      return send(res, 200, { ok: true, head })
     }
 
     if (path === '/v1/agents' && req.method === 'GET') {
