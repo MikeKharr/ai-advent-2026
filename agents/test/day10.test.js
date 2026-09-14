@@ -277,3 +277,30 @@ test('GET со стратегией считает счётчик по ней, �
   assert.equal(plain.context.messages, undefined, 'без параметров ответ прежний')
   await http.close()
 })
+
+test('счётчик сводки зажат действующим окном модели', async () => {
+  const ctx = setup()
+  // Реплики заведомо шире окна: считаем по базе, запуск не нужен.
+  for (let i = 1; i <= 6; i++) {
+    ctx.sessions.append({
+      sessionId: SID,
+      role: i % 2 ? 'user' : 'agent',
+      text: `реплика ${i}`,
+      tokens: 500,
+    })
+  }
+  const http = await serve(ctx)
+  const url = `/v1/sessions/${SID}?strategy=summary&model=anthropic-haiku&summarizeAt=500`
+  const tight = await (await http.get(`${url}&contextTokens=800`)).json()
+  assert.equal(tight.context.total, 500, 'в окно 800 влезает одна реплика, а не все шесть')
+  assert.equal(tight.context.willCompress, true, 'порог перейдён — при следующем сообщении сожмётся')
+
+  const wide = await (await http.get(`${url}&contextTokens=8000`)).json()
+  assert.equal(wide.context.total, 3000, 'широкое окно вмещает всё накопленное')
+
+  // Без параметров — прежний ответ дней 7–9, без оглядки на окно.
+  const plain = await (await http.get(`/v1/sessions/${SID}`)).json()
+  assert.equal(plain.context.total, 3000)
+  assert.equal(plain.context.willCompress, undefined)
+  await http.close()
+})

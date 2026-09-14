@@ -364,11 +364,26 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
         }
       }
       const row = stmt.summary.get(sessionId)
-      const summaryTokens = row?.tokens ?? 0
-      const freshTokens = this.since(sessionId, row?.throughId ?? 0).reduce(
-        (sum, m) => sum + m.tokens,
-        0,
-      )
+      const stored = row?.tokens ?? 0
+      const fresh = this.since(sessionId, row?.throughId ?? 0)
+      if (strategy !== 'summary') {
+        // Дни 7–9: без учёта окна модели — его знает только запуск.
+        return {
+          total: stored + fresh.reduce((sum, m) => sum + m.tokens, 0),
+          summaryTokens: stored,
+          freshTokens: fresh.reduce((sum, m) => sum + m.tokens, 0),
+        }
+      }
+      // Стратегия 1: то же правило, что в `memory.js → summaryMemory`. Сводка
+      // идёт, только если помещается в окно целиком (подрезать её нельзя),
+      // репликам достаётся остаток. Иначе счётчик обещал бы памяти больше,
+      // чем окно этой модели вместит (ADR 2026-09-14-0447, критерий 6).
+      const summaryTokens = stored <= effective ? stored : 0
+      let freshTokens = 0
+      for (let i = fresh.length - 1; i >= 0; i--) {
+        if (freshTokens + fresh[i].tokens > effective - summaryTokens) break
+        freshTokens += fresh[i].tokens
+      }
       return { total: summaryTokens + freshTokens, summaryTokens, freshTokens }
     },
 
