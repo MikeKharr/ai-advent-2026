@@ -177,6 +177,56 @@ export function parseSummarizeAt(value, contextTokens) {
 }
 
 /**
+ * Стратегии управления контекстом дня 10 (ADR 2026-09-14-0447, п. 1).
+ * `facts` в этом заходе не реализована и значением не принимается: мёртвого
+ * кода в параметрах не заводим. Без поля `strategy` поведение прежнее
+ * (дни 6–9), поэтому список не содержит «пусто».
+ */
+export const STRATEGIES = ['summary', 'window', 'branches']
+
+/** Скользящее окно: сколько последних реплик пути уходит модели. */
+export const WINDOW_LIMITS = { min: 1, max: 40, default: 10 }
+
+/**
+ * Стратегия из входа запуска. Без поля — null, и агент ведёт себя как в
+ * днях 6–9 (критерий приёмки 1).
+ */
+export function parseStrategy(value) {
+  if (value === undefined || value === null || value === '') return { ok: true, value: null }
+  if (!STRATEGIES.includes(value)) {
+    return { ok: false, message: `Стратегия: одна из ${STRATEGIES.join(', ')}` }
+  }
+  return { ok: true, value }
+}
+
+/**
+ * M — число последних реплик пути для стратегии `window`. Порога в токенах
+ * при ней нет: «без ограничения по токенам» из задания (ADR, п. 6).
+ */
+export function parseWindow(value) {
+  const parsed = parseBoundedInt(value, WINDOW_LIMITS.min, WINDOW_LIMITS.max)
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      message: `Реплик в окне: целое от ${WINDOW_LIMITS.min} до ${WINDOW_LIMITS.max}`,
+    }
+  }
+  return { ok: true, value: parsed.value ?? WINDOW_LIMITS.default }
+}
+
+/**
+ * Родитель нового сообщения в дереве (стратегия `branches`). Ноль — корень,
+ * без поля — голова ветки. Принадлежность сессии и роль проверяет агент:
+ * здесь только форма.
+ */
+export function parseParentId(value) {
+  if (value === undefined || value === null || value === '') return { ok: true, value: null }
+  const n = Number(value)
+  if (!Number.isInteger(n) || n < 0) return { ok: false, message: 'Поле parentId должно быть числом' }
+  return { ok: true, value: n }
+}
+
+/**
  * Идентификатор сессии приходит из cookie дня. Проверяется по форме, а не
  * по содержимому: угадать чужой — то же, что угадать номер запуска.
  */

@@ -23,6 +23,7 @@ import {
   SUMMARY_CLASS,
   SUMMARY_PROVIDER,
 } from './llm.js'
+import { recall } from './memory.js'
 import {
   budgetFor,
   inputBudgetFor,
@@ -31,9 +32,12 @@ import {
   PROMPT_PRESETS,
   isSessionId,
   parseParams,
+  parseParentId,
   parseSphere,
+  parseStrategy,
   parseSummarizeAt,
   parseSystem,
+  parseWindow,
 } from './params.js'
 import { TERMINAL } from './runs.js'
 
@@ -143,10 +147,27 @@ export function createNewsAnalyst({
       // Порог сводки необязателен: без него агент ведёт себя как в днях 7–8.
       const summarizeAt = parseSummarizeAt(body.summarizeAt, parsed.params.contextTokens)
       if (!summarizeAt.ok) return { ok: false, message: summarizeAt.message }
+      // Стратегия необязательна: без неё поведение дней 6–9 (ADR 2026-09-14-0447).
+      const strategy = parseStrategy(body.strategy)
+      if (!strategy.ok) return { ok: false, message: strategy.message }
+      const windowSize = parseWindow(body.window)
+      if (!windowSize.ok) return { ok: false, message: windowSize.message }
+      const parentId = parseParentId(body.parentId)
+      if (!parentId.ok) return { ok: false, message: parentId.message }
       // Сессия необязательна: без неё агент ведёт себя как в дне 6.
       const sessionId = body.sessionId ?? null
       if (sessionId !== null && !isSessionId(sessionId))
         return { ok: false, message: 'Поле sessionId должно быть идентификатором сессии' }
+      // Родитель проверяется на границе: сообщение существует, принадлежит
+      // этой сессии и сказано агентом. Иначе ветка выросла бы из чужой
+      // переписки — номера сообщений сквозные по общей базе дней 6–10.
+      if (parentId.value !== null && parentId.value !== 0) {
+        if (sessions === null || sessionId === null)
+          return { ok: false, message: 'Родительское сообщение требует сессии' }
+        const parent = sessions.message(sessionId, parentId.value)
+        if (!parent || parent.role !== 'agent')
+          return { ok: false, message: 'Родительское сообщение не найдено' }
+      }
       if (this.isBusy(sessionId))
         return { ok: false, message: 'Дождитесь ответа на предыдущее сообщение' }
       return {
@@ -157,6 +178,9 @@ export function createNewsAnalyst({
           system: system.system,
           sessionId,
           summarizeAt: summarizeAt.value,
+          strategy: strategy.value,
+          window: windowSize.value,
+          parentId: parentId.value,
         },
       }
     },
@@ -198,6 +222,8 @@ export function createNewsAnalyst({
     /** Выполняет запуск до терминального события. Возвращает, когда всё записано. */
     async execute(run) {
       const { sphere, params, sessionId } = run.input
+      const strategy = run.input.strategy ?? null
+      const windowSize = run.input.window ?? null
       // Свой промпт запуска или промпт из реестра. Всё, что считает размер
       // запроса и зовёт модель, обязано брать именно его: иначе агент
       // пообещает, что подборка влезает, по чужой мерке.
@@ -227,15 +253,43 @@ export function createNewsAnalyst({
       /** Реплика пользователя пишется до вызова модели: вопрос был задан. */
       let asked = false
       let memoryFailed = false
+      // Дерево ведут все сессии дня 10, а не только режим «Ветки»: иначе
+      // после переключения стратегии «последние M по номеру» смешали бы
+      // реплики разных веток (ADR 2026-09-14-0447, п. 8.4).
+      const tree = strategy !== null
+      // Родитель первого сообщения: явный из входа, ноль — корень, без поля —
+      // текущая голова ветки.
+      let nextParent =
+        memory && tree
+          ? run.input.parentId === 0
+            ? null
+            : (run.input.parentId ?? sessions.head(sessionId))
+          : null
       const remember = (role, text, tokens, meta) => {
-        if (!memory) return
+        if (!memory) return null
         try {
-          sessions.append({ sessionId, role, text, tokens, runId: run.id, meta })
+          const id = sessions.append({
+            sessionId,
+            role,
+            text,
+            tokens,
+            runId: run.id,
+            meta,
+            parentId: tree ? nextParent : null,
+          })
+          // Ответ — ребёнок вопроса, а голова — последнее записанное
+          // сообщение: при отказе её замкнёт запись об ошибке.
+          if (tree) {
+            nextParent = id
+            sessions.setHead(sessionId, id)
+          }
+          return id
         } catch (error) {
           // Диалог без записи хуже, чем диалог, но лучше, чем упавший запуск.
           // Идентификатор сессии — ключ к переписке: в лог идёт только начало.
           memoryFailed = true
           log(`сессия ${sessionId.slice(0, 8)}…: запись не удалась: ${error.message}`)
+          return null
         }
       }
       const emit = (fields) => runs.emit(run.id, fields)
@@ -451,88 +505,71 @@ export function createNewsAnalyst({
         // остаток. Действующий размер меньше заданного, если предел входа
         // модели не позволяет (ADR 2026-09-09-1906).
         const effective = effectiveContext(params.contextTokens, budget.tokens)
-        if (memory && effective > 0 && summarizeAt !== null) {
-          // Режим сводки (ADR 2026-09-11-1608): реплики после сводки копятся
-          // до порога N, затем один раз, до ответа, сжимаются вместе с ней.
-          let stored = sessions.summary(sessionId)
-          let fresh = sessions.since(sessionId, stored?.throughId ?? 0)
-          // Слова для отбора — из реплик до сжатия: после него хвост пуст,
-          // а тема разговора жива в последних сообщениях пользователя.
-          recentTalk = fresh
-          const freshTokens = fresh.reduce((sum, m) => sum + m.tokens, 0)
-          if (freshTokens >= summarizeAt) {
-            const done = await compress(stored, fresh)
-            if (done) {
-              stored = { text: done.text, tokens: done.tokens }
-              fresh = []
-              // Текст сводки — в её строке и в GET сессии; здесь только числа.
-              summarized = {
-                sourceTokens: done.sourceTokens,
-                tokens: done.tokens,
-                ratio: done.ratio,
-                totalTokens: done.totalTokens,
-              }
-            }
-          }
-          // Окно — страховка: сводка, не поместившаяся в него целиком, не идёт,
-          // а свежим репликам остаётся то, что сводка не заняла.
-          summaryText = stored && stored.tokens <= effective ? stored.text : null
-          const summaryTokens = summaryText === null ? 0 : stored.tokens
-          if (stored && summaryText === null) {
-            // Не подрезаем: обрезанный пересказ молча терял бы конец в памяти
-            // модели, а блок на странице показывал бы его целиком.
+        // Что вспомнить — по стратегии; ветвления памяти живут в memory.js.
+        const recalled = await recall({
+          strategy,
+          memory,
+          sessions,
+          sessionId,
+          effective,
+          requested: params.contextTokens,
+          windowSize,
+          summarizeAt,
+          compress,
+          emit,
+          // Путь строится от явного родителя, если он пришёл: новая ветка
+          // наследует предка, а не прежнюю голову. Ноль — корень.
+          from: run.input.parentId === 0 ? null : (run.input.parentId ?? undefined),
+        })
+        transcript = recalled.transcript
+        summaryText = recalled.summaryText
+        recentTalk = recalled.recentTalk
+        summarized = recalled.summarized
+        context = recalled.context
+        if (memory && strategy === 'window') {
+          if (transcript.length > 0) {
             emit({
-              stage: 'warning',
-              level: 'warn',
-              title: 'Сводка не поместилась в окно модели',
-              detail: `сводка ${stored.tokens} токенов, окно ${effective}; модель получит только реплики после неё`,
-              data: { summaryTokens: stored.tokens, effective },
+              stage: 'planning',
+              title: 'Вспомнил разговор',
+              detail: `${transcript.length} реплик окна, ${context.used} токенов; порога в токенах нет`,
+              data: { ...context },
             })
           }
-          const tail = fitDialog(fresh, effective - summaryTokens)
-          transcript = tail.messages
-          context = {
-            used: summaryTokens + tail.tokens,
-            effective,
-            requested: params.contextTokens,
-            messages: tail.messages.length,
-            dropped: tail.dropped,
-            summaryTokens,
-            freshTokens: tail.tokens,
-            summarized,
-          }
-          if (summaryText !== null || tail.messages.length > 0) {
+        } else if (memory && strategy === 'branches' && effective > 0) {
+          if (transcript.length > 0) {
             emit({
               stage: 'planning',
               title: 'Вспомнил разговор',
               detail:
-                `сводка ${summaryTokens} и ${tail.messages.length} реплик, ` +
+                `путь ветки: ${transcript.length} из ${context.pathMessages} реплик, ` +
+                `${context.used} из ${effective} токенов контекста`,
+              data: { ...context },
+            })
+          }
+        } else if (memory && effective > 0 && summarizeAt !== null) {
+          // Режим сводки (ADR 2026-09-11-1608): сжатие и сборку блока сделал
+          // memory.js, здесь остаётся только событие монитора.
+          if (summaryText !== null || transcript.length > 0) {
+            emit({
+              stage: 'planning',
+              title: 'Вспомнил разговор',
+              detail:
+                `сводка ${context.summaryTokens} и ${transcript.length} реплик, ` +
                 `${context.used} из ${effective} токенов контекста`,
               data: { ...context },
             })
           }
         } else if (memory && effective > 0) {
-          const tail = sessions.tail(sessionId, effective)
-          transcript = tail.messages
-          context = {
-            used: tail.tokens,
-            effective,
-            requested: params.contextTokens,
-            messages: tail.messages.length,
-            dropped: tail.dropped,
-          }
-          if (tail.messages.length > 0) {
+          if (transcript.length > 0) {
             emit({
               stage: 'planning',
               title: 'Вспомнил разговор',
               detail:
-                `${tail.messages.length} реплик, ${tail.tokens} из ${effective} токенов контекста` +
+                `${transcript.length} реплик, ${context.used} из ${effective} токенов контекста` +
                 (effective < params.contextTokens ? ` (модель даёт меньше ${params.contextTokens})` : ''),
               data: { ...context },
             })
           }
-        } else {
-          context = { used: 0, effective, requested: params.contextTokens, messages: 0, dropped: 0 }
         }
 
         // Инструмент: архив. Аргументы без текстов — тема и запрос в событие
@@ -664,9 +701,13 @@ export function createNewsAnalyst({
           const reset = budget.quota?.resetAt
             ? ` Сброс: ${new Date(budget.quota.resetAt).toLocaleTimeString('ru-RU')}.`
             : ''
+          // В режиме окна размер контекста не действует, и советовать его
+          // уменьшить было бы неправдой: рычаг у пользователя — M.
           const blame =
             context.used > 0
-              ? ` Из них ${context.used} занял контекст разговора — его размер можно уменьшить.`
+              ? strategy === 'window'
+                ? ` Из них ${context.used} занял разговор — уменьшите M (сейчас ${windowSize}).`
+                : ` Из них ${context.used} занял контекст разговора — его размер можно уменьшить.`
               : ''
           return fail({
             code: 'budget_too_small',
@@ -800,6 +841,14 @@ export function createNewsAnalyst({
           perSource: params.perSource,
           articles: params.articles,
           stopSequences: params.stopSequences.length,
+          // Поля дня 10 — только при стратегии: у дней 6–9 сводка ответа прежняя.
+          ...(strategy !== null
+            ? {
+                strategy,
+                ...(strategy === 'window' ? { windowSize } : {}),
+                ...(strategy === 'branches' ? { pathMessages: context.pathMessages ?? 0 } : {}),
+              }
+            : {}),
           // Поля режима сводки — только в нём: у дней 7–8 сводка ответа прежняя.
           ...(summarizeAt !== null
             ? {
