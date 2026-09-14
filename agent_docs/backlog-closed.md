@@ -4,6 +4,8 @@
 
 ## 2026-09
 
+- [x] 2026-09-14 — узкий экран, горизонтальная прокрутка от заголовка запуска (`.run-name`, `white-space: nowrap`): **закрыто в дне 10**. В днях 8 и 9 пункт остаётся открытым — сданные дни без указания владельца не правятся, он оставлен в `backlog.md`. → `development-history/2026-09-14-0700-day10-window-branches.md`
+- [x] 2026-09-14 — срезанное кольцо фокуса у полей настроек (`overflow` у `.params-body`): **закрыто в дне 10**. В днях 8 и 9 пункт остаётся открытым. → `development-history/2026-09-14-0700-day10-window-branches.md`
 - [x] 2026-09-12 — командный режим сверки `rename-map.js` закрыт вместе с предметом: шаг P2 (project-atlas PR #9) удалил файл, сверку с копией атласа заменили три эталонные суммы на коммите `d0cc8e4`. → `development-history/2026-09-12-1401-atlas-migration-to-project-atlas.md`
 - [x] 2026-09-12 — комментарий «Проверено на дне 8» в `web/style.css` инструмента снят тем же шагом P2 (project-atlas PR #9): побайтовая сверка с эталоном отпала, и след ai-advent в общем проекте стало можно убрать. → `development-history/2026-09-12-1401-atlas-migration-to-project-atlas.md`
 - [x] 2026-09-11 — выкатка проверяет `/healthz` каждой единицы до 12 раз с паузой 4 с, `curl --max-time 10`, у job `deploy` — `timeout-minutes: 10`: пересоздание нескольких единиц больше не даёт ложного красного, пока Caddy возвращает их в работу (PR #114). → `development-history/2026-09-11-1507-deploy-healthz-ssh-norm-key-samples.md`
