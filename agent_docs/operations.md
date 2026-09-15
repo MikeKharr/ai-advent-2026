@@ -468,8 +468,10 @@ docker compose exec -T router node -e "fetch('http://100.77.87.97:11434/api/tags
 3. Запись провайдера: `kind: "ollama"`, `tier: "self-hosted"`, `profile: "laptop"`
    (или `server`), `maxConcurrency: 1` для ноутбука,
    `capabilities: ["text_generation", "json_schema"]`,
-   `dataClasses` шире облачных — данные не покидают периметр. Образец —
-   `router/config/providers.local.example.json`.
+   `dataClasses` — полный список `["public", "internal", "personal"]`, как
+   у всех провайдеров: решением владельца 2026-09-15 (PR #140) поле выражает
+   оркестрацию «тип данных × мощность модели», а не границу выхода данных.
+   Образец записи — `router/config/providers.local.example.json`.
 4. Профиль задаёт дедлайн по формуле ADR (загрузка 20 с, генерация не ниже 6.4 ток/с
    для `laptop`); переопределить можно полем `timeouts: { loadMs, promptEvalTps, genTpsFloor }`.
 5. Локальный запуск роутера с ноутбучным провайдером:
