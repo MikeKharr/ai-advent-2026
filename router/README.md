@@ -18,7 +18,8 @@ src/config.js  валидация; битая конфигурация — кр�
 src/registry.js реестр провайдеров за швом (list())
 src/health.js  отрицательный кэш, предохранитель, 429, ёмкость хоста
 src/router.js  createRouter().route(): возможность → политика → здоровье
-src/adapters/  anthropic (Messages API), ollama (родной /api/generate)
+src/adapters/  anthropic (Messages API), groq и kimi (OpenAI-совместимые),
+               ollama (родной /api/generate)
 src/ledger.js  журнал расхода JSONL, суточные суммы
 src/service.js HTTP: /v1/route, /v1/spend, /v1/metrics, /healthz
 server.js      точка входа

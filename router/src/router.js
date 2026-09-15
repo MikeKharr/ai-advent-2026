@@ -118,7 +118,9 @@ export function createRouter({
       )
       if (candidates.length === 0)
         return refuse('no_provider', `провайдер ${explicit} не найден в реестре`, [])
-      const allowed = orderedCandidates(cls, providers).some((p) => p.id === candidates[0].id)
+      const allowed = orderedCandidates(cls, providers, { explicit: true }).some(
+        (p) => p.id === candidates[0].id,
+      )
       if (!allowed)
         return refuse(
           'refused',
@@ -419,7 +421,9 @@ export function createRouter({
           .list()
           .filter((p) => p.id === req.provider || `${p.id}#${p.revision}` === req.provider)
       : registry.list()
-    const capable = orderedCandidates(cls, pool).filter(
+    // Провайдер «только по явному выбору» в автоматическую оценку не входит:
+    // иначе каждый запрос без provider резервировался бы по его ставке.
+    const capable = orderedCandidates(cls, pool, { explicit: Boolean(req.provider) }).filter(
       (p) => capabilityFit(p, cls, level, dataClass, inputTokens, extraRequires).ok,
     )
     const calls = req.provider ? 1 : Math.min(MAX_CALLS, Math.max(1, capable.length))
@@ -444,7 +448,9 @@ export function createRouter({
     // Приложению показываем только те модели, которые класс действительно
     // может использовать: классификатор в списке моделей для ответа
     // пользователю — это приглашение выбрать заведомый отказ.
-    const capable = orderedCandidates(cls, registry.list()).filter(
+    // Список для выбора: провайдеры с `explicitOnly` сюда входят — именно
+    // отсюда приложение узнаёт, что их можно назвать по имени.
+    const capable = orderedCandidates(cls, registry.list(), { explicit: true }).filter(
       (p) => capabilityFit(p, cls, cls.thinking, cls.dataClass, 0).ok,
     )
     return capable.map((p) => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { loadConfig } from '../src/config.js'
+import { loadConfig, orderedCandidates } from '../src/config.js'
 import { createStaticRegistry } from '../src/registry.js'
 import { createRouter } from '../src/router.js'
 import {
@@ -12,6 +12,9 @@ import {
   groqWithQuota,
   httpJson,
   httpText,
+  KIMI_K26,
+  KIMI_K3,
+  kimiCompletion,
   ollamaGenerate,
   PROVIDERS,
   scriptedFetch,
@@ -1057,6 +1060,272 @@ test('обрезание: свободный текст — успех с trunca
   assert.equal(r2.code, 'all_failed')
   assert.equal(r2.attempts.length, 1, 'после обрезания схемного ответа второго не зовём')
   assert.equal(strict.calls.filter((c) => c.host === CLOUD).length, 0)
+})
+
+// Флаг «только явный выбор» (ADR 2026-09-15-1448, п. 2). Проверяется на
+// модели Groq, а не Kimi: флаг — свойство маршрутизации, а не провайдера.
+const EXPLICIT_ONLY = { ...GROQ_CHAT, explicitOnly: true }
+
+test('explicitOnly: политика провайдера не берёт, явный выбор — берёт', async () => {
+  const { router, calls } = setup({
+    providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+    hosts: {
+      [GROQ]: () => httpJson(200, groqCompletion({ text: 'ответ Groq' })),
+      [CLOUD]: cloudOk,
+    },
+  })
+  // Без флага этот провайдер первый в ярусе news_answer и выиграл бы
+  // (тест «явный выбор модели: зовём только её»). С флагом — пропущен.
+  const auto = await router.route({ taskClass: 'news_answer', input: 'текст' })
+  assert.equal(auto.ok, true)
+  assert.equal(auto.provider.id, 'anthropic-haiku')
+  assert.equal(calls.filter((c) => c.host === GROQ).length, 0, 'автоматически к нему не ходили')
+
+  const picked = await router.route({
+    taskClass: 'news_answer',
+    input: 'текст',
+    provider: 'groq-gpt-oss-20b',
+  })
+  assert.equal(picked.ok, true)
+  assert.equal(picked.provider.id, 'groq-gpt-oss-20b')
+  assert.equal(calls.filter((c) => c.host === GROQ).length, 1)
+})
+
+test('explicitOnly: ярус по-прежнему ограничивает явный выбор', async () => {
+  // Класс other — только cloud-frontier, провайдер в cloud-cheap: флаг
+  // не отменяет проверку яруса (ADR 2026-09-08-1824, п. 3).
+  const { router, calls } = setup({
+    providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const r = await router.route({ taskClass: 'other', input: 'x', provider: 'groq-gpt-oss-20b' })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'refused')
+  assert.equal(r.reasons[0].stage, 'policy')
+  assert.equal(calls.length, 0)
+})
+
+test('explicitOnly: в оценку расхода без provider не входит, с provider — считается', async () => {
+  // Дорогая модель, доступная только по имени, не должна поднимать резерв
+  // каждому автоматическому запросу класса.
+  const pricey = { ...EXPLICIT_ONLY, price: { inputPerMTok: 3, outputPerMTok: 15 } }
+  const req = { taskClass: 'news_answer', input: 'x'.repeat(4000) }
+  const withFlag = setup({
+    providers: [pricey, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const without = setup({
+    providers: [PROVIDERS[1], GUARD],
+    hosts: { [CLOUD]: cloudOk },
+  })
+  assert.deepEqual(
+    withFlag.router.estimateRequest(req),
+    without.router.estimateRequest(req),
+    'оценка такая же, как если бы провайдера в реестре не было',
+  )
+  const picked = withFlag.router.estimateRequest({ ...req, provider: 'groq-gpt-oss-20b' })
+  assert.ok(picked.costUsd > without.router.estimateRequest(req).costUsd, 'считается по названной')
+})
+
+test('explicitOnly: /v1/models показывает провайдера — это список для выбора', async () => {
+  const { router } = setup({
+    providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  assert.deepEqual(
+    router.providerLimits('news_answer').map((l) => l.id),
+    ['groq-gpt-oss-20b', 'anthropic-haiku'],
+  )
+})
+
+test('без explicitOnly порядок кандидатов прежний', async () => {
+  // Защита от регрессии у действующих провайдеров: ни один из них поля не
+  // имеет, и явность на их порядок влиять не должна.
+  const providers = [GROQ_CHAT, ...PROVIDERS]
+  for (const name of Object.keys(CLASSES)) {
+    const policy = orderedCandidates(CLASSES[name], providers).map((p) => p.id)
+    const explicit = orderedCandidates(CLASSES[name], providers, { explicit: true }).map(
+      (p) => p.id,
+    )
+    assert.deepEqual(policy, explicit, `класс ${name}`)
+  }
+  // И сам маршрут выбирает прежнего кандидата.
+  const { router } = setup({
+    providers: [GROQ_CHAT, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const r = await router.route({ taskClass: 'news_answer', input: 'текст' })
+  assert.equal(r.provider.id, 'groq-gpt-oss-20b')
+})
+
+test('explicitOnly: не булево — крах на старте; класс без иных кандидатов — тоже', () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [{ ...GROQ_CHAT, explicitOnly: 'да' }, PROVIDERS[1], GUARD],
+        classes: CLASSES,
+        env: ENV,
+      }),
+    /explicitOnly/,
+  )
+  // Класс, у которого все кандидаты — «только по явному выбору», кандидата
+  // для политики не имеет: это ошибка старта, а не отказ в рантайме.
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+        classes: { ...CLASSES, news_answer: { ...CLASSES.news_answer, tiers: ['cloud-cheap'] } },
+        env: ENV,
+      }),
+    /news_answer/,
+  )
+})
+
+// Адаптер Kimi (ADR 2026-09-15-1448, п. 1). Обе записи — explicitOnly,
+// поэтому в каждом вызове провайдер называется явно.
+const KIMI = 'api.moonshot.test'
+const kimiOk = () => httpJson(200, kimiCompletion())
+
+test('kimi: путь /v1, max_completion_tokens, без temperature и n', async () => {
+  const { router, calls } = setup({
+    providers: [KIMI_K3, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  const r = await router.route({
+    taskClass: 'other',
+    input: 'текст',
+    system: 'ты помощник',
+    provider: 'kimi-k3',
+    temperature: 0.4,
+    stop: ['КОНЕЦ'],
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.provider.model, 'kimi-k3')
+  assert.equal(calls[0].url, 'https://api.moonshot.test/v1/chat/completions', 'путь без /openai')
+  assert.equal(calls[0].headers.authorization, 'Bearer sk-kimi-test')
+  assert.equal(calls[0].body.stream, false)
+  assert.equal(calls[0].body.max_tokens, undefined, 'max_tokens у Kimi устарел')
+  assert.equal(calls[0].body.temperature, undefined, 'температура фиксирована — не отправляем')
+  assert.equal(calls[0].body.n, undefined)
+  assert.deepEqual(calls[0].body.messages, [
+    { role: 'system', content: 'ты помощник' },
+    { role: 'user', content: 'текст' },
+  ])
+  assert.deepEqual(calls[0].body.stop, ['КОНЕЦ'])
+})
+
+test('kimi: два диалекта рассуждений и запас токенов на неотключаемые', async () => {
+  const { router, calls } = setup({
+    providers: [KIMI_K3, KIMI_K26, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  // k3: рассуждения не выключаются, none отображён на low плюс запас токенов.
+  await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k3' })
+  assert.equal(calls[0].body.reasoning_effort, 'low')
+  assert.equal(calls[0].body.thinking, undefined)
+  assert.equal(calls[0].body.max_completion_tokens, 1024 + 1024, 'потолок поднят на запас')
+
+  // k2.6: none — это выключение через thinking.type, запас не нужен.
+  await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k2.6' })
+  assert.deepEqual(calls[1].body.thinking, { type: 'disabled' })
+  assert.equal(calls[1].body.reasoning_effort, undefined)
+  assert.equal(calls[1].body.max_completion_tokens, 1024)
+
+  // Уровень со значением true: параметр не отправляется вовсе, бюджет
+  // размышлений роутер уже заложил в потолок.
+  await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k2.6', thinking: 'medium' })
+  assert.equal(calls[2].body.thinking, undefined)
+  assert.equal(calls[2].body.reasoning_effort, undefined)
+  assert.equal(calls[2].body.max_completion_tokens, 1024 + 2500)
+})
+
+test('kimi: reasoning_content отбрасывается, расход — по ставке промаха кэша', async () => {
+  const { router } = setup({
+    providers: [KIMI_K3, PROVIDERS[1], GUARD],
+    hosts: {
+      [KIMI]: () =>
+        httpJson(
+          200,
+          kimiCompletion({
+            text: 'видимый ответ',
+            reasoning: 'длинная цепочка рассуждений',
+            input: 500,
+            output: 40,
+            cached: 400,
+          }),
+        ),
+      [CLOUD]: cloudOk,
+    },
+  })
+  const r = await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k3' })
+  assert.equal(r.ok, true)
+  assert.equal(r.text, 'видимый ответ', 'рассуждения в ответ не попадают')
+  // cached_tokens намеренно не вычитается: журнал вправе завысить, но не занизить.
+  assert.deepEqual(r.usage, { inputTokens: 500, outputTokens: 40, webSearches: 0 })
+  assert.deepEqual(r.metrics, { loadMs: null, promptEvalMs: null, evalMs: null, tokPerSec: null })
+})
+
+test('kimi: finish_reason length — обрезанный ответ', async () => {
+  const { router } = setup({
+    providers: [KIMI_K3, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: () => httpJson(200, kimiCompletion({ finish: 'length' })), [CLOUD]: cloudOk },
+  })
+  const r = await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k3' })
+  assert.equal(r.ok, true)
+  assert.equal(r.truncated, true)
+})
+
+test('kimi: возможность, которой нет у адаптера, — громкая ошибка', async () => {
+  // Схема и серверные инструменты объявлены в конфигурации, но адаптер их не
+  // умеет: молча отвечать из памяти модели нельзя.
+  const schemaful = { ...KIMI_K3, capabilities: ['text_generation', 'json_schema'] }
+  const searchy = { ...KIMI_K3, capabilities: ['text_generation', 'web_search'] }
+  const { router } = setup({
+    providers: [schemaful, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  const withSchema = await router.route({
+    taskClass: 'extract_json',
+    input: 'x',
+    schema: { type: 'object' },
+    provider: 'kimi-k3',
+  })
+  assert.equal(withSchema.ok, false)
+  assert.match(withSchema.reasons.at(-1).reason, /структурированный вывод/)
+
+  const search = setup({
+    providers: [searchy, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  const withTool = await search.router.route({
+    taskClass: 'rank_news',
+    input: 'новости',
+    provider: 'kimi-k3',
+  })
+  assert.equal(withTool.ok, false)
+  assert.match(withTool.reasons.at(-1).reason, /web_search/)
+})
+
+test('kimi: четыре записи на одном ключе и хосте — одна ёмкость', () => {
+  // Ёмкость считается на хост: расхождение между записями — крах на старте.
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [KIMI_K3, { ...KIMI_K26, maxConcurrency: 4 }, PROVIDERS[1], GUARD],
+        classes: CLASSES,
+        env: ENV,
+      }),
+    /ёмкость/,
+  )
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [KIMI_K3, PROVIDERS[1], GUARD],
+        classes: CLASSES,
+        env: { ...ENV, KIMI_API_KEY: '' },
+      }),
+    /KIMI_API_KEY/,
+  )
 })
 
 test('anthropic: размышления уходят бюджетом, max_tokens его превышает, схема — в output_config', async () => {

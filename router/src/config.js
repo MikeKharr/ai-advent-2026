@@ -4,7 +4,7 @@
 export const TIERS = ['self-hosted', 'cloud-cheap', 'cloud-frontier']
 export const LEVELS = ['none', 'low', 'medium', 'high']
 export const PROFILES = ['laptop', 'server', 'cloud']
-export const KINDS = ['anthropic', 'groq', 'ollama']
+export const KINDS = ['anthropic', 'groq', 'kimi', 'ollama']
 export const REASONING_CONTROLS = ['format', 'include']
 
 /**
@@ -120,6 +120,11 @@ export function validateProviders(providers, env) {
       fail(`${where}: при none = "${p.thinking.none}" нужен reasoningFloorTokens`)
     if (p.strictSchema !== undefined && typeof p.strictSchema !== 'boolean')
       fail(`${where}: strictSchema — булево`)
+    // Провайдер только для явного выбора: политика его не берёт (ADR
+    // 2026-09-15-1448, п. 2). Опечатка в поле означала бы тихое возвращение
+    // дорогой модели в автоматическую маршрутизацию, поэтому — на старте.
+    if (p.explicitOnly !== undefined && typeof p.explicitOnly !== 'boolean')
+      fail(`${where}: explicitOnly — булево`)
     if (!Number.isInteger(p.revision ?? 1)) fail(`${where}: revision — целое`)
     if (p.secretEnv && !env[p.secretEnv])
       fail(`${where}: переменная секрета ${p.secretEnv} не задана`)
@@ -203,13 +208,22 @@ export function validateApps(appsConfig, env, classes) {
   }
 }
 
-/** Кандидаты класса в порядке политики: ярусы по порядку, внутри — порядок объявления. */
-export function orderedCandidates(cls, providers) {
+/**
+ * Кандидаты класса в порядке политики: ярусы по порядку, внутри — порядок
+ * объявления. `explicit` — вызывающий назвал провайдера сам: тогда в список
+ * входят и провайдеры с `explicitOnly`, которых политика не выбирает
+ * (ADR 2026-09-15-1448, п. 2). Умолчание `false` — сторона политики.
+ */
+export function orderedCandidates(cls, providers, { explicit = false } = {}) {
   const deny = new Set(cls.deny ?? [])
   const out = []
   for (const tier of cls.tiers) {
     if (deny.has(tier)) continue
-    for (const p of providers) if (p.tier === tier) out.push(p)
+    for (const p of providers) {
+      if (p.tier !== tier) continue
+      if (p.explicitOnly && !explicit) continue
+      out.push(p)
+    }
   }
   return out
 }
