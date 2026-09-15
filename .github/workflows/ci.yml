@@ -131,7 +131,7 @@ jobs:
           # Роутеру для старта нужны ключи приложений — тоже фиктивные.
           # Сервису агентов — AGENT_KEY и ROUTER_APP_KEY, дню 6 — AGENT_KEY.
           docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
-            -e GROQ_API_KEY=ci-dummy \
+            -e GROQ_API_KEY=ci-dummy -e KIMI_API_KEY=ci-dummy \
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
             -e APP_KEY_DAY5=ci-dummy -e APP_KEY_AGENTS=ci-dummy \
             -e ROUTER_APP_KEY=ci-dummy -e AGENT_KEY=ci-dummy \

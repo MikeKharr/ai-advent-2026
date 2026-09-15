@@ -12,6 +12,9 @@ import {
   groqWithQuota,
   httpJson,
   httpText,
+  KIMI_K26,
+  KIMI_K3,
+  kimiCompletion,
   ollamaGenerate,
   PROVIDERS,
   scriptedFetch,
@@ -1175,6 +1178,153 @@ test('explicitOnly: не булево — крах на старте; класс
         env: ENV,
       }),
     /news_answer/,
+  )
+})
+
+// Адаптер Kimi (ADR 2026-09-15-1448, п. 1). Обе записи — explicitOnly,
+// поэтому в каждом вызове провайдер называется явно.
+const KIMI = 'api.moonshot.test'
+const kimiOk = () => httpJson(200, kimiCompletion())
+
+test('kimi: путь /v1, max_completion_tokens, без temperature и n', async () => {
+  const { router, calls } = setup({
+    providers: [KIMI_K3, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  const r = await router.route({
+    taskClass: 'other',
+    input: 'текст',
+    system: 'ты помощник',
+    provider: 'kimi-k3',
+    temperature: 0.4,
+    stop: ['КОНЕЦ'],
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.provider.model, 'kimi-k3')
+  assert.equal(calls[0].url, 'https://api.moonshot.test/v1/chat/completions', 'путь без /openai')
+  assert.equal(calls[0].headers.authorization, 'Bearer sk-kimi-test')
+  assert.equal(calls[0].body.stream, false)
+  assert.equal(calls[0].body.max_tokens, undefined, 'max_tokens у Kimi устарел')
+  assert.equal(calls[0].body.temperature, undefined, 'температура фиксирована — не отправляем')
+  assert.equal(calls[0].body.n, undefined)
+  assert.deepEqual(calls[0].body.messages, [
+    { role: 'system', content: 'ты помощник' },
+    { role: 'user', content: 'текст' },
+  ])
+  assert.deepEqual(calls[0].body.stop, ['КОНЕЦ'])
+})
+
+test('kimi: два диалекта рассуждений и запас токенов на неотключаемые', async () => {
+  const { router, calls } = setup({
+    providers: [KIMI_K3, KIMI_K26, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  // k3: рассуждения не выключаются, none отображён на low плюс запас токенов.
+  await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k3' })
+  assert.equal(calls[0].body.reasoning_effort, 'low')
+  assert.equal(calls[0].body.thinking, undefined)
+  assert.equal(calls[0].body.max_completion_tokens, 1024 + 1024, 'потолок поднят на запас')
+
+  // k2.6: none — это выключение через thinking.type, запас не нужен.
+  await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k2.6' })
+  assert.deepEqual(calls[1].body.thinking, { type: 'disabled' })
+  assert.equal(calls[1].body.reasoning_effort, undefined)
+  assert.equal(calls[1].body.max_completion_tokens, 1024)
+
+  // Уровень со значением true: параметр не отправляется вовсе, бюджет
+  // размышлений роутер уже заложил в потолок.
+  await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k2.6', thinking: 'medium' })
+  assert.equal(calls[2].body.thinking, undefined)
+  assert.equal(calls[2].body.reasoning_effort, undefined)
+  assert.equal(calls[2].body.max_completion_tokens, 1024 + 2500)
+})
+
+test('kimi: reasoning_content отбрасывается, расход — по ставке промаха кэша', async () => {
+  const { router } = setup({
+    providers: [KIMI_K3, PROVIDERS[1], GUARD],
+    hosts: {
+      [KIMI]: () =>
+        httpJson(
+          200,
+          kimiCompletion({
+            text: 'видимый ответ',
+            reasoning: 'длинная цепочка рассуждений',
+            input: 500,
+            output: 40,
+            cached: 400,
+          }),
+        ),
+      [CLOUD]: cloudOk,
+    },
+  })
+  const r = await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k3' })
+  assert.equal(r.ok, true)
+  assert.equal(r.text, 'видимый ответ', 'рассуждения в ответ не попадают')
+  // cached_tokens намеренно не вычитается: журнал вправе завысить, но не занизить.
+  assert.deepEqual(r.usage, { inputTokens: 500, outputTokens: 40, webSearches: 0 })
+  assert.deepEqual(r.metrics, { loadMs: null, promptEvalMs: null, evalMs: null, tokPerSec: null })
+})
+
+test('kimi: finish_reason length — обрезанный ответ', async () => {
+  const { router } = setup({
+    providers: [KIMI_K3, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: () => httpJson(200, kimiCompletion({ finish: 'length' })), [CLOUD]: cloudOk },
+  })
+  const r = await router.route({ taskClass: 'other', input: 'x', provider: 'kimi-k3' })
+  assert.equal(r.ok, true)
+  assert.equal(r.truncated, true)
+})
+
+test('kimi: возможность, которой нет у адаптера, — громкая ошибка', async () => {
+  // Схема и серверные инструменты объявлены в конфигурации, но адаптер их не
+  // умеет: молча отвечать из памяти модели нельзя.
+  const schemaful = { ...KIMI_K3, capabilities: ['text_generation', 'json_schema'] }
+  const searchy = { ...KIMI_K3, capabilities: ['text_generation', 'web_search'] }
+  const { router } = setup({
+    providers: [schemaful, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  const withSchema = await router.route({
+    taskClass: 'extract_json',
+    input: 'x',
+    schema: { type: 'object' },
+    provider: 'kimi-k3',
+  })
+  assert.equal(withSchema.ok, false)
+  assert.match(withSchema.reasons.at(-1).reason, /структурированный вывод/)
+
+  const search = setup({
+    providers: [searchy, PROVIDERS[1], GUARD],
+    hosts: { [KIMI]: kimiOk, [CLOUD]: cloudOk },
+  })
+  const withTool = await search.router.route({
+    taskClass: 'rank_news',
+    input: 'новости',
+    provider: 'kimi-k3',
+  })
+  assert.equal(withTool.ok, false)
+  assert.match(withTool.reasons.at(-1).reason, /web_search/)
+})
+
+test('kimi: четыре записи на одном ключе и хосте — одна ёмкость', () => {
+  // Ёмкость считается на хост: расхождение между записями — крах на старте.
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [KIMI_K3, { ...KIMI_K26, maxConcurrency: 4 }, PROVIDERS[1], GUARD],
+        classes: CLASSES,
+        env: ENV,
+      }),
+    /ёмкость/,
+  )
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [KIMI_K3, PROVIDERS[1], GUARD],
+        classes: CLASSES,
+        env: { ...ENV, KIMI_API_KEY: '' },
+      }),
+    /KIMI_API_KEY/,
   )
 })
 

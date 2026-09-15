@@ -68,6 +68,40 @@ export function groqCompletion({
   }
 }
 
+/**
+ * Ответ Kimi: OpenAI-совместимый, но без времён в usage, с нестандартным
+ * cached_tokens на верхнем уровне usage и рассуждениями в reasoning_content.
+ */
+export function kimiCompletion({
+  text = 'ответ',
+  reasoning = 'сначала подумаю',
+  finish = 'stop',
+  input = 120,
+  output = 40,
+  cached = 0,
+  model = 'kimi-k2.6',
+} = {}) {
+  return {
+    id: 'chatcmpl-7d1e9a4b',
+    object: 'chat.completion',
+    created: 1_788_000_000,
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: 'assistant', content: text, reasoning_content: reasoning },
+        finish_reason: finish,
+      },
+    ],
+    usage: {
+      prompt_tokens: input,
+      completion_tokens: output,
+      total_tokens: input + output,
+      cached_tokens: cached,
+    },
+  }
+}
+
 export const PROVIDERS = [
   {
     id: 'mac-qwen3',
@@ -145,9 +179,46 @@ export const GROQ_CHAT = {
   price: { inputPerMTok: 0.075, outputPerMTok: 0.3 },
 }
 
+/**
+ * Kimi: две записи на одном ключе и одном хосте — разные диалекты рассуждений.
+ * У k3 рассуждения не выключаются (none отображён на low + запас токенов),
+ * у k2.6 уровень none — это thinking.type: disabled.
+ */
+export const KIMI_K3 = {
+  id: 'kimi-k3',
+  revision: 1,
+  kind: 'kimi',
+  tier: 'cloud-frontier',
+  baseUrl: 'https://api.moonshot.test',
+  model: 'kimi-k3',
+  profile: 'cloud',
+  capabilities: ['text_generation'],
+  contextWindow: 1048576,
+  maxRequestTokens: 32768,
+  jurisdiction: 'sg',
+  dataClasses: ['public'],
+  maxConcurrency: 15,
+  thinking: { none: 'low', low: 'low', medium: 'high', high: 'high' },
+  reasoningFloorTokens: 1024,
+  explicitOnly: true,
+  secretEnv: 'KIMI_API_KEY',
+  price: { inputPerMTok: 3, outputPerMTok: 15 },
+}
+
+export const KIMI_K26 = {
+  ...KIMI_K3,
+  id: 'kimi-k2.6',
+  model: 'kimi-k2.6',
+  contextWindow: 262144,
+  thinking: { none: 'none', low: true, medium: true, high: true },
+  reasoningFloorTokens: undefined,
+  price: { inputPerMTok: 0.95, outputPerMTok: 4 },
+}
+
 export const ENV = {
   ANTHROPIC_API_KEY: 'sk-test',
   GROQ_API_KEY: 'gsk-test',
+  KIMI_API_KEY: 'sk-kimi-test',
   ROUTER_ADMIN_KEY: 'admin-test',
   APP_KEY_SMOKE: 'app-smoke',
 }
