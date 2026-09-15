@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { loadConfig } from '../src/config.js'
+import { loadConfig, orderedCandidates } from '../src/config.js'
 import { createStaticRegistry } from '../src/registry.js'
 import { createRouter } from '../src/router.js'
 import {
@@ -1057,6 +1057,125 @@ test('обрезание: свободный текст — успех с trunca
   assert.equal(r2.code, 'all_failed')
   assert.equal(r2.attempts.length, 1, 'после обрезания схемного ответа второго не зовём')
   assert.equal(strict.calls.filter((c) => c.host === CLOUD).length, 0)
+})
+
+// Флаг «только явный выбор» (ADR 2026-09-15-1448, п. 2). Проверяется на
+// модели Groq, а не Kimi: флаг — свойство маршрутизации, а не провайдера.
+const EXPLICIT_ONLY = { ...GROQ_CHAT, explicitOnly: true }
+
+test('explicitOnly: политика провайдера не берёт, явный выбор — берёт', async () => {
+  const { router, calls } = setup({
+    providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+    hosts: {
+      [GROQ]: () => httpJson(200, groqCompletion({ text: 'ответ Groq' })),
+      [CLOUD]: cloudOk,
+    },
+  })
+  // Без флага этот провайдер первый в ярусе news_answer и выиграл бы
+  // (тест «явный выбор модели: зовём только её»). С флагом — пропущен.
+  const auto = await router.route({ taskClass: 'news_answer', input: 'текст' })
+  assert.equal(auto.ok, true)
+  assert.equal(auto.provider.id, 'anthropic-haiku')
+  assert.equal(calls.filter((c) => c.host === GROQ).length, 0, 'автоматически к нему не ходили')
+
+  const picked = await router.route({
+    taskClass: 'news_answer',
+    input: 'текст',
+    provider: 'groq-gpt-oss-20b',
+  })
+  assert.equal(picked.ok, true)
+  assert.equal(picked.provider.id, 'groq-gpt-oss-20b')
+  assert.equal(calls.filter((c) => c.host === GROQ).length, 1)
+})
+
+test('explicitOnly: ярус по-прежнему ограничивает явный выбор', async () => {
+  // Класс other — только cloud-frontier, провайдер в cloud-cheap: флаг
+  // не отменяет проверку яруса (ADR 2026-09-08-1824, п. 3).
+  const { router, calls } = setup({
+    providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const r = await router.route({ taskClass: 'other', input: 'x', provider: 'groq-gpt-oss-20b' })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'refused')
+  assert.equal(r.reasons[0].stage, 'policy')
+  assert.equal(calls.length, 0)
+})
+
+test('explicitOnly: в оценку расхода без provider не входит, с provider — считается', async () => {
+  // Дорогая модель, доступная только по имени, не должна поднимать резерв
+  // каждому автоматическому запросу класса.
+  const pricey = { ...EXPLICIT_ONLY, price: { inputPerMTok: 3, outputPerMTok: 15 } }
+  const req = { taskClass: 'news_answer', input: 'x'.repeat(4000) }
+  const withFlag = setup({
+    providers: [pricey, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const without = setup({
+    providers: [PROVIDERS[1], GUARD],
+    hosts: { [CLOUD]: cloudOk },
+  })
+  assert.deepEqual(
+    withFlag.router.estimateRequest(req),
+    without.router.estimateRequest(req),
+    'оценка такая же, как если бы провайдера в реестре не было',
+  )
+  const picked = withFlag.router.estimateRequest({ ...req, provider: 'groq-gpt-oss-20b' })
+  assert.ok(picked.costUsd > without.router.estimateRequest(req).costUsd, 'считается по названной')
+})
+
+test('explicitOnly: /v1/models показывает провайдера — это список для выбора', async () => {
+  const { router } = setup({
+    providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  assert.deepEqual(
+    router.providerLimits('news_answer').map((l) => l.id),
+    ['groq-gpt-oss-20b', 'anthropic-haiku'],
+  )
+})
+
+test('без explicitOnly порядок кандидатов прежний', async () => {
+  // Защита от регрессии у действующих провайдеров: ни один из них поля не
+  // имеет, и явность на их порядок влиять не должна.
+  const providers = [GROQ_CHAT, ...PROVIDERS]
+  for (const name of Object.keys(CLASSES)) {
+    const policy = orderedCandidates(CLASSES[name], providers).map((p) => p.id)
+    const explicit = orderedCandidates(CLASSES[name], providers, { explicit: true }).map(
+      (p) => p.id,
+    )
+    assert.deepEqual(policy, explicit, `класс ${name}`)
+  }
+  // И сам маршрут выбирает прежнего кандидата.
+  const { router } = setup({
+    providers: [GROQ_CHAT, PROVIDERS[1], GUARD],
+    hosts: { [GROQ]: () => httpJson(200, groqCompletion()), [CLOUD]: cloudOk },
+  })
+  const r = await router.route({ taskClass: 'news_answer', input: 'текст' })
+  assert.equal(r.provider.id, 'groq-gpt-oss-20b')
+})
+
+test('explicitOnly: не булево — крах на старте; класс без иных кандидатов — тоже', () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [{ ...GROQ_CHAT, explicitOnly: 'да' }, PROVIDERS[1], GUARD],
+        classes: CLASSES,
+        env: ENV,
+      }),
+    /explicitOnly/,
+  )
+  // Класс, у которого все кандидаты — «только по явному выбору», кандидата
+  // для политики не имеет: это ошибка старта, а не отказ в рантайме.
+  assert.throws(
+    () =>
+      loadConfig({
+        providers: [EXPLICIT_ONLY, PROVIDERS[1], GUARD],
+        classes: { ...CLASSES, news_answer: { ...CLASSES.news_answer, tiers: ['cloud-cheap'] } },
+        env: ENV,
+      }),
+    /news_answer/,
+  )
 })
 
 test('anthropic: размышления уходят бюджетом, max_tokens его превышает, схема — в output_config', async () => {
