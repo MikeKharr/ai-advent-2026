@@ -38,7 +38,7 @@
     "capabilities": ["text_generation", "json_schema", "web_search", "tools"],
     "contextWindow": 200000,
     "jurisdiction": "us",
-    "dataClasses": ["public"],
+    "dataClasses": ["public", "internal", "personal"],
     "maxConcurrency": 8,
     "thinking": {
       "none": true,
@@ -66,7 +66,7 @@
     "capabilities": ["prompt_guard"],
     "contextWindow": 384,
     "jurisdiction": "us",
-    "dataClasses": ["public"],
+    "dataClasses": ["public", "internal", "personal"],
     "maxConcurrency": 4,
     "thinking": {
       "none": true
@@ -90,7 +90,7 @@
     "capabilities": ["text_generation", "json_schema"],
     "contextWindow": 131072,
     "jurisdiction": "us",
-    "dataClasses": ["public"],
+    "dataClasses": ["public", "internal", "personal"],
     "maxConcurrency": 4,
     "thinking": {
       "none": "low",
@@ -121,7 +121,7 @@
     "capabilities": ["text_generation", "json_schema"],
     "contextWindow": 131072,
     "jurisdiction": "us",
-    "dataClasses": ["public"],
+    "dataClasses": ["public", "internal", "personal"],
     "maxConcurrency": 4,
     "thinking": {
       "none": "none"
