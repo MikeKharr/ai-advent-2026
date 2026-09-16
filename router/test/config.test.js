@@ -6,6 +6,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { loadConfig, orderedCandidates } from '../src/config.js'
+import { createStaticRegistry } from '../src/registry.js'
+import { createRouter } from '../src/router.js'
 
 const read = (name) => JSON.parse(readFileSync(new URL(`../config/${name}`, import.meta.url), 'utf8'))
 const providers = read('providers.json')
@@ -69,6 +71,78 @@ const agents = apps.apps.find((a) => a.id === 'agents')
 
 test('лимиты agents — та пара, что решена владельцем 2026-09-16', () => {
   assert.deepEqual(agents.limits, { dailyTokens: 10_000_000, dailyCostUsd: 10 })
+})
+
+// Роутер на продовой конфигурации. Сеть не нужна: и список моделей, и отказ по
+// потолку ответа решаются до обращения к провайдеру, поэтому fetch здесь падает —
+// если он всё же будет вызван, тест покраснеет, а не сходит наружу.
+function prodRouter() {
+  const config = loadConfig({ providers, classes, apps, env: ENV_PROD })
+  return createRouter({
+    config,
+    registry: createStaticRegistry(config.providers),
+    fetchImpl: () => {
+      throw new Error('в этом тесте провайдеров не вызывают')
+    },
+    env: ENV_PROD,
+  })
+}
+
+// Класс дня 11 (ADR 2026-09-15-2024, п. 8.1). Поля сверяются целиком: у класса
+// нет «неважных» полей — каждое из них двигает либо выбор модели, либо цену.
+test('класс layered_dialogue — поля, решённые ADR 2026-09-15-2024', () => {
+  assert.deepEqual(classes.layered_dialogue, {
+    tiers: ['self-hosted', 'cloud-cheap', 'cloud-frontier'],
+    requires: ['text_generation'],
+    thinking: 'none',
+    answerTokens: 1024,
+    maxAnswerTokens: 2048,
+    dataClass: 'public',
+  })
+})
+
+test('layered_dialogue разрешён приложению agents и только ему', () => {
+  assert.ok(agents.classes.includes('layered_dialogue'))
+  for (const a of apps.apps.filter((x) => x.id !== 'agents'))
+    assert.equal(a.classes.includes('layered_dialogue'), false, `${a.id}: класс дня 11 не его`)
+})
+
+// Восемь, а не четыре (критерий 12 ADR). Четыре — это длина списка MODELS в
+// agents/src/params.js, подмножество, которое предлагает страница. Роутер же
+// отдаёт всех кандидатов явного выбора: providerLimits зовёт orderedCandidates с
+// explicit: true, и записи Kimi входят туда по ADR 2026-09-15-1448. Число здесь
+// намеренно больше того, что показывает страница: зелёный тест нельзя получить
+// сужением tiers или добавлением deny — и то, и другое отрезало бы явный выбор
+// Kimi и Groq, а список ниже стал бы короче.
+test('/v1/models по классу layered_dialogue отдаёт восемь моделей для явного выбора', () => {
+  const ids = prodRouter().providerLimits('layered_dialogue').map((p) => p.id)
+  assert.deepEqual(ids, [
+    'mac-qwen3',
+    'groq-gpt-oss-20b',
+    'groq-qwen3.6-27b',
+    'anthropic-haiku',
+    'kimi-k3',
+    'kimi-k2.6',
+    'kimi-k2.7-code',
+    'kimi-k2.7-code-highspeed',
+  ])
+  assert.equal(ids.length, 8)
+  // Классификатор инъекций не генеративный — в списке для выбора ему не место.
+  assert.equal(ids.includes('groq-prompt-guard'), false)
+})
+
+// Потолок ответа — граница расхода: на Kimi k3 выход по $15 за миллион, и
+// каждая лишняя тысяча токенов стоит денег. Отказ приходит до выбора провайдера.
+test('layered_dialogue отвергает ответ выше 2048 токенов, не обращаясь к провайдеру', async () => {
+  const refused = await prodRouter().route({
+    taskClass: 'layered_dialogue',
+    input: 'привет',
+    answerTokens: 2049,
+  })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.code, 'refused')
+  // Число в сообщении — из класса, а не константа роутера.
+  assert.match(refused.message, /от 1 до 2048/)
 })
 
 // Дефект, ради которого заведена эта проверка: денежный потолок работает только
