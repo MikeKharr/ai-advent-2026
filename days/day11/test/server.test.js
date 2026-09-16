@@ -330,6 +330,13 @@ test('память профиля перечитывается чтением, �
   assert.equal(r.status, 200)
   const body = await r.json()
   assert.equal(body.profile.rules[0].key, 'тон')
+  // У правила стоит имя диалога-источника, а не его идентификатор.
+  assert.match(body.profile.rules[0].source, /^[а-яё]+-[а-яё]+-\d{1,2}$/)
+  assert.equal(
+    JSON.stringify(body.profile.rules).includes(SID),
+    false,
+    'идентификатора диалога в правилах нет',
+  )
   assert.equal(body.profile.topics[0].title, 'fintech')
   assert.equal(body.profile.settings.maxTokens, 2000)
   assert.equal(r.headers.getSetCookie().length, 0, 'чтение указателей не трогает')

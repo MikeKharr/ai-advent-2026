@@ -258,7 +258,15 @@ const profileView = (profile, sessionCap) => ({
   id: profile.id,
   name: profile.name,
   settings: profile.settings ?? {},
-  rules: profile.rules ?? [],
+  // У правила, как и у факта, стоит имя диалога-источника, а не его
+  // идентификатор: монитор говорит, откуда правило взялось, и не раздаёт
+  // указатель на чужую переписку (раскладка, п. 10.1).
+  rules: (profile.rules ?? []).map((r) => ({
+    key: r.key,
+    value: r.value,
+    updatedAt: r.updatedAt,
+    source: r.sourceSessionId ? sessionName(r.sourceSessionId) : null,
+  })),
   topics: profile.topics ?? [],
   sessions: sessionsView(profile.sessions),
   sessionCap,

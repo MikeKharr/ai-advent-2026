@@ -2579,7 +2579,9 @@
       text.textContent = `${r.key} — ${r.value}`;
       const when = document.createElement('span');
       when.className = 'when';
-      when.textContent = `${fmtDate(r.updatedAt)} · записано из диалога`;
+      // Дата и диалог-источник: у правила, как и у факта, источник — разговор.
+      // Диалога может уже не быть — это честная история записи, а не ссылка.
+      when.textContent = fmtDate(r.updatedAt) + (r.source ? ` · из диалога «${r.source}»` : '');
       li.append(text, when);
       list.append(li);
     }
