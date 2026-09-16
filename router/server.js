@@ -44,6 +44,10 @@ http.createServer(handler).listen(port, () => {
     port,
     providers: config.providers.map((p) => `${p.id}#${p.revision ?? 1} (${p.kind}, ${p.tier})`),
     apps: config.apps.apps.map((a) => a.id),
+    // Действующие потолки приложений — слово самого процесса о том, что он
+    // загрузил (ADR 2026-09-16-0540). Только id и числа лимитов: ни secretEnv,
+    // ни значений переменных окружения здесь быть не должно.
+    limits: Object.fromEntries(config.apps.apps.map((a) => [a.id, a.limits])),
     ledgerSkippedLines: ledger.skippedLines(),
   })
 })
