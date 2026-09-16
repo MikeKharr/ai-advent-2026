@@ -60,7 +60,10 @@
    workflow ждёт `healthy` по healthcheck контейнера (публичного адреса нет).
 3. Проверка изнутри сервера:
    `docker compose exec router node -e "fetch('http://127.0.0.1:8081/healthz').then(r=>r.text()).then(console.log)"`.
-4. Расход: `docker compose exec router node -e "fetch('http://127.0.0.1:8081/v1/spend',{headers:{authorization:'Bearer '+process.env.ROUTER_ADMIN_KEY}}).then(r=>r.text()).then(console.log)"`.
+4. Расход и метрики: `docker compose exec -T router node admin.js spend` и
+   `docker compose exec -T router node admin.js metrics` — скрипт из образа,
+   ключ берёт из окружения контейнера и не печатает. Те же две строки — в
+   закрытом списке агента (ADR `2026-09-16-0907`).
 
 Действующие суточные лимиты приложений смотреть не нужно через `exec`: роутер
 печатает их сам при старте — поле `limits` в записи `"event":"start"`
