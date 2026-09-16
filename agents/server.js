@@ -35,6 +35,13 @@ try {
   sessions = createSessions({
     file: env.SESSIONS_FILE,
     ttlMs: env.SESSION_TTL_HOURS * 3600_000,
+    // Профили дня 11: свой срок и свои потолки (ADR 2026-09-15-2024, п. 2).
+    // Числа идут из окружения сюда, а не берутся умолчанием хранилища:
+    // иначе `/healthz` и отказы страницы обещали бы одно, а база держала
+    // другое.
+    profileTtlMs: env.PROFILE_TTL_DAYS * 24 * 3600_000,
+    profileCap: env.PROFILE_CAP,
+    sessionCap: env.PROFILE_SESSION_CAP,
     log,
   })
   // Уборка на старте — заодно проверка, что база читается целиком: файл

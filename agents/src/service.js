@@ -3,7 +3,15 @@
 
 import { timingSafeEqual } from 'node:crypto'
 import { effectiveContext } from './llm.js'
-import { inputBudgetFor, isSessionId, STRATEGIES, WINDOW_LIMITS } from './params.js'
+import {
+  inputBudgetFor,
+  isProfileId,
+  isSessionId,
+  parseProfileName,
+  parseSettings,
+  STRATEGIES,
+  WINDOW_LIMITS,
+} from './params.js'
 import { TERMINAL } from './runs.js'
 
 const MAX_BODY = 64 * 1024
@@ -137,6 +145,34 @@ export function createService({ agents, archive, runs, sessions = null, env, log
     }
   }
 
+  /**
+   * Принадлежит ли сессия профилю из строки запроса. Ручки дня 11 идут с
+   * `?profile=`, и сессия чужого профиля отвечает как несуществующая — 404
+   * (ADR 2026-09-15-2024, п. 3): номера и идентификаторы в общей базе
+   * сквозные, и «не ваша» не должно отличаться от «нет такой». Без
+   * параметра проверки нет — это путь дней 6–10, и их ответ прежний.
+   */
+  const foreignSession = (sessionId, params) => {
+    const profileId = params.get('profile')
+    if (profileId === null) return false
+    if (!isProfileId(profileId)) return true
+    return sessions.sessionProfile(sessionId) !== profileId
+  }
+
+  /** Тело запроса как JSON или отказ 400: один разбор на все ручки профиля. */
+  const jsonBody = async (req, res) => {
+    try {
+      return { ok: true, body: JSON.parse(await readBody(req)) }
+    } catch (error) {
+      send(res, 400, {
+        ok: false,
+        code: 'bad_json',
+        message: error.message === 'тело больше 64 КБ' ? error.message : 'тело не JSON',
+      })
+      return { ok: false }
+    }
+  }
+
   const startRun = (agent, run) => {
     // Запуск асинхронный: ответ 202 уходит до первого события. Исполнение
     // само не бросает, но страховка от ошибки в самой страховке — лог.
@@ -267,6 +303,9 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       const sessionId = sessionMatch[1]
       if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
       if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      if (foreignSession(sessionId, url.searchParams)) {
+        return send(res, 404, { ok: false, code: 'unknown_session' })
+      }
       if (req.method === 'GET') {
         return send(res, 200, {
           ok: true,
@@ -301,6 +340,9 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       const sessionId = headMatch[1]
       if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
       if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      if (foreignSession(sessionId, url.searchParams)) {
+        return send(res, 404, { ok: false, code: 'unknown_session' })
+      }
       // Пока в сессии идёт запуск, голову двигать нельзя: ответ сел бы под
       // прежнего родителя. Замок тот же, что у второго сообщения.
       if ([...agents.values()].some((a) => a.isBusy?.(sessionId))) {
@@ -333,6 +375,106 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       const head = sessions.latestLeaf(sessionId, messageId)
       sessions.setHead(sessionId, head)
       return send(res, 200, { ok: true, head })
+    }
+
+    // --- Профили дня 11 (ADR 2026-09-15-2024, п. 8.3) ---------------------
+    // Профиль открыт: любой посетитель видит все профили, читает и пополняет
+    // любой и удаляет любой. Ключ здесь один на весь сервис — это граница
+    // «день ↔ сервис», а не разграничение посетителей; его нет по решению
+    // владельца 11 («с credentials пока работать не будем»).
+    if (path.startsWith('/v1/profiles')) {
+      if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
+
+      if (path === '/v1/profiles' && req.method === 'GET') {
+        return send(res, 200, { ok: true, profiles: sessions.profiles(), cap: env.PROFILE_CAP })
+      }
+
+      if (path === '/v1/profiles' && req.method === 'POST') {
+        const parsed = await jsonBody(req, res)
+        if (!parsed.ok) return
+        const name = parseProfileName(parsed.body?.name)
+        if (!name.ok) return send(res, 400, { ok: false, code: 'bad_input', message: name.message })
+        const created = sessions.createProfile({ name: name.name })
+        if (!created.ok) {
+          return send(res, 409, {
+            ok: false,
+            code: 'profiles_full',
+            message: `Мест нет: профилей не больше ${env.PROFILE_CAP}`,
+          })
+        }
+        return send(res, 200, { ok: true, profile: created.profile })
+      }
+
+      const match = path.match(/^\/v1\/profiles\/([^/]+)(\/settings|\/sessions)?$/)
+      if (!match) return send(res, 404, { ok: false, code: 'not_found' })
+      const [, profileId, tail] = match
+      if (!isProfileId(profileId)) return send(res, 404, { ok: false, code: 'unknown_profile' })
+
+      if (!tail && req.method === 'GET') {
+        // Чтение профиля срок его памяти не продлевает (ADR, п. 2): выбор
+        // профиля посторонним не должен держать чужое досье ещё месяц.
+        const profile = sessions.profile(profileId)
+        if (!profile) return send(res, 404, { ok: false, code: 'unknown_profile' })
+        return send(res, 200, { ok: true, profile, sessionCap: env.PROFILE_SESSION_CAP })
+      }
+
+      if (!tail && req.method === 'DELETE') {
+        const removed = sessions.deleteProfile(profileId)
+        if (!removed) return send(res, 404, { ok: false, code: 'unknown_profile' })
+        log(JSON.stringify({ event: 'profile_deleted', removed }))
+        return send(res, 200, { ok: true, removed })
+      }
+
+      if (tail === '/settings' && req.method === 'PUT') {
+        const parsed = await jsonBody(req, res)
+        if (!parsed.ok) return
+        // Те же разборщики, что у входа запуска: значение, годное в
+        // настройках, обязано быть годным и в запуске.
+        const settings = parseSettings(parsed.body)
+        if (!settings.ok) {
+          return send(res, 400, { ok: false, code: 'bad_input', message: settings.message })
+        }
+        if (!sessions.saveSettings({ profileId, settings: settings.settings })) {
+          return send(res, 404, { ok: false, code: 'unknown_profile' })
+        }
+        return send(res, 200, { ok: true, settings: settings.settings })
+      }
+
+      if (tail === '/sessions' && req.method === 'GET') {
+        if (!sessions.profile(profileId)) {
+          return send(res, 404, { ok: false, code: 'unknown_profile' })
+        }
+        return send(res, 200, {
+          ok: true,
+          sessions: sessions.sessionsOf(profileId),
+          cap: env.PROFILE_SESSION_CAP,
+        })
+      }
+
+      if (tail === '/sessions' && req.method === 'POST') {
+        const parsed = await jsonBody(req, res)
+        if (!parsed.ok) return
+        const raw = parsed.body?.topicId
+        const topicId = raw === undefined || raw === null || raw === '' ? null : Number(raw)
+        if (topicId !== null && (!Number.isInteger(topicId) || topicId <= 0)) {
+          return send(res, 400, { ok: false, code: 'bad_input', message: 'Поле topicId — число' })
+        }
+        const created = sessions.createSession({ profileId, topicId })
+        if (created.ok) return send(res, 200, { ok: true, sessionId: created.id, topicId })
+        if (created.code === 'no_profile') {
+          return send(res, 404, { ok: false, code: 'unknown_profile' })
+        }
+        if (created.code === 'unknown_topic') {
+          return send(res, 400, { ok: false, code: 'bad_input', message: 'Тема не найдена' })
+        }
+        return send(res, 409, {
+          ok: false,
+          code: 'sessions_full',
+          message: `Диалогов не больше ${env.PROFILE_SESSION_CAP}: закройте лишние`,
+        })
+      }
+
+      return send(res, 404, { ok: false, code: 'not_found' })
     }
 
     if (path === '/v1/agents' && req.method === 'GET') {
