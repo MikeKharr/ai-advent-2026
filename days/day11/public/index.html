@@ -55,7 +55,10 @@
     /* Правый отступ обязателен: колонка со своим скроллом обрезает всё, что
        касается её края, — бегунок ползунка в крайних положениях, кольцо
        фокуса (outline-offset 2px) и содержимое под полосой прокрутки. */
-    .col { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+    /* Левый отступ нужен по той же причине, что правый: overflow-y:auto делает
+       вычисленным и overflow-x, и колонка срезает кольцо фокуса (outline-offset
+       2px) у элементов, стоящих вплотную к её левому краю. */
+    .col { min-height:0; overflow-y:auto; padding-right:var(--s-2); padding-left:var(--s-2); }
     main.col { display:flex; flex-direction:column; }
     main.col footer { margin-top:auto; }
   }
@@ -625,8 +628,11 @@
         class="pid-name" id="pid-name"></span><button class="clear" id="switch-profile"
         type="button">сменить профиль</button></span>
     </div>
-    <p class="sub">Вы переписываетесь с агентом, который помнит правила работы с вами, факты
-    по темам этого профиля и текущий разговор. Ход каждого запуска виден в мониторе.
+    <!-- Две строки, не три: третья стоила логу 25.6 px (замер ревью раскладки).
+         Обязательное по ADR — открытость профиля и непроверенность ответов —
+         живёт на экране входа и в футере, здесь его нет. -->
+    <p class="sub">Агент помнит правила работы с вами, факты по темам профиля и текущий
+    разговор. Ход запуска виден в мониторе.
     <button class="about" id="about" type="button" disabled>Об агенте</button></p>
 
     <section class="chat" aria-labelledby="chat-h">
@@ -635,10 +641,10 @@
         <span class="topic-line" id="topic-line" hidden><span>тема:</span><span
           class="topic-name" id="topic-name"></span><button class="clear" id="topic-btn"
           type="button">сменить</button></span>
-        <button class="clear head-gap" id="ses-btn" type="button"
+        <button class="clear head-gap num" id="ses-btn" type="button"
                 aria-label="Показать диалоги профиля">диалоги: 0</button>
         <button class="clear" id="clear" type="button" disabled
-                aria-label="Очистить переписку и начать новую">очистить</button>
+                aria-label="Очистить переписку">очистить</button>
         <!-- Разделители со скрытой запятой: без неё скринридер читает числа
              одной фразой. Живой областью строка не делается. -->
         <p class="meters" id="meters" hidden><span class="part" id="ctx" hidden></span><span
@@ -712,8 +718,11 @@
 
 <dialog id="ask-clear" aria-labelledby="ask-clear-h" tabindex="-1">
   <p class="dlg-name" id="ask-clear-h">Очистить переписку?</p>
-  <p class="dlg-purpose">Переписка, её сводка и факты стратегии будут удалены, начнётся
-  новая сессия. Правила и темы профиля останутся.</p>
+  <!-- Новая сессия здесь не начинается: сервер стирает указатель, и диалог
+       родится с первого сообщения или по кнопке «Новый диалог». Текст дня 10
+       обещал новую сессию — там сервер её и чеканил. -->
+  <p class="dlg-purpose">Переписка, её сводка и факты стратегии будут удалены. Новый диалог
+  начнётся с первого сообщения. Правила и темы профиля останутся.</p>
   <div class="dlg-actions">
     <button class="dlg-btn is-danger" id="ask-clear-yes" type="button">Очистить</button>
     <button class="dlg-btn is-second" id="ask-clear-no" type="button">Отмена</button>
