@@ -23,4 +23,6 @@ src/adapters/  anthropic (Messages API), groq и kimi (OpenAI-совместим
 src/ledger.js  журнал расхода JSONL, суточные суммы
 src/service.js HTTP: /v1/route, /v1/spend, /v1/metrics, /healthz
 server.js      точка входа
+admin.js       чтение /v1/spend и /v1/metrics изнутри контейнера: ровно два
+               аргумента, ключ из окружения, вывод без него (ADR 2026-09-16-0907)
 ```

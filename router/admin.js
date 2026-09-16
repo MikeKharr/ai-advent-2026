@@ -33,9 +33,10 @@ if (!value) {
 // вернуть полученный заголовок эхом.
 const scrub = (text) => text.split(value).join('[скрыто]')
 
-const url = new URL(PATHS[process.argv[2]], `http://127.0.0.1:${process.env.PORT ?? 8081}`)
-
 try {
+  // Разбор адреса — тоже внутри try: при нечисловом PORT конструктор URL
+  // бросает TypeError, и вне try он ушёл бы стеком Node мимо scrub.
+  const url = new URL(PATHS[process.argv[2]], `http://127.0.0.1:${process.env.PORT ?? 8081}`)
   const response = await fetch(url, { headers: { authorization: `Bearer ${value}` } })
   const body = await response.text()
   if (!response.ok) {

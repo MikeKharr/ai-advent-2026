@@ -3,6 +3,12 @@
 // настоящим процессом и по всем веткам, а не только по успешной: значения
 // ключа нет ни в одном выводе — ни при 200, ни при ошибке сервера, ни при
 // обрыве сети, ни при плохом аргументе.
+//
+// Поддельный сервер записывает путь и метод запроса: требования «только
+// чтение» и «путь из таблицы, а не из argv» должны падать тестом, а не
+// держаться комментарием в коде. Значение ключа сервер возвращает в теле и
+// при 200, и при 500 — иначе проверка «ключа нет в выводе» проверяла бы
+// пустое место.
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -17,15 +23,18 @@ const SECRET = 'test-admin-secret-value'
 const BODY_200 = '{"day":{"agents":{"costUsd":0.42}}}'
 
 /**
- * Поддельный роутер на свободном порту. `mode` — что отвечать;
- * 500 возвращает полученный заголовок authorization эхом в теле.
+ * Поддельный роутер на свободном порту. `mode` — что отвечать; режимы
+ * `echo200` и 500 возвращают полученный заголовок authorization в теле.
  */
 async function withServer(mode, run) {
-  const seen = { requests: 0, authorization: null }
+  const seen = { requests: 0, authorization: null, url: null, method: null }
   const server = http.createServer((req, res) => {
     seen.requests += 1
     seen.authorization = req.headers.authorization
+    seen.url = req.url
+    seen.method = req.method
     if (mode === 200) return res.writeHead(200).end(BODY_200)
+    if (mode === 'echo200') return res.writeHead(200).end(`{"echo":"${req.headers.authorization}"}`)
     if (mode === 401) return res.writeHead(401).end('{"error":"unauthorized"}')
     res.writeHead(500).end(`upstream failed, sent header: ${req.headers.authorization}`)
   })
@@ -60,7 +69,7 @@ async function closedPort() {
   return withServer(200, (port) => port)
 }
 
-test('200 — тело в stdout байт в байт, код 0, ключ ушёл заголовком', async () => {
+test('spend: GET на /v1/spend, тело в stdout байт в байт, код 0', async () => {
   const { result, seen } = await withServer(200, async (port, seen) => ({
     result: await admin(['spend'], { port }),
     seen,
@@ -69,12 +78,27 @@ test('200 — тело в stdout байт в байт, код 0, ключ ушё
   assert.equal(result.stdout, BODY_200)
   assert.equal(seen.requests, 1)
   assert.equal(seen.authorization, `Bearer ${SECRET}`)
+  assert.equal(seen.url, '/v1/spend')
+  // Единственный метод — GET: пишущая ручка недостижима (ADR, требование 5).
+  assert.equal(seen.method, 'GET')
 })
 
-test('metrics ходит по своему пути и тоже отдаёт тело', async () => {
-  const result = await withServer(200, (port) => admin(['metrics'], { port }))
+test('metrics: GET на /v1/metrics, а не на путь соседнего аргумента', async () => {
+  const { result, seen } = await withServer(200, async (port, seen) => ({
+    result: await admin(['metrics'], { port }),
+    seen,
+  }))
   assert.equal(result.code, 0)
   assert.equal(result.stdout, BODY_200)
+  assert.equal(seen.url, '/v1/metrics')
+  assert.equal(seen.method, 'GET')
+})
+
+test('200 с ключом в теле — значение вырезано из stdout', async () => {
+  const result = await withServer('echo200', (port) => admin(['spend'], { port }))
+  assert.equal(result.code, 0)
+  // Не «секрета нет» (его могло не быть и так), а «он был и его вырезали».
+  assert.ok(result.stdout.includes('[скрыто]'), 'scrub на stdout не сработал')
 })
 
 test('401 от роутера — код 1', async () => {
@@ -86,16 +110,18 @@ test('401 от роутера — код 1', async () => {
 test('500 с эхом заголовка в теле — код 1, значение вырезано', async () => {
   const result = await withServer(500, (port) => admin(['spend'], { port }))
   assert.equal(result.code, 1)
-  assert.ok(result.stderr.includes('[скрыто]'), 'эхо заголовка должно быть вырезано, а не отсутствовать')
+  assert.ok(result.stderr.includes('[скрыто]'), 'scrub на stderr не сработал')
 })
 
-for (const args of [['ledger'], ['spend', 'metrics'], [], ['constructor'], ['/v1/spend']]) {
+for (const args of [['ledger'], ['spend', 'metrics'], [], ['constructor'], ['/v1/spend'], ['../v1/spend']]) {
   test(`аргумент вне закрытого множества (${JSON.stringify(args)}) — код 2, запроса нет`, async () => {
     const { result, seen } = await withServer(200, async (port, seen) => ({
       result: await admin(args, { port }),
       seen,
     }))
     assert.equal(result.code, 2)
+    // Ноль запросов — и есть запрет интерполяции argv в путь: что бы ни
+    // пришло аргументом, до сети оно не доходит (ADR, требование 4).
     assert.equal(seen.requests, 0)
     assert.ok(result.stderr.includes('spend|metrics'))
   })
@@ -115,4 +141,10 @@ test('порт без слушателя — код 1, в сообщении н�
   const result = await admin(['spend'], { port: await closedPort() })
   assert.equal(result.code, 1)
   assert.ok(result.stderr.length > 0)
+})
+
+test('нечисловой PORT — код 1 и сообщение, а не стек Node мимо scrub', async () => {
+  const result = await admin(['spend'], { port: 'не-число' })
+  assert.equal(result.code, 1)
+  assert.ok(!result.stderr.includes('TypeError'), 'наружу ушёл необработанный стек')
 })
