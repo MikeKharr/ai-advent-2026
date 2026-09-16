@@ -733,15 +733,23 @@ export function createSessions({
     sweep(at = now()) {
       // Сначала профили старше своего срока: они уходят со всей памятью тем
       // же оператором, что `deleteProfile`, и уносят свои сессии целиком.
-      // Возвращаемое число — по-прежнему убранные сессии: его читает журнал
-      // сервиса, и смысл «сколько диалогов истекло» не меняется.
-      for (const row of stmt.staleProfiles.all(at - profileTtlMs)) this.deleteProfile(row.id)
+      // Возвращаемое число — убранные сессии, все до одной: журнал сервиса
+      // читает его как «сколько диалогов исчезло», и диалоги, ушедшие внутри
+      // удаления профиля, исчезли не меньше прочих.
+      let removed = 0
+      for (const row of stmt.staleProfiles.all(at - profileTtlMs)) {
+        removed += this.deleteProfile(row.id)?.sessions ?? 0
+      }
       const cutoff = at - ttlMs
       const stale = stmt.stale.all(cutoff)
       for (const row of stale) this.clear(row.id)
+      removed += stale.length
       // Сессия, чей профиль удалён в обход `deleteProfile` (оборвавшаяся
       // транзакция, правка базы руками), уходит целиком, а не строкой.
-      for (const row of stmt.orphanProfileSessions.all()) this.clear(row.id)
+      for (const row of stmt.orphanProfileSessions.all()) {
+        this.clear(row.id)
+        removed += 1
+      }
       stmt.orphanMessages.run()
       stmt.orphanSummaries.run()
       stmt.orphanFacts.run()
@@ -750,7 +758,7 @@ export function createSessions({
       stmt.orphanTopics.run()
       // Факты тем — после тем: осиротевшая тема сначала должна исчезнуть.
       stmt.orphanTopicFacts.run()
-      return stale.length
+      return removed
     },
 
     /**
@@ -868,6 +876,11 @@ export function createSessions({
      * это названное последствие открытости, а не упущение.
      */
     deleteProfile(id) {
+      // Срок здесь не проверяется намеренно (нулевая граница), в отличие от
+      // чтения: истёкший, но ещё не убранный профиль обязан удаляться — этим
+      // же оператором его уносит `sweep`. Цена — рассогласование кодов на
+      // окне между истечением и уборкой: чтение отдаёт 404, удаление 200.
+      // Данные при этом в обоих случаях уходят, и это важнее симметрии.
       if (!stmt.profile.get(id, 0)) return null
       db.exec('BEGIN')
       try {

@@ -27,7 +27,17 @@ const LEGACY = '66666666-6666-4666-8666-666666666666'
  */
 function open(options = {}) {
   const file = join(mkdtempSync(join(tmpdir(), 'day11-')), 'sessions.db')
-  const sessions = createSessions({ file, ttlMs: 30 * HOUR, log: () => {}, ...options })
+  // Числа — из окружения, как их проводит `server.js`: тест меряет те
+  // потолки и сроки, которые получит прод, а не умолчания хранилища.
+  const sessions = createSessions({
+    file,
+    ttlMs: ENV.SESSION_TTL_HOURS * HOUR,
+    profileTtlMs: ENV.PROFILE_TTL_DAYS * DAY,
+    profileCap: ENV.PROFILE_CAP,
+    sessionCap: ENV.PROFILE_SESSION_CAP,
+    log: () => {},
+    ...options,
+  })
   return { sessions, file }
 }
 
@@ -61,6 +71,10 @@ async function serve({ sessions, env = ENV }) {
     createService({ agents, archive: fakeArchive(), runs, sessions, env, log: () => {} }),
   )
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  // Упавшая проверка не доходит до `close()`, и открытый сервер держал бы
+  // событийный цикл: прогон не падал бы, а висел — в CI это таймаут вместо
+  // отчёта. `unref` снимает эту зависимость, запросы цикл держат сами.
+  server.unref()
   const base = `http://127.0.0.1:${server.address().port}`
   const auth = { authorization: 'Bearer agent-key' }
   const call = (method, path, body) =>
@@ -293,7 +307,7 @@ test('двадцать первый диалог профиля — 409, и на
 
 test('выбор профиля с убранной по сроку сессией её не создаёт и срок не двигает', async () => {
   let t = 1_000_000_000
-  const { sessions } = open({ now: () => t })
+  const { sessions, file } = open({ now: () => t })
   const http = await serve({ sessions })
   const profile = await create(http, 'вернувшийся')
   const sid = (await (await http.post(`/v1/profiles/${profile.id}/sessions`)).json()).sessionId
@@ -301,13 +315,19 @@ test('выбор профиля с убранной по сроку сессие
 
   t += 31 * HOUR // сессии 31 час, профилю — чуть больше суток
   assert.equal(sessions.sweep(), 1, 'диалог убран по сроку')
-  const lastSeen = sessions.profiles()[0].lastSeenAt
+  // Срок читается из базы, а не из ответа: продление, сделанное после чтения
+  // строки профиля, в ответе не видно — а память оно держит ещё месяц.
+  const db = raw(file)
+  const storedAt = () => db.prepare('SELECT last_seen_at AS at FROM profiles WHERE id = ?').get(profile.id).at
+  const lastSeen = storedAt()
 
   const body = await (await http.get(`/v1/profiles/${profile.id}`)).json()
   assert.deepEqual(body.profile.sessions, [], 'живых диалогов нет')
   assert.equal(body.profile.lastSession, null, 'ставить cookie сессии нечем')
-  assert.equal(body.profile.lastSeenAt, lastSeen, 'чтение профиля срок не продлевает')
+  assert.equal(storedAt(), lastSeen, 'чтение профиля не двигает хранимый last_seen_at')
+  assert.equal(body.profile.lastSeenAt, lastSeen, 'и в ответе тот же срок, что в базе')
   assert.equal(sessions.stats().sessions, 0, 'выбор профиля сессию не создал')
+  db.close()
 
   // Первое сообщение создаёт диалог профиля и двигает срок.
   const created = sessions.createSession({ profileId: profile.id })
@@ -429,13 +449,20 @@ test('профиль старше 30 дней уходит со всей пам�
     t,
   )
   sessions.append({ sessionId: LEGACY, role: 'user', text: 'день 7', tokens: 5 })
+  // Диалог истёкшего профиля: он уйдёт внутри удаления профиля, а не по
+  // сроку сессии, и обязан попасть в счёт убранного.
+  assert.equal(sessions.createSession({ profileId: old.id }).ok, true)
 
   t += 10 * DAY
   const fresh = await create(http, 'живой')
   sessions.append({ sessionId: LEGACY, role: 'user', text: 'ещё день 7', tokens: 5 })
 
   t += 21 * DAY // забытому 31 день, живому 21
-  sessions.sweep()
+  assert.equal(
+    sessions.sweep(),
+    2,
+    'в счёт убранного вошли и диалог истёкшего профиля, и сессия дней 6–10',
+  )
   assert.deepEqual(
     sessions.profiles().map((p) => p.id),
     [fresh.id],

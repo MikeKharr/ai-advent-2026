@@ -149,6 +149,13 @@ export const PARAM_LIMITS = {
 }
 
 /**
+ * Размер контекста, когда его не задали ни запуск, ни реестр. Одно число на
+ * запуск и на настройки профиля: порог сводки сверяется с ним же, и разойтись
+ * они не могут (умолчание дня 8, ADR 2026-09-09-1906).
+ */
+export const DEFAULT_CONTEXT_TOKENS = 3000
+
+/**
  * Порог сводки N (ADR 2026-09-11-1608): когда реплики после последней
  * сводки набирают N токенов, агент сжимает их вместе с ней в новую сводку.
  * Отдельно от PARAM_LIMITS: те отдаются дням 6–8 в описании агента, и их
@@ -337,7 +344,10 @@ export function parseSettings(source) {
   // Порог сводки сверяется с тем размером контекста, который получится после
   // записи: пара «порог больше контекста» не должна попасть в базу и всплыть
   // отказом на первом же запуске.
-  const summarizeAt = parseSummarizeAt(source.summarizeAt, contextTokens.value ?? 3000)
+  const summarizeAt = parseSummarizeAt(
+    source.summarizeAt,
+    contextTokens.value ?? DEFAULT_CONTEXT_TOKENS,
+  )
   if (!summarizeAt.ok) return summarizeAt
   if (summarizeAt.value !== null) settings.summarizeAt = summarizeAt.value
 
@@ -529,7 +539,7 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
       // Число статей необязательно: без него подборку набирает агент под
       // предел входа модели (ADR 2026-09-09-2134).
       articles: articles.value ?? defaults.articles ?? null,
-      contextTokens: contextTokens.value ?? defaults.contextTokens ?? 3000,
+      contextTokens: contextTokens.value ?? defaults.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
       temperature: temperature.value ?? defaults.temperature,
       stopSequences,
     },
