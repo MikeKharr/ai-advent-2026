@@ -64,3 +64,26 @@ test('Kimi не участвует в политике ни одного кла�
   const explicit = orderedCandidates(classes.other, providers, { explicit: true }).map((p) => p.id)
   assert.deepEqual(explicit.filter((id) => id.startsWith('kimi-')), kimi.map((p) => p.id))
 })
+
+const agents = apps.apps.find((a) => a.id === 'agents')
+
+test('лимиты agents — та пара, что решена владельцем 2026-09-16', () => {
+  assert.deepEqual(agents.limits, { dailyTokens: 10_000_000, dailyCostUsd: 10 })
+})
+
+// Дефект, ради которого заведена эта проверка: денежный потолок работает только
+// тогда, когда токенный не упирается раньше. Пара «$10 при 2 млн токенов»
+// этого не давала — фактический предел оставался около $2,8. Проверяется связь,
+// а не равенство: при возврате `dailyTokens` к 2 млн тест обязан краснеть.
+test('у agents денежный лимит упирается раньше токенного по ставке Haiku', () => {
+  const haiku = providers.find((p) => p.id === 'anthropic-haiku')
+  const { dailyCostUsd, dailyTokens } = agents.limits
+  // Чистый вход — самая дешёвая возможная смесь, поэтому это верхняя граница
+  // числа токенов, которые вообще можно купить на суточные деньги.
+  const affordable = (dailyCostUsd / haiku.price.inputPerMTok) * 1e6
+  assert.ok(
+    dailyTokens >= affordable,
+    `токенный лимит ${dailyTokens} упирается раньше денежного $${dailyCostUsd}: ` +
+      `по ставке Haiku на эти деньги приходится до ${affordable} токенов`,
+  )
+})
