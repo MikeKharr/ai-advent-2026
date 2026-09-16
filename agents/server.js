@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createNewsAnalyst } from './src/agent.js'
 import { parseEnv } from './src/env.js'
+import { createLayeredAgent, LAYERED_AGENT_ID } from './src/layered.js'
 import { loadRegistry } from './src/registry.js'
 import { createRuns } from './src/runs.js'
 import { createService } from './src/service.js'
@@ -57,10 +58,15 @@ try {
   log({ event: 'sessions_off', file: env.SESSIONS_FILE, reason: error.message })
 }
 
-/** Реестр агентов → исполнители. Сегодня один; следующий добавляется по образцу. */
+/** Реестр агентов → исполнители: аналитик новостей и агент со слоями памяти. */
 const agents = new Map()
 for (const entry of registry.values()) {
-  agents.set(entry.id, createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log }))
+  agents.set(
+    entry.id,
+    entry.id === LAYERED_AGENT_ID
+      ? createLayeredAgent({ agent: entry, runs, sessions, env, log })
+      : createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log }),
+  )
 }
 
 // Готовые запуски удаляются по TTL; незавершённые живут до терминального события.

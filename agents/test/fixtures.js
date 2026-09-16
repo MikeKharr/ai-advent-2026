@@ -19,6 +19,7 @@ export const REGISTRY = loadRegistry(
   JSON.parse(readFileSync(join(here, '..', 'config', 'agents.json'), 'utf8')),
 )
 export const NEWS = REGISTRY.get('news-analyst')
+export const LAYERED = REGISTRY.get('layered-agent')
 
 export const ITEMS = [
   {

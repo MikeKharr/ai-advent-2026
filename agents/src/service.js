@@ -2,6 +2,7 @@
 // `AGENT_KEY`, на все `/v1/*`; `/healthz` открыт — его проверяет compose.
 
 import { timingSafeEqual } from 'node:crypto'
+import { LAYERED_AGENT_ID } from './layered.js'
 import { effectiveContext } from './llm.js'
 import {
   inputBudgetFor,
@@ -10,6 +11,7 @@ import {
   parseProfileName,
   parseSettings,
   STRATEGIES,
+  TOPIC_FACT_CAP,
   WINDOW_LIMITS,
 } from './params.js'
 import { TERMINAL } from './runs.js'
@@ -159,6 +161,17 @@ export function createService({ agents, archive, runs, sessions = null, env, log
     return sessions.sessionProfile(sessionId) !== profileId
   }
 
+  /** Идёт ли в этой сессии запуск: замок принадлежит исполнителю агента. */
+  const busy = (sessionId) => [...agents.values()].some((a) => a.isBusy?.(sessionId))
+
+  /**
+   * Умолчания реестра того агента, чьи настройки правятся. Настройки — за
+   * профилем, а профиль есть только у агента дня 11, поэтому спрашивается
+   * его запись: иначе порог сводки сверялся бы с одним размером контекста,
+   * а запуск шёл бы с другим (находка ревьюера, PR #151).
+   */
+  const settingsDefaults = () => agents.get(LAYERED_AGENT_ID)?.defaults ?? {}
+
   /** Тело запроса как JSON или отказ 400: один разбор на все ручки профиля. */
   const jsonBody = async (req, res) => {
     try {
@@ -307,8 +320,17 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         return send(res, 404, { ok: false, code: 'unknown_session' })
       }
       if (req.method === 'GET') {
+        // Слои дня 11: чей диалог, какая тема активна и ждёт ли ответа
+        // предложение новой (ADR 2026-09-15-2024, п. 8.3). У сессий дней
+        // 6–10 все три поля — null, и их ответ прежний по существу.
+        const state = sessions.sessionState(sessionId)
         return send(res, 200, {
           ok: true,
+          profileId: state?.profileId ?? null,
+          topic: state?.topicId ? { id: state.topicId, title: state.topicTitle } : null,
+          pendingTopic: state?.pending
+            ? { title: state.pending.title, facts: state.pending.facts.length }
+            : null,
           // Для сессии дня 10 это все узлы дерева, у каждого `parentId`;
           // путь, навигатор и обзор страница строит сама (ADR, п. 8.3).
           messages: sessions.history(sessionId),
@@ -377,6 +399,77 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       return send(res, 200, { ok: true, head })
     }
 
+    // Ответ на предложение новой темы и ручная смена темы — одна ручка
+    // (ADR 2026-09-15-2024, п. 6.2.3). Вызовов модели здесь нет: ответ
+    // кнопкой действует сразу и не стоит ничего.
+    const topicMatch = path.match(/^\/v1\/sessions\/([^/]+)\/topic$/)
+    if (topicMatch && req.method === 'POST') {
+      const sessionId = topicMatch[1]
+      if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
+      if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      const profileId = url.searchParams.get('profile')
+      // Чужая сессия отвечает как несуществующая — та же граница, что у
+      // чтения и удаления диалога профиля.
+      if (!isProfileId(profileId) || sessions.sessionProfile(sessionId) !== profileId) {
+        return send(res, 404, { ok: false, code: 'unknown_session' })
+      }
+      // Пока идёт запуск, тему двигать нельзя: пополнение того же запуска
+      // решает её судьбу, и два решения разошлись бы.
+      if (busy(sessionId)) {
+        return send(res, 409, {
+          ok: false,
+          code: 'busy',
+          message: 'Дождитесь ответа на предыдущее сообщение',
+        })
+      }
+      const parsed = await jsonBody(req, res)
+      if (!parsed.ok) return
+      const body = parsed.body ?? {}
+      let result
+      if (body.decision !== undefined && body.decision !== null) {
+        result = sessions.resolveTopic({ sessionId, profileId, decision: body.decision })
+      } else if ('topicId' in body) {
+        const raw = body.topicId
+        const topicId = raw === null || raw === '' ? null : Number(raw)
+        if (topicId !== null && (!Number.isInteger(topicId) || topicId <= 0)) {
+          return send(res, 400, { ok: false, code: 'bad_input', message: 'Поле topicId — число' })
+        }
+        result = sessions.resolveTopic({ sessionId, profileId, topicId })
+      } else {
+        return send(res, 400, {
+          ok: false,
+          code: 'bad_input',
+          message: 'Нужен decision (open или continue) или topicId',
+        })
+      }
+      if (result.ok) {
+        return send(res, 200, {
+          ok: true,
+          topic: result.topicId ? { id: result.topicId, title: result.topicTitle } : null,
+          factsWritten: result.factsWritten,
+          warnings: result.warnings,
+        })
+      }
+      if (result.code === 'unknown_profile') {
+        return send(res, 404, { ok: false, code: 'unknown_profile' })
+      }
+      if (result.code === 'unknown_session') {
+        return send(res, 404, { ok: false, code: 'unknown_session' })
+      }
+      if (result.code === 'no_pending') {
+        return send(res, 409, {
+          ok: false,
+          code: 'no_pending',
+          message: 'Отвечать не на что: предложение темы не ждёт ответа',
+        })
+      }
+      return send(res, 400, {
+        ok: false,
+        code: 'bad_input',
+        message: result.code === 'unknown_topic' ? 'Тема не найдена' : 'Нужен open или continue',
+      })
+    }
+
     // --- Профили дня 11 (ADR 2026-09-15-2024, п. 8.3) ---------------------
     // Профиль открыт: любой посетитель видит все профили, читает и пополняет
     // любой и удаляет любой. Ключ здесь один на весь сервис — это граница
@@ -405,7 +498,7 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         return send(res, 200, { ok: true, profile: created.profile })
       }
 
-      const match = path.match(/^\/v1\/profiles\/([^/]+)(\/settings|\/sessions)?$/)
+      const match = path.match(/^\/v1\/profiles\/([^/]+)(\/settings|\/sessions|\/topics\/\d+)?$/)
       if (!match) return send(res, 404, { ok: false, code: 'not_found' })
       const [, profileId, tail] = match
       if (!isProfileId(profileId)) return send(res, 404, { ok: false, code: 'unknown_profile' })
@@ -419,6 +512,16 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       }
 
       if (!tail && req.method === 'DELETE') {
+        // Пока в диалоге профиля идёт запуск, удалять нельзя: запись ответа
+        // воскресила бы строку удалённой сессии, и «удаление без следа»
+        // держалось бы ровно до конца этого запуска (compliance, фаза 3).
+        if (sessions.sessionsOf(profileId).some((s) => busy(s.id))) {
+          return send(res, 409, {
+            ok: false,
+            code: 'busy',
+            message: 'В профиле идёт запуск — дождитесь ответа',
+          })
+        }
         const removed = sessions.deleteProfile(profileId)
         if (!removed) return send(res, 404, { ok: false, code: 'unknown_profile' })
         log(JSON.stringify({ event: 'profile_deleted', removed }))
@@ -430,7 +533,7 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         if (!parsed.ok) return
         // Те же разборщики, что у входа запуска: значение, годное в
         // настройках, обязано быть годным и в запуске.
-        const settings = parseSettings(parsed.body)
+        const settings = parseSettings(parsed.body, settingsDefaults())
         if (!settings.ok) {
           return send(res, 400, { ok: false, code: 'bad_input', message: settings.message })
         }
@@ -438,6 +541,29 @@ export function createService({ agents, archive, runs, sessions = null, env, log
           return send(res, 404, { ok: false, code: 'unknown_profile' })
         }
         return send(res, 200, { ok: true, settings: settings.settings })
+      }
+
+      // Факты темы — для монитора состояния памяти (ADR, п. 8.3). Тема
+      // чужого профиля отвечает как несуществующая.
+      if (tail?.startsWith('/topics/') && req.method === 'GET') {
+        if (!sessions.profile(profileId)) {
+          return send(res, 404, { ok: false, code: 'unknown_profile' })
+        }
+        const topicId = Number(tail.slice('/topics/'.length))
+        const topic = sessions.topicOf(profileId, topicId)
+        if (!topic) return send(res, 404, { ok: false, code: 'unknown_topic' })
+        return send(res, 200, {
+          ok: true,
+          topic: {
+            ...topic,
+            // Монитору отдаётся весь потолок темы (ADR, п. 6.1).
+            facts: sessions.topicFactsOf(topicId, TOPIC_FACT_CAP).map((fact) => ({
+              text: fact.text,
+              at: new Date(fact.at).toISOString(),
+              sourceSessionId: fact.sourceSessionId,
+            })),
+          },
+        })
       }
 
       if (tail === '/sessions' && req.method === 'GET') {
@@ -485,7 +611,10 @@ export function createService({ agents, archive, runs, sessions = null, env, log
     const toolMatch = path.match(/^\/v1\/agents\/([^/]+)\/tools\/archive$/)
     if (toolMatch && req.method === 'GET') {
       const agent = agents.get(toolMatch[1])
-      if (!agent) return send(res, 404, { ok: false, code: 'unknown_agent' })
+      // Агент без архива о нём и не отвечает: у дня 11 инструментов нет.
+      if (!agent || !(agent.tools ?? []).includes('archive')) {
+        return send(res, 404, { ok: false, code: 'unknown_agent' })
+      }
       return send(res, 200, { ok: true, ...archive.state() })
     }
 
