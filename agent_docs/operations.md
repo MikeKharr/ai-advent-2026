@@ -62,6 +62,11 @@
    `docker compose exec router node -e "fetch('http://127.0.0.1:8081/healthz').then(r=>r.text()).then(console.log)"`.
 4. Расход: `docker compose exec router node -e "fetch('http://127.0.0.1:8081/v1/spend',{headers:{authorization:'Bearer '+process.env.ROUTER_ADMIN_KEY}}).then(r=>r.text()).then(console.log)"`.
 
+Действующие суточные лимиты приложений смотреть не нужно через `exec`: роутер
+печатает их сам при старте — поле `limits` в записи `"event":"start"`
+(`docker compose logs router --since <время выкатки>` или `--tail N`).
+Ручка `/v1/spend` остаётся для расхода (ADR `2026-09-16-0540`).
+
 Резерв предварительной проверки считается по **способным кандидатам** класса:
 число вызовов — по их количеству (у класса с единственным кандидатом фолбэка
 не бывает), деньги — по самой дорогой ставке среди них, а не среди всех
