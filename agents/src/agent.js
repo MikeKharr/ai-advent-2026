@@ -42,6 +42,7 @@ import {
   parseWindow,
 } from './params.js'
 import { TERMINAL } from './runs.js'
+import { createSessionLock, explainRouterError, paidNothing, seconds } from './shared.js'
 
 /**
  * Сколько последних реплик пользователя участвуют в отборе статей. Больше
@@ -82,38 +83,6 @@ function factsSourceCap(maxOutputTokens) {
   return maxOutputTokens + Math.ceil(PARAM_LIMITS.promptChars / 2)
 }
 
-/** «2.0 с» / «320 мс» — для деталей события; страница форматирует сама. */
-function seconds(ms) {
-  return ms < 1000 ? `${Math.round(ms)} мс` : `${(ms / 1000).toFixed(1)} с`
-}
-
-/**
- * Отказ роутера, не дошедший до провайдера, денег не стоил: день по этому
- * признаку возвращает слот лимитера, иначе поток отказов выест суточный
- * предел зря.
- */
-function paidNothing(error) {
-  return (
-    error.code === 'budget_exceeded' ||
-    error.code === 'refused' ||
-    error.code === 'no_provider' ||
-    (Array.isArray(error.attempts) && error.attempts.length === 0) ||
-    (error.status >= 400 && error.status < 500 && error.status !== 429)
-  )
-}
-
-/** Текст отказа роутера для пользователя — как в дне 5. */
-function explainRouterError(error) {
-  if (error.code === 'budget_exceeded') {
-    // Роутер отвечает так и когда остаток есть, но запрос в него не влез:
-    // «попробуйте завтра» было бы неправдой — хватит меньшей подборки.
-    return /не помещается/.test(error.message)
-      ? 'Запрос слишком большой для остатка суточного лимита. Уменьшите статей на издание или контекст.'
-      : 'Суточный лимит расхода приложения исчерпан, попробуйте завтра.'
-  }
-  return `Модель не ответила: ${error.message}`
-}
-
 export function createNewsAnalyst({
   agent,
   archive,
@@ -127,20 +96,14 @@ export function createNewsAnalyst({
   // Промпт из реестра — основа; запуск может прийти со своим (см. parseSystem).
   const baseSystem = agent.systemPrompt
   const limitsOf = () => fetchLimits(env, agent.taskClass, { fetchImpl }).catch(() => null)
-  // Один запуск на сессию за раз: два параллельных перемешали бы порядок
-  // реплик в базе, и диалог перестал бы быть диалогом (ADR 2026-09-09-1906).
-  const busy = new Set()
+  const lock = createSessionLock()
 
   return {
     id: agent.id,
     version: agent.version,
 
-    /** Идёт ли в этой сессии запуск. Проверяется до создания следующего. */
-    isBusy: (sessionId) => sessionId !== null && busy.has(sessionId),
-    /** Занять сессию — синхронно, в том же такте, что и создание запуска. */
-    hold(sessionId) {
-      if (sessionId) busy.add(sessionId)
-    },
+    isBusy: lock.isBusy,
+    hold: lock.hold,
 
     /** Вход запуска: проверяется здесь, на границе агента, а не у дня. */
     parseInput(body) {
@@ -1168,7 +1131,7 @@ export function createNewsAnalyst({
         }
       } finally {
         // Сессия свободна при любом исходе: иначе один сбой запер бы диалог.
-        if (sessionId) busy.delete(sessionId)
+        lock.release(sessionId)
       }
     },
   }
