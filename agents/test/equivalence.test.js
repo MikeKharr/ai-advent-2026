@@ -222,23 +222,36 @@ const SCENARIOS = {
   'быстрые часы: длительности в миллисекундах': () =>
     runScenario({ input: { ...FINTECH, prompt: 'что нового' }, fetchImpl: router(), step: 10 }),
 
-  // Ветка paidNothing по коду состояния: без кода `budget_exceeded` решает
-  // именно диапазон 4xx с исключением 429.
-  'отказ роутера: 429 без кода бюджета': () =>
+  // Ветка paidNothing по коду состояния. Список попыток обязан быть
+  // непустым: роутер всегда отдаёт `attempts` массивом, и на пустом
+  // решение принимает предыдущая ветка, а не диапазон 4xx.
+  // 429 из исключения: провайдера звали, деньги потрачены — слот не вернуть.
+  'отказ роутера: 429 после попытки провайдера': () =>
     runScenario({
       input: { ...FINTECH, prompt: 'что нового' },
       fetchImpl: router({
         answerStatus: 429,
-        answer: { ok: false, code: 'rate_limited', message: 'слишком часто' },
+        answer: {
+          ok: false,
+          code: 'rate_limited',
+          message: 'слишком часто',
+          attempts: [{ provider: 'anthropic-haiku', outcome: 'rate_limited' }],
+        },
       }),
     }),
 
+  // 400 внутри диапазона: отказ разбора, провайдер не отвечал — слот вернуть.
   'отказ роутера: 400 разбора запроса': () =>
     runScenario({
       input: { ...FINTECH, prompt: 'что нового' },
       fetchImpl: router({
         answerStatus: 400,
-        answer: { ok: false, code: 'bad_input', message: 'неверный запрос' },
+        answer: {
+          ok: false,
+          code: 'bad_input',
+          message: 'неверный запрос',
+          attempts: [{ provider: 'anthropic-haiku', outcome: 'refused' }],
+        },
       }),
     }),
 

@@ -2132,7 +2132,7 @@
       }
     ]
   },
-  "отказ роутера: 429 без кода бюджета": {
+  "отказ роутера: 429 после попытки провайдера": {
     "busyAfter": false,
     "calls": [
       {
@@ -2147,7 +2147,7 @@
       "error": {
         "code": "rate_limited",
         "message": "Модель не ответила: слишком часто",
-        "paidNothing": true
+        "paidNothing": false
       },
       "result": null,
       "status": "failed",
