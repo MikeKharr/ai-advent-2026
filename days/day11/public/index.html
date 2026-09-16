@@ -238,6 +238,11 @@
   .clear:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
   .clear:active { background:var(--bg); }
   .mem-btn { width:100%; text-align:center; font-size:var(--t-sm); line-height:1.5; }
+  /* Кнопка прижата к верхнему краю правой колонки, а колонка с overflow-y:auto
+     режет наружное кольцо сверху — та же кромка, что у плавающей кнопки слева,
+     и то же решение. `padding-top` у `.col` не годится: он снял бы 8 px с
+     колонки диалога и увёл бы лог из выверенного бюджета. */
+  .mem-btn:focus-visible { outline-offset:-2px; }
 
   .msg { padding:var(--s-3) var(--s-4); }
   .msg.is-user + .msg { padding-top:0; }
