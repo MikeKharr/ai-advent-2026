@@ -393,10 +393,16 @@ test('настройки проверяются разборщиками зап�
   assert.equal(overLimit.status, 400, 'потолок класса layered_dialogue — 2048')
   assert.match((await overLimit.json()).message, /от 1 до 2048/)
 
-  // Модель вне закрытого списка: отказ на границе, роутер не вызывается.
-  const kimi = await put({ model: 'kimi-k3' })
-  assert.equal(kimi.status, 400)
-  assert.match((await kimi.json()).message, /Неизвестная модель/)
+  // Модели Kimi день 11 принимает (ADR 2026-09-16-1038); несуществующая —
+  // по-прежнему отказ на границе, и роутер не вызывается ни в том, ни в другом
+  // случае: настройки пишутся без обращения к модели.
+  const kimi = await put({ strategy: 'window', model: 'kimi-k3' })
+  assert.equal(kimi.status, 200)
+  assert.equal((await kimi.json()).settings.model, 'kimi-k3')
+
+  const unknown = await put({ model: 'gpt-5' })
+  assert.equal(unknown.status, 400)
+  assert.match((await unknown.json()).message, /Неизвестная модель/)
   assert.deepEqual(http.fetchImpl.calls, [], 'к роутеру не ходили ни разу')
 
   // Отказ настроек прежние значения не портит.

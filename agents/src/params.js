@@ -48,6 +48,61 @@ export const MODELS = [
 ]
 
 /**
+ * Модели Kimi — только для агента дня 11 (ADR 2026-09-16-1038). Дни 6–10
+ * держат прежний список `MODELS`: сданные дни не меняются, и п. 8 ADR
+ * 2026-09-15-1448 для них в силе.
+ *
+ * `maxInputTokens` 32 000 у всех четырёх — чуть ниже статического
+ * `maxRequestTokens` 32 768 роутера, чтобы отказ приходил от сервиса
+ * словами «уменьшите контекст», а не отказом роутера. Окно контекста
+ * моделей к делу не относится: роутер отказывает раньше. `maxChars` —
+ * по отношению Haiku (3 знака на токен); для агента дня 11 поле инертно,
+ * оно есть ради одинаковой формы записей каталога.
+ *
+ * Пометка в `note` у трёх записей — про неотключаемые рассуждения: на
+ * уровне `none` класса адаптер всё равно прибавляет к потолку ответа
+ * 1024 токена на рассуждения, и они оплачиваются по ставке выхода.
+ * `slow` не ставится: скорость Kimi не измерена.
+ */
+export const KIMI_MODELS = [
+  {
+    id: 'kimi-k3',
+    label: 'Kimi K3',
+    note: 'Kimi · рассуждения не выключаются',
+    maxChars: 96_000,
+    maxInputTokens: 32_000,
+  },
+  {
+    id: 'kimi-k2.6',
+    label: 'Kimi K2.6',
+    note: 'Kimi',
+    maxChars: 96_000,
+    maxInputTokens: 32_000,
+  },
+  {
+    id: 'kimi-k2.7-code',
+    label: 'Kimi K2.7 Code',
+    note: 'Kimi · рассуждения не выключаются',
+    maxChars: 96_000,
+    maxInputTokens: 32_000,
+  },
+  {
+    id: 'kimi-k2.7-code-highspeed',
+    label: 'Kimi K2.7 Code Highspeed',
+    note: 'Kimi · рассуждения не выключаются',
+    maxChars: 96_000,
+    maxInputTokens: 32_000,
+  },
+]
+
+/**
+ * Что предлагает выбрать агент дня 11. Haiku остаётся первой и умолчанием:
+ * умолчанием агента Kimi быть не должен, и реестр по-прежнему сверяет
+ * `defaults.model` с `MODELS`.
+ */
+export const LAYERED_MODELS = [...MODELS, ...KIMI_MODELS]
+
+/**
  * Готовые запросы — от простого к сложному. Порядок значим: он показывает,
  * как растёт цена запроса и требовательность к подборке.
  */
@@ -120,7 +175,12 @@ export const PROMPT_PRESETS = [
   },
 ]
 
-const model = (id) => MODELS.find((m) => m.id === id) ?? MODELS[0]
+// Поиск идёт по всему каталогу, а не по одному `MODELS`: неизвестный `id`
+// здесь молча отдаёт `MODELS[0]`, и без записей Kimi `inputBudgetFor('kimi-k3')`
+// вернул бы предел Haiku — окно настроек показало бы «33K», а бюджет запуска
+// считался бы по чужой записи. Кто какой список предлагает выбрать — дело
+// разборщиков ниже, а не этого поиска.
+const model = (id) => LAYERED_MODELS.find((m) => m.id === id) ?? MODELS[0]
 
 /** Бюджет символов на тексты статей для выбранной модели. */
 export function budgetFor(modelId) {
@@ -320,7 +380,7 @@ const SETTING_KEYS = [
   'system',
 ]
 
-export function parseSettings(source, defaults = {}) {
+export function parseSettings(source, defaults = {}, models = MODELS) {
   if (source === null || typeof source !== 'object' || Array.isArray(source)) {
     return { ok: false, message: 'Настройки должны быть объектом' }
   }
@@ -336,7 +396,7 @@ export function parseSettings(source, defaults = {}) {
   if (strategy.value !== null) settings.strategy = strategy.value
 
   if (has('model')) {
-    if (!MODELS.some((m) => m.id === source.model)) {
+    if (!models.some((m) => m.id === source.model)) {
       return { ok: false, message: 'Неизвестная модель' }
     }
     settings.model = source.model
@@ -498,8 +558,12 @@ function parseBoundedInt(value, min, max) {
  * Параметры запуска: запрос к модели, выбор модели, потолок токенов,
  * стоп-последовательности, сколько статей отбирать и сколько с источника.
  * Умолчания — из реестра агента: это его настройка, а не сервиса.
+ *
+ * `models` — список, по которому проверяется выбор. Умолчание `MODELS`:
+ * день 11 передаёт `LAYERED_MODELS` сам, а дни 6–10 остаются с прежним
+ * закрытым списком, не меняясь ни строкой (ADR 2026-09-16-1038).
  */
-export function parseParams(source, { maxOutputTokens, defaults }) {
+export function parseParams(source, { maxOutputTokens, defaults, models = MODELS }) {
   const prompt = cleanText(source.prompt)
   if (!prompt.ok) return { ok: false, message: 'Поле prompt должно быть строкой' }
   if (prompt.text.length > PARAM_LIMITS.promptChars) {
@@ -507,7 +571,7 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
   }
 
   const model = source.model ?? defaults.model
-  if (!MODELS.some((m) => m.id === model)) return { ok: false, message: 'Неизвестная модель' }
+  if (!models.some((m) => m.id === model)) return { ok: false, message: 'Неизвестная модель' }
 
   const maxTokens = parseBoundedInt(source.maxTokens, 1, maxOutputTokens)
   if (!maxTokens.ok) {
