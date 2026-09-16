@@ -149,6 +149,13 @@ export const PARAM_LIMITS = {
 }
 
 /**
+ * Размер контекста, когда его не задали ни запуск, ни реестр. Одно число на
+ * запуск и на настройки профиля: порог сводки сверяется с ним же, и разойтись
+ * они не могут (умолчание дня 8, ADR 2026-09-09-1906).
+ */
+export const DEFAULT_CONTEXT_TOKENS = 3000
+
+/**
  * Порог сводки N (ADR 2026-09-11-1608): когда реплики после последней
  * сводки набирают N токенов, агент сжимает их вместе с ней в новую сводку.
  * Отдельно от PARAM_LIMITS: те отдаются дням 6–8 в описании агента, и их
@@ -257,6 +264,129 @@ export function isSessionId(value) {
 }
 
 /**
+ * Идентификатор профиля — такой же UUID сервера, что и у сессии, и
+ * проверяется так же: по форме. Угадать чужой — то же, что угадать номер
+ * запуска; профиль и без того открыт всем (ADR 2026-09-15-2024, п. 2).
+ */
+export function isProfileId(value) {
+  return isSessionId(value)
+}
+
+/** Имя профиля — метка, не ключ: 1–40 знаков после чистки (ADR, п. 2). */
+export const PROFILE_NAME_CHARS = 40
+
+export function parseProfileName(value) {
+  if (typeof value !== 'string') return { ok: false, message: 'Поле name должно быть строкой' }
+  const name = value.replace(/[\u0000-\u001F\u007F]/g, '').replace(/\s+/g, ' ').trim()
+  if (name.length === 0) return { ok: false, message: 'Имя профиля не может быть пустым' }
+  if (name.length > PROFILE_NAME_CHARS) {
+    return { ok: false, message: `Имя профиля длиннее ${PROFILE_NAME_CHARS} символов` }
+  }
+  return { ok: true, name }
+}
+
+/**
+ * Потолок ответа агента дня 11 — потолок его класса роутера
+ * `layered_dialogue`, а не общий `MAX_OUTPUT_TOKENS` сервиса (4096):
+ * иначе окно настроек обещало бы 4096, а роутер отвергал бы всё выше 2048
+ * (ADR 2026-09-15-2024, п. 8.1 и 8.2).
+ */
+export const LAYERED_MAX_TOKENS = 2048
+
+/**
+ * Настройки агента за профилем — закрытый список ключей («Уточнения», 6).
+ * Проверяются теми же разборщиками, что вход запуска: значение, годное в
+ * настройках, обязано быть годным и в запуске, иначе панель сохраняла бы
+ * то, чем нельзя воспользоваться. Неизвестный ключ — ошибка, а не молчание:
+ * настройки хранятся целиком заново, и «пропавшее» поле заметить нечем.
+ */
+const SETTING_KEYS = [
+  'strategy',
+  'model',
+  'contextTokens',
+  'summarizeAt',
+  'window',
+  'factsTokens',
+  'temperature',
+  'maxTokens',
+  'stopSequences',
+  'system',
+]
+
+export function parseSettings(source) {
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) {
+    return { ok: false, message: 'Настройки должны быть объектом' }
+  }
+  for (const key of Object.keys(source)) {
+    if (!SETTING_KEYS.includes(key)) return { ok: false, message: `Неизвестная настройка: ${key}` }
+  }
+
+  const settings = {}
+  const has = (key) => source[key] !== undefined && source[key] !== null && source[key] !== ''
+
+  const strategy = parseStrategy(source.strategy)
+  if (!strategy.ok) return strategy
+  if (strategy.value !== null) settings.strategy = strategy.value
+
+  if (has('model')) {
+    if (!MODELS.some((m) => m.id === source.model)) {
+      return { ok: false, message: 'Неизвестная модель' }
+    }
+    settings.model = source.model
+  }
+
+  const contextTokens = parseBoundedInt(source.contextTokens, 0, PARAM_LIMITS.contextTokens)
+  if (!contextTokens.ok) {
+    return { ok: false, message: `Размер контекста: целое от 0 до ${PARAM_LIMITS.contextTokens}` }
+  }
+  if (contextTokens.value !== undefined) settings.contextTokens = contextTokens.value
+
+  // Порог сводки сверяется с тем размером контекста, который получится после
+  // записи: пара «порог больше контекста» не должна попасть в базу и всплыть
+  // отказом на первом же запуске.
+  const summarizeAt = parseSummarizeAt(
+    source.summarizeAt,
+    contextTokens.value ?? DEFAULT_CONTEXT_TOKENS,
+  )
+  if (!summarizeAt.ok) return summarizeAt
+  if (summarizeAt.value !== null) settings.summarizeAt = summarizeAt.value
+
+  if (has('window')) {
+    const window = parseWindow(source.window)
+    if (!window.ok) return window
+    settings.window = window.value
+  }
+
+  if (has('factsTokens')) {
+    const facts = parseFactsTokens(source.factsTokens)
+    if (!facts.ok) return facts
+    settings.factsTokens = facts.value
+  }
+
+  const temperature = parseTemperature(source.temperature)
+  if (!temperature.ok) return { ok: false, message: 'Температура: число от 0 до 1 с шагом 0.1' }
+  if (temperature.value !== undefined) settings.temperature = temperature.value
+
+  const maxTokens = parseBoundedInt(source.maxTokens, 1, LAYERED_MAX_TOKENS)
+  if (!maxTokens.ok) {
+    return { ok: false, message: `Лимит токенов: целое от 1 до ${LAYERED_MAX_TOKENS}` }
+  }
+  if (maxTokens.value !== undefined) settings.maxTokens = maxTokens.value
+
+  const stop = parseStopSequences(source.stopSequences)
+  if (!stop.ok) return stop
+  if (stop.value.length > 0) settings.stopSequences = stop.value
+
+  if (has('system')) {
+    const system = parseSystem(source.system)
+    if (!system.ok) return system
+    settings.system = system.system
+  }
+
+  return { ok: true, settings }
+}
+
+/**
  * Тема от пользователя. С дня 8 поле необязательно: релевантность считается
  * по репликам разговора (ADR 2026-09-09-2134). Дни 6 и 7 продолжают его
  * присылать, поэтому проверка остаётся прежней.
@@ -323,6 +453,30 @@ function parseTemperature(raw) {
   return { ok: true, value: tenths / 10 }
 }
 
+/**
+ * Стоп-последовательности: не больше четырёх, каждая — строка до 40 знаков.
+ * Один разборщик на запуск и на настройки профиля: значение, годное в
+ * настройках, обязано быть годным и в запуске.
+ */
+function parseStopSequences(raw) {
+  const list = raw === undefined || raw === null || raw === '' ? [] : raw
+  if (!Array.isArray(list)) return { ok: false, message: 'stopSequences должен быть массивом' }
+  if (list.length > PARAM_LIMITS.stopSequences) {
+    return { ok: false, message: `Стоп-последовательностей не больше ${PARAM_LIMITS.stopSequences}` }
+  }
+  const value = []
+  for (const entry of list) {
+    const cleaned = cleanText(entry)
+    if (!cleaned.ok) return { ok: false, message: 'Стоп-последовательность должна быть строкой' }
+    if (cleaned.text.length === 0) continue
+    if (cleaned.text.length > PARAM_LIMITS.stopChars) {
+      return { ok: false, message: `Стоп-последовательность длиннее ${PARAM_LIMITS.stopChars}` }
+    }
+    value.push(cleaned.text)
+  }
+  return { ok: true, value }
+}
+
 function parseBoundedInt(value, min, max) {
   if (value === undefined || value === null || value === '') return { ok: true, value: undefined }
   const n = Number(value)
@@ -371,25 +525,9 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
     return { ok: false, message: 'Температура: число от 0 до 1 с шагом 0.1' }
   }
 
-  const raw = source.stopSequences
-  const list = raw === undefined || raw === null || raw === '' ? [] : raw
-  if (!Array.isArray(list)) return { ok: false, message: 'stopSequences должен быть массивом' }
-  if (list.length > PARAM_LIMITS.stopSequences) {
-    return {
-      ok: false,
-      message: `Стоп-последовательностей не больше ${PARAM_LIMITS.stopSequences}`,
-    }
-  }
-  const stopSequences = []
-  for (const entry of list) {
-    const cleaned = cleanText(entry)
-    if (!cleaned.ok) return { ok: false, message: 'Стоп-последовательность должна быть строкой' }
-    if (cleaned.text.length === 0) continue
-    if (cleaned.text.length > PARAM_LIMITS.stopChars) {
-      return { ok: false, message: `Стоп-последовательность длиннее ${PARAM_LIMITS.stopChars}` }
-    }
-    stopSequences.push(cleaned.text)
-  }
+  const stop = parseStopSequences(source.stopSequences)
+  if (!stop.ok) return stop
+  const stopSequences = stop.value
 
   return {
     ok: true,
@@ -401,7 +539,7 @@ export function parseParams(source, { maxOutputTokens, defaults }) {
       // Число статей необязательно: без него подборку набирает агент под
       // предел входа модели (ADR 2026-09-09-2134).
       articles: articles.value ?? defaults.articles ?? null,
-      contextTokens: contextTokens.value ?? defaults.contextTokens ?? 3000,
+      contextTokens: contextTokens.value ?? defaults.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
       temperature: temperature.value ?? defaults.temperature,
       stopSequences,
     },

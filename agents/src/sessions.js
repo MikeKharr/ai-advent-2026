@@ -5,6 +5,7 @@
 // `node:sqlite` — модуль самого Node, зависимостей не добавляет. В Node 22
 // он требует флага `--experimental-sqlite`, поэтому образ сервиса — Node 24.
 
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 export { isSessionId } from './params.js'
@@ -63,21 +64,84 @@ CREATE TABLE IF NOT EXISTS facts (
   truncated_streak INTEGER NOT NULL DEFAULT 0,  -- обрезаний подряд; ≥ 2 — стоп
   updated_at       INTEGER NOT NULL
 );
+
+-- Профили дня 11 (ADR 2026-09-15-2024, п. 10). Профиль — ярлык, по которому
+-- агент находит свою память, а не защита: все профили видны всем. Живёт
+-- 30 дней от последнего действия любого посетителя в нём.
+CREATE TABLE IF NOT EXISTS profiles (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  settings     TEXT NOT NULL DEFAULT '{}',
+  created_at   INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL
+);
+
+-- Память персонализации: правила из разговора. Имя правила уникально в
+-- профиле, новое правило заменяет прежнее с тем же именем. Пополняет их
+-- вызов памяти (фаза 4б); хранение и уборка — здесь.
+CREATE TABLE IF NOT EXISTS personalization (
+  profile_id        TEXT NOT NULL,
+  key               TEXT NOT NULL,
+  value             TEXT NOT NULL,
+  source_session_id TEXT,
+  updated_at        INTEGER NOT NULL,
+  PRIMARY KEY (profile_id, key)
+);
+
+-- Память фактов: темы профиля и факты в них. Тема переживает сессию и
+-- уходит только вместе с профилем (ADR, п. 6.1). Имя "facts" в базе занято
+-- строкой стратегии рабочей памяти, поэтому таблица — topic_facts.
+CREATE TABLE IF NOT EXISTS topics (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topics_by_profile ON topics(profile_id, updated_at);
+CREATE TABLE IF NOT EXISTS topic_facts (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic_id          INTEGER NOT NULL,
+  text              TEXT NOT NULL,
+  source_session_id TEXT,
+  at                INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topic_facts_by_topic ON topic_facts(topic_id, id);
 `
 
 /**
- * Столбцы дерева дня 10 (ADR 2026-09-14-0447, п. 9). Добавляются при старте
- * идемпотентно: старые строки получают NULL, все операторы дней 6–9 называют
- * столбцы явно, поэтому ни один их запрос не меняет ни текста, ни результата.
+ * Столбцы дерева дня 10 (ADR 2026-09-14-0447, п. 9) и профиля дня 11
+ * (ADR 2026-09-15-2024, п. 10). Добавляются при старте идемпотентно: старые
+ * строки получают NULL, все операторы дней 6–10 называют столбцы явно,
+ * поэтому ни один их запрос не меняет ни текста, ни результата. `profile_id`
+ * NULL — это и есть сессия дней 6–10: она не принадлежит ни одному профилю
+ * и потому не попадает ни под один оператор удаления профиля.
  */
 function migrate(db) {
   const has = (table, column) =>
     db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)
   if (!has('messages', 'parent_id')) db.exec('ALTER TABLE messages ADD COLUMN parent_id INTEGER')
   if (!has('sessions', 'head_id')) db.exec('ALTER TABLE sessions ADD COLUMN head_id INTEGER')
+  if (!has('sessions', 'profile_id')) db.exec('ALTER TABLE sessions ADD COLUMN profile_id TEXT')
+  if (!has('sessions', 'topic_id')) db.exec('ALTER TABLE sessions ADD COLUMN topic_id INTEGER')
+  if (!has('sessions', 'pending_topic')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN pending_topic TEXT')
+  }
+  // Индекс создаётся после столбца: в старой базе его колонки ещё нет.
+  db.exec('CREATE INDEX IF NOT EXISTS sessions_by_profile ON sessions(profile_id, last_seen_at)')
 }
 
-export function createSessions({ file, ttlMs, now = Date.now, log = console.error }) {
+export function createSessions({
+  file,
+  ttlMs,
+  // Профиль живёт дольше своих диалогов, потолки — временные рабочие
+  // значения решения владельца 8 (ADR 2026-09-15-2024).
+  profileTtlMs = 30 * 24 * 3600_000,
+  profileCap = 5,
+  sessionCap = 20,
+  now = Date.now,
+  log = console.error,
+}) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
   // WAL: чтение не блокируется записью, а обрыв процесса не рвёт файл.
@@ -197,6 +261,93 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
     ),
     counts: db.prepare(
       'SELECT (SELECT count(*) FROM sessions) AS sessions, (SELECT count(*) FROM messages) AS messages',
+    ),
+
+    // --- Профили дня 11 (ADR 2026-09-15-2024, п. 2 и 3) ------------------
+    addProfile: db.prepare(
+      'INSERT INTO profiles (id, name, settings, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)',
+    ),
+    liveProfiles: db.prepare(
+      `SELECT p.id, p.name, p.created_at AS createdAt, p.last_seen_at AS lastSeenAt,
+              (SELECT count(*) FROM sessions s
+                WHERE s.profile_id = p.id AND s.last_seen_at >= ?) AS sessions
+         FROM profiles p WHERE p.last_seen_at >= ? ORDER BY p.last_seen_at DESC`,
+    ),
+    countProfiles: db.prepare('SELECT count(*) AS n FROM profiles WHERE last_seen_at >= ?'),
+    profile: db.prepare(
+      `SELECT id, name, settings, created_at AS createdAt, last_seen_at AS lastSeenAt
+         FROM profiles WHERE id = ? AND last_seen_at >= ?`,
+    ),
+    touchProfile: db.prepare('UPDATE profiles SET last_seen_at = ? WHERE id = ?'),
+    saveSettings: db.prepare('UPDATE profiles SET settings = ?, last_seen_at = ? WHERE id = ?'),
+    staleProfiles: db.prepare('SELECT id FROM profiles WHERE last_seen_at < ?'),
+    rules: db.prepare(
+      `SELECT key, value, source_session_id AS sourceSessionId, updated_at AS updatedAt
+         FROM personalization WHERE profile_id = ? ORDER BY updated_at DESC`,
+    ),
+    topics: db.prepare(
+      `SELECT t.id, t.title, t.created_at AS createdAt, t.updated_at AS updatedAt,
+              (SELECT count(*) FROM topic_facts f WHERE f.topic_id = t.id) AS facts
+         FROM topics t WHERE t.profile_id = ? ORDER BY t.updated_at DESC`,
+    ),
+    topicOfProfile: db.prepare('SELECT id FROM topics WHERE id = ? AND profile_id = ?'),
+
+    // --- Сессии профиля --------------------------------------------------
+    addSession: db.prepare(
+      `INSERT INTO sessions (id, created_at, last_seen_at, profile_id, topic_id)
+       VALUES (?, ?, ?, ?, ?)`,
+    ),
+    liveSessions: db.prepare(
+      `SELECT s.id, s.created_at AS createdAt, s.last_seen_at AS lastSeenAt,
+              s.topic_id AS topicId, t.title AS topicTitle,
+              (SELECT count(*) FROM messages m WHERE m.session_id = s.id) AS messages,
+              (SELECT m.text FROM messages m
+                WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1) AS opening
+         FROM sessions s LEFT JOIN topics t ON t.id = s.topic_id
+        WHERE s.profile_id = ? AND s.last_seen_at >= ?
+        ORDER BY s.last_seen_at DESC`,
+    ),
+    countSessions: db.prepare(
+      'SELECT count(*) AS n FROM sessions WHERE profile_id = ? AND last_seen_at >= ?',
+    ),
+    sessionOwner: db.prepare('SELECT profile_id AS profileId FROM sessions WHERE id = ?'),
+
+    // --- Удаление профиля: девять таблиц одной транзакцией (критерий 2) ---
+    // Каждый оператор ограничен профилем и его сессиями. Сессии дней 6–10
+    // несут `profile_id` NULL, а `= ?` с непустым идентификатором с NULL не
+    // совпадает никогда — поэтому чужая переписка под эти операторы не
+    // попадает ни при каком значении.
+    dropProfileMessages: db.prepare(
+      'DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE profile_id = ?)',
+    ),
+    dropProfileSummaries: db.prepare(
+      'DELETE FROM summaries WHERE session_id IN (SELECT id FROM sessions WHERE profile_id = ?)',
+    ),
+    dropProfileFacts: db.prepare(
+      'DELETE FROM facts WHERE session_id IN (SELECT id FROM sessions WHERE profile_id = ?)',
+    ),
+    dropProfileCosts: db.prepare(
+      'DELETE FROM summary_costs WHERE session_id IN (SELECT id FROM sessions WHERE profile_id = ?)',
+    ),
+    dropProfileSessions: db.prepare('DELETE FROM sessions WHERE profile_id = ?'),
+    dropProfileTopicFacts: db.prepare(
+      'DELETE FROM topic_facts WHERE topic_id IN (SELECT id FROM topics WHERE profile_id = ?)',
+    ),
+    dropProfileTopics: db.prepare('DELETE FROM topics WHERE profile_id = ?'),
+    dropProfileRules: db.prepare('DELETE FROM personalization WHERE profile_id = ?'),
+    dropProfile: db.prepare('DELETE FROM profiles WHERE id = ?'),
+
+    // --- Сироты новых таблиц --------------------------------------------
+    orphanRules: db.prepare(
+      'DELETE FROM personalization WHERE profile_id NOT IN (SELECT id FROM profiles)',
+    ),
+    orphanTopics: db.prepare('DELETE FROM topics WHERE profile_id NOT IN (SELECT id FROM profiles)'),
+    orphanTopicFacts: db.prepare(
+      'DELETE FROM topic_facts WHERE topic_id NOT IN (SELECT id FROM topics)',
+    ),
+    // Сессия, чей профиль уже удалён: убирается целиком, как любая другая.
+    orphanProfileSessions: db.prepare(
+      'SELECT id FROM sessions WHERE profile_id IS NOT NULL AND profile_id NOT IN (SELECT id FROM profiles)',
     ),
   }
 
@@ -580,14 +731,34 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
      * обещает 30 часов (ADR 2026-09-14-0447, п. 9).
      */
     sweep(at = now()) {
+      // Сначала профили старше своего срока: они уходят со всей памятью тем
+      // же оператором, что `deleteProfile`, и уносят свои сессии целиком.
+      // Возвращаемое число — убранные сессии, все до одной: журнал сервиса
+      // читает его как «сколько диалогов исчезло», и диалоги, ушедшие внутри
+      // удаления профиля, исчезли не меньше прочих.
+      let removed = 0
+      for (const row of stmt.staleProfiles.all(at - profileTtlMs)) {
+        removed += this.deleteProfile(row.id)?.sessions ?? 0
+      }
       const cutoff = at - ttlMs
       const stale = stmt.stale.all(cutoff)
       for (const row of stale) this.clear(row.id)
+      removed += stale.length
+      // Сессия, чей профиль удалён в обход `deleteProfile` (оборвавшаяся
+      // транзакция, правка базы руками), уходит целиком, а не строкой.
+      for (const row of stmt.orphanProfileSessions.all()) {
+        this.clear(row.id)
+        removed += 1
+      }
       stmt.orphanMessages.run()
       stmt.orphanSummaries.run()
       stmt.orphanFacts.run()
       stmt.orphanCosts.run()
-      return stale.length
+      stmt.orphanRules.run()
+      stmt.orphanTopics.run()
+      // Факты тем — после тем: осиротевшая тема сначала должна исчезнуть.
+      stmt.orphanTopicFacts.run()
+      return removed
     },
 
     /**
@@ -612,6 +783,167 @@ export function createSessions({ file, ttlMs, now = Date.now, log = console.erro
       // копится отдельно, а не в ответах (ADR 2026-09-11-1608).
       total += stmt.cost.get(sessionId)?.tokens ?? 0
       return total
+    },
+
+    // --- Профили дня 11 (ADR 2026-09-15-2024) -----------------------------
+
+    /**
+     * Все живые профили по убыванию активности: их видят все посетители —
+     * профиль это ярлык памяти, а не учётная запись (решение владельца 9).
+     */
+    profiles(at = now()) {
+      return stmt.liveProfiles.all(at - ttlMs, at - profileTtlMs)
+    },
+
+    /**
+     * Профиль со всей его памятью для экрана и монитора: настройки, правила,
+     * темы, живые диалоги. `lastSession` — последний по активности живой
+     * диалог или null; на нём стоит решение страницы, ставить ли cookie
+     * сессии. Чтение профиля активность НЕ продлевает (ADR, п. 2): иначе
+     * случайный клик постороннего держал бы чужую память ещё месяц.
+     */
+    profile(id, at = now()) {
+      const row = stmt.profile.get(id, at - profileTtlMs)
+      if (!row) return null
+      let settings = {}
+      try {
+        settings = row.settings ? JSON.parse(row.settings) : {}
+      } catch {
+        // Порченые настройки не должны прятать профиль целиком: остальная
+        // память посетителю нужнее, а окно настроек перезапишет их.
+        log(`настройки профиля ${id.slice(0, 8)}… не разобраны`)
+      }
+      const sessions = stmt.liveSessions.all(id, at - ttlMs)
+      return {
+        id: row.id,
+        name: row.name,
+        settings,
+        createdAt: row.createdAt,
+        lastSeenAt: row.lastSeenAt,
+        rules: stmt.rules.all(id),
+        topics: stmt.topics.all(id),
+        sessions,
+        lastSession: sessions[0]?.id ?? null,
+      }
+    },
+
+    /**
+     * Новый профиль. Потолок живых профилей проверяется в той же транзакции,
+     * что вставка: два одновременных создания иначе дали бы шестой.
+     * Шестому посетителю продукт не предлагает стереть чужое — он получает
+     * отказ `profiles_full`.
+     */
+    createProfile({ name, at = now() }) {
+      db.exec('BEGIN')
+      try {
+        if (stmt.countProfiles.get(at - profileTtlMs).n >= profileCap) {
+          db.exec('ROLLBACK')
+          return { ok: false, code: 'profiles_full' }
+        }
+        const id = randomUUID()
+        stmt.addProfile.run(id, name, '{}', at, at)
+        db.exec('COMMIT')
+        return { ok: true, profile: this.profile(id, at) }
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+    },
+
+    /**
+     * Действие в профиле: срок хранения всей его памяти идёт от него. Любое
+     * действие любого посетителя, не владельца данных (ADR, «Последствия»).
+     */
+    touchProfile(id, at = now()) {
+      if (!stmt.profile.get(id, at - profileTtlMs)) return false
+      stmt.touchProfile.run(at, id)
+      return true
+    },
+
+    /** Настройки агента за профилем: пишутся целиком заново (ADR, п. 4). */
+    saveSettings({ profileId, settings, at = now() }) {
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return false
+      stmt.saveSettings.run(JSON.stringify(settings), at, profileId)
+      return true
+    },
+
+    /**
+     * Удаление профиля со всей связанной памятью — одной транзакцией
+     * (решение владельца 10, критерий 2). После неё ни в одной из девяти
+     * таблиц нет строки этого профиля, его сессий и его тем; чужие сессии
+     * (`profile_id` NULL у дней 6–10 и идентификатор другого профиля) ни под
+     * один оператор не попадают. Удалить профиль может любой посетитель —
+     * это названное последствие открытости, а не упущение.
+     */
+    deleteProfile(id) {
+      // Срок здесь не проверяется намеренно (нулевая граница), в отличие от
+      // чтения: истёкший, но ещё не убранный профиль обязан удаляться — этим
+      // же оператором его уносит `sweep`. Цена — рассогласование кодов на
+      // окне между истечением и уборкой: чтение отдаёт 404, удаление 200.
+      // Данные при этом в обоих случаях уходят, и это важнее симметрии.
+      if (!stmt.profile.get(id, 0)) return null
+      db.exec('BEGIN')
+      try {
+        const removed = {
+          messages: Number(stmt.dropProfileMessages.run(id).changes),
+          summaries: Number(stmt.dropProfileSummaries.run(id).changes),
+          facts: Number(stmt.dropProfileFacts.run(id).changes),
+          costs: Number(stmt.dropProfileCosts.run(id).changes),
+          topicFacts: Number(stmt.dropProfileTopicFacts.run(id).changes),
+          topics: Number(stmt.dropProfileTopics.run(id).changes),
+          rules: Number(stmt.dropProfileRules.run(id).changes),
+          sessions: Number(stmt.dropProfileSessions.run(id).changes),
+          profiles: Number(stmt.dropProfile.run(id).changes),
+        }
+        db.exec('COMMIT')
+        return removed
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+    },
+
+    /**
+     * Новый диалог профиля. Потолок живых диалогов — в той же транзакции,
+     * что вставка, и действует на любой путь создания: и на кнопку «Новый
+     * диалог», и на первое сообщение без cookie сессии (ADR, п. 8.3).
+     * Создание диалога — действие в профиле, поэтому срок профиля продлевает.
+     */
+    createSession({ profileId, topicId = null, at = now() }) {
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return { ok: false, code: 'no_profile' }
+      if (topicId !== null && !stmt.topicOfProfile.get(topicId, profileId)) {
+        return { ok: false, code: 'unknown_topic' }
+      }
+      db.exec('BEGIN')
+      try {
+        if (stmt.countSessions.get(profileId, at - ttlMs).n >= sessionCap) {
+          db.exec('ROLLBACK')
+          return { ok: false, code: 'sessions_full' }
+        }
+        const id = randomUUID()
+        stmt.addSession.run(id, at, at, profileId, topicId)
+        stmt.touchProfile.run(at, profileId)
+        db.exec('COMMIT')
+        return { ok: true, id }
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+    },
+
+    /** Живые диалоги профиля по убыванию активности. */
+    sessionsOf(profileId, at = now()) {
+      return stmt.liveSessions.all(profileId, at - ttlMs)
+    },
+
+    /**
+     * Чей это диалог: идентификатор профиля, `null` у сессий дней 6–10 и
+     * `undefined`, если сессии нет вовсе. Граница чтения чужой памяти:
+     * сессия чужого профиля отвечает как несуществующая — 404.
+     */
+    sessionProfile(sessionId) {
+      const row = stmt.sessionOwner.get(sessionId)
+      return row ? (row.profileId ?? null) : undefined
     },
 
     stats() {
