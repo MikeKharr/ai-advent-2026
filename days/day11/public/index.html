@@ -1,0 +1,3029 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day11 -> /day11/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Агент со слоями памяти — AI Advent 2026, день 11</title>
+<style>
+  /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
+     Значения вне этих шкал — дефект, а не нюанс. */
+  :root {
+    color-scheme: light dark;
+    --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+    --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+    --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-lg:1.125rem; --t-xl:1.5rem;
+    --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+    --line:#e6e6e3; --line-ctl:#8f8f8a;
+    --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+    --overlay:rgb(23 23 26 / .5);
+    --r-sm:6px; --r-md:10px; --r-full:999px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+      --line:#2a2a30; --line-ctl:#6a6a73;
+      --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+      --overlay:rgb(0 0 0 / .6);
+    }
+  }
+  * { box-sizing: border-box; }
+  /* Собственный display у элемента перебивает [hidden] из таблицы браузера,
+     и скрытый блок остаётся на экране. Правило нужно всем блокам окна,
+     которые прячутся по состоянию. */
+  [hidden] { display:none !important; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Раскладка «диалог / наблюдение». На широком экране каждая колонка
+     скроллится сама. Левый отступ --s-7 на всех ширинах — место плавающей
+     кнопки настроек: она стоит на координате x=0 и иначе перекрывала бы текст. */
+  .layout {
+    display:grid; grid-template-columns:1fr; gap:var(--s-6);
+    max-width:80rem; margin:0 auto; padding:var(--s-6) var(--s-4) var(--s-6) var(--s-7);
+  }
+  @media (min-width: 73rem) {
+    html, body { height:100%; }
+    body { overflow:hidden; }
+    .layout {
+      grid-template-columns: minmax(0,1fr) 24rem;
+      height:100dvh; padding:var(--s-6) var(--s-5) var(--s-6) var(--s-7);
+    }
+    /* Правый отступ обязателен: колонка со своим скроллом обрезает всё, что
+       касается её края, — бегунок ползунка в крайних положениях, кольцо
+       фокуса (outline-offset 2px) и содержимое под полосой прокрутки. */
+    .col { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+    main.col { display:flex; flex-direction:column; }
+    main.col footer { margin-top:auto; }
+  }
+  /* Пока профиль не выбран, экран входа занимает страницу целиком: под ним
+     нет ни диалога, ни памяти, ни агента. */
+  body:has(.gate:not([hidden])) { overflow:auto; height:auto; }
+
+  h1 { font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; margin:0 0 var(--s-2); }
+  .head-row {
+    display:flex; align-items:baseline; justify-content:space-between;
+    gap:var(--s-4); flex-wrap:wrap;
+  }
+  .head-row h1 { margin-bottom:0; }
+  h2 {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); margin:0;
+  }
+  .sub { color:var(--fg-mut); margin:0 0 var(--s-4); max-width:68ch; }
+
+  /* Пять состояний у каждого интерактивного элемента: покой, наведение,
+     нажатие, :focus-visible, [disabled]. Фокус — на всех, а не только у полей. */
+  :where(button, input, textarea, a, summary, [tabindex]):focus-visible {
+    outline:2px solid var(--acc); outline-offset:2px;
+  }
+  /* Внутри прокручиваемых контейнеров кольцо рисуется внутрь: наружное
+     срезает `overflow`. */
+  .params-body :where(button, input, textarea, a, summary, [tabindex]):focus-visible,
+  .mem-body :where(button, input, textarea, a, summary, [tabindex]):focus-visible,
+  .log :where(button, input, textarea, a, summary, [tabindex]):focus-visible {
+    outline-offset:-2px;
+  }
+  input, textarea {
+    width:100%; padding:var(--s-2) var(--s-3); font:inherit; color:var(--fg);
+    background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  }
+  input:hover, textarea:hover { border-color:var(--fg-mut); }
+  input[disabled], textarea[disabled] { opacity:.5; cursor:default; }
+  input[disabled]:hover, textarea[disabled]:hover { border-color:var(--line-ctl); }
+  textarea { resize:vertical; }
+
+  form { display:block; }
+  .submit { margin-top:var(--s-5); }
+  button {
+    font:inherit; font-weight:600; border-radius:var(--r-sm); cursor:pointer;
+    padding:var(--s-2) var(--s-4); color:var(--acc-fg); background:var(--acc);
+    border:1px solid var(--acc);
+  }
+  button:hover { filter:brightness(1.08); }
+  button:active { transform:translateY(1px); }
+  button[disabled] { opacity:.5; cursor:default; filter:none; transform:none; }
+
+  /* Кнопка в тексте описания: вид ссылки, но открывает окно. */
+  .about {
+    display:inline; padding:0; border:0; background:transparent; font:inherit; font-weight:400;
+    color:var(--fg); text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em;
+  }
+  .about:hover { filter:none; text-decoration-color:var(--fg); }
+  .about:active { transform:none; opacity:.7; }
+  .about[disabled] { opacity:.5; text-decoration-color:var(--line-ctl); }
+
+  .num { font-variant-numeric:tabular-nums; }
+
+  /* --- экран выбора профиля --- */
+  /* Это экран, а не модальное окно: выхода отсюда нет, а <dialog> закрывается
+     Esc и подложкой. Модальное окно, которое нельзя закрыть, — ложное обещание. */
+  .gate {
+    max-width:40rem; margin:0 auto;
+    padding:var(--s-6) var(--s-4);
+    display:flex; flex-direction:column; gap:var(--s-5);
+  }
+  .gate h1 { margin:0; }
+  .gate .sub { margin:calc(-1 * var(--s-3)) 0 0; }
+  /* Условие работы продукта, а не ошибка: --surface и рамка контрола, не
+     --danger. Красный здесь обесценил бы красный у настоящих отказов. */
+  .notice {
+    display:flex; gap:var(--s-3); margin:0;
+    padding:var(--s-3) var(--s-4);
+    background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-md);
+    font-size:var(--t-sm); line-height:1.5; color:var(--fg);
+  }
+  .notice .mark { font-weight:600; }
+  .gate-head { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-3); }
+  .gate-count { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .pro-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:var(--s-2); }
+  /* Две кнопки рядом, а не кнопка в кнопке: вложенные интерактивные элементы
+     недопустимы, и разделение даёт два честных стопа Tab на строку. */
+  .pro-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--s-2); align-items:stretch; }
+  .pro-pick {
+    display:block; width:100%; text-align:left; font-weight:400;
+    padding:var(--s-2) var(--s-3);
+    color:var(--fg); background:transparent; border:1px solid var(--line); border-radius:var(--r-sm);
+  }
+  .pro-pick:hover { background:var(--bg); filter:none; }
+  .pro-pick:active { background:var(--bg); transform:translateY(1px); }
+  .pro-name { display:flex; align-items:baseline; gap:var(--s-2); flex-wrap:wrap; }
+  .pro-title { font-size:var(--t-md); line-height:1.6; overflow-wrap:anywhere; }
+  .pro-when { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  /* Профиль из cookie помечен словом, а не только фоном. */
+  .chip {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-full);
+    padding:0 var(--s-2); white-space:nowrap;
+  }
+  .pro-del { align-self:center; }
+  .pro-del:hover { color:var(--danger); border-color:var(--line-ctl); filter:none; }
+  .gate-form .field { display:block; }
+  .gate-note { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch; }
+  .gate-row { display:flex; align-items:flex-end; gap:var(--s-3); flex-wrap:wrap; }
+  .gate-row .grow { flex:1 1 14rem; min-width:0; }
+  .gate-row .submit { margin-top:0; }
+
+  /* --- плавающая кнопка настроек --- */
+  /* Единственный вход в окно настроек (ADR, п. 9). Первым элементом .chat-col
+     в DOM — значит, достижима с клавиатуры первой на любой ширине. */
+  .float {
+    position:fixed; left:0; top:50%; transform:translateY(-50%); z-index:2;
+    width:var(--s-7); height:var(--s-7); padding:0;
+    display:inline-flex; align-items:center; justify-content:center;
+    color:var(--fg-mut); background:var(--surface);
+    border:1px solid var(--line-ctl); border-radius:0 var(--r-md) var(--r-md) 0;
+    font-weight:400;
+  }
+  .float:hover { color:var(--fg); background:var(--bg); filter:none; }
+  .float:active { background:var(--bg); transform:translateY(-50%); }
+  /* Кольцо внутрь: у элемента на координате x=0 внешнее срезает край окна. */
+  .float:focus-visible { outline-offset:-2px; }
+  .float svg { width:1rem; height:1rem; stroke:currentColor; fill:none;
+               stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+
+  /* --- шапка: профиль и тема --- */
+  .pid { display:flex; align-items:baseline; gap:var(--s-2); min-width:0; }
+  .pid-label {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut);
+  }
+  .pid-name {
+    font-size:var(--t-sm); line-height:1.5; max-width:14rem;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .feed-head { display:flex; align-items:baseline; gap:var(--s-3); flex-wrap:wrap; }
+  .topic-line { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); display:flex;
+                align-items:baseline; gap:var(--s-2); min-width:0; }
+  .topic-name { max-width:12rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Счётчики уходят второй строкой на всех ширинах: в первый ряд они не
+     помещаются (901 px при 808 доступных), и высота шапки не должна скакать
+     от длины названия темы. */
+  .meters {
+    order:3; flex-basis:100%; margin:0;
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .meters .part { white-space:nowrap; }
+  .head-gap { margin-left:auto; }
+
+  /* --- диалог --- */
+  .chat-col { display:flex; flex-direction:column; }
+  .chat { display:flex; flex-direction:column; gap:var(--s-3); min-height:0; flex:1; }
+  .restored { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch; }
+  .log {
+    list-style:none; margin:0; padding:0;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+    max-height:60dvh; overflow-y:auto;
+    min-height:calc(2 * var(--s-8));
+  }
+  @media (min-width: 73rem) {
+    .right { min-height:0; }
+    .monitor { flex:1; min-height:0; }
+    .panel { overflow-y:auto; min-height:0; }
+    .log { flex:1 1 auto; min-height:calc(2 * var(--s-8)); max-height:none; }
+  }
+  .clear {
+    padding:var(--s-1) var(--s-3); font-size:var(--t-xs); line-height:1.4; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .clear:hover { color:var(--fg); border-color:var(--line-ctl); filter:none; }
+  .clear:active { background:var(--bg); }
+  .mem-btn { width:100%; text-align:center; font-size:var(--t-sm); line-height:1.5; }
+
+  .msg { padding:var(--s-3) var(--s-4); }
+  .msg.is-user + .msg { padding-top:0; }
+  .msg.is-user:not(:first-child) { border-top:1px solid var(--line); }
+  .msg-head {
+    margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .msg.is-user .msg-text {
+    margin:var(--s-2) 0 0; padding:var(--s-1) 0 var(--s-1) var(--s-3);
+    border-left:2px solid var(--line-ctl);
+    color:var(--fg-mut); font-size:var(--t-sm); line-height:1.5;
+    max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .msg.is-agent .msg-text {
+    margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5;
+    max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .msg.is-error .msg-text { color:var(--fg); }
+  .msg.is-error .mark { color:var(--danger); font-weight:600; margin-right:var(--s-1); }
+  .warned { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; font-weight:600; }
+  .warned .mark { margin-right:var(--s-1); }
+  .sum {
+    margin:var(--s-3) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .sum + .sum { margin-top:var(--s-1); }
+  .msg .params-d { margin-top:var(--s-3); }
+  .msg .params-d > summary {
+    list-style:none; cursor:pointer; display:flex; align-items:center; gap:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  .msg .params-d > summary::-webkit-details-marker { display:none; }
+  .msg .params-d > summary::before { content:"▸"; }
+  .msg .params-d[open] > summary::before { content:"▾"; }
+  .msg .params-d > summary:hover { color:var(--fg); }
+  .msg .params-d > summary:active { background:var(--bg); }
+
+  /* Карточка вопроса о теме — ряд действий под текстом обычной реплики агента:
+     она узел дерева и часть рабочей памяти, а не отдельный блок раскладки. */
+  .ask-row { display:flex; flex-wrap:wrap; gap:var(--s-2); margin:var(--s-3) 0 0; }
+  .ask-note { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch; }
+  .ask-done { margin:var(--s-3) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+
+  /* Карточка выбора темы над пустым логом: живёт внутри прокручиваемого лога,
+     постоянной высоты не занимает и исчезает с первым сообщением. */
+  .topic-pick { padding:var(--s-3) var(--s-4); border-bottom:1px solid var(--line); }
+  .topic-pick-h { margin:0; font-size:var(--t-sm); line-height:1.5; }
+  .topic-pick .hint { display:block; margin-top:var(--s-2); font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch; }
+
+  .fold {
+    padding:var(--s-2) var(--s-4); background:var(--bg);
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  }
+  .fold + .msg.is-user { border-top:0; }
+  .fold summary {
+    list-style:none; cursor:pointer; display:flex; align-items:baseline; gap:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .fold summary::-webkit-details-marker { display:none; }
+  .fold summary::before { content:"▸"; }
+  .fold details[open] > summary::before { content:"▾"; }
+  .fold summary:hover { color:var(--fg); }
+  .fold summary:active { background:var(--surface); }
+  .fold-text {
+    margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg);
+    max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+
+  /* Строка значений настроек между логом и композитором: панели в колонке
+     больше нет, она переехала в окно по плавающей кнопке. */
+  .params-values {
+    margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums; overflow-wrap:anywhere;
+  }
+
+  .composer { display:flex; flex-direction:column; gap:var(--s-2); }
+  .composer textarea::placeholder { color:var(--fg-mut); opacity:1; }
+  .composer .submit { margin-top:0; flex:none; }
+  .submit-row { display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap; }
+  .submit-row .hint {
+    margin:0; max-width:52ch;
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  .edit-bar {
+    display:flex; align-items:center; gap:var(--s-3); margin:0;
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+
+  .tag {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:var(--s-1) var(--s-2);
+    font-variant-numeric:tabular-nums;
+  }
+  .mon-empty, .empty {
+    margin:0; padding:var(--s-3) var(--s-4); color:var(--fg-mut);
+    font-size:var(--t-sm); line-height:1.5; max-width:52ch;
+  }
+
+  .right { display:flex; flex-direction:column; gap:var(--s-5); }
+  .monitor { display:flex; flex-direction:column; gap:var(--s-3); }
+
+  footer {
+    margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
+    color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; max-width:52ch;
+  }
+  footer a {
+    color:var(--fg); text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em;
+  }
+  footer a:hover { text-decoration-color:var(--fg); }
+  footer a:active { opacity:.7; }
+
+  .vh {
+    position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden;
+    clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; border:0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation:none !important; transition:none !important; }
+    button:active { transform:none; }
+    .float:active { transform:translateY(-50%); }
+  }
+</style>
+<style>
+  /* Выбор модели: радиогруппа, а не выпадающий список — вариантов четыре,
+     и все должны быть видны сразу, вместе с пометкой поставщика. */
+  .models { display:flex; flex-direction:column; gap:var(--s-2); margin:var(--s-2) 0 0; }
+  .model {
+    display:flex; align-items:baseline; gap:var(--s-2);
+    padding:var(--s-2) var(--s-3); border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm); background:var(--surface); cursor:pointer;
+  }
+  .model:hover { border-color:var(--fg-mut); }
+  .model:has(input:focus-visible) { outline:2px solid var(--acc); outline-offset:-2px; }
+  .model:has(input:checked) { border-color:var(--acc); }
+  .model input { width:auto; margin:0; accent-color:var(--acc); }
+  .model-name { font-size:var(--t-sm); line-height:1.5; }
+  .model-note {
+    margin-left:auto; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    border:1px solid var(--line); border-radius:var(--r-full); padding:0 var(--s-2);
+  }
+
+  /* Монитор агента: панель → запуски → события → раскрытие. */
+  .panel {
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+    font-size:var(--t-sm); line-height:1.5;
+  }
+  .runs, .events { list-style:none; margin:0; padding:0; }
+  .run + .run { border-top:1px solid var(--line); }
+  .run-s, .ev-s { list-style:none; cursor:pointer; }
+  .run-s::-webkit-details-marker, .ev-s::-webkit-details-marker { display:none; }
+  .run-s:hover, .run-s:active, .ev-s:hover, .ev-s:active { background:var(--bg); }
+  .run-s:focus-visible, .ev-s:focus-visible { outline-offset:-2px; }
+
+  .run-s { display:flex; align-items:baseline; gap:var(--s-2); padding:var(--s-2) var(--s-3); }
+  .run-s::before { content:"▸"; font-size:var(--t-xs); flex:none; }
+  .run-d[open] > .run-s::before { content:"▾"; }
+  .run-name {
+    font-weight:600; flex:0 0 auto; max-width:45%;
+    white-space:normal; overflow-wrap:anywhere;
+  }
+  .run-status { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+                color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .run.is-failed .run-status { color:var(--danger); }
+  .run-time {
+    margin-left:auto; flex:none; font-size:var(--t-xs); color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+
+  .ev-s {
+    display:grid; grid-template-columns:var(--s-4) 1fr auto; column-gap:var(--s-2);
+    padding:var(--s-2) var(--s-3) var(--s-2) var(--s-5);
+  }
+  .ev-mark { text-align:center; }
+  .ev-title { overflow-wrap:anywhere; }
+  .ev-dur { color:var(--fg-mut); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  .ev-detail {
+    grid-column:2; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .ev-detail:empty { display:none; }
+  .ev.is-warn .ev-mark, .ev.is-warn .ev-title { font-weight:600; }
+  .ev.is-error .ev-mark, .ev.is-error .ev-title { font-weight:600; color:var(--danger); }
+
+  .ev-dl {
+    margin:0; padding:var(--s-2) var(--s-3) var(--s-3) var(--s-5); background:var(--bg);
+    display:grid; grid-template-columns:auto 1fr; gap:var(--s-1) var(--s-3);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  .ev-dl dt, .ev-dl dd { margin:0; }
+  .ev-dl dd { max-width:68ch; white-space:pre-wrap; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+
+  /* Окна: нативный dialog, без тени — подложка уже отделяет. */
+  dialog {
+    width:min(44rem, 100% - 2 * var(--s-4)); max-height:calc(100dvh - 2 * var(--s-6));
+    padding:var(--s-5); margin:auto; color:var(--fg); background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--r-md);
+    display:none; flex-direction:column; gap:var(--s-4);
+  }
+  dialog[open] { display:flex; }
+  dialog::backdrop { background:var(--overlay); }
+  #set-dlg { width:min(34rem, 100% - 2 * var(--s-4)); max-height:80dvh; }
+  #mem-dlg { width:min(40rem, 100% - 2 * var(--s-4)); max-height:80dvh; }
+  .dlg-head { display:flex; align-items:baseline; gap:var(--s-2); }
+  .dlg-name { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; min-width:0; overflow-wrap:anywhere; }
+  .dlg-head .tag { align-self:center; }
+  .dlg-purpose { margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch; }
+  .dlg-note { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .icon-btn {
+    flex:none; width:var(--s-6); height:var(--s-6); padding:0; margin-left:auto;
+    display:inline-flex; align-items:center; justify-content:center;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm); font-weight:400; line-height:1;
+  }
+  .icon-btn:hover { color:var(--fg); background:var(--bg); filter:none; }
+  .icon-btn svg { width:1rem; height:1rem; stroke:currentColor; fill:none;
+                  stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  .dlg-actions { display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap; }
+  .dlg-btn {
+    padding:var(--s-2) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
+    color:var(--fg); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-sm);
+  }
+  .dlg-btn:hover { background:var(--bg); filter:none; }
+  .dlg-btn:active { background:var(--bg); transform:translateY(1px); }
+  .dlg-btn.is-second { color:var(--fg-mut); }
+  .dlg-btn.is-second:hover { color:var(--fg); }
+  .dlg-btn.is-danger { color:var(--danger); }
+  .dlg-msg { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); flex:1; min-width:0; }
+  .prompt {
+    display:block; width:100%; margin:0; padding:var(--s-3) var(--s-4);
+    min-height:calc(3 * var(--s-6)); overflow-y:auto; resize:vertical;
+    font:var(--t-sm)/1.5 ui-monospace, monospace; color:var(--fg); overflow-wrap:anywhere;
+    background:var(--bg); border:1px solid var(--line-ctl); border-radius:var(--r-sm);
+  }
+  .prompt:hover { border-color:var(--fg-mut); }
+  .prompt[disabled] { opacity:.5; }
+
+  /* Тело окна настроек прокручивается, шапка и подвал — нет. */
+  .params-body { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+  .params-body .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
+  .params-body .name {
+    display:flex; justify-content:space-between; align-items:baseline;
+    gap:var(--s-2); margin-bottom:var(--s-2);
+  }
+  .params-body .hint {
+    display:block; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4;
+    margin-top:var(--s-1); max-width:52ch; font-variant-numeric:tabular-nums;
+  }
+  .params-body .name .num { color:var(--fg-mut); }
+  input[type=range] {
+    display:block; width:100%; height:var(--s-5); margin:0; cursor:pointer;
+    accent-color:var(--acc); padding:0; border:0; background:transparent;
+  }
+  input[type=range]:hover { border:0; filter:brightness(1.08); }
+
+  /* Ряд чипов: вариантов немного, и все видны сразу. Родная радиогруппа даёт
+     клавиатуре одну остановку Tab и выбор стрелками. */
+  .strategies { display:flex; flex-wrap:wrap; gap:var(--s-2); margin:var(--s-2) 0 0; }
+  .strategy {
+    display:flex; align-items:center; gap:var(--s-2);
+    padding:var(--s-1) var(--s-3); border:1px solid var(--line-ctl);
+    border-radius:var(--r-full); background:var(--surface); cursor:pointer;
+    font-size:var(--t-sm); line-height:1.5;
+  }
+  .strategy:hover { border-color:var(--fg-mut); }
+  .strategy:has(input:focus-visible) { outline:2px solid var(--acc); outline-offset:-2px; }
+  .strategy:has(input:checked) { border-color:var(--acc); }
+  .strategy input { width:auto; margin:0; accent-color:var(--acc); }
+  .na { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-weight:400; }
+
+  /* Ряд действий под своим сообщением — только в режиме «Ветки». */
+  .msg-actions {
+    display:flex; align-items:center; gap:var(--s-3); margin:var(--s-2) 0 0;
+    font-size:var(--t-xs); line-height:1.4;
+  }
+  .msg-btn {
+    padding:0 var(--s-2); font-size:var(--t-xs); line-height:1.6; font-weight:400;
+    color:var(--fg-mut); background:transparent; border:1px solid var(--line-ctl);
+    border-radius:var(--r-full);
+  }
+  .msg-btn:hover { color:var(--fg); filter:none; }
+  .msg-btn:active { background:var(--bg); }
+  .nav { margin-left:auto; display:flex; align-items:center; gap:var(--s-2); }
+  .nav-count { color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+
+  .br-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:var(--s-2); }
+  .br-row {
+    display:block; width:100%; text-align:left;
+    padding:var(--s-2) var(--s-3); font-size:var(--t-sm); line-height:1.5; font-weight:400;
+    color:var(--fg); background:transparent; border:1px solid var(--line);
+    border-radius:var(--r-sm); font-variant-numeric:tabular-nums;
+  }
+  .br-row:hover { background:var(--bg); filter:none; }
+  .br-row:active { background:var(--bg); transform:translateY(1px); }
+  .br-row[disabled] { background:var(--bg); }
+
+  /* --- окно памяти профиля --- */
+  .mem-body { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+  .mem-sec + .mem-sec { margin-top:var(--s-5); padding-top:var(--s-5); border-top:1px solid var(--line); }
+  .mem-h { margin:0; font-size:var(--t-sm); line-height:1.5; font-weight:600;
+           text-transform:none; letter-spacing:normal; color:var(--fg); }
+  /* Подпись «кому принадлежит и когда исчезнет» — обязательная часть раздела:
+     она описывает устройство и видна даже в пустом окне. */
+  .mem-own { margin:var(--s-1) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch; }
+  .mem-sub { margin:var(--s-4) 0 var(--s-2); font-size:var(--t-xs); line-height:1.4;
+             text-transform:uppercase; letter-spacing:.06em; color:var(--fg-mut); }
+  .mem-count { display:flex; align-items:center; gap:var(--s-2); flex-wrap:wrap;
+               margin:0 0 var(--s-2); font-size:var(--t-xs); line-height:1.4;
+               color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  /* Два слоя персонализации различаются подзаголовком и поверхностью, не цветом. */
+  .mem-panel {
+    margin:0; padding:var(--s-2) var(--s-3); font-size:var(--t-sm); line-height:1.5;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-sm);
+    overflow-wrap:anywhere; font-variant-numeric:tabular-nums;
+  }
+  .mem-list { list-style:none; margin:0; padding:0; border:1px solid var(--line); border-radius:var(--r-sm); }
+  .mem-item { padding:var(--s-2) var(--s-3); background:var(--bg); font-size:var(--t-sm); line-height:1.5; }
+  .mem-item + .mem-item { border-top:1px solid var(--line); }
+  .mem-item .when { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+                    font-variant-numeric:tabular-nums; }
+  .mem-text { overflow-wrap:anywhere; }
+  .mem-empty { margin:0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch; }
+  .mem-note { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch; }
+  /* Строка-скелет загрузки: та же высота, что у строки списка, без обещания
+     содержимого. */
+  .skel { height:var(--s-5); margin-bottom:var(--s-2); background:var(--bg);
+          border:1px solid var(--line); border-radius:var(--r-sm); }
+</style>
+</head>
+<body>
+
+<!-- Экран выбора профиля: показывается при каждом заходе, до всего остального. -->
+<section class="gate" id="gate" aria-labelledby="gate-h">
+  <h1 id="gate-h">Агент со слоями памяти</h1>
+  <p class="sub">Агент помнит вас между диалогами: правила работы с вами, факты по темам
+  и текущий разговор.</p>
+
+  <p class="notice"><span class="mark" aria-hidden="true">!</span><span>Профили открыты:
+  любой посетитель может выбрать, читать, пополнять и удалить любой профиль. Не записывайте
+  сюда то, что не должны видеть другие.</span></p>
+
+  <div>
+    <div class="gate-head">
+      <h2 id="gate-list-h">Профили</h2>
+      <span class="gate-count" id="gate-count"></span>
+    </div>
+    <p class="mem-empty" id="gate-msg" hidden></p>
+    <ul class="pro-list" id="pro-list" aria-labelledby="gate-list-h"></ul>
+    <p class="dlg-actions" id="gate-retry-row" hidden>
+      <button class="dlg-btn" id="gate-retry" type="button">Повторить</button>
+    </p>
+  </div>
+
+  <form class="gate-form" id="gate-form">
+    <div class="gate-row">
+      <label class="field grow">
+        <span class="name">Имя профиля</span>
+        <input id="pro-name" type="text" maxlength="40" autocomplete="off"
+               aria-describedby="pro-name-hint">
+      </label>
+      <button class="submit" id="pro-create" type="submit">Создать профиль</button>
+    </div>
+    <p class="gate-note" id="pro-name-hint">1–40 знаков. Имя — метка, а не пароль:
+    оно ничего не защищает.</p>
+    <p class="warned" id="gate-full" hidden><span class="mark" aria-hidden="true">!</span><span
+      class="vh">Предупреждение: </span>Мест нет: пять профилей — выберите существующий.</p>
+  </form>
+
+  <p class="gate-note" id="gate-ttl">Профиль и его память — правила и факты — живут 30 дней
+  с последнего действия в нём; переписка — 30 часов.</p>
+</section>
+
+<div class="layout" id="layout" hidden>
+
+  <main class="col chat-col">
+    <!-- Первым элементом колонки: с клавиатуры кнопка достижима первой на
+         любой ширине, и это единственный вход в окно настроек. -->
+    <button class="float" id="set-btn" type="button" aria-label="Настройки агента">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+    </button>
+
+    <div class="head-row">
+      <h1>Агент со слоями памяти</h1>
+      <span class="pid" id="pid"><span class="pid-label">Профиль:</span><span
+        class="pid-name" id="pid-name"></span><button class="clear" id="switch-profile"
+        type="button">сменить профиль</button></span>
+    </div>
+    <p class="sub">Вы переписываетесь с агентом, который помнит правила работы с вами, факты
+    по темам этого профиля и текущий разговор. Ход каждого запуска виден в мониторе.
+    <button class="about" id="about" type="button" disabled>Об агенте</button></p>
+
+    <section class="chat" aria-labelledby="chat-h">
+      <div class="feed-head">
+        <h2 id="chat-h">Диалог</h2>
+        <span class="topic-line" id="topic-line" hidden><span>тема:</span><span
+          class="topic-name" id="topic-name"></span><button class="clear" id="topic-btn"
+          type="button">сменить</button></span>
+        <button class="clear head-gap" id="ses-btn" type="button"
+                aria-label="Показать диалоги профиля">диалоги: 0</button>
+        <button class="clear" id="clear" type="button" disabled
+                aria-label="Очистить переписку и начать новую">очистить</button>
+        <!-- Разделители со скрытой запятой: без неё скринридер читает числа
+             одной фразой. Живой областью строка не делается. -->
+        <p class="meters" id="meters" hidden><span class="part" id="ctx" hidden></span><span
+          id="meters-sep" hidden><span aria-hidden="true"> · </span><span class="vh">, </span></span><span
+          class="part" id="spent" hidden></span></p>
+      </div>
+      <p class="restored" id="restored" hidden></p>
+
+      <ol class="log" id="log">
+        <li class="empty" id="empty">Переписки пока нет. Напишите сообщение — агент ответит,
+        помня правила и факты этого профиля.</li>
+      </ol>
+
+      <p class="params-values" id="params-sum"></p>
+
+      <form id="f" class="composer">
+        <p class="edit-bar" id="edit-bar" hidden><span id="edit-what"></span><button
+          class="msg-btn" id="edit-cancel" type="button">отменить</button></p>
+        <textarea id="p-prompt" rows="3" maxlength="2000" aria-label="Сообщение агенту" required
+          placeholder="Например: помоги разобрать, что мы знаем по этой теме"></textarea>
+        <div class="submit-row">
+          <button id="go" type="submit" class="submit">Спросить</button>
+          <p class="hint" id="composer-hint">Ctrl + Enter — отправить.</p>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <div class="col right">
+    <button class="clear mem-btn" id="mem-btn" type="button">Память профиля</button>
+
+    <section class="monitor" aria-labelledby="mon-h">
+      <h2 id="mon-h">Монитор агента</h2>
+      <div class="panel" id="panel">
+        <p class="mon-empty" id="mon-empty">Здесь по ходу запроса появляются события агента:
+        вспомнил профиль, спросил модель, пополнил память, решил судьбу темы.
+        Только ваши запросы из этого браузера; после перезагрузки страницы список пуст.</p>
+        <ol class="runs" id="runs"></ol>
+      </div>
+      <!-- Список событий не живой: десять событий за шесть секунд читались бы
+           дольше запуска. Объявляются только статусы запуска и ошибки. -->
+      <div class="vh" id="live" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="vh" id="alert" role="alert"></div>
+    </section>
+
+    <footer>
+      Профиль открыт: любой посетитель может выбрать его, читать и пополнять его память и
+      удалить его целиком. <span id="ttl-note">Правила и факты профиля хранятся 30 дней
+      с последнего действия в нём — чьего угодно; переписка — 30 часов</span> и удаляется
+      кнопкой «очистить». Правила и факты записывает Claude Haiku 4.5 из ваших диалогов:
+      они <strong>не проверены</strong>, и у факта стоит дата записи и имя диалога, а не
+      издание. Архива статей и белого списка ссылок у этого агента нет —
+      <strong>ссылки и числа в его ответах ничем не подтверждены</strong>. События монитора
+      живут до перезагрузки страницы.
+      Вопросы: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
+    </footer>
+  </div>
+
+</div>
+
+<dialog id="ask-del" aria-labelledby="ask-del-h" tabindex="-1">
+  <p class="dlg-name" id="ask-del-h">Удалить профиль?</p>
+  <p class="dlg-purpose">Будут удалены настройки, правила, темы, факты и все диалоги этого
+  профиля — у всех, кто им пользуется. Вернуть будет нельзя.</p>
+  <div class="dlg-actions">
+    <button class="dlg-btn is-danger" id="ask-del-yes" type="button">Удалить</button>
+    <button class="dlg-btn is-second" id="ask-del-no" type="button">Отмена</button>
+    <span class="dlg-msg" id="ask-del-note" role="status"></span>
+  </div>
+</dialog>
+
+<dialog id="ask-clear" aria-labelledby="ask-clear-h" tabindex="-1">
+  <p class="dlg-name" id="ask-clear-h">Очистить переписку?</p>
+  <p class="dlg-purpose">Переписка, её сводка и факты стратегии будут удалены, начнётся
+  новая сессия. Правила и темы профиля останутся.</p>
+  <div class="dlg-actions">
+    <button class="dlg-btn is-danger" id="ask-clear-yes" type="button">Очистить</button>
+    <button class="dlg-btn is-second" id="ask-clear-no" type="button">Отмена</button>
+  </div>
+</dialog>
+
+<dialog id="ses-dlg" aria-labelledby="ses-h" tabindex="-1">
+  <div class="dlg-head">
+    <p class="dlg-name" id="ses-h">Диалоги профиля</p>
+    <button class="icon-btn" id="ses-close" type="button" aria-label="Закрыть">×</button>
+  </div>
+  <p class="mem-empty" id="ses-msg" hidden></p>
+  <ul class="br-list" id="ses-list"></ul>
+  <div class="dlg-actions">
+    <span class="dlg-note" id="ses-count"></span>
+    <button class="dlg-btn" id="ses-new" type="button">Новый диалог</button>
+  </div>
+  <p class="warned" id="ses-full" hidden><span class="mark" aria-hidden="true">!</span><span
+    class="vh">Предупреждение: </span>Диалогов больше не создать: 20 из 20. Очистите или
+  дождитесь, пока старые уйдут по сроку.</p>
+</dialog>
+
+<dialog id="topic-dlg" aria-labelledby="topic-h" tabindex="-1">
+  <div class="dlg-head">
+    <p class="dlg-name" id="topic-h">Тема диалога</p>
+    <button class="icon-btn" id="topic-close" type="button" aria-label="Закрыть">×</button>
+  </div>
+  <fieldset class="field" id="topic-set" style="border:0;padding:0;margin:0;">
+    <legend class="vh">Тема</legend>
+    <div class="strategies" id="topic-options"></div>
+  </fieldset>
+  <p class="mem-empty" id="topic-none" hidden>Тем пока нет — агент предложит первую, когда
+  поймёт предмет разговора.</p>
+  <div class="dlg-actions">
+    <button class="dlg-btn" id="topic-go" type="button">Начать диалог</button>
+    <span class="dlg-msg" id="topic-note" role="status"></span>
+  </div>
+</dialog>
+
+<dialog id="set-dlg" aria-labelledby="set-h" tabindex="-1">
+  <div class="dlg-head">
+    <p class="dlg-name" id="set-h">Настройки агента</p>
+    <button class="icon-btn" id="set-close" type="button" aria-label="Закрыть">×</button>
+  </div>
+  <p class="dlg-note" id="set-state">Умолчания агента. Меняются только для этого профиля.</p>
+  <p class="warned" id="set-error" hidden></p>
+  <div class="dlg-actions" id="set-retry-row" hidden>
+    <button class="dlg-btn" id="set-retry" type="button">Повторить</button>
+  </div>
+
+  <div class="params-body" id="set-body">
+    <fieldset class="field" style="border:0;padding:0;margin:0 0 var(--s-5);">
+      <legend class="name" style="padding:0;">Стратегия памяти</legend>
+      <div class="strategies">
+        <label class="strategy"><input type="radio" name="strategy" value="summary"
+          checked><span>Сводка при пороге</span></label>
+        <label class="strategy"><input type="radio" name="strategy" value="window"><span>Скользящее окно</span></label>
+        <label class="strategy"><input type="radio" name="strategy" value="facts"><span>Липкие факты</span></label>
+        <label class="strategy"><input type="radio" name="strategy" value="branches"><span>Ветки</span></label>
+      </div>
+      <span class="hint">Чем агент помнит текущий разговор. Смена действует со следующего
+      сообщения и переписку не удаляет. Правила и факты профиля она не трогает.</span>
+      <!-- Единственное объявление смены стратегии: неприменимыми становятся до
+           трёх полей сразу, и три живые области подряд читались бы как три события. -->
+      <span class="hint" id="strategy-live" role="status"></span>
+    </fieldset>
+
+    <fieldset class="field" style="border:0;padding:0;margin:0 0 var(--s-5);">
+      <legend class="name" style="padding:0;">Модель</legend>
+      <div class="models" id="models"></div>
+      <span class="hint">Выбирается до запуска. Агент спрашивает именно её; подмены на
+      другую при отказе не будет. Память профиля пополняет Claude Haiku 4.5 — при любой
+      модели чата.</span>
+    </fieldset>
+
+    <label class="field">
+      <span class="name">Размер контекста<span class="na" id="p-context-na" hidden>не применяется</span></span>
+      <input id="p-context" class="num" type="number" min="0" max="8000" step="100"
+             value="3000" inputmode="numeric" aria-describedby="p-context-live">
+      <span class="hint">Сколько токенов переписки уходит модели: сводка и свежие реплики
+      (0–8000). Правила и факты темы идут сверх этого числа.</span>
+      <span class="hint" id="p-context-live" role="status"></span>
+      <span class="hint" id="p-context-why" hidden></span>
+    </label>
+
+    <label class="field">
+      <span class="name">Порог сжатия<span class="na" id="p-summarize-na" hidden>не применяется</span></span>
+      <input id="p-summarize-at" class="num" type="number" min="500" max="8000" step="100"
+             value="2000" inputmode="numeric" aria-describedby="p-summarize-live">
+      <span class="hint">Когда реплики после последней сводки наберут столько токенов, агент
+      сожмёт их вместе с прежней сводкой (500–8000, меньше размера контекста). Сжимает
+      всегда Claude Haiku 4.5.</span>
+      <span class="hint" id="p-summarize-live" role="status"></span>
+      <span class="hint" id="p-summarize-why" hidden></span>
+    </label>
+
+    <label class="field">
+      <span class="name">Последние реплики (M)<span class="na" id="p-window-na" hidden>не применяется</span></span>
+      <input id="p-window" class="num" type="number" min="1" max="40" step="1"
+             value="10" inputmode="numeric" aria-describedby="p-window-live">
+      <span class="hint">Сколько последних реплик диалога уходит модели целиком (1–40).
+      Реплика — одно сообщение, ваше или агента.</span>
+      <span class="hint" id="p-window-live" role="status"></span>
+      <span class="hint" id="p-window-why" hidden></span>
+    </label>
+
+    <label class="field">
+      <span class="name">Лимит фактов<span class="na" id="p-facts-na" hidden>не применяется</span></span>
+      <input id="p-facts-tokens" class="num" type="number" min="200" max="2000" step="100"
+             value="600" inputmode="numeric" aria-describedby="p-facts-live">
+      <span class="hint">Сколько токенов отводится на выжимку фактов текущего разговора
+      (200–2000). Это факты стратегии, они живут в диалоге, а не в теме профиля.</span>
+      <span class="hint" id="p-facts-live" role="status"></span>
+      <span class="hint" id="p-facts-why" hidden></span>
+    </label>
+
+    <label class="field">
+      <span class="name">Температура <output class="num" id="p-temp-out" aria-hidden="true">1.0</output></span>
+      <input id="p-temp" type="range" min="0" max="1" step="0.1" value="1" aria-label="Температура">
+      <span class="hint">0 — предсказуемо и сухо, 1 — свободнее и разнообразнее. Шаг 0.1.
+      При единице параметр не отправляется вовсе: часть моделей принимает только своё
+      умолчание.</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Лимит ответа</span>
+      <input id="p-max-tokens" class="num" type="number" min="1" max="2048" value="1024"
+             inputmode="numeric">
+      <span class="hint">Сколько токенов отводится на ответ (1–2048).</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Условие завершения ответа</span>
+      <textarea id="p-stop" rows="2" maxlength="400"
+        placeholder="слово или фраза; при появлении в ответе генерация остановится"></textarea>
+      <span class="hint">До 4 стоп-последовательностей, по одной на строку.</span>
+    </label>
+
+    <label class="field">
+      <span class="name">Свой системный промпт</span>
+      <textarea class="prompt" id="p-system" rows="6" maxlength="4000"></textarea>
+      <span class="hint">Заменяет промпт агента для этого профиля — у всех, кто его выберет.
+      Пусто — промпт из реестра.</span>
+    </label>
+  </div>
+</dialog>
+
+<dialog id="mem-dlg" aria-labelledby="mem-h" tabindex="-1">
+  <div class="dlg-head">
+    <p class="dlg-name" id="mem-h">Память профиля</p>
+    <button class="icon-btn" id="mem-close" type="button" aria-label="Закрыть">×</button>
+  </div>
+  <p class="warned" id="mem-error" hidden></p>
+  <div class="dlg-actions" id="mem-retry-row" hidden>
+    <button class="dlg-btn" id="mem-retry" type="button">Повторить</button>
+  </div>
+  <div class="mem-body" id="mem-body">
+    <section class="mem-sec" aria-labelledby="mem-p-h">
+      <h2 class="mem-h" id="mem-p-h">Память персонализации</h2>
+      <p class="mem-own">Профиль. Настройки заданы вами; правила записывает Haiku 4.5 из
+      диалогов, они не проверены, и агент обязан им следовать. 30 дней с последнего действия
+      в профиле — любого посетителя.</p>
+      <div id="mem-person"></div>
+    </section>
+    <section class="mem-sec" aria-labelledby="mem-f-h">
+      <h2 class="mem-h" id="mem-f-h">Память фактов по темам</h2>
+      <p class="mem-own">Профиль. Факты записаны моделью из ваших диалогов и не проверены —
+      источник факта всегда диалог, не издание. Тема переживёт этот диалог; удаляется
+      с профилем.</p>
+      <div id="mem-facts"></div>
+    </section>
+    <section class="mem-sec" aria-labelledby="mem-w-h">
+      <h2 class="mem-h" id="mem-w-h">Рабочая память — текущий диалог</h2>
+      <p class="mem-own">Сессия. 30 часов без сообщений или «очистить»; правила и факты при
+      этом остаются.</p>
+      <div id="mem-work"></div>
+    </section>
+  </div>
+</dialog>
+
+<dialog id="dlg" aria-labelledby="dlg-name" tabindex="-1">
+  <div class="dlg-head">
+    <p class="dlg-name" id="dlg-name">Агент</p>
+    <span class="tag" id="dlg-version" hidden></span>
+    <button class="icon-btn" id="dlg-close" type="button" aria-label="Закрыть">×</button>
+  </div>
+  <p class="dlg-purpose" id="dlg-purpose"></p>
+  <div class="dlg-actions" id="dlg-row" hidden>
+    <h2>Системный промпт агента</h2>
+    <span class="dlg-note" id="dlg-state"></span>
+  </div>
+  <textarea class="prompt" id="dlg-prompt" rows="6" readonly
+    aria-label="Системный промпт агента" hidden></textarea>
+  <p class="dlg-purpose" id="dlg-nopr" hidden>Системный промпт недоступен</p>
+  <p class="gate-note">Свой промпт для этого профиля задаётся в окне настроек — он заменяет
+  этот текст у всех, кто выберет профиль.</p>
+</dialog>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const form = $('f'), input = $('p-prompt'), button = $('go');
+  const log = $('log'), empty = $('empty');
+  const runsList = $('runs'), monEmpty = $('mon-empty');
+  const live = $('live'), alertBox = $('alert');
+
+  /* ---------- общее ---------- */
+
+  const announce = (text) => { live.textContent = ''; live.textContent = text; };
+  const shout = (text) => { alertBox.textContent = ''; alertBox.textContent = text; };
+
+  const fmtInt = (n) => Number(n).toLocaleString('ru-RU');
+  const fmtTime = (iso) =>
+    new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const fmtDate = (iso) =>
+    new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+  const fmtStamp = (iso) =>
+    `${fmtDate(iso)} ${new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
+  const plural = (n, one, few, many) => {
+    const a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return many;
+    if (b > 1 && b < 5) return few;
+    if (b === 1) return one;
+    return many;
+  };
+  const fmtDuration = (ms) => {
+    if (ms === null || ms === undefined || !Number.isFinite(ms)) return '';
+    if (ms < 1000) return `${Math.round(ms)} мс`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)} с`;
+    const m = Math.floor(ms / 60_000);
+    return `${m} мин ${Math.round((ms - m * 60_000) / 1000)} с`;
+  };
+
+  /**
+   * Относительное время активности. Точное время захода постороннего — лишняя
+   * подробность о человеке, а для выбора профиля хватает порядка.
+   */
+  const fmtAgo = (ms) => {
+    if (!Number.isFinite(ms)) return 'время неизвестно';
+    const diff = Math.max(0, Date.now() - ms);
+    const min = Math.floor(diff / 60_000);
+    if (min < 1) return 'только что';
+    if (min < 60) return `${min} ${plural(min, 'минуту', 'минуты', 'минут')} назад`;
+    const hours = Math.floor(min / 60);
+    if (hours < 24) return `${hours} ${plural(hours, 'час', 'часа', 'часов')} назад`;
+    const days = Math.floor(hours / 24);
+    if (days === 1) return 'вчера';
+    return `${days} ${plural(days, 'день', 'дня', 'дней')} назад`;
+  };
+
+  /** Видимая строка предупреждения: маркер и начертание, префикс для скринридера. */
+  const warnLine = (text) => {
+    const warn = document.createElement('p');
+    warn.className = 'warned';
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = '!';
+    const prefix = document.createElement('span');
+    prefix.className = 'vh';
+    prefix.textContent = 'Предупреждение: ';
+    warn.append(mark, prefix, text);
+    return warn;
+  };
+
+  const say = (el, text) => {
+    el.hidden = !text;
+    el.textContent = text ?? '';
+  };
+
+  /** Запрос к своему серверу: отказ приходит его словами, а не кодом. */
+  const api = async (path, options) => {
+    const r = await fetch(path, options);
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const error = new Error(body.error ?? `ответ ${r.status}`);
+      error.status = r.status;
+      error.code = body.code;
+      throw error;
+    }
+    return body;
+  };
+  const postJson = (body) => ({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  /* ---------- состояние страницы ---------- */
+
+  let models = [];
+  let defaults = {};
+  let limits = {};
+  let agentInfo = null;
+  let ttlHours = null;
+  let ttlDays = null;
+
+  /** Профиль со всей памятью: { id, name, settings, rules, topics, sessions, sessionCap }. */
+  let profile = null;
+  let profileCap = null;
+  let profileList = [];
+  let currentProfileId = null;
+
+  // Переписка живёт у агента: страница её показывает, но не хранит.
+  let messages = [];
+  let restoredFromServer = false;
+  let spentTokens = null;
+  let summaryState = null;
+  let factsState = null;
+  let contextState = null;
+  let headId = null;
+  let activeTopic = null;    // { id, title } или null
+  let pendingTopic = null;   // { title, facts } или null
+  let sessionName = null;    // имя живого диалога или null — диалога ещё нет
+  let foldOpen = false;
+  let factsOpen = false;
+  let editing = false;
+  let editParent = null;
+  let editFrom = null;
+  let branchWarn = null;
+  let askWarn = null;        // отказ кнопки карточки темы
+  /** Тема, выбранная в карточке над пустым логом: уйдёт с первым сообщением. */
+  let pickedTopicId = null;
+
+  /* ---------- экран выбора профиля ---------- */
+
+  const gate = $('gate'), layout = $('layout');
+
+  const gateSkeletons = () => {
+    const box = $('pro-list');
+    box.replaceChildren();
+    box.setAttribute('aria-busy', 'true');
+    for (let i = 0; i < 3; i++) {
+      const li = document.createElement('li');
+      const skel = document.createElement('p');
+      skel.className = 'skel';
+      li.append(skel);
+      box.append(li);
+    }
+  };
+
+  const renderGate = ({ focus = false } = {}) => {
+    const box = $('pro-list');
+    box.replaceChildren();
+    box.removeAttribute('aria-busy');
+    const full = profileCap !== null && profileList.length >= profileCap;
+    $('gate-count').textContent =
+      profileCap === null ? '' : `${profileList.length} из ${profileCap} мест`;
+    say($('gate-msg'), profileList.length === 0
+      ? 'Профилей пока нет. Создайте первый — он будет открыт всем.'
+      : '');
+    $('gate-full').hidden = !full;
+    $('pro-name').disabled = full;
+    $('pro-create').disabled = full;
+
+    for (const p of profileList) {
+      const li = document.createElement('li');
+      li.className = 'pro-row';
+
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'pro-pick';
+      const name = document.createElement('span');
+      name.className = 'pro-name';
+      const title = document.createElement('span');
+      title.className = 'pro-title';
+      title.textContent = p.name;
+      title.title = p.name;
+      name.append(title);
+      // Профиль из cookie помечен словом, а не только фоном: цвет не
+      // единственный носитель смысла.
+      if (p.id === currentProfileId) {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = 'в прошлый раз';
+        name.append(chip);
+      }
+      const when = document.createElement('span');
+      when.className = 'pro-when';
+      const n = p.sessions ?? 0;
+      when.textContent =
+        `активен ${fmtAgo(p.lastSeenAt)} · ${n} ${plural(n, 'диалог', 'диалога', 'диалогов')}`;
+      pick.append(name, when);
+      pick.onclick = () => selectProfile(p.id);
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'clear pro-del';
+      del.textContent = 'удалить';
+      del.setAttribute('aria-label', `Удалить профиль «${p.name}»`);
+      del.onclick = () => askDelete(p);
+
+      li.append(pick, del);
+      box.append(li);
+    }
+
+    if (focus) {
+      const first = box.querySelector('.pro-pick');
+      if (first) first.focus();
+      else if (!full) $('pro-name').focus();
+    }
+  };
+
+  const loadProfiles = async ({ focus = false } = {}) => {
+    gateSkeletons();
+    $('gate-retry-row').hidden = true;
+    try {
+      const d = await api('./api/profiles');
+      profileList = d.profiles ?? [];
+      profileCap = d.cap ?? null;
+      currentProfileId = d.currentId ?? null;
+      renderGate({ focus });
+    } catch (error) {
+      $('pro-list').replaceChildren();
+      $('pro-list').removeAttribute('aria-busy');
+      say($('gate-msg'), 'Список профилей не загрузился. Проверьте связь и повторите.');
+      $('gate-retry-row').hidden = false;
+      // Создавать профиль вслепую нельзя: неизвестно, есть ли места.
+      $('pro-name').disabled = true;
+      $('pro-create').disabled = true;
+      if (focus) $('gate-retry').focus();
+    }
+  };
+  $('gate-retry').onclick = () => loadProfiles({ focus: true });
+
+  const showGate = () => {
+    layout.hidden = true;
+    gate.hidden = false;
+    profile = null;
+    document.title = 'Агент со слоями памяти — AI Advent 2026, день 11';
+    loadProfiles({ focus: true }).then(() => {
+      announce(`Экран выбора профиля. Профилей: ${profileList.length}.`);
+    });
+  };
+
+  const selectProfile = async (id) => {
+    try {
+      const d = await api('./api/profile/select', postJson({ id }));
+      profile = d.profile;
+      currentProfileId = profile.id;
+      gate.hidden = true;
+      layout.hidden = false;
+      $('pid-name').textContent = profile.name;
+      $('pid-name').title = profile.name;
+      // Смена профиля меняет всё: настройки, память, диалоги и ленту событий.
+      runs.length = 0;
+      renderMonitor();
+      applySettings(profile.settings ?? {});
+      await loadChat();
+      input.focus();
+      announce(
+        `Профиль «${profile.name}». Диалогов: ${profile.sessions.length}.`,
+      );
+    } catch (error) {
+      if (error.status === 404) {
+        announce('Профиль не найден: выберите другой.');
+        loadProfiles({ focus: true });
+        return;
+      }
+      say($('gate-msg'), error.message);
+    }
+  };
+
+  $('gate-form').onsubmit = async (event) => {
+    event.preventDefault();
+    const name = $('pro-name').value.trim();
+    if (!name) {
+      $('pro-name').setCustomValidity('Введите имя профиля');
+      $('pro-name').reportValidity();
+      return;
+    }
+    $('pro-name').setCustomValidity('');
+    try {
+      const d = await api('./api/profile', postJson({ name }));
+      $('pro-name').value = '';
+      // Созданный профиль сразу выбирается: человек его для этого и заводил.
+      await selectProfile(d.profile.id);
+    } catch (error) {
+      // Места могли занять, пока страница была открыта: тот же текст, что и
+      // при пяти живых профилях, — и без предложения стереть чужое.
+      if (error.code === 'profiles_full') {
+        await loadProfiles();
+        $('gate-full').hidden = false;
+        $('pro-name').disabled = true;
+        $('pro-create').disabled = true;
+        announce('Мест нет: пять профилей — выберите существующий.');
+        return;
+      }
+      say($('gate-msg'), error.message);
+      $('pro-name').focus();
+    }
+  };
+  $('pro-name').addEventListener('input', () => $('pro-name').setCustomValidity(''));
+
+  const askDel = $('ask-del');
+  let deleting = null;
+  const askDelete = (p) => {
+    deleting = p;
+    $('ask-del-h').textContent = `Удалить профиль «${p.name}»?`;
+    say($('ask-del-note'), '');
+    askDel.showModal();
+    $('ask-del-no').focus();
+  };
+  $('ask-del-no').onclick = () => askDel.close();
+  $('ask-del-yes').onclick = async () => {
+    const victim = deleting;
+    if (!victim) return;
+    try {
+      await api('./api/profile', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: victim.id }),
+      });
+      askDel.close();
+      const mine = profile?.id === victim.id;
+      await loadProfiles();
+      if (mine) {
+        // Удалили тот профиль, в котором сидели: возвращаемся на экран входа.
+        profile = null;
+        layout.hidden = true;
+        gate.hidden = false;
+      }
+      renderGate({ focus: true });
+      announce(
+        `Профиль «${victim.name}» удалён. ` +
+          `Осталось ${profileList.length} ${plural(profileList.length, 'профиль', 'профиля', 'профилей')}.`,
+      );
+    } catch (error) {
+      say($('ask-del-note'), error.message);
+    }
+  };
+  // Фокус после закрытия окна не уходит на body: он возвращается на список.
+  askDel.addEventListener('close', () => {
+    if (gate.hidden) return;
+    const back = $('pro-list').querySelector('.pro-pick') ?? $('pro-name');
+    back.focus();
+  });
+
+  $('switch-profile').onclick = () => {
+    // Возврат на экран входа ничего не удаляет и срок профиля не продлевает:
+    // POST /api/profile/select уходит только при выборе.
+    showGate();
+  };
+
+  /* ---------- состояние агента ---------- */
+
+  const renderModels = () => {
+    const box = $('models');
+    box.replaceChildren();
+    models.forEach((m) => {
+      const label = document.createElement('label');
+      label.className = 'model';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'model';
+      radio.value = m.id;
+      radio.checked = m.id === (settings.model ?? defaults.model ?? models[0].id);
+      const name = document.createElement('span');
+      name.className = 'model-name';
+      name.textContent = m.label;
+      const note = document.createElement('span');
+      note.className = 'model-note';
+      note.textContent = m.budgetTokens
+        ? `${m.note} · ${Math.round(m.budgetTokens / 1000)}K токенов`
+        : m.note;
+      if (m.slow) note.textContent += ' · медленно';
+      if (m.available === false) {
+        label.style.opacity = '.55';
+        note.textContent = `${m.note} · сейчас недоступна`;
+      }
+      label.append(radio, name, note);
+      box.append(label);
+    });
+  };
+  const chosenModel = () =>
+    document.querySelector('input[name=model]:checked')?.value ?? models[0]?.id;
+
+  fetch('./api/state')
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then((d) => {
+      models = d.models ?? [];
+      defaults = d.defaults ?? {};
+      limits = d.limits ?? {};
+      agentInfo = d.agent ?? null;
+      ttlHours = d.session?.ttlHours ?? null;
+      ttlDays = d.profile?.ttlDays ?? null;
+      // Потолок ответа приходит с сервера: окно настроек не должно обещать
+      // числа, которого сервис не примет.
+      if (Number.isInteger(limits.maxTokens)) {
+        $('p-max-tokens').max = String(limits.maxTokens);
+        $('p-max-tokens').nextElementSibling.textContent =
+          `Сколько токенов отводится на ответ (1–${limits.maxTokens}).`;
+      }
+      renderModels();
+      // Сроки — с сервера: обещание на странице должно меняться вместе с
+      // настройкой, а не расходиться с ней молча.
+      if (ttlHours && ttlDays) {
+        const hours = `${ttlHours} ${plural(ttlHours, 'час', 'часа', 'часов')}`;
+        const days = `${ttlDays} ${plural(ttlDays, 'день', 'дня', 'дней')}`;
+        $('ttl-note').textContent =
+          `Правила и факты профиля хранятся ${days} с последнего действия в нём — ` +
+          `чьего угодно; переписка — ${hours}`;
+        $('gate-ttl').textContent =
+          `Профиль и его память — правила и факты — живут ${days} с последнего действия ` +
+          `в нём; переписка — ${hours}.`;
+      }
+      showParamsSummary();
+    })
+    .catch(() => {})
+    .finally(() => { $('about').disabled = false; });
+
+  /* ---------- настройки профиля ---------- */
+
+  const STRATEGY_LABEL = {
+    summary: 'Сводка при пороге',
+    window: 'Скользящее окно',
+    facts: 'Липкие факты',
+    branches: 'Ветки',
+  };
+  const SUMMARY_MODEL = 'Claude Haiku 4.5';
+
+  /** Применимость полей — таблица дня 10, п. 2. */
+  const APPLIES = {
+    summary: { context: true, summarizeAt: true, window: false, factsTokens: false },
+    window: { context: false, summarizeAt: false, window: true, factsTokens: false },
+    facts: { context: false, summarizeAt: false, window: true, factsTokens: true },
+    branches: { context: true, summarizeAt: false, window: false, factsTokens: false },
+  };
+  const WHY = {
+    context: 'в контекст идут последние M реплик целиком, без потолка в токенах.',
+    summarizeAt: 'сводка в этом режиме не делается.',
+    window: {
+      summary: 'сколько реплик уйдёт модели, решает сводка и окно контекста.',
+      branches: 'сколько реплик уйдёт модели, решает окно контекста.',
+    },
+    factsTokens: 'факты в этом режиме не собираются.',
+  };
+  const APPLY_LINE = {
+    summary: 'Применяются: размер контекста, порог сжатия. Не применяются: последние реплики, лимит фактов.',
+    window: 'Применяются: последние реплики. Не применяются: размер контекста, порог сжатия, лимит фактов.',
+    facts: 'Применяются: последние реплики, лимит фактов. Не применяются: размер контекста, порог сжатия.',
+    branches: 'Применяется: размер контекста. Не применяются: порог сжатия, последние реплики, лимит фактов.',
+  };
+  const FIELDS = [
+    { key: 'context', at: 'p-context', input: 'p-context', live: 'p-context-live' },
+    { key: 'summarizeAt', at: 'p-summarize', input: 'p-summarize-at', live: 'p-summarize-live' },
+    { key: 'window', at: 'p-window', input: 'p-window', live: 'p-window-live' },
+    { key: 'factsTokens', at: 'p-facts', input: 'p-facts-tokens', live: 'p-facts-live' },
+  ];
+
+  /** Значения настроек, с которыми уйдёт следующий запуск. */
+  let settings = {};
+
+  const strategy = () =>
+    document.querySelector('input[name=strategy]:checked')?.value ?? 'summary';
+
+  /** Настройки профиля в поля формы. Пусто — умолчания агента. */
+  const applySettings = (source) => {
+    settings = { ...source };
+    const set = (id, value) => { if (value !== undefined && value !== null) $(id).value = String(value); };
+    const radio = document.querySelector(
+      `input[name=strategy][value="${CSS.escape(source.strategy ?? 'summary')}"]`,
+    );
+    if (radio) radio.checked = true;
+    set('p-context', source.contextTokens ?? defaults.contextTokens ?? 3000);
+    set('p-summarize-at', source.summarizeAt ?? 2000);
+    set('p-window', source.window ?? 10);
+    set('p-facts-tokens', source.factsTokens ?? 600);
+    set('p-temp', source.temperature ?? defaults.temperature ?? 1);
+    set('p-max-tokens', source.maxTokens ?? defaults.maxTokens ?? 1024);
+    $('p-stop').value = (source.stopSequences ?? []).join('\n');
+    $('p-system').value = source.system ?? '';
+    renderModels();
+    showTemp();
+    applyStrategy();
+  };
+
+  const temp = $('p-temp'), tempOut = $('p-temp-out');
+  const showTemp = () => { tempOut.textContent = Number(temp.value).toFixed(1); };
+  temp.addEventListener('input', showTemp);
+
+  /** Значения формы как объект настроек: неприменимое не попадает в запись. */
+  const collectSettings = () => {
+    const s = strategy();
+    const out = {
+      strategy: s,
+      model: chosenModel(),
+      temperature: Number(temp.value),
+      maxTokens: Number($('p-max-tokens').value),
+      stopSequences: $('p-stop').value.split('\n').map((x) => x.trim()).filter(Boolean),
+    };
+    if (APPLIES[s].context) out.contextTokens = Number($('p-context').value);
+    if (APPLIES[s].summarizeAt && !$('p-summarize-at').disabled)
+      out.summarizeAt = Number($('p-summarize-at').value);
+    if (APPLIES[s].window) out.window = Number($('p-window').value);
+    if (APPLIES[s].factsTokens) out.factsTokens = Number($('p-facts-tokens').value);
+    const system = $('p-system').value.trim();
+    if (system) out.system = system;
+    return out;
+  };
+
+  const showSummarizeLive = () => {
+    const requested = Number($('p-context').value) || 0;
+    const n = Number($('p-summarize-at').value) || 0;
+    const line = $('p-summarize-live');
+    if (!APPLIES[strategy()].summarizeAt) return;
+    $('p-summarize-at').disabled = requested <= 500;
+    $('p-summarize-at').setCustomValidity(
+      !$('p-summarize-at').disabled && n >= requested
+        ? `Порог сжатия должен быть меньше размера контекста (${fmtInt(requested)}).`
+        : '',
+    );
+    line.textContent = $('p-summarize-at').disabled
+      ? 'Сжатие выключено: при размере контекста до 500 сжимать нечего.'
+      : `Сводка — до ${fmtInt(Math.ceil(n * 0.3))} токенов, сжимает ${SUMMARY_MODEL}.`;
+  };
+  const showWindowLive = () => {
+    const m = Number($('p-window').value) || 0;
+    const have = pathMessages().length;
+    $('p-window-live').textContent =
+      have <= m
+        ? `Сейчас в диалоге ${have} ${plural(have, 'реплика', 'реплики', 'реплик')} — уйдут все.`
+        : `Уйдут последние ${m} ${plural(m, 'реплика', 'реплики', 'реплик')} из ${have}.`;
+  };
+  const showFactsLive = () => {
+    const t = Number($('p-facts-tokens').value) || 0;
+    $('p-facts-live').textContent = `Факты — до ${fmtInt(t)} токенов, обновляет ${SUMMARY_MODEL}.`;
+  };
+  const showContextLive = () => {
+    const requested = Number($('p-context').value) || 0;
+    const model = models.find((m) => m.id === chosenModel());
+    $('p-context-live').textContent = model
+      ? `Действует до ${fmtInt(requested)}; предел входа ${model.label} — ` +
+        `${fmtInt(model.budgetTokens ?? 0)} токенов на промпт, память профиля и переписку, ` +
+        'поэтому уйти может меньше.'
+      : `Действует до ${fmtInt(requested)}.`;
+  };
+
+  const applyStrategy = () => {
+    const s = strategy();
+    const name = STRATEGY_LABEL[s];
+    for (const f of FIELDS) {
+      const ok = APPLIES[s][f.key];
+      const field = $(f.input);
+      $(`${f.at}-na`).hidden = ok;
+      const why = $(`${f.at}-why`);
+      why.hidden = ok;
+      const reason = typeof WHY[f.key] === 'string' ? WHY[f.key] : WHY[f.key][s];
+      if (!ok) why.textContent = `Не применяется при стратегии «${name}»: ${reason}`;
+      $(f.live).hidden = !ok;
+      field.disabled = !ok;
+      // Выключенное поле проверке не подлежит: иначе окно отказалось бы
+      // закрыться из-за поля, которое в запись не идёт.
+      if (!ok) field.setCustomValidity('');
+    }
+    $('strategy-live').textContent = APPLY_LINE[s];
+    if (s !== 'branches') cancelEdit();
+    showSummarizeLive();
+    showWindowLive();
+    showFactsLive();
+    showContextLive();
+    showParamsSummary();
+    renderLog({ keepScroll: true });
+    showMeters();
+  };
+
+  /** Строка значений в колонке: только применимые параметры, стратегия первой. */
+  const showParamsSummary = () => {
+    const s = strategy();
+    const model = models.find((m) => m.id === chosenModel());
+    const parts = [STRATEGY_LABEL[s]];
+    if (model) parts.push(model.label);
+    if (APPLIES[s].context) parts.push(`контекст ${fmtInt(Number($('p-context').value) || 0)}`);
+    if (APPLIES[s].summarizeAt)
+      parts.push(
+        $('p-summarize-at').disabled
+          ? 'сжатие выкл.'
+          : `сжатие при ${fmtInt(Number($('p-summarize-at').value) || 0)}`,
+      );
+    if (APPLIES[s].window) parts.push(`последние ${fmtInt(Number($('p-window').value) || 0)} реплик`);
+    if (APPLIES[s].factsTokens) parts.push(`факты до ${fmtInt(Number($('p-facts-tokens').value) || 0)}`);
+    parts.push(`ответ до ${fmtInt(Number($('p-max-tokens').value) || 0)}`);
+    // Свой промпт — признак изменённого поведения агента, и он обязан быть
+    // виден без открытия окна.
+    if ($('p-system').value.trim()) parts.push('свой промпт');
+    $('params-sum').textContent = `Настройки: ${parts.join(' · ')}`;
+  };
+
+  for (const radio of document.querySelectorAll('input[name=strategy]')) {
+    radio.addEventListener('change', applyStrategy);
+  }
+  for (const id of ['p-context', 'p-summarize-at', 'p-max-tokens', 'p-window', 'p-facts-tokens']) {
+    $(id).addEventListener('input', () => {
+      showSummarizeLive();
+      showContextLive();
+      showParamsSummary();
+    });
+  }
+  $('p-system').addEventListener('input', showParamsSummary);
+  $('models').addEventListener('change', () => {
+    showContextLive();
+    showParamsSummary();
+  });
+
+  /* ---------- окно настроек ---------- */
+
+  const setDlg = $('set-dlg');
+  /** Какое поле назвал разборщик: отказ должен показываться у виновника. */
+  const CULPRIT = [
+    [/Размер контекста/i, 'p-context'],
+    [/Порог сводки/i, 'p-summarize-at'],
+    [/Реплик в окне/i, 'p-window'],
+    [/Лимит фактов/i, 'p-facts-tokens'],
+    [/Температура/i, 'p-temp'],
+    [/Лимит токенов/i, 'p-max-tokens'],
+    [/Стоп-последовательност/i, 'p-stop'],
+    [/[Сс]истемный промпт/i, 'p-system'],
+    [/Неизвестная модель/i, 'p-max-tokens'],
+  ];
+  const culpritOf = (message) => {
+    for (const [pattern, id] of CULPRIT) if (pattern.test(message)) return id;
+    return null;
+  };
+  /** Строка отказа под полем-виновником: живёт до следующей попытки. */
+  let culpritLine = null;
+  const clearCulprit = () => {
+    if (culpritLine) culpritLine.remove();
+    culpritLine = null;
+  };
+
+  const setBusy = (busy) => {
+    $('set-body').setAttribute('aria-busy', busy ? 'true' : 'false');
+    for (const el of $('set-body').querySelectorAll('input, textarea')) {
+      if (busy) el.dataset.wasDisabled = el.disabled ? '1' : '';
+      el.disabled = busy ? true : el.dataset.wasDisabled === '1';
+    }
+  };
+
+  const openSettings = async () => {
+    clearCulprit();
+    say($('set-error'), '');
+    $('set-retry-row').hidden = true;
+    $('set-state').textContent = 'Загружаю настройки профиля…';
+    setBusy(true);
+    setDlg.showModal();
+    setDlg.focus();
+    await refreshSettings();
+  };
+
+  const refreshSettings = async () => {
+    try {
+      const d = await api('./api/profile');
+      profile = d.profile;
+      setBusy(false);
+      applySettings(profile.settings ?? {});
+      const empty = Object.keys(profile.settings ?? {}).length === 0;
+      $('set-state').textContent = empty
+        ? 'Умолчания агента. Меняются только для этого профиля.'
+        : 'Настройки этого профиля. Действуют у всех, кто его выберет.';
+      say($('set-error'), '');
+      $('set-retry-row').hidden = true;
+    } catch (error) {
+      // Поля остаются выключенными: показывать пустые поля без объяснения —
+      // значит обещать, что настроек нет.
+      $('set-state').textContent = '';
+      say(
+        $('set-error'),
+        'Настройки не загрузились — окно можно закрыть, прежние значения не изменились',
+      );
+      $('set-retry-row').hidden = false;
+    }
+  };
+  $('set-retry').onclick = () => {
+    setBusy(true);
+    $('set-state').textContent = 'Загружаю настройки профиля…';
+    refreshSettings();
+  };
+
+  /**
+   * Закрытие пишет настройки — всеми тремя способами (×, Esc, подложка):
+   * «отмены» в этом окне нет, и делать вид, что Esc что-то отменяет, нельзя.
+   * Отказ окно не закрывает: иначе посетитель ушёл бы в уверенности, что
+   * настройки приняты.
+   */
+  const closeSettings = async () => {
+    if ($('set-body').getAttribute('aria-busy') === 'true') {
+      // Настройки не загрузились: писать нечего, и окно просто закрывается.
+      setDlg.close();
+      return;
+    }
+    clearCulprit();
+    const invalid = [$('p-context'), $('p-summarize-at'), $('p-window'), $('p-facts-tokens'),
+      $('p-max-tokens')].find((el) => !el.disabled && !el.checkValidity());
+    if (invalid) {
+      invalid.reportValidity();
+      invalid.focus();
+      return;
+    }
+    const body = collectSettings();
+    try {
+      const d = await api('./api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      settings = d.settings ?? body;
+      if (profile) profile.settings = settings;
+      setDlg.close();
+      showParamsSummary();
+      announce('Настройки сохранены');
+    } catch (error) {
+      const id = culpritOf(error.message);
+      const line = document.createElement('p');
+      line.className = 'warned';
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '!';
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Предупреждение: ';
+      line.append(mark, prefix, error.message);
+      clearCulprit();
+      if (id) {
+        const field = $(id);
+        field.closest('.field').append(line);
+        culpritLine = line;
+        field.focus();
+      } else {
+        say($('set-error'), error.message);
+      }
+    }
+  };
+
+  $('set-btn').onclick = openSettings;
+  $('set-close').onclick = closeSettings;
+  // Esc: окно не закрывается само — сначала запись.
+  setDlg.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeSettings();
+  });
+  // Клик по подложке: цель события — сам диалог, а не его содержимое.
+  setDlg.addEventListener('click', (event) => {
+    if (event.target === setDlg) closeSettings();
+  });
+  setDlg.addEventListener('close', () => $('set-btn').focus());
+
+  /* ---------- окно «Об агенте» ---------- */
+
+  const dlg = $('dlg');
+  $('about').onclick = () => {
+    $('dlg-name').textContent = agentInfo?.name ?? 'Агент';
+    const version = $('dlg-version');
+    version.hidden = !agentInfo?.version;
+    version.textContent = agentInfo?.version ? `v${agentInfo.version}` : '';
+    $('dlg-purpose').textContent = agentInfo
+      ? agentInfo.purpose
+      : 'Описание агента недоступно: не удалось получить его состояние';
+    const base = agentInfo?.systemPrompt ?? '';
+    $('dlg-row').hidden = !base;
+    $('dlg-prompt').hidden = !base;
+    $('dlg-nopr').hidden = !agentInfo || Boolean(base);
+    if (base) {
+      $('dlg-prompt').value = base;
+      $('dlg-state').textContent = `${base.length} ${plural(base.length, 'знак', 'знака', 'знаков')}`;
+    }
+    dlg.showModal();
+    dlg.focus();
+  };
+  $('dlg-close').onclick = () => dlg.close();
+  dlg.addEventListener('close', () => $('about').focus());
+
+  /* ---------- монитор агента ---------- */
+
+  const MAX_RUNS = 5;
+  const STATUS_WORD = {
+    queued: 'в очереди', running: 'выполняется', succeeded: 'готово',
+    failed: 'ошибка', cancelled: 'отменён',
+  };
+  const LEVEL_WORD = { info: 'сведения', warn: 'предупреждение', error: 'ошибка' };
+  const LEVEL_MARK = { info: '·', warn: '!', error: '×' };
+  const LEVEL_PREFIX = { warn: 'Предупреждение: ', error: 'Ошибка: ' };
+
+  const runs = [];
+
+  const runHeader = (run) => {
+    let status = STATUS_WORD[run.status] ?? run.status;
+    if (run.status === 'succeeded' || run.status === 'failed') {
+      const parts = [status];
+      if (run.durationMs !== null) parts.push(fmtDuration(run.durationMs));
+      if (run.warnings > 0)
+        parts.push(`${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}`);
+      status = parts.join(' · ');
+    }
+    return status;
+  };
+
+  const renderEvent = (event) => {
+    const li = document.createElement('li');
+    li.className = `ev is-${event.level}`;
+    const d = document.createElement('details');
+    const s = document.createElement('summary');
+    s.className = 'ev-s';
+
+    const mark = document.createElement('span');
+    mark.className = 'ev-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = LEVEL_MARK[event.level] ?? '·';
+
+    const title = document.createElement('span');
+    title.className = 'ev-title';
+    if (LEVEL_PREFIX[event.level]) {
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = LEVEL_PREFIX[event.level];
+      title.append(prefix);
+    }
+    title.append(event.title);
+
+    const dur = document.createElement('span');
+    dur.className = 'ev-dur';
+    dur.textContent = fmtDuration(event.durationMs);
+
+    const detail = document.createElement('span');
+    detail.className = 'ev-detail';
+    detail.textContent = (event.detail ?? '').split('\n')[0];
+
+    s.append(mark, title, dur, detail);
+
+    const dl = document.createElement('dl');
+    dl.className = 'ev-dl';
+    const row = (term, value) => {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    row('время', fmtTime(event.at));
+    row('стадия', event.stage);
+    row('уровень', LEVEL_WORD[event.level] ?? event.level);
+    row('статус', STATUS_WORD[event.status] ?? event.status);
+    if (event.detail) row('детали', event.detail);
+
+    d.append(s, dl);
+    li.append(d);
+    return li;
+  };
+
+  const renderRun = (run) => {
+    const li = document.createElement('li');
+    li.className = `run is-${run.status}`;
+    li.dataset.run = run.key;
+    const d = document.createElement('details');
+    d.className = 'run-d';
+    d.open = run.open;
+    const s = document.createElement('summary');
+    s.className = 'run-s';
+    const name = document.createElement('span');
+    name.className = 'run-name';
+    name.textContent = run.name;
+    const status = document.createElement('span');
+    status.className = 'run-status';
+    status.textContent = `· ${runHeader(run)}`;
+    const time = document.createElement('time');
+    time.className = 'run-time';
+    time.dateTime = run.startedAt;
+    time.textContent = fmtTime(run.startedAt);
+    s.append(name, status, time);
+    const events = document.createElement('ol');
+    events.className = 'events';
+    for (const event of run.events) events.append(renderEvent(event));
+    d.append(s, events);
+    d.addEventListener('toggle', () => { run.open = d.open; });
+    if (run.status === 'queued' || run.status === 'running') li.setAttribute('aria-busy', 'true');
+    li.append(d);
+    return li;
+  };
+
+  const renderMonitor = () => {
+    runsList.replaceChildren(...runs.map(renderRun));
+    monEmpty.hidden = runs.length > 0;
+  };
+
+  const setStatus = (run, status) => {
+    if (run.status === status) return;
+    run.status = status;
+    if (status === 'succeeded' || status === 'failed') {
+      run.durationMs = run.durationMs ?? (Date.now() - Date.parse(run.startedAt));
+      const tail = status === 'succeeded'
+        ? `готово за ${fmtDuration(run.durationMs)}` +
+          (run.warnings ? `, ${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}` : '')
+        : 'ошибка';
+      announce(`Запуск «${run.name}»: ${tail}`);
+    } else {
+      announce(`Запуск «${run.name}»: ${STATUS_WORD[status]}`);
+    }
+  };
+
+  const addEvent = (run, event) => {
+    run.events.unshift(event);
+    if (event.level === 'warn') run.warnings += 1;
+    if (event.level === 'error') shout(`Ошибка: ${event.title}`);
+    if (event.status && event.status !== run.status) setStatus(run, event.status);
+    if (event.stage === 'done' && event.durationMs) run.durationMs = event.durationMs;
+    renderMonitor();
+  };
+  const pageEvent = (run, level, title, detail = '') =>
+    addEvent(run, {
+      at: new Date().toISOString(), stage: 'страница', level, title, detail,
+      status: run.status, durationMs: null,
+    });
+
+  const startRun = (name) => {
+    for (const r of runs) r.open = false;
+    const run = {
+      key: String(Date.now()), name, status: 'queued', startedAt: new Date().toISOString(),
+      events: [], warnings: 0, durationMs: null, open: true, answered: false,
+    };
+    runs.unshift(run);
+    if (runs.length > MAX_RUNS) runs.length = MAX_RUNS;
+    renderMonitor();
+    announce(`Запуск «${name}»: в очереди`);
+    return run;
+  };
+
+  const failRun = (run, title, detail) => {
+    run.status = 'failed';
+    pageEvent(run, 'error', title, detail);
+    run.durationMs = Date.now() - Date.parse(run.startedAt);
+    announce(`Запуск «${run.name}»: ошибка`);
+    renderMonitor();
+  };
+
+  /* ---------- шапка диалога ---------- */
+
+  const meterSep = () => {
+    const dot = document.createElement('span');
+    dot.setAttribute('aria-hidden', 'true');
+    dot.textContent = ' · ';
+    const comma = document.createElement('span');
+    comma.className = 'vh';
+    comma.textContent = ', ';
+    return [dot, comma];
+  };
+
+  const showMeters = () => {
+    const ctx = $('ctx'), spent = $('spent');
+    // Живой сессии нет — счётчиков нет вовсе: экран не обещает того, чего нет.
+    if (!sessionName) {
+      ctx.hidden = true;
+      spent.hidden = true;
+      $('meters-sep').hidden = true;
+      $('meters').hidden = true;
+      return;
+    }
+    const s = strategy();
+    const known = Number.isFinite(contextState?.total);
+    const willCompress = s === 'summary' && contextState?.willCompress === true;
+    ctx.hidden = !known && !willCompress;
+    if (willCompress) {
+      ctx.replaceChildren('при следующем сообщении история будет сжата');
+    } else if (known) {
+      const tail = [];
+      if (s === 'summary' && Number.isFinite(contextState.summaryTokens))
+        tail.push(`из них сводка ${fmtInt(contextState.summaryTokens)}`);
+      if (s === 'window' || s === 'facts') {
+        if (s === 'facts') {
+          const f = Number.isFinite(contextState.factsTokens) ? contextState.factsTokens : 0;
+          tail.push(`из них факты ${fmtInt(f)}`);
+        }
+        const m = Number($('p-window').value) || 0;
+        const have = pathMessages().length;
+        tail.push(
+          have <= m
+            ? `все ${have} ${plural(have, 'реплика', 'реплики', 'реплик')}`
+            : `последние ${m} ${plural(m, 'реплика', 'реплики', 'реплик')} из ${have}`,
+        );
+      }
+      if (s === 'branches') {
+        const n = pathMessages().length;
+        tail.push(`в ветке ${n} ${plural(n, 'сообщение', 'сообщения', 'сообщений')}`);
+      }
+      const parts = [`накоплено ${fmtInt(contextState.total)}`];
+      for (const part of tail) parts.push(...meterSep(), part);
+      ctx.replaceChildren(...parts);
+    }
+    spent.hidden = spentTokens === null;
+    if (spentTokens !== null) spent.textContent = `за всю переписку ${fmtInt(spentTokens)} токенов`;
+    $('meters-sep').hidden = ctx.hidden || spent.hidden;
+    $('meters').hidden = ctx.hidden && spent.hidden;
+  };
+
+  const showHead = () => {
+    const busy = button.disabled;
+    // Тема показывается только при живом диалоге: «тема: не выбрана» с пустым
+    // значением было бы обещанием того, чего нет.
+    const hasTopicsOrTopic = sessionName && (activeTopic || (profile?.topics ?? []).length > 0);
+    $('topic-line').hidden = !hasTopicsOrTopic;
+    if (hasTopicsOrTopic) {
+      $('topic-name').textContent = activeTopic ? `«${activeTopic.title}»` : '«без темы»';
+      $('topic-name').title = activeTopic ? activeTopic.title : 'без темы';
+      $('topic-btn').disabled = busy;
+    }
+    const n = profile?.sessions?.length ?? 0;
+    $('ses-btn').textContent = `диалоги: ${n}`;
+    $('ses-btn').disabled = busy;
+    $('switch-profile').disabled = busy;
+    $('clear').disabled = busy || !sessionName;
+    showMeters();
+  };
+
+  /* ---------- лог ---------- */
+
+  const parentOf = (m) => (Number.isInteger(m.parentId) && m.parentId !== 0 ? m.parentId : null);
+  const childrenOf = (pid) =>
+    messages
+      .filter((m) => Number.isInteger(m.id) && parentOf(m) === pid)
+      .sort((a, b) => a.id - b.id);
+
+  const pathMessages = () => {
+    if (!Number.isInteger(headId)) return messages;
+    const byId = new Map(messages.filter((m) => Number.isInteger(m.id)).map((m) => [m.id, m]));
+    const chain = [];
+    const seen = new Set();
+    let node = byId.get(headId);
+    while (node && !seen.has(node.id)) {
+      seen.add(node.id);
+      chain.push(node);
+      node = byId.get(parentOf(node));
+    }
+    chain.reverse();
+    return [...chain, ...messages.filter((m) => !Number.isInteger(m.id))];
+  };
+
+  const renderUser = (m) => {
+    const li = document.createElement('li');
+    li.className = 'msg is-user';
+    const head = document.createElement('p');
+    head.className = 'msg-head';
+    head.textContent = `Вы · ${fmtTime(m.at)}`;
+    const text = document.createElement('p');
+    text.className = 'msg-text';
+    text.textContent = m.text;
+    li.append(head, text);
+    return li;
+  };
+
+  const summaryLines = (s) => {
+    const did = [];
+    if (s.rules !== undefined)
+      did.push(`вспомнил ${s.rules} ${plural(s.rules, 'правило', 'правила', 'правил')}`);
+    if (s.topicFacts !== undefined && s.topicFacts > 0)
+      did.push(`${s.topicFacts} ${plural(s.topicFacts, 'факт темы', 'факта темы', 'фактов темы')}`);
+    if (s.model) did.push(`спросил ${models.find((m) => m.id === s.provider)?.label ?? s.model}`);
+    if (s.systemOverridden) did.push('системный промпт профиля');
+
+    const numbers = [];
+    if (s.totalTokens !== undefined) numbers.push(`${fmtInt(s.totalTokens)} токенов`);
+    if (s.contextEffective !== undefined)
+      numbers.push(`контекст ${fmtInt(s.contextUsed)} из ${fmtInt(s.contextEffective)}`);
+    if (s.durationMs !== undefined) numbers.push(fmtDuration(s.durationMs));
+    return [did.join(' · '), numbers.join(' · ')];
+  };
+
+  /**
+   * Карточка вопроса о новой теме — ряд действий под обычной репликой агента
+   * (ADR, п. 6.2). Три состояния: ждёт ответа, открыта, продолжено. Знак «✓»
+   * идёт вместе со словом: значок смысл в одиночку не несёт.
+   */
+  const addProposal = (li, proposal) => {
+    const facts = proposal.facts ?? 0;
+    const waiting = pendingTopic && pendingTopic.title === proposal.title;
+
+    if (waiting) {
+      const row = document.createElement('p');
+      row.className = 'ask-row';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'dlg-btn';
+      open.textContent = `Открыть тему «${proposal.title}»`;
+      open.disabled = button.disabled;
+      open.onclick = () => answerTopic('open');
+      const keep = document.createElement('button');
+      keep.type = 'button';
+      keep.className = 'dlg-btn';
+      keep.textContent = activeTopic
+        ? `Продолжить в «${activeTopic.title}»`
+        : 'Продолжить без темы';
+      keep.disabled = button.disabled;
+      keep.onclick = () => answerTopic('continue');
+      row.append(open, keep);
+      li.append(row);
+
+      const note = document.createElement('p');
+      note.className = 'ask-note';
+      note.textContent = button.disabled
+        ? 'Идёт запуск — ответить можно после ответа агента.'
+        : `Пока вы не ответили, ${facts} ${plural(facts, 'факт', 'факта', 'фактов')} из этой ` +
+          'части разговора не записаны ни в одну тему и уйдут вместе с диалогом. ' +
+          'Ответить можно и словами в диалоге — тогда тема сменится после следующего ответа агента.';
+      li.append(note);
+      if (askWarn) li.append(warnLine(askWarn));
+      return;
+    }
+
+    const done = document.createElement('p');
+    done.className = 'ask-done';
+    const opened = activeTopic && activeTopic.title === proposal.title;
+    if (opened) {
+      done.textContent =
+        `✓ Тема «${proposal.title}» открыта · ${facts} ${plural(facts, 'факт записан', 'факта записаны', 'фактов записаны')} в неё`;
+    } else if (activeTopic) {
+      done.textContent =
+        `✓ Продолжили в «${activeTopic.title}» · ${facts} ${plural(facts, 'факт записан', 'факта записаны', 'фактов записаны')} в неё`;
+    } else {
+      done.textContent =
+        `✓ Продолжили без темы · ${facts} ${plural(facts, 'факт не записан', 'факта не записаны', 'фактов не записаны')}`;
+    }
+    li.append(done);
+  };
+
+  const renderAgent = (m) => {
+    const li = document.createElement('li');
+    const meta = m.meta ?? {};
+    li.className = `msg is-agent${meta.error ? ' is-error' : ''}`;
+
+    const head = document.createElement('p');
+    head.className = 'msg-head';
+    head.textContent = `Агент · ${fmtTime(m.at)}`;
+
+    const text = document.createElement('p');
+    text.className = 'msg-text';
+    if (meta.error) {
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '×';
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Ошибка: ';
+      const said = String(m.text).trim();
+      const dot = /[.!?…]$/.test(said) ? '' : '.';
+      text.append(mark, prefix, `Ответа нет: ${said}${dot} Что случилось — в мониторе агента.`);
+    } else {
+      text.textContent = m.text || '(пустой ответ)';
+    }
+    li.append(head, text);
+    if (meta.error) return li;
+
+    // Вопрос о теме — обычная реплика агента, поэтому карточка живёт здесь и
+    // переживает перезагрузку страницы.
+    if (meta.topicProposal) {
+      addProposal(li, meta.topicProposal);
+      return li;
+    }
+
+    if (meta.truncated) li.append(warnLine('Ответ обрезан лимитом токенов'));
+    if (meta.summarizeFailed)
+      li.append(warnLine('Историю сжать не удалось — модель видела только хвост переписки'));
+    const dropped = meta.contextDropped ?? 0;
+    if (dropped > 0)
+      li.append(
+        warnLine(
+          `В контекст не поместились ${fmtInt(dropped)} ${plural(dropped, 'прежнее сообщение', 'прежних сообщения', 'прежних сообщений')}`,
+        ),
+      );
+
+    for (const line of summaryLines(meta)) {
+      if (!line) continue;
+      const p = document.createElement('p');
+      p.className = 'sum';
+      p.textContent = line;
+      li.append(p);
+    }
+
+    const details = document.createElement('details');
+    details.className = 'params-d';
+    const summary = document.createElement('summary');
+    summary.textContent = 'параметры ответа';
+    const dl = document.createElement('dl');
+    dl.className = 'ev-dl';
+    const row = (term, value) => {
+      if (value === undefined || value === null || value === '') return;
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    row('модель', meta.model);
+    row('max_tokens', meta.maxTokens);
+    row('температура', meta.temperature === undefined ? null : Number(meta.temperature).toFixed(1));
+    row('правила профиля', meta.rules === undefined ? null : `${meta.rules} (${fmtInt(meta.rulesTokens ?? 0)} токенов)`);
+    row('факты темы', meta.topicFacts === undefined ? null : `${meta.topicFacts} (${fmtInt(meta.topicTokens ?? 0)} токенов)`);
+    row(
+      'размер контекста',
+      meta.contextRequested === undefined
+        ? null
+        : `задан ${fmtInt(meta.contextRequested)}, действует ${fmtInt(meta.contextEffective)}`,
+    );
+    row('сообщений в контексте', meta.contextMessages);
+    row(
+      'вход / выход',
+      meta.inputTokens === undefined
+        ? null
+        : `${fmtInt(meta.inputTokens)} / ${fmtInt(meta.outputTokens)} токенов`,
+    );
+    row('системный промпт', meta.systemOverridden ? 'свой, из настроек профиля' : 'исходный');
+    details.append(summary, dl);
+    li.append(details);
+    return li;
+  };
+
+  const renderFold = (s) => {
+    const li = document.createElement('li');
+    li.className = 'fold';
+    const pct = s.sourceTokens > 0 ? Math.round((s.tokens / s.sourceTokens) * 100) : null;
+    const d = document.createElement('details');
+    d.open = foldOpen;
+    d.addEventListener('toggle', () => { foldOpen = d.open; });
+    const summary = document.createElement('summary');
+    const label = document.createElement('span');
+    label.textContent =
+      `Сводка разговора · ${fmtInt(s.sourceTokens)} → ${fmtInt(s.tokens)} токенов` +
+      (pct === null ? '' : ` (${pct} %)`) + ` · сжал ${SUMMARY_MODEL}`;
+    summary.append(label);
+    const text = document.createElement('p');
+    text.className = 'fold-text';
+    text.textContent = s.text;
+    d.append(summary, text);
+    li.append(d);
+    if (s.truncated)
+      li.append(warnLine(`Сводка обрезана потолком ${fmtInt(s.tokens)} токенов — конец пересказа потерян`));
+    return li;
+  };
+
+  const renderFactsFold = (f, behind) => {
+    const li = document.createElement('li');
+    li.className = 'fold';
+    const streak = Number.isFinite(f.truncatedStreak) ? f.truncatedStreak : 0;
+    const text = String(f.text ?? '');
+    const lines = text.split('\n').filter((s) => s.trim()).length;
+    const d = document.createElement('details');
+    d.open = factsOpen;
+    d.addEventListener('toggle', () => { factsOpen = d.open; });
+    const summary = document.createElement('summary');
+    const label = document.createElement('span');
+    const stale = streak >= 1 && behind >= 1
+      ? ` · не обновлялись ${behind} ${plural(behind, 'сообщение', 'сообщения', 'сообщений')}`
+      : '';
+    label.textContent =
+      `Факты диалога · ${lines} ${plural(lines, 'строка', 'строки', 'строк')} · ` +
+      `${fmtInt(f.tokens)} токенов · обновил ${SUMMARY_MODEL}${stale}`;
+    summary.append(label);
+    const body = document.createElement('p');
+    body.className = 'fold-text';
+    // Текст — данные, а не разметка: в ссылки не превращается.
+    body.textContent = text.trim()
+      ? text
+      : 'Фактов пока нет: первое обновление не уложилось в лимит.';
+    d.append(summary, body);
+    li.append(d);
+    if (streak >= 2)
+      li.append(warnLine('Факты не обновляются: дважды не уложились в лимит. Поднимите лимит — обновление возобновится.'));
+    else if (streak === 1)
+      li.append(warnLine('Факты не уложились в лимит и не обновлены — поднимите лимит'));
+    return li;
+  };
+
+  /** Карточка выбора темы над пустым логом: только пока живого диалога нет. */
+  const renderTopicPick = () => {
+    const li = document.createElement('li');
+    li.className = 'topic-pick';
+    const h = document.createElement('p');
+    h.className = 'topic-pick-h';
+    h.textContent = 'С какой темы начать?';
+    li.append(h);
+
+    const topics = profile?.topics ?? [];
+    if (topics.length === 0) {
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      hint.textContent = 'Тем пока нет — агент предложит первую, когда поймёт предмет разговора.';
+      li.append(hint);
+      return li;
+    }
+
+    const set = document.createElement('fieldset');
+    set.style.border = '0';
+    set.style.padding = '0';
+    set.style.margin = 'var(--s-2) 0 0';
+    const legend = document.createElement('legend');
+    legend.className = 'vh';
+    legend.textContent = 'Тема нового диалога';
+    set.append(legend);
+    set.append(topicOptions('pick', pickedTopicId, (id) => { pickedTopicId = id; }));
+    li.append(set);
+
+    const hint = document.createElement('span');
+    hint.className = 'hint';
+    hint.textContent =
+      'Тему можно сменить в шапке диалога в любой момент. Без темы агент спросит сам, когда поймёт предмет.';
+    li.append(hint);
+    return li;
+  };
+
+  /** Радиогруппа тем: родная, один стоп Tab на группу и выбор стрелками. */
+  const topicOptions = (name, selected, onPick) => {
+    const box = document.createElement('div');
+    box.className = 'strategies';
+    const option = (id, text) => {
+      const label = document.createElement('label');
+      label.className = 'strategy';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = `topic-${name}`;
+      radio.value = id === null ? '' : String(id);
+      radio.checked = (id ?? null) === (selected ?? null);
+      radio.onchange = () => onPick(id);
+      const span = document.createElement('span');
+      span.textContent = text;
+      label.append(radio, span);
+      box.append(label);
+    };
+    option(null, 'Без темы — агент спросит в разговоре');
+    for (const t of profile?.topics ?? []) {
+      const n = t.facts ?? 0;
+      option(t.id, `${t.title} · ${n} ${plural(n, 'факт', 'факта', 'фактов')}`);
+    }
+    return box;
+  };
+
+  const renderLog = ({ keepScroll = false } = {}) => {
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    const stick = keepScroll ? atBottom : true;
+    const nodes = [];
+    const list = pathMessages();
+    let foldAt = -1;
+    const mode = strategy();
+    const branches = mode === 'branches';
+    const memory = mode === 'summary' ? summaryState : mode === 'facts' ? factsState : null;
+    list.forEach((m) => {
+      try {
+        const node = m.role === 'user' ? renderUser(m) : renderAgent(m);
+        if (branches && m.role === 'user') addActions(node, m);
+        nodes.push(node);
+      } catch {}
+      if (memory && m.id === memory.throughId) foldAt = nodes.length;
+    });
+    if (branchWarn) {
+      const li = document.createElement('li');
+      li.className = 'msg';
+      li.append(warnLine(branchWarn));
+      nodes.unshift(li);
+    }
+    if (memory && nodes.length > 0) {
+      try {
+        const idx = list.findIndex((m) => m.id === memory.throughId);
+        const behind = idx === -1 ? 0 : list.length - 1 - idx;
+        nodes.splice(
+          foldAt === -1 ? 0 : foldAt,
+          0,
+          mode === 'facts' ? renderFactsFold(memory, behind) : renderFold(memory),
+        );
+      } catch {}
+    }
+    // Живого диалога нет: над пустым состоянием — выбор темы, с которой
+    // начнётся первый диалог.
+    if (nodes.length === 0) {
+      log.replaceChildren(renderTopicPick(), empty);
+    } else {
+      log.replaceChildren(...nodes);
+    }
+    $('restored').hidden = !(restoredFromServer && messages.length > 0);
+    showHead();
+    if (stick) log.scrollTop = log.scrollHeight;
+  };
+
+  $('restored').textContent = 'Переписка восстановлена с сервера.';
+
+  /* ---------- чтение переписки ---------- */
+
+  const contextParams = () => {
+    const s = strategy();
+    const q = new URLSearchParams({ strategy: s });
+    const model = chosenModel();
+    if (model) q.set('model', model);
+    if (APPLIES[s].window) q.set('window', $('p-window').value);
+    if (APPLIES[s].factsTokens) q.set('factsTokens', $('p-facts-tokens').value);
+    if (APPLIES[s].context) q.set('contextTokens', $('p-context').value);
+    if (APPLIES[s].summarizeAt && !$('p-summarize-at').disabled)
+      q.set('summarizeAt', $('p-summarize-at').value);
+    return q;
+  };
+
+  const adoptChat = (d) => {
+    messages = d.messages ?? [];
+    restoredFromServer = messages.length > 0;
+    spentTokens = Number.isFinite(d.totalTokens) ? d.totalTokens : null;
+    summaryState = d.summary ?? null;
+    factsState = d.facts ?? null;
+    contextState = d.context ?? null;
+    headId = Number.isInteger(d.head) ? d.head : null;
+    activeTopic = d.topic ?? null;
+    pendingTopic = d.pendingTopic ?? null;
+    sessionName = d.session?.name ?? null;
+  };
+
+  const loadChat = async () => {
+    try {
+      const d = await api(`./api/chat?${contextParams()}`);
+      adoptChat(d);
+      askWarn = null;
+      renderLog();
+      if (d.expired) announce('Прежний диалог истёк. Новое сообщение начнёт новый.');
+    } catch (error) {
+      restoredFromServer = false;
+      spentTokens = null;
+      contextState = null;
+      renderLog();
+      $('restored').hidden = false;
+      $('restored').textContent =
+        'Прежнюю переписку загрузить не удалось. Новое сообщение начнёт диалог заново.';
+    }
+  };
+
+  const syncChat = async () => {
+    try {
+      const d = await api(`./api/chat?${contextParams()}`);
+      adoptChat(d);
+    } catch {
+      contextState = null;
+    }
+    renderLog({ keepScroll: true });
+  };
+
+  /** Профиль после ответа: правила, темы и диалоги могли пополниться. */
+  const syncProfile = async () => {
+    try {
+      const d = await api('./api/profile');
+      profile = d.profile;
+      showHead();
+    } catch {}
+  };
+
+  /* ---------- ответ на вопрос о теме ---------- */
+
+  const answerTopic = async (decision) => {
+    try {
+      await api('./api/session/topic', postJson({ decision }));
+      askWarn = null;
+      await Promise.all([syncChat(), syncProfile()]);
+      const title = activeTopic?.title;
+      announce(
+        decision === 'open' && title
+          ? `Тема «${title}» открыта.`
+          : title
+            ? `Продолжили в «${title}».`
+            : 'Продолжили без темы.',
+      );
+    } catch (error) {
+      askWarn = error.status === 409 && error.code === 'busy'
+        ? 'Идёт запуск — ответить можно после ответа агента'
+        : 'Ответ не принят — обновите страницу';
+      renderLog({ keepScroll: true });
+      announce(askWarn);
+    }
+  };
+
+  /* ---------- окно диалогов ---------- */
+
+  const sesDlg = $('ses-dlg');
+
+  const openSessions = async () => {
+    const box = $('ses-list');
+    box.replaceChildren();
+    say($('ses-msg'), '');
+    $('ses-full').hidden = true;
+    $('ses-count').textContent = '';
+    box.setAttribute('aria-busy', 'true');
+    for (let i = 0; i < 3; i++) {
+      const li = document.createElement('li');
+      const skel = document.createElement('p');
+      skel.className = 'skel';
+      li.append(skel);
+      box.append(li);
+    }
+    sesDlg.showModal();
+    sesDlg.focus();
+
+    try {
+      const d = await api('./api/sessions');
+      if (profile) profile.sessions = d.sessions ?? [];
+      box.replaceChildren();
+      box.removeAttribute('aria-busy');
+      const list = d.sessions ?? [];
+      const cap = d.cap ?? null;
+      $('ses-count').textContent = cap === null ? '' : `${list.length} из ${cap}`;
+      const full = cap !== null && list.length >= cap;
+      $('ses-new').disabled = full;
+      $('ses-full').hidden = !full;
+      if (list.length === 0) {
+        say($('ses-msg'), 'Диалогов пока нет. Начните новый — он будет первым в профиле.');
+        $('ses-new').focus();
+        return;
+      }
+      for (const s of list) {
+        const li = document.createElement('li');
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'br-row';
+        const current = s.id === d.currentId;
+        const n = s.messages ?? 0;
+        b.textContent =
+          `«${s.name}» · активен ${fmtAgo(s.lastSeenAt)} · ${n} ${plural(n, 'сообщение', 'сообщения', 'сообщений')} · ` +
+          (s.topic ? `тема: ${s.topic.title}` : 'без темы') +
+          (current ? ' · текущий' : '');
+        b.disabled = current;
+        b.onclick = () => pickSession(s);
+        li.append(b);
+        box.append(li);
+      }
+      (box.querySelector('button:not([disabled])') ?? $('ses-new')).focus();
+    } catch (error) {
+      box.replaceChildren();
+      box.removeAttribute('aria-busy');
+      say($('ses-msg'), 'Список диалогов не загрузился. Проверьте связь и повторите.');
+      $('ses-new').focus();
+    }
+  };
+
+  const pickSession = async (s) => {
+    try {
+      await api('./api/session/select', postJson({ id: s.id }));
+      sesDlg.close();
+      await loadChat();
+      announce(`Диалог «${s.name}».`);
+    } catch (error) {
+      say($('ses-msg'), error.message);
+    }
+  };
+
+  $('ses-btn').onclick = openSessions;
+  $('ses-close').onclick = () => sesDlg.close();
+  sesDlg.addEventListener('close', () => $('ses-btn').focus());
+  // Переход окно-в-окно не делается: вложенные <dialog> ломают ловушку фокуса.
+  $('ses-new').onclick = () => {
+    sesDlg.close();
+    openTopicDialog('new');
+  };
+
+  /* ---------- окно выбора темы ---------- */
+
+  const topicDlg = $('topic-dlg');
+  let topicMode = 'new';
+  let topicChoice = null;
+  /** Куда вернуть фокус: окно открывается и из шапки, и из окна диалогов. */
+  let topicBackTo = null;
+
+  const openTopicDialog = (mode) => {
+    topicMode = mode;
+    topicBackTo = mode === 'new' ? $('ses-btn') : $('topic-btn');
+    const topics = profile?.topics ?? [];
+    $('topic-h').textContent = mode === 'new' ? 'Тема нового диалога' : 'Тема диалога';
+    $('topic-go').textContent = mode === 'new' ? 'Начать диалог' : 'Сменить тему';
+    say($('topic-note'), '');
+    topicChoice = mode === 'new' ? null : (activeTopic?.id ?? null);
+    const box = $('topic-options');
+    box.replaceChildren();
+    if (topics.length === 0) {
+      $('topic-set').hidden = true;
+      $('topic-none').hidden = false;
+      // Менять тему не на что: в режиме смены окно не открывается вовсе.
+      if (mode !== 'new') return;
+    } else {
+      $('topic-set').hidden = false;
+      $('topic-none').hidden = true;
+      box.append(topicOptions('dlg', topicChoice, (id) => { topicChoice = id; }));
+    }
+    topicDlg.showModal();
+    (box.querySelector('input') ?? $('topic-go')).focus();
+  };
+
+  $('topic-btn').onclick = () => openTopicDialog('current');
+  $('topic-close').onclick = () => topicDlg.close();
+  topicDlg.addEventListener('close', () => topicBackTo?.focus());
+
+  $('topic-go').onclick = async () => {
+    try {
+      if (topicMode === 'new') {
+        const d = await api('./api/session', postJson({ topicId: topicChoice }));
+        topicDlg.close();
+        await Promise.all([loadChat(), syncProfile()]);
+        announce(`Новый диалог «${d.name}».`);
+      } else {
+        await api('./api/session/topic', postJson({ topicId: topicChoice }));
+        topicDlg.close();
+        await Promise.all([syncChat(), syncProfile()]);
+        announce(activeTopic ? `Тема диалога: «${activeTopic.title}».` : 'Диалог без темы.');
+      }
+    } catch (error) {
+      say($('topic-note'), error.message);
+    }
+  };
+
+  /* ---------- окно памяти профиля ---------- */
+
+  const memDlg = $('mem-dlg');
+  const CHIP = 'записано моделью, не проверено';
+
+  const memSkeleton = (box) => {
+    box.replaceChildren();
+    for (let i = 0; i < 2; i++) {
+      const skel = document.createElement('p');
+      skel.className = 'skel';
+      box.append(skel);
+    }
+  };
+
+  const renderPersonalization = () => {
+    const box = $('mem-person');
+    box.replaceChildren();
+
+    const h1 = document.createElement('p');
+    h1.className = 'mem-sub';
+    h1.textContent = 'Настройки — заданы вами, меняются в окне настроек';
+    const panel = document.createElement('p');
+    panel.className = 'mem-panel';
+    panel.textContent = $('params-sum').textContent.replace(/^Настройки: /, '');
+    box.append(h1, panel);
+
+    const h2 = document.createElement('p');
+    h2.className = 'mem-sub';
+    h2.textContent = `Правила из разговора — извлёк ${SUMMARY_MODEL}`;
+    box.append(h2);
+
+    const rules = profile?.rules ?? [];
+    const count = document.createElement('p');
+    count.className = 'mem-count';
+    const num = document.createElement('span');
+    num.textContent = `${rules.length} из 40`;
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = CHIP;
+    count.append(num, chip);
+    box.append(count);
+
+    if (rules.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'mem-empty';
+      p.textContent = 'Пока ничего: агент запишет, как с вами работать, из ваших слов.';
+      box.append(p);
+      return;
+    }
+    const list = document.createElement('ul');
+    list.className = 'mem-list';
+    for (const r of rules) {
+      const li = document.createElement('li');
+      li.className = 'mem-item';
+      const text = document.createElement('span');
+      text.className = 'mem-text';
+      // Текст правила — данные, а не разметка: в ссылки не превращается.
+      text.textContent = `${r.key} — ${r.value}`;
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = `${fmtDate(r.updatedAt)} · записано из диалога`;
+      li.append(text, when);
+      list.append(li);
+    }
+    box.append(list);
+    if (rules.length >= 40)
+      box.append(warnLine('40 из 40 — новые правила заменяют старые с тем же именем, прочие не записываются'));
+  };
+
+  const renderTopicMemory = (facts, failed) => {
+    const box = $('mem-facts');
+    box.replaceChildren();
+
+    if (activeTopic) {
+      const head = document.createElement('p');
+      head.className = 'mem-count';
+      const num = document.createElement('span');
+      num.textContent = `Активная тема: ${activeTopic.title} · ${facts ? facts.length : 0} из 60 фактов`;
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = CHIP;
+      head.append(num, chip);
+      box.append(head);
+
+      if (failed) {
+        box.append(warnLine('Факты этой темы не загрузились'));
+      } else if (!facts || facts.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'mem-empty';
+        p.textContent = 'Фактов пока нет: агент записывает их из ваших диалогов после каждого ответа.';
+        box.append(p);
+      } else {
+        const list = document.createElement('ul');
+        list.className = 'mem-list';
+        for (const f of facts) {
+          const li = document.createElement('li');
+          li.className = 'mem-item';
+          const text = document.createElement('span');
+          text.className = 'mem-text';
+          text.textContent = f.text;
+          const when = document.createElement('span');
+          when.className = 'when';
+          // Дата записи и имя диалога, не издание: источник факта — разговор.
+          when.textContent = `записан ${fmtStamp(f.at)}` + (f.source ? ` · из диалога «${f.source}»` : '');
+          li.append(text, when);
+          list.append(li);
+        }
+        box.append(list);
+        if (facts.length >= 60)
+          box.append(warnLine('60 из 60 — новые факты в эту тему не записываются'));
+      }
+    } else {
+      const p = document.createElement('p');
+      p.className = 'mem-empty';
+      p.textContent = sessionName
+        ? 'Темы у этого диалога нет: агент предложит её, когда поймёт предмет разговора.'
+        : 'Диалога ещё нет, поэтому нет и активной темы.';
+      box.append(p);
+    }
+
+    if (pendingTopic) {
+      const wait = document.createElement('p');
+      wait.className = 'mem-note';
+      wait.textContent =
+        `Ждёт вашего ответа: «${pendingTopic.title}» — ${pendingTopic.facts} ` +
+        `${plural(pendingTopic.facts, 'факт', 'факта', 'фактов')}. Ответьте на вопрос в конце переписки.`;
+      box.append(wait);
+    }
+
+    const others = (profile?.topics ?? []).filter((t) => t.id !== activeTopic?.id);
+    const rest = document.createElement('p');
+    rest.className = 'mem-note';
+    rest.textContent = others.length
+      ? 'Ещё темы профиля: ' +
+        others.map((t) => `${t.title} — ${t.facts ?? 0} ${plural(t.facts ?? 0, 'факт', 'факта', 'фактов')}`).join(' · ')
+      : 'Других тем у профиля пока нет.';
+    box.append(rest);
+
+    // Без этой строки список других тем читался бы как контекст, который у
+    // агента есть: модели видна только активная тема.
+    const only = document.createElement('p');
+    only.className = 'mem-note';
+    only.textContent = 'Модель видит только активную тему.';
+    box.append(only);
+  };
+
+  const renderWorkingMemory = () => {
+    const box = $('mem-work');
+    box.replaceChildren();
+    if (!sessionName) {
+      const p = document.createElement('p');
+      p.className = 'mem-empty';
+      p.textContent =
+        'Диалога ещё нет: он начнётся с первого сообщения. Правила и факты профиля при этом уже действуют.';
+      box.append(p);
+      return;
+    }
+    const lines = [
+      `Диалог «${sessionName}» · ${activeTopic ? `тема: ${activeTopic.title}` : 'без темы'}`,
+      `Стратегия: ${STRATEGY_LABEL[strategy()]}` +
+        (Number.isFinite(contextState?.total) ? ` · накоплено ${fmtInt(contextState.total)}` : '') +
+        (Number.isFinite(contextState?.summaryTokens) ? ` · из них сводка ${fmtInt(contextState.summaryTokens)}` : ''),
+      `Сообщений: ${pathMessages().length}` +
+        (spentTokens === null ? '' : ` · за всю переписку ${fmtInt(spentTokens)} токенов`),
+    ];
+    for (const line of lines) {
+      const p = document.createElement('p');
+      p.className = 'mem-panel';
+      p.style.marginBottom = 'var(--s-2)';
+      p.textContent = line;
+      box.append(p);
+    }
+  };
+
+  const openMemory = async () => {
+    $('mem-h').textContent = `Память профиля «${profile?.name ?? ''}»`;
+    say($('mem-error'), '');
+    $('mem-retry-row').hidden = true;
+    $('mem-body').setAttribute('aria-busy', 'true');
+    memSkeleton($('mem-person'));
+    memSkeleton($('mem-facts'));
+    memSkeleton($('mem-work'));
+    memDlg.showModal();
+    memDlg.focus();
+    await refreshMemory();
+  };
+
+  const refreshMemory = async () => {
+    let failedProfile = false;
+    try {
+      const d = await api('./api/profile');
+      profile = d.profile;
+    } catch {
+      failedProfile = true;
+    }
+    // Один отказ не опустошает окно целиком: пришедшие разделы показываются.
+    let facts = null;
+    let failedFacts = false;
+    if (activeTopic) {
+      try {
+        const d = await api(`./api/topic/${activeTopic.id}`);
+        facts = d.topic?.facts ?? [];
+      } catch {
+        failedFacts = true;
+      }
+    }
+    $('mem-body').setAttribute('aria-busy', 'false');
+    if (failedProfile) {
+      say($('mem-error'), 'Память профиля не загрузилась');
+      $('mem-retry-row').hidden = false;
+      $('mem-person').replaceChildren(warnLine('Настройки и правила не загрузились'));
+    } else {
+      renderPersonalization();
+    }
+    renderTopicMemory(facts, failedFacts);
+    renderWorkingMemory();
+  };
+  $('mem-retry').onclick = () => {
+    $('mem-body').setAttribute('aria-busy', 'true');
+    memSkeleton($('mem-person'));
+    refreshMemory();
+  };
+
+  $('mem-btn').onclick = openMemory;
+  $('mem-close').onclick = () => memDlg.close();
+  memDlg.addEventListener('close', () => $('mem-btn').focus());
+
+  /* ---------- ветки ---------- */
+
+  const focusBack = (key) => {
+    if (!key) return;
+    const back = log.querySelector(`[data-key="${CSS.escape(key)}"]`);
+    if (back && !back.disabled) {
+      back.focus();
+      return;
+    }
+    const id = key.slice(key.indexOf(':') + 1);
+    log.querySelector(`[data-key="${CSS.escape(`edit:${id}`)}"]`)?.focus();
+  };
+
+  const addActions = (li, m) => {
+    const row = document.createElement('p');
+    row.className = 'msg-actions';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'msg-btn';
+    edit.textContent = 'Изменить';
+    edit.disabled = button.disabled;
+    edit.dataset.key = `edit:${m.id}`;
+    edit.onclick = () => startEdit(m);
+    row.append(edit);
+
+    const family = Number.isInteger(m.id) ? childrenOf(parentOf(m)) : [];
+    if (family.length > 1) {
+      const at = family.findIndex((x) => x.id === m.id);
+      const nav = document.createElement('span');
+      nav.className = 'nav';
+      nav.setAttribute('role', 'group');
+      nav.setAttribute('aria-label', 'Ветки этого сообщения');
+      const step = (to, sign, label) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'msg-btn';
+        b.textContent = sign;
+        b.setAttribute('aria-label', label);
+        b.disabled = to === null || button.disabled;
+        b.dataset.key = `${sign}:${m.id}`;
+        if (to !== null) b.onclick = () => switchBranch(to.id, `${sign}:${to.id}`);
+        return b;
+      };
+      const count = document.createElement('span');
+      count.className = 'nav-count';
+      count.textContent = `${at + 1} из ${family.length}`;
+      nav.append(
+        step(at > 0 ? family[at - 1] : null, '‹', 'предыдущая ветка'),
+        count,
+        step(at < family.length - 1 ? family[at + 1] : null, '›', 'следующая ветка'),
+      );
+      row.append(nav);
+    }
+    li.append(row);
+  };
+
+  const startEdit = (m) => {
+    editing = true;
+    editParent = parentOf(m);
+    editFrom = `edit:${m.id}`;
+    input.value = m.text;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    $('edit-what').textContent = `Новая ветка от вашего сообщения ${fmtTime(m.at)} · `;
+    $('edit-bar').hidden = false;
+    announce('Текст сообщения перенесён в поле ввода. Отправка создаст новую ветку, прежняя останется.');
+  };
+
+  const cancelEdit = ({ sent = false } = {}) => {
+    const was = editing;
+    editing = false;
+    editParent = null;
+    $('edit-bar').hidden = true;
+    if (!was || sent) { editFrom = null; return; }
+    input.value = '';
+    focusBack(editFrom);
+    editFrom = null;
+  };
+
+  $('edit-cancel').onclick = () => cancelEdit();
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && editing) {
+      event.preventDefault();
+      cancelEdit();
+    }
+  });
+
+  const switchBranch = async (messageId, focusKey) => {
+    try {
+      const body = await api('./api/chat/head', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messageId }),
+      });
+      branchWarn = null;
+      if (Number.isInteger(body.head)) headId = body.head;
+      await syncChat();
+      focusBack(focusKey);
+    } catch (error) {
+      branchWarn = error.status === 409
+        ? 'Идёт запуск — ветку можно переключить после ответа'
+        : 'Ветку переключить не удалось — обновите страницу';
+      renderLog({ keepScroll: true });
+      announce(branchWarn);
+    }
+  };
+
+  /* ---------- отправка ---------- */
+
+  const pushLocal = (role, text, meta) => {
+    messages.push({
+      id: `local-${messages.length}`,
+      role,
+      text,
+      tokens: 0,
+      at: new Date().toISOString(),
+      meta,
+    });
+    renderLog({ keepScroll: true });
+  };
+
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (!message) {
+      input.reportValidity();
+      return;
+    }
+
+    const mode = strategy();
+    const params = {
+      prompt: message,
+      model: chosenModel(),
+      maxTokens: Number($('p-max-tokens').value),
+      temperature: Number(temp.value),
+      strategy: mode,
+      stopSequences: $('p-stop').value.split('\n').map((s) => s.trim()).filter(Boolean),
+    };
+    if (APPLIES[mode].context) params.contextTokens = Number($('p-context').value);
+    if (APPLIES[mode].window) params.window = Number($('p-window').value);
+    if (APPLIES[mode].factsTokens) params.factsTokens = Number($('p-facts-tokens').value);
+    if (APPLIES[mode].summarizeAt && !$('p-summarize-at').disabled)
+      params.summarizeAt = Number($('p-summarize-at').value);
+    if (mode === 'branches' && editing) params.parentId = editParent ?? 0;
+    const system = $('p-system').value.trim();
+    if (system) params.system = system;
+    // Тема первого сообщения: диалога ещё нет, и он родится с ней.
+    if (!sessionName && pickedTopicId !== null) params.topicId = pickedTopicId;
+
+    button.disabled = true;
+    log.setAttribute('aria-busy', 'true');
+    const run = startRun(message);
+    pushLocal('user', message);
+    input.value = '';
+    cancelEdit({ sent: true });
+    showHead();
+
+    const finish = () => {
+      button.disabled = false;
+      log.removeAttribute('aria-busy');
+      renderLog({ keepScroll: true });
+      renderMonitor();
+    };
+    const answered = (text, meta) => {
+      pushLocal('agent', text, meta);
+      showParamsSummary();
+    };
+
+    let runId;
+    try {
+      const response = await fetch('./api/answer', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        failRun(run, 'Сервер отклонил запрос', data.error ?? `ответ ${response.status}`);
+        answered(data.error ?? `ответ ${response.status}`, { error: true });
+        return finish();
+      }
+      runId = data.runId;
+      pickedTopicId = null;
+    } catch {
+      failRun(run, 'Связь с агентом прервана', 'запрос не отправлен');
+      answered('запрос не отправлен', { error: true });
+      return finish();
+    }
+
+    const es = new EventSource(`./api/runs/${encodeURIComponent(runId)}/events`);
+    let ended = false;
+    es.addEventListener('event', (m) => {
+      let ev;
+      try { ev = JSON.parse(m.data); } catch { return; }
+      if (ev.stage === 'warning' && ev.title === 'Историю не сжал') run.summarizeFailed = true;
+      addEvent(run, ev);
+    });
+    es.addEventListener('end', async (m) => {
+      ended = true;
+      es.close();
+      let end = {};
+      try { end = JSON.parse(m.data); } catch {}
+      if (end.result) {
+        run.answered = true;
+        const r = end.result;
+        answered(r.answer, run.summarizeFailed ? { ...r.summary, summarizeFailed: true } : r.summary);
+        if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
+      } else if (end.error) {
+        answered(end.error.message ?? 'агент не ответил', { error: true });
+      }
+      setStatus(run, end.status === 'succeeded' || end.status === 'failed' ? end.status
+        : run.answered ? 'succeeded' : 'failed');
+      finish();
+      // Память профиля могла пополниться, тема — смениться, вопрос — появиться.
+      await Promise.all([syncChat(), syncProfile()]);
+    });
+    es.onerror = async () => {
+      if (ended) return;
+      ended = true;
+      es.close();
+      if (run.answered) { setStatus(run, 'succeeded'); finish(); return; }
+      if (run.events.length > 0) {
+        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа');
+        answered('поток закрылся без ответа', { error: true });
+      } else {
+        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся');
+        answered('связь с агентом прервана', { error: true });
+      }
+      finish();
+      await Promise.all([syncChat(), syncProfile()]);
+    };
+  };
+
+  input.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') form.requestSubmit();
+  });
+
+  const platform = navigator.userAgentData?.platform ?? navigator.platform ?? '';
+  if (/mac/i.test(platform)) $('composer-hint').textContent = 'Cmd + Enter — отправить.';
+
+  /* ---------- очистка переписки ---------- */
+
+  const askClear = $('ask-clear');
+  $('clear').onclick = () => {
+    askClear.showModal();
+    $('ask-clear-no').focus();
+  };
+  $('ask-clear-no').onclick = () => askClear.close();
+  askClear.addEventListener('close', () => $('clear').focus());
+  $('ask-clear-yes').onclick = async () => {
+    askClear.close();
+    try {
+      await api('./api/chat', { method: 'DELETE' });
+      messages = [];
+      restoredFromServer = false;
+      spentTokens = null;
+      summaryState = null;
+      factsState = null;
+      contextState = null;
+      headId = null;
+      activeTopic = null;
+      pendingTopic = null;
+      sessionName = null;
+      pickedTopicId = null;
+      cancelEdit();
+      await syncProfile();
+      renderLog();
+      announce('Переписка удалена. Новый диалог начнётся с первого сообщения. Правила и темы профиля остались.');
+    } catch (error) {
+      announce('Переписку удалить не удалось: агент не ответил.');
+    }
+  };
+
+  /* ---------- старт ---------- */
+
+  // Экран выбора профиля показывается при каждом заходе, даже если cookie
+  // профиля стоит: под ним нет ни диалога, ни памяти, ни агента.
+  showGate();
+</script>
+</body>
+</html>
