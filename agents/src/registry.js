@@ -37,10 +37,12 @@ export function loadRegistry(raw) {
     const d = entry.defaults
     if (!d || typeof d !== 'object') fail(id, 'defaults: ожидался объект')
     if (!MODELS.some((m) => m.id === d.model)) fail(id, `defaults.model: неизвестная модель`)
-    for (const field of ['maxTokens', 'perSource']) {
-      if (!Number.isInteger(d[field]) || d[field] <= 0)
-        fail(id, `defaults.${field}: ожидалось положительное целое`)
-    }
+    if (!Number.isInteger(d.maxTokens) || d.maxTokens <= 0)
+      fail(id, 'defaults.maxTokens: ожидалось положительное целое')
+    // Статей с источника у агента без архива не бывает (день 11), поэтому
+    // поле необязательно; заданное проверяется как прежде.
+    if (d.perSource !== undefined && (!Number.isInteger(d.perSource) || d.perSource <= 0))
+      fail(id, 'defaults.perSource: ожидалось положительное целое или отсутствие')
     if (!Number.isFinite(d.temperature) || d.temperature < 0 || d.temperature > 1)
       fail(id, 'defaults.temperature: число от 0 до 1')
     // Число статей в умолчаниях необязательно: без него подборку набирает

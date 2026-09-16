@@ -294,6 +294,13 @@ export function parseProfileName(value) {
 export const LAYERED_MAX_TOKENS = 2048
 
 /**
+ * Потолок фактов одной темы (ADR 2026-09-15-2024, п. 6.1) — временное рабочее
+ * значение решения владельца 8. Одно число на хранилище, запуск и ручку
+ * монитора: тремя копиями они разошлись бы молча.
+ */
+export const TOPIC_FACT_CAP = 60
+
+/**
  * Настройки агента за профилем — закрытый список ключей («Уточнения», 6).
  * Проверяются теми же разборщиками, что вход запуска: значение, годное в
  * настройках, обязано быть годным и в запуске, иначе панель сохраняла бы
@@ -313,7 +320,7 @@ const SETTING_KEYS = [
   'system',
 ]
 
-export function parseSettings(source) {
+export function parseSettings(source, defaults = {}) {
   if (source === null || typeof source !== 'object' || Array.isArray(source)) {
     return { ok: false, message: 'Настройки должны быть объектом' }
   }
@@ -343,10 +350,13 @@ export function parseSettings(source) {
 
   // Порог сводки сверяется с тем размером контекста, который получится после
   // записи: пара «порог больше контекста» не должна попасть в базу и всплыть
-  // отказом на первом же запуске.
+  // отказом на первом же запуске. Умолчание спрашивается у реестра того
+  // агента, чьи настройки правятся, — тем же порядком, что `parseParams`:
+  // иначе запуск пошёл бы с контекстом реестра, а настройки сверялись бы с
+  // другим числом, и порог «влез бы» там, где в запуске он больше окна.
   const summarizeAt = parseSummarizeAt(
     source.summarizeAt,
-    contextTokens.value ?? DEFAULT_CONTEXT_TOKENS,
+    contextTokens.value ?? defaults.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
   )
   if (!summarizeAt.ok) return summarizeAt
   if (summarizeAt.value !== null) settings.summarizeAt = summarizeAt.value

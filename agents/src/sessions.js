@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 export { isSessionId } from './params.js'
+import { TOPIC_FACT_CAP } from './params.js'
 import { DatabaseSync } from 'node:sqlite'
 
 const SCHEMA = `
@@ -139,6 +140,14 @@ export function createSessions({
   profileTtlMs = 30 * 24 * 3600_000,
   profileCap = 5,
   sessionCap = 20,
+  // Потолки слоёв памяти профиля — временные рабочие значения решения
+  // владельца 8 (ADR 2026-09-15-2024, пп. 4 и 6.1): тем на профиль, фактов в
+  // теме, правил на профиль и припаркованных фактов неотвеченного
+  // предложения. Сверх потолка не пишется ничего, вытеснения нет.
+  topicCap = 30,
+  topicFactCap = TOPIC_FACT_CAP,
+  ruleCap = 40,
+  parkedFactCap = 24,
   now = Date.now,
   log = console.error,
 }) {
@@ -290,7 +299,41 @@ export function createSessions({
               (SELECT count(*) FROM topic_facts f WHERE f.topic_id = t.id) AS facts
          FROM topics t WHERE t.profile_id = ? ORDER BY t.updated_at DESC`,
     ),
-    topicOfProfile: db.prepare('SELECT id FROM topics WHERE id = ? AND profile_id = ?'),
+    topicOfProfile: db.prepare('SELECT id, title FROM topics WHERE id = ? AND profile_id = ?'),
+
+    // --- Слои памяти профиля: темы, факты тем, правила (ADR, пп. 4 и 6) ---
+    titlesOfProfile: db.prepare('SELECT id, title FROM topics WHERE profile_id = ?'),
+    addTopic: db.prepare(
+      'INSERT INTO topics (profile_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ),
+    touchTopic: db.prepare('UPDATE topics SET updated_at = ? WHERE id = ?'),
+    countTopics: db.prepare('SELECT count(*) AS n FROM topics WHERE profile_id = ?'),
+    addTopicFact: db.prepare(
+      'INSERT INTO topic_facts (topic_id, text, source_session_id, at) VALUES (?, ?, ?, ?)',
+    ),
+    countTopicFacts: db.prepare('SELECT count(*) AS n FROM topic_facts WHERE topic_id = ?'),
+    // Последние факты темы — от свежих: порядок переворачивает вызывающий.
+    lastTopicFacts: db.prepare(
+      `SELECT id, text, source_session_id AS sourceSessionId, at
+         FROM topic_facts WHERE topic_id = ? ORDER BY id DESC LIMIT ?`,
+    ),
+    countRules: db.prepare('SELECT count(*) AS n FROM personalization WHERE profile_id = ?'),
+    hasRule: db.prepare('SELECT 1 AS yes FROM personalization WHERE profile_id = ? AND key = ?'),
+    saveRule: db.prepare(
+      `INSERT INTO personalization (profile_id, key, value, source_session_id, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(profile_id, key) DO UPDATE SET
+         value = excluded.value, source_session_id = excluded.source_session_id,
+         updated_at = excluded.updated_at`,
+    ),
+    sessionState: db.prepare(
+      `SELECT s.profile_id AS profileId, s.topic_id AS topicId, s.pending_topic AS pendingTopic,
+              t.title AS topicTitle
+         FROM sessions s LEFT JOIN topics t ON t.id = s.topic_id
+        WHERE s.id = ?`,
+    ),
+    setTopic: db.prepare('UPDATE sessions SET topic_id = ? WHERE id = ?'),
+    setPending: db.prepare('UPDATE sessions SET pending_topic = ? WHERE id = ?'),
 
     // --- Сессии профиля --------------------------------------------------
     addSession: db.prepare(
@@ -351,6 +394,64 @@ export function createSessions({
     ),
   }
 
+  /**
+   * Ожидающее предложение темы из столбца `pending_topic`. Битый JSON не
+   * должен запирать диалог вопросом, на который нельзя ответить: считаем,
+   * что предложения нет, — факты пары тогда уйдут в активную тему.
+   */
+  const parsePending = (raw) => {
+    if (!raw) return null
+    try {
+      const value = JSON.parse(raw)
+      if (!value || typeof value.title !== 'string') return null
+      return {
+        title: value.title,
+        facts: Array.isArray(value.facts) ? value.facts.filter((f) => typeof f === 'string') : [],
+        at: value.at ?? null,
+        messageId: value.messageId ?? null,
+      }
+    } catch {
+      log('ожидающее предложение темы не разобрано')
+      return null
+    }
+  }
+
+  /**
+   * Тема профиля по названию без учёта регистра. Сравнение в JS, а не в SQL:
+   * `LOWER()` у SQLite работает только по ASCII, и «Финтех» с «финтех» разошлись
+   * бы в две темы.
+   */
+  const findTopicByTitle = (profileId, title) => {
+    const wanted = String(title).trim().toLocaleLowerCase('ru')
+    for (const row of stmt.titlesOfProfile.all(profileId)) {
+      if (row.title.toLocaleLowerCase('ru') === wanted) return { id: row.id, title: row.title }
+    }
+    return null
+  }
+
+  /** Тема по названию или новая. Сверх потолка тема не заводится. */
+  const openTopic = (profileId, title, at) => {
+    const known = findTopicByTitle(profileId, title)
+    if (known) return known
+    if (stmt.countTopics.get(profileId).n >= topicCap) return { full: true }
+    const id = Number(stmt.addTopic.run(profileId, title, at, at).lastInsertRowid)
+    return { id, title }
+  }
+
+  /** Факты в тему с её потолком: сверх него не пишется, вытеснения нет. */
+  const writeFacts = (topicId, facts, sessionId, at) => {
+    let room = Math.max(0, topicFactCap - stmt.countTopicFacts.get(topicId).n)
+    let written = 0
+    for (const text of facts) {
+      if (room === 0) break
+      stmt.addTopicFact.run(topicId, text, sessionId, at)
+      room -= 1
+      written += 1
+    }
+    if (written > 0) stmt.touchTopic.run(at, topicId)
+    return { written, dropped: facts.length - written }
+  }
+
   /** Строка базы → сообщение для страницы. Битая сводка не роняет чат. */
   const toMessage = (row) => {
     let meta = null
@@ -387,7 +488,23 @@ export function createSessions({
       stmt.touch.run(sessionId, at, at)
     },
 
-    append({ sessionId, role, text, tokens, runId = null, meta = null, parentId = null, at = now() }) {
+    append({
+      sessionId,
+      role,
+      text,
+      tokens,
+      runId = null,
+      meta = null,
+      parentId = null,
+      at = now(),
+      onlyIfLive = false,
+    }) {
+      // `touch` создаёт строку сессии, если её нет, — для дней 6–10 это и есть
+      // «сессия начинается первым сообщением». Диалогу профиля так нельзя:
+      // запись в сессию, удалённую вместе с профилем, воскресила бы её строку
+      // с `profile_id` NULL, и обещание «удаление без следа» (ADR
+      // 2026-09-15-2024, п. 2) держалось бы только до следующего ответа.
+      if (onlyIfLive && !stmt.hasSession.get(sessionId)) return null
       this.touch(sessionId, at)
       const info = stmt.insert.run(
         sessionId,
@@ -944,6 +1061,314 @@ export function createSessions({
     sessionProfile(sessionId) {
       const row = stmt.sessionOwner.get(sessionId)
       return row ? (row.profileId ?? null) : undefined
+    },
+
+    // --- Слои памяти профиля: чтение (ADR 2026-09-15-2024, пп. 4 и 6) -----
+    // Слои отдаются как данные; что из них уйдёт модели, решает политика
+    // (`context.js`), а не хранилище.
+
+    /** Правила профиля, от свежих к старым. */
+    rulesOf(profileId) {
+      return stmt.rules.all(profileId)
+    },
+
+    /** Темы профиля с числом фактов, от свежих к старым. */
+    topicsOf(profileId) {
+      return stmt.topics.all(profileId)
+    },
+
+    /** Последние `limit` фактов темы, от старых к свежим. */
+    topicFactsOf(topicId, limit) {
+      return stmt.lastTopicFacts.all(topicId, limit).reverse()
+    },
+
+    /** Тема профиля или null — граница чтения чужой темы. */
+    topicOf(profileId, topicId) {
+      const row = stmt.topicOfProfile.get(topicId, profileId)
+      return row ? { id: row.id, title: row.title } : null
+    },
+
+    /**
+     * Состояние диалога дня 11: чей он, какая тема активна и ждёт ли ответа
+     * предложение новой темы. `null`, если сессии нет вовсе.
+     */
+    sessionState(sessionId) {
+      const row = stmt.sessionState.get(sessionId)
+      if (!row) return null
+      return {
+        profileId: row.profileId ?? null,
+        topicId: row.topicId ?? null,
+        topicTitle: row.topicTitle ?? null,
+        pending: parsePending(row.pendingTopic),
+      }
+    },
+
+    /**
+     * Дельта вызова пополнения в память профиля — одной транзакцией
+     * (ADR 2026-09-15-2024, пп. 5.2 и 6.2). Что решать — дело политики и
+     * модели; здесь только запись с её правилами: потолки слоёв, парковка
+     * фактов до ответа человека и гонка с удалением.
+     *
+     * Пишется, только если живы и диалог (реплика `aliveId` на месте), и
+     * профиль: вызов идёт секунды, и за это время профиль могли удалить —
+     * тогда в память не попадает ничего, а цена вызова не воскрешает строк.
+     */
+    rememberLayers({
+      sessionId,
+      profileId,
+      aliveId,
+      topic = { kind: 'continue' },
+      facts = [],
+      rules = [],
+      spentTokens = 0,
+      at = now(),
+    }) {
+      if (!stmt.hasMessage.get(aliveId, sessionId)) return { ok: false, code: 'session_gone' }
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return { ok: false, code: 'profile_gone' }
+      const state = this.sessionState(sessionId)
+      if (!state || state.profileId !== profileId) return { ok: false, code: 'session_gone' }
+
+      db.exec('BEGIN')
+      try {
+        const report = {
+          ok: true,
+          topicId: state.topicId,
+          topicTitle: state.topicTitle,
+          switched: null,
+          proposal: null,
+          waiting: false,
+          pending: null,
+          factsWritten: 0,
+          factsParked: 0,
+          rulesWritten: 0,
+          warnings: [],
+        }
+        const pending = state.pending
+        let decision = topic.kind
+        // Пока предложение ждёт ответа, самостоятельных переходов нет: руль у
+        // человека, и его ответ решит всё разом (ADR, п. 6.2).
+        if (pending && decision !== 'open' && decision !== 'reject') decision = 'wait'
+        // Отвечать нечего — «открыть» и «отклонить» читаются как «продолжить».
+        if (!pending && (decision === 'open' || decision === 'reject')) decision = 'continue'
+
+        /** Факты в тему с её потолком; тема становится активной у диалога. */
+        const store = (target, list) => {
+          report.topicId = target.id
+          report.topicTitle = target.title
+          const { written, dropped } = writeFacts(target.id, list, sessionId, at)
+          report.factsWritten += written
+          if (dropped > 0) {
+            report.warnings.push({ code: 'topic_facts_full', dropped, cap: topicFactCap })
+          }
+        }
+        /** Активной темы нет — факты не записываются никуда (ADR, п. 6.2.4). */
+        const intoActive = (list) => {
+          if (state.topicId) return store({ id: state.topicId, title: state.topicTitle }, list)
+          if (list.length > 0) report.warnings.push({ code: 'no_topic', dropped: list.length })
+        }
+        const switchTo = (target, by) => {
+          stmt.setTopic.run(target.id, sessionId)
+          report.switched = { from: state.topicTitle, to: target.title, by }
+        }
+
+        if (decision === 'wait') {
+          const room = Math.max(0, parkedFactCap - pending.facts.length)
+          const added = facts.slice(0, room)
+          if (added.length < facts.length) {
+            report.warnings.push({
+              code: 'parked_full',
+              dropped: facts.length - added.length,
+              cap: parkedFactCap,
+            })
+          }
+          const next = { ...pending, facts: [...pending.facts, ...added] }
+          stmt.setPending.run(JSON.stringify(next), sessionId)
+          report.factsParked = added.length
+          report.waiting = true
+          report.pending = { title: pending.title, facts: next.facts.length }
+        } else if (decision === 'open' || decision === 'reject') {
+          // Ответ человека репликой: припаркованное и факты этой пары уходят
+          // вместе — одним решением, как и кнопкой (ADR, п. 6.2.3).
+          const all = [...pending.facts, ...facts]
+          stmt.setPending.run(null, sessionId)
+          if (decision === 'reject') {
+            intoActive(all)
+          } else {
+            const opened = openTopic(profileId, pending.title, at)
+            if (opened.full) {
+              report.warnings.push({ code: 'topics_full', cap: topicCap, title: pending.title })
+              intoActive(all)
+            } else {
+              switchTo(opened, 'answer')
+              store(opened, all)
+            }
+          }
+        } else if (decision === 'existing') {
+          // Чужой или несуществующий идентификатор — как «продолжить».
+          const target = this.topicOf(profileId, topic.id)
+          if (!target) intoActive(facts)
+          else {
+            switchTo(target, 'model')
+            store(target, facts)
+          }
+        } else if (decision === 'propose') {
+          // Название существующей темы — переход к ней, а не вопрос.
+          const known = findTopicByTitle(profileId, topic.title)
+          if (known) {
+            switchTo(known, 'model')
+            store(known, facts)
+          } else {
+            const parked = facts.slice(0, parkedFactCap)
+            if (parked.length < facts.length) {
+              report.warnings.push({
+                code: 'parked_full',
+                dropped: facts.length - parked.length,
+                cap: parkedFactCap,
+              })
+            }
+            stmt.setPending.run(
+              JSON.stringify({ title: topic.title, facts: parked, at }),
+              sessionId,
+            )
+            report.factsParked = parked.length
+            report.proposal = { title: topic.title, facts: parked.length }
+            report.pending = { title: topic.title, facts: parked.length }
+          }
+        } else {
+          intoActive(facts)
+        }
+
+        // Правила: имя уникально в профиле, новое значение заменяет прежнее;
+        // сверх потолка новые имена не заводятся (ADR, п. 4).
+        let room = Math.max(0, ruleCap - stmt.countRules.get(profileId).n)
+        let rulesDropped = 0
+        for (const rule of rules) {
+          const known = Boolean(stmt.hasRule.get(profileId, rule.key))
+          if (!known && room === 0) {
+            rulesDropped += 1
+            continue
+          }
+          stmt.saveRule.run(profileId, rule.key, rule.value, sessionId, at)
+          if (!known) room -= 1
+          report.rulesWritten += 1
+        }
+        if (rulesDropped > 0) {
+          report.warnings.push({ code: 'rules_full', dropped: rulesDropped, cap: ruleCap })
+        }
+
+        // Пополнение памяти — действие в профиле: срок всей его памяти идёт
+        // от него (ADR, п. 2). Цена вызова — в ту же сумму «вызовы памяти».
+        stmt.touchProfile.run(at, profileId)
+        this.touch(sessionId, at)
+        stmt.addCost.run(sessionId, Math.max(0, Math.round(spentTokens)))
+        db.exec('COMMIT')
+        return report
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+    },
+
+    /**
+     * Ответ человека на предложение темы и ручная смена темы — одна операция
+     * (ADR 2026-09-15-2024, п. 6.2.3): `open` уносит припаркованные факты в
+     * новую тему, `continue` — в активную, `topicId` меняет тему без вопроса.
+     * Вызовов модели здесь нет, поэтому и цены нет.
+     */
+    resolveTopic({ sessionId, profileId, decision = null, topicId = undefined, at = now() }) {
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) {
+        return { ok: false, code: 'unknown_profile' }
+      }
+      const state = this.sessionState(sessionId)
+      if (!state || state.profileId !== profileId) return { ok: false, code: 'unknown_session' }
+      if (topicId !== undefined) {
+        // Ручной выбор: человек решил сам, вопроса нет. `null` — «без темы».
+        const target = topicId === null ? null : this.topicOf(profileId, topicId)
+        if (topicId !== null && !target) return { ok: false, code: 'unknown_topic' }
+        db.exec('BEGIN')
+        try {
+          const report = {
+            ok: true,
+            topicId: target ? target.id : null,
+            topicTitle: target ? target.title : null,
+            switched: { from: state.topicTitle, to: target ? target.title : null, by: 'human' },
+            factsWritten: 0,
+            warnings: [],
+          }
+          // Выбор темы рукой — ответ и на висящий вопрос: оставить предложение
+          // живым значило бы, что агент дальше не переходит сам и паркует
+          // факты в предмет, от которого человек уже ушёл (ревьюер, PR #153).
+          const parked = state.pending?.facts ?? []
+          if (state.pending) stmt.setPending.run(null, sessionId)
+          stmt.setTopic.run(target ? target.id : null, sessionId)
+          if (parked.length > 0) {
+            if (target) {
+              const { written, dropped } = writeFacts(target.id, parked, sessionId, at)
+              report.factsWritten = written
+              if (dropped > 0) {
+                report.warnings.push({ code: 'topic_facts_full', dropped, cap: topicFactCap })
+              }
+            } else {
+              report.warnings.push({ code: 'no_topic', dropped: parked.length })
+            }
+          }
+          stmt.touchProfile.run(at, profileId)
+          db.exec('COMMIT')
+          return report
+        } catch (error) {
+          db.exec('ROLLBACK')
+          throw error
+        }
+      }
+      if (decision !== 'open' && decision !== 'continue') return { ok: false, code: 'bad_decision' }
+      if (!state.pending) return { ok: false, code: 'no_pending' }
+
+      db.exec('BEGIN')
+      try {
+        const report = {
+          ok: true,
+          topicId: state.topicId,
+          topicTitle: state.topicTitle,
+          switched: null,
+          factsWritten: 0,
+          warnings: [],
+        }
+        const parked = state.pending.facts
+        stmt.setPending.run(null, sessionId)
+        const into = (target) => {
+          const { written, dropped } = writeFacts(target.id, parked, sessionId, at)
+          report.topicId = target.id
+          report.topicTitle = target.title
+          report.factsWritten = written
+          if (dropped > 0) {
+            report.warnings.push({ code: 'topic_facts_full', dropped, cap: topicFactCap })
+          }
+        }
+        if (decision === 'open') {
+          const opened = openTopic(profileId, state.pending.title, at)
+          if (opened.full) {
+            report.warnings.push({ code: 'topics_full', cap: topicCap, title: state.pending.title })
+            if (state.topicId) into({ id: state.topicId, title: state.topicTitle })
+            else if (parked.length > 0) {
+              report.warnings.push({ code: 'no_topic', dropped: parked.length })
+            }
+          } else {
+            stmt.setTopic.run(opened.id, sessionId)
+            report.switched = { from: state.topicTitle, to: opened.title, by: 'human' }
+            into(opened)
+          }
+        } else if (state.topicId) {
+          into({ id: state.topicId, title: state.topicTitle })
+        } else if (parked.length > 0) {
+          report.warnings.push({ code: 'no_topic', dropped: parked.length })
+        }
+        stmt.touchProfile.run(at, profileId)
+        db.exec('COMMIT')
+        return report
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
     },
 
     stats() {

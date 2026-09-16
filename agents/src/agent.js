@@ -101,6 +101,9 @@ export function createNewsAnalyst({
   return {
     id: agent.id,
     version: agent.version,
+    // Инструменты записи — чтобы сервис отличал агента с архивом от агента
+    // без него: ручка архива у второго обязана отвечать 404 (ADR, п. 8.2).
+    tools: [...agent.tools],
 
     isBusy: lock.isBusy,
     hold: lock.hold,
