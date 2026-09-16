@@ -15,6 +15,14 @@
     "maxAnswerTokens": 4096,
     "dataClass": "public"
   },
+  "layered_dialogue": {
+    "tiers": ["self-hosted", "cloud-cheap", "cloud-frontier"],
+    "requires": ["text_generation"],
+    "thinking": "none",
+    "answerTokens": 1024,
+    "maxAnswerTokens": 2048,
+    "dataClass": "public"
+  },
   "extract_json": {
     "tiers": ["self-hosted", "cloud-frontier"],
     "requires": ["text_generation", "json_schema"],
