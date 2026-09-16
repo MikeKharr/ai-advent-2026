@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import { assemble, REPLENISH_CAPS } from '../src/context.js'
 import { createLayeredAgent } from '../src/layered.js'
 import { estimateTokens, parseDelta } from '../src/llm.js'
+import { inputBudgetFor } from '../src/params.js'
 import { createRuns } from '../src/runs.js'
 import { createSessions } from '../src/sessions.js'
 import { paidNothing } from '../src/shared.js'
@@ -137,7 +138,7 @@ test('describe(): потолок ответа 2048, инструментов и 
   assert.equal(described.taskClass, 'layered_dialogue')
   assert.deepEqual(described.tools, [], 'инструментов у агента нет')
   assert.deepEqual(described.presets, [], 'готовых запросов о новостях нет')
-  assert.equal(described.models.length, 4, 'страница предлагает закрытый список моделей')
+  assert.equal(described.models.length, 8, 'закрытый список дня 11: четыре прежние и четыре Kimi')
   assert.equal(described.limits.perSource, undefined, 'статей с источника у агента не бывает')
   assert.equal(described.limits.articles, undefined)
 })
@@ -150,12 +151,34 @@ test('maxTokens 2049 — отказ сервиса, роутер не вызыв
   assert.deepEqual(fetchImpl.calls, [], 'до роутера запрос не дошёл')
 })
 
+// Список дня 11 открыт для Kimi (ADR 2026-09-16-1038); закрытым он быть не
+// перестал — несуществующая модель по-прежнему не доходит до роутера.
+test('модель Kimi принята: роутер спрошен именно о ней, классом дня 11', async () => {
+  const { ask, fetchImpl } = setup()
+
+  const { snapshot } = await ask({ model: 'kimi-k3' })
+  assert.equal(snapshot.status, 'succeeded')
+
+  const call = fetchImpl.answers()[0]
+  assert.equal(call.provider, 'kimi-k3', 'подмены на другую модель нет')
+  assert.equal(call.taskClass, 'layered_dialogue')
+})
+
+test('предел входа kimi-k3 — свой, а не молча Haiku', () => {
+  assert.equal(inputBudgetFor('kimi-k3'), 32_000)
+  assert.notEqual(
+    inputBudgetFor('kimi-k3'),
+    inputBudgetFor('anthropic-haiku'),
+    'запись найдена в каталоге, а не заменена первой моделью списка',
+  )
+})
+
 test('модель вне закрытого списка — 400 «Неизвестная модель», роутер не вызывается', async () => {
   const { ask, fetchImpl } = setup({ router: boomRouter() })
 
-  const refused = await ask({ model: 'kimi-k3' })
+  const refused = await ask({ model: 'gpt-5' })
   assert.equal(refused.refused, 'Неизвестная модель')
-  assert.deepEqual(fetchImpl.calls, [], 'вызов за $0,13 не состоялся')
+  assert.deepEqual(fetchImpl.calls, [], 'платного вызова не состоялось')
 })
 
 test('поля дня 10 — sphere, perSource, articles — отвергаются', async () => {

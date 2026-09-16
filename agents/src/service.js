@@ -8,6 +8,7 @@ import {
   inputBudgetFor,
   isProfileId,
   isSessionId,
+  LAYERED_MODELS,
   parseProfileName,
   parseSettings,
   STRATEGIES,
@@ -533,7 +534,10 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         if (!parsed.ok) return
         // Те же разборщики, что у входа запуска: значение, годное в
         // настройках, обязано быть годным и в запуске.
-        const settings = parseSettings(parsed.body, settingsDefaults())
+        // Список — тот же, что у входа запуска дня 11: настройки этой ручки
+        // принадлежат агенту дня 11, и модель, годная в запуске, обязана быть
+        // годной в настройках (ADR 2026-09-16-1038).
+        const settings = parseSettings(parsed.body, settingsDefaults(), LAYERED_MODELS)
         if (!settings.ok) {
           return send(res, 400, { ok: false, code: 'bad_input', message: settings.message })
         }

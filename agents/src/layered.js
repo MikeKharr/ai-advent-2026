@@ -27,7 +27,7 @@ import {
   isProfileId,
   isSessionId,
   LAYERED_MAX_TOKENS,
-  MODELS,
+  LAYERED_MODELS,
   PARAM_LIMITS,
   parseFactsTokens,
   parseParams,
@@ -113,6 +113,9 @@ export function createLayeredAgent({
         // потолок сервиса: 2049 отвергается здесь, а не роутером.
         maxOutputTokens: LAYERED_MAX_TOKENS,
         defaults: agent.defaults,
+        // Список дня 11 — с моделями Kimi (ADR 2026-09-16-1038). Дни 6–10
+        // зовут `parseParams` без него и остаются на `MODELS`.
+        models: LAYERED_MODELS,
       })
       if (!parsed.ok) return { ok: false, message: parsed.message }
       if (parsed.params.prompt === '') return { ok: false, message: 'Напишите сообщение' }
@@ -162,7 +165,7 @@ export function createLayeredAgent({
      */
     async describe() {
       const limits = await limitsOf()
-      const models = MODELS.map((m) => {
+      const models = LAYERED_MODELS.map((m) => {
         const budget = effectiveBudget(m.id, inputBudgetFor(m.id), limits)
         return {
           ...m,

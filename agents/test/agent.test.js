@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createNewsAnalyst } from '../src/agent.js'
+import { KIMI_MODELS } from '../src/params.js'
 import { createRuns } from '../src/runs.js'
 import { ENV, fakeArchive, fakeRouter, ITEMS, NEWS, ROUTER_ANSWER } from './fixtures.js'
 
@@ -231,6 +232,21 @@ test('вход проверяется на границе агента', () => {
   assert.equal(ok.input.params.model, 'anthropic-haiku', 'умолчание — из реестра')
   assert.equal(ok.input.params.maxTokens, 600)
   assert.equal(ok.input.params.temperature, 0.3)
+})
+
+// Kimi открыт только дню 11 (ADR 2026-09-16-1038). Страж стоит здесь, потому
+// что список один на сервис: стоит `parseParams` начать по умолчанию брать
+// список дня 11 — и модели Kimi молча появятся в днях 6–10.
+test('дни 6–10 моделей Kimi не получили: news-analyst отвергает их на границе', () => {
+  const runs = createRuns()
+  const agent = createNewsAnalyst({ agent: NEWS, archive: fakeArchive(), runs, env: ENV })
+  for (const { id } of KIMI_MODELS) {
+    assert.equal(
+      agent.parseInput({ sphere: 'x', prompt: 'вопрос', model: id }).message,
+      'Неизвестная модель',
+      `${id} в дни 6–10 не попал`,
+    )
+  }
 })
 
 test('описание: промпт из реестра, модели с живым пределом, без ключей', async () => {
