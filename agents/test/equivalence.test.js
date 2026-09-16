@@ -42,9 +42,9 @@ const MEMO_ANSWER = {
  * Часы с постоянным шагом: длительности в событиях становятся
  * воспроизводимыми, а изменение числа обращений к часам — видимым.
  */
-function clock() {
+function clock(step = 1000) {
   let t = Date.UTC(2026, 8, 16, 0, 0, 0)
-  return () => (t += 1000)
+  return () => (t += step)
 }
 
 /** Роутер-заглушка: отдельные ответы вызову ответа и вызову памяти. */
@@ -98,8 +98,8 @@ function seedPath(sessions, count, tokens) {
 }
 
 /** Один запуск до терминального события. Возвращает всё наблюдаемое снаружи. */
-async function runScenario({ input, archive, fetchImpl, memory = false, seed = null }) {
-  const now = clock()
+async function runScenario({ input, archive, fetchImpl, memory = false, seed = null, step }) {
+  const now = clock(step)
   const runs = createRuns({ now })
   const sessions = memory
     ? createSessions({ file: ':memory:', ttlMs: 30 * 3600_000, log: () => {} })
@@ -214,6 +214,31 @@ const SCENARIOS = {
           message: 'все провайдеры отказали',
           attempts: [{ provider: 'anthropic-haiku', outcome: 'timeout' }],
         },
+      }),
+    }),
+
+  // Часы с мелким шагом: длительности уходят под секунду, и второй формат
+  // `seconds` («320 мс») попадает в запись. На шаге в секунду он недостижим.
+  'быстрые часы: длительности в миллисекундах': () =>
+    runScenario({ input: { ...FINTECH, prompt: 'что нового' }, fetchImpl: router(), step: 10 }),
+
+  // Ветка paidNothing по коду состояния: без кода `budget_exceeded` решает
+  // именно диапазон 4xx с исключением 429.
+  'отказ роутера: 429 без кода бюджета': () =>
+    runScenario({
+      input: { ...FINTECH, prompt: 'что нового' },
+      fetchImpl: router({
+        answerStatus: 429,
+        answer: { ok: false, code: 'rate_limited', message: 'слишком часто' },
+      }),
+    }),
+
+  'отказ роутера: 400 разбора запроса': () =>
+    runScenario({
+      input: { ...FINTECH, prompt: 'что нового' },
+      fetchImpl: router({
+        answerStatus: 400,
+        answer: { ok: false, code: 'bad_input', message: 'неверный запрос' },
       }),
     }),
 
@@ -454,6 +479,10 @@ test('эталон не пуст и правда проходит по выне�
   assert.match(dump, /Обновил факты/)
   assert.match(dump, /Старые реплики не вошли в сводку/)
   assert.match(dump, /Старые реплики не вошли в факты/)
-  // Формат длительности (seconds).
-  assert.match(dump, /\d+[,.]?\d* (с|мс)/)
+  // Оба формата длительности (seconds): секунды и миллисекунды.
+  assert.match(dump, /\d+\.\d+ с/)
+  assert.match(dump, /\d+ мс/)
+  // Обе ветки paidNothing по коду состояния.
+  assert.match(dump, /rate_limited/)
+  assert.match(dump, /bad_input/)
 })
