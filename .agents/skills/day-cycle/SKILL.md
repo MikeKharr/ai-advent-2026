@@ -73,7 +73,10 @@ description: /day-cycle — оркестрация полного цикла д�
    `2026-09-11-1230`); закрытый список того, что агент выполняет на
    сервере сам, в `cd ai-advent-2026/deploy`:
    `docker compose ps`; `docker compose logs <единица> --tail N` или с
-   `--since …`; `docker compose restart caddy`; `grep -c '^NAME=' <файл>`
+   `--since …`; `docker compose restart caddy`; `docker compose restart mail`
+   — дословно, применить настройку почты и сбросить растущую задержку
+   повторов после разового пика памяти (ADR `2026-09-18-1839`);
+   `grep -c '^NAME=' <файл>`
    и `grep -o '^[A-Z_]*=' <файл>` — имена без значений; копия
    существующего `AGENT_KEY` из `agents.env` в `dayN.env` единицы, которая
    ходит к сервису агентов (ADR `2026-09-11-1743`), — новый файл:
