@@ -134,3 +134,32 @@ challenge.zpq.ai {
 		file_server
 	}
 }
+
+# --- сайт компании zpq.ai ---
+# Отдельный домен, отдельный корень: статика из site/zpq того же репозитория,
+# каталог site уже примонтирован в контейнер как /srv/site (compose.yml).
+# Заголовка X-Robots-Tag здесь НЕТ намеренно: в отличие от challenge.zpq.ai,
+# сайт компании обязан индексироваться.
+zpq.ai {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	root * /srv/site/zpq
+	file_server
+
+	handle_errors {
+		rewrite * /404.html
+		file_server
+	}
+}
+
+# www отправляем на апекс: один канонический адрес для поиска.
+www.zpq.ai {
+	redir https://zpq.ai{uri} permanent
+}
