@@ -279,9 +279,35 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Почтовый сервер домена zpq.ai (ADR 2026-09-18-1052, путь В).
+  # Наружу — только приём (25), отправка из клиента (465) и IMAP (993);
+  # 587/143/110/995/4190 намеренно не публикуются. Администрирование —
+  # через Caddy на mail.zpq.ai, порт 8080 наружу не выходит.
+  # Секретов в репозитории нет и быть не должно: учётные данные первого
+  # администратора Stalwart печатает в свой журнал при первом старте
+  # (docker compose logs mail), дальше всё настраивается через админку и
+  # живёт в томе mail_etc.
+  mail:
+    image: stalwartlabs/stalwart:v0.16
+    restart: unless-stopped
+    hostname: mail.zpq.ai
+    ports:
+      - "25:25"     # приём почты от чужих серверов
+      - "465:465"   # SMTP submission (implicit TLS) для клиента владельца
+      - "993:993"   # IMAP (implicit TLS)
+    volumes:
+      - mail_etc:/etc/stalwart    # настройка, переживает пересоздание контейнера
+      - mail_data:/var/lib/stalwart   # письма и индексы
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
 volumes:
   caddy_data:
   caddy_config:
   router_data:
   agents_data:
   day5_data:
+  mail_etc:
+  mail_data:
