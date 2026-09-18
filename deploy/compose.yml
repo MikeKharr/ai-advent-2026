@@ -279,9 +279,41 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Почтовый сервер домена zpq.ai (ADR 2026-09-18-1052, путь В).
+  # Наружу не публикуется НИЧЕГО: почтовые порты (25 — приём, 465 —
+  # submission, 993 — IMAP) пока закрыты, поэтому посторонний не может
+  # прислать контейнеру ни байта. Откроет их отдельный PR — по решению
+  # владельца и когда дойдёт до почтового клиента.
+  # Администрирование (8080) доступно только Caddy по внутренней сети
+  # compose, http://mail:8080; этого достаточно, чтобы пройти мастер
+  # настройки на https://mail.zpq.ai.
+  # Секретов в репозитории нет и быть не должно: учётные данные первого
+  # администратора Stalwart печатает в свой журнал при первом старте
+  # (docker compose logs mail), дальше всё настраивается через админку и
+  # живёт в томе mail_etc.
+  mail:
+    image: stalwartlabs/stalwart:v0.16
+    restart: unless-stopped
+    hostname: mail.zpq.ai
+    expose:
+      - "8080"
+    volumes:
+      - mail_etc:/etc/stalwart    # настройка, переживает пересоздание контейнера
+      - mail_data:/var/lib/stalwart   # письма и индексы
+    # Гигабайт, а не 512 МБ: у RocksDB буфер записи 128 МБ, кеши по
+    # умолчанию растут до предела, и сопровождающий советует начинать с 1 ГБ.
+    # Зациклившийся по нехватке памяти контейнер агент не поднимет —
+    # `restart mail` в закрытом списке отсутствует (ADR 2026-09-11-1230).
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
 volumes:
   caddy_data:
   caddy_config:
   router_data:
   agents_data:
   day5_data:
+  mail_etc:
+  mail_data:

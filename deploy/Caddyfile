@@ -163,3 +163,27 @@ zpq.ai {
 www.zpq.ai {
 	redir https://zpq.ai{uri} permanent
 }
+
+# --- почта на домене: администрирование Stalwart ---
+# ADR 2026-09-18-1052 (путь В). Сам почтовый сервер — служба mail в
+# compose.yml; наружу она не публикует ничего, и этот блок — её
+# единственный вход: веб-администрирование (8080) по внутренней сети.
+# X-Robots-Tag здесь ЕСТЬ намеренно: в отличие от сайта компании,
+# админка индексироваться не должна.
+# Собственный сертификат Stalwart (проксирование http-01) появится тем
+# же PR, что откроет почтовые порты: пока портов нет, ему нечего
+# защищать, а провайдер ACME у Stalwart по умолчанию не заведён.
+mail.zpq.ai {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+
+		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex"
+	}
+
+	reverse_proxy mail:8080
+}
