@@ -12,6 +12,8 @@ import { loadRegistry } from './src/registry.js'
 import { createRuns } from './src/runs.js'
 import { createService } from './src/service.js'
 import { createSessions } from './src/sessions.js'
+import { createStageLog } from './src/stage-log.js'
+import { createStagedAgent, STAGED_AGENT_ID } from './src/staged.js'
 import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -58,15 +60,19 @@ try {
   log({ event: 'sessions_off', file: env.SESSIONS_FILE, reason: error.message })
 }
 
-/** Реестр агентов → исполнители: аналитик новостей и агент со слоями памяти. */
+// Журнал этапов дня 13 — файл на томе агентов. Отказ записи запуск не валит:
+// он живёт в `stage-log.js` и отвечает `false`.
+const stageLog = createStageLog({ file: env.STAGE_LOG_FILE, log })
+
+/** Реестр агентов → исполнители: аналитик новостей, слои памяти, машина состояний. */
 const agents = new Map()
 for (const entry of registry.values()) {
-  agents.set(
-    entry.id,
-    entry.id === LAYERED_AGENT_ID
-      ? createLayeredAgent({ agent: entry, runs, sessions, env, log })
-      : createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log }),
-  )
+  let agent
+  if (entry.id === LAYERED_AGENT_ID) agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
+  else if (entry.id === STAGED_AGENT_ID)
+    agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })
+  else agent = createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log })
+  agents.set(entry.id, agent)
 }
 
 // Готовые запуски удаляются по TTL; незавершённые живут до терминального события.
@@ -77,13 +83,19 @@ if (sessions) {
     try {
       const removed = sessions.sweep()
       if (removed > 0) log({ event: 'sessions_swept', removed })
+      // Срок хранения журнала этапов — тот же, что у переписки (ADR
+      // 2026-09-21-1747, п. 7): строки снимает та же уборка.
+      const rows = stageLog.prune(
+        new Date(Date.now() - env.SESSION_TTL_HOURS * 3600_000).toISOString(),
+      )
+      if (rows > 0) log({ event: 'stage_log_pruned', rows })
     } catch (error) {
       console.error(`уборка диалогов: ${error.message}`)
     }
   }, 10 * 60_000).unref()
 }
 
-const handler = createService({ agents, archive, runs, sessions, env, log })
+const handler = createService({ agents, archive, runs, sessions, stageLog, env, log })
 http.createServer(handler).listen(env.PORT, () => {
   log({
     event: 'start',
