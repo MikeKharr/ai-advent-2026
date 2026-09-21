@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -80,7 +80,12 @@ async function start({
     post,
     get,
     calls,
-    close: () => new Promise((r) => server.close(r)),
+    // Соединения рвём явно: иначе оборванный клиентом сокет держит close.
+    close: () =>
+      new Promise((r) => {
+        server.closeAllConnections()
+        server.close(r)
+      }),
     tick: (ms) => (t += ms),
   }
 }
@@ -376,3 +381,58 @@ test('класс вне списка приложения — 403; /v1/spend и 
     await s.close()
   }
 })
+
+test('обрыв клиента прерывает вызов провайдера, попытка остаётся в книге расхода', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ledger-'))
+  const file = join(dir, 'ledger.jsonl')
+  // Оба провайдера висят: клиент уходит, пока вызов в полёте. Ответ висит
+  // на ручке, а не навсегда, — иначе снятый проброс вешал бы прогон вместо
+  // того, чтобы его провалить.
+  let release
+  const hanging = () => new Promise((r) => (release = r))
+  const s = await start({ hosts: { [LAPTOP]: hanging, [CLOUD]: hanging }, file })
+  try {
+    const client = new AbortController()
+    const request = fetch(`${s.base}/v1/route`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${ENV.APP_KEY_SMOKE}`,
+      },
+      body: JSON.stringify({ taskClass: 'summarize', input: 'длинный текст запроса' }),
+      signal: client.signal,
+    }).catch((e) => e)
+    await waitFor(() => s.calls.length === 1)
+    client.abort()
+    assert.ok((await request) instanceof Error, 'клиент ушёл без ответа')
+
+    // Вызов оборван, а не доигран до конца, и второго провайдера не было.
+    await waitFor(() => existsSync(file) && readFileSync(file, 'utf8').trim() !== '')
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines.length, 1, 'одна попытка: фолбэка после обрыва нет')
+    assert.equal(s.calls.length, 1)
+    assert.equal(lines[0].outcome, 'aborted')
+    assert.equal(lines[0].estimated, true, 'usage провайдер не вернул — вход по оценке, с пометкой')
+    assert.ok(lines[0].inputTokens > 0, 'вход не ноль: он принят и оплачен')
+    assert.equal(lines[0].outputTokens, 0)
+
+    // И книга расхода это видит: следующий запрос стартует с меньшим остатком.
+    const spend = await (await s.get('/v1/spend')).json()
+    assert.equal(spend.apps.smoke.calls, 1)
+    assert.equal(spend.apps.smoke.tokens, lines[0].inputTokens)
+  } finally {
+    release?.(httpJson(200, anthropicMessage()))
+    await s.close()
+  }
+})
+
+async function waitFor(cond) {
+  for (let i = 0; i < 200; i++) {
+    if (cond()) return
+    await new Promise((r) => setTimeout(r, 5))
+  }
+  throw new Error('условие не наступило')
+}
