@@ -578,6 +578,27 @@ test('ручка паузы: чужой профиль или диалог — 4
   }
 })
 
+test('удаление профиля с запуском на паузе: запуск отменён, профиль удалён', async () => {
+  const parts = setup()
+  const { server, base, auth } = await serve(parts)
+  try {
+    const started = parts.start()
+    parts.runs.pause(started.run.id)
+    await until(() => parts.runs.snapshot(started.run.id).events.some((e) => e.stage === 'paused'))
+
+    const removed = await fetch(`${base}/v1/profiles/${parts.profile.id}`, {
+      method: 'DELETE',
+      headers: auth,
+    })
+    assert.equal(removed.status, 200, 'запуск на паузе удалению не мешает — он отменяется')
+    assert.equal(parts.runs.snapshot(started.run.id).status, 'cancelled')
+    assert.equal(parts.agent.isBusy(parts.sid), false, 'замок снят')
+    await started.done
+  } finally {
+    server.close()
+  }
+})
+
 test('журнал этапов: строка на проход, без текстов, чужой запуск — 404, уборка по сроку', async () => {
   const file = join(mkdtempSync(join(tmpdir(), 'stage-log-')), 'stage-log.csv')
   const fetchImpl = router({

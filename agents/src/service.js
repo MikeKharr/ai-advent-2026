@@ -199,9 +199,22 @@ export function createService({
    * (ADR 2026-09-21-1747, п. 3). Работающий запуск это не трогает: его держит
    * замок сессии, и ручки выше отвечают 409.
    */
-  const cancelPausedRun = (sessionId) => {
+  const cancelPausedRun = async (sessionId) => {
     const run = runs.forSession?.(sessionId)
-    if (run?.paused) runs.cancelPaused(run.id)
+    if (!run?.paused) return
+    // Ждём терминального события: замок сессии снимает сам исполнитель, и
+    // проверка занятости сразу после отмены увидела бы его ещё занятым.
+    await new Promise((resolve) => {
+      const off = runs.subscribe(run.id, (message) => {
+        if (message.type !== 'end') return
+        off()
+        resolve()
+      })
+      if (!runs.cancelPaused(run.id)) {
+        off()
+        resolve()
+      }
+    })
   }
 
   /** Тело запроса как JSON или отказ 400: один разбор на все ручки профиля. */
@@ -453,7 +466,7 @@ export function createService({
       if (req.method === 'DELETE') {
         // Запуск на паузе в этом диалоге отменяется вместе с ним: иначе он
         // держал бы замок до конца срока паузы.
-        cancelPausedRun(sessionId)
+        await cancelPausedRun(sessionId)
         return send(res, 200, { ok: true, removed: sessions.clear(sessionId) })
       }
       return send(res, 404, { ok: false, code: 'not_found' })
@@ -619,6 +632,10 @@ export function createService({
         // Пока в диалоге профиля идёт запуск, удалять нельзя: запись ответа
         // воскресила бы строку удалённой сессии, и «удаление без следа»
         // держалось бы ровно до конца этого запуска (compliance, фаза 3).
+        // Запуск на паузе отменяется вместе с профилем — это та же отмена,
+        // что и просроченная пауза (ADR 2026-09-21-1747, п. 3). Работающий
+        // запуск по-прежнему держит удаление: ответ воскресил бы строку.
+        for (const session of sessions.sessionsOf(profileId)) await cancelPausedRun(session.id)
         if (sessions.sessionsOf(profileId).some((s) => busy(s.id))) {
           return send(res, 409, {
             ok: false,
@@ -626,7 +643,6 @@ export function createService({
             message: 'В профиле идёт запуск — дождитесь ответа',
           })
         }
-        for (const session of sessions.sessionsOf(profileId)) cancelPausedRun(session.id)
         const removed = sessions.deleteProfile(profileId)
         if (!removed) return send(res, 404, { ok: false, code: 'unknown_profile' })
         log(JSON.stringify({ event: 'profile_deleted', removed }))
