@@ -211,6 +211,7 @@ export function createSessions({
       `INSERT INTO messages (session_id, role, text, tokens, at, run_id, meta, parent_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
+    updateMeta: db.prepare('UPDATE messages SET meta = ? WHERE id = ? AND session_id = ?'),
     history: db.prepare(
       `SELECT id, role, text, tokens, at, run_id AS runId, meta, parent_id AS parentId
        FROM messages WHERE session_id = ? ORDER BY id ASC`,
@@ -564,6 +565,19 @@ export function createSessions({
         parentId,
       )
       return Number(info.lastInsertRowid)
+    },
+
+    /**
+     * Сводка у сообщения — заново. Нужна дню 13: ответ пишется на этапе
+     * «Проверка», а число пройденных этапов известно только на «Выдаче»
+     * (ADR 2026-09-21-1747, п. 1). Сообщение обязано принадлежать этой
+     * сессии: номера в базе сквозные, и без проверки правка задевала бы
+     * чужую переписку. Очищенный диалог правится в ноль строк — это и есть
+     * «ничего не воскресло».
+     */
+    updateMessageMeta({ sessionId, messageId, meta }) {
+      const info = stmt.updateMeta.run(meta ? JSON.stringify(meta) : null, messageId, sessionId)
+      return Number(info.changes) > 0
     },
 
     /** Голова текущей ветки или null у линейных сессий дней 6–9. */

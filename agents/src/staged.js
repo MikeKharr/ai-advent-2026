@@ -990,6 +990,12 @@ export function createStagedAgent({
           reviewModel,
           reviewRounds,
           rounds: ctx.round,
+          // Сколько проходов этапов запуск сделал к этой минуте: считая
+          // текущую «Проверку», чья строка журнала пишется следом. На
+          // «Выдаче» число уточняется правкой этой же сводки — там оно
+          // окончательное, а карточка ответа живёт 30 часов и собирать его
+          // из событий и CSV с другими сроками жизни ей нечем.
+          stagesPassed: rows.length + 1,
           // Пометка проверки — у сообщения, а не в событии: карточка ответа
           // показывает её и после перезагрузки страницы.
           review: ctx.marked
@@ -1084,6 +1090,21 @@ export function createStagedAgent({
           enteredAt: deliverEnteredAt,
           outcome: 'done',
         })
+        // Окончательное число пройденных этапов — у сообщения: строк журнала
+        // ровно столько же, и карточка ответа не собирает его сама.
+        const stagesPassed = rows.length
+        if (ctx.answerId !== null && ctx.summary) {
+          ctx.summary.stagesPassed = stagesPassed
+          try {
+            sessions.updateMessageMeta({
+              sessionId,
+              messageId: ctx.answerId,
+              meta: ctx.summary,
+            })
+          } catch (error) {
+            log(`сессия ${sessionId.slice(0, 8)}…: сводка ответа не уточнена: ${error.message}`)
+          }
+        }
         flushLog('succeeded')
         runs.finish(run.id, {
           status: 'succeeded',
@@ -1104,6 +1125,7 @@ export function createStagedAgent({
             // дошёл. При обрыве потока слоты остаются занятыми: это цена
             // правила, а не дефект (ADR 2026-09-21-1747, п. 5).
             rounds: ctx.answerCalls,
+            stagesPassed,
             reviewRounds,
             reviewModel,
             marked: ctx.marked !== null,

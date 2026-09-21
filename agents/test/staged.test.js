@@ -684,6 +684,28 @@ test('настройки дня 13: проверяющая модель из с�
   assert.equal(agent.parseInput({ reviewModel: 'нет-такой' }).ok, false)
 })
 
+test('у карточки ответа есть число пройденных этапов, и оно равно строкам журнала', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'stage-log-')), 'stage-log.csv')
+  const fetchImpl = router({
+    verdicts: [verdictReply(`вердикт: отклонено\nзамечания: ${REMARKS}`), verdictReply('вердикт: принято')],
+  })
+  const parts = setup({ fetchImpl, stageLogFile: file })
+  const { run, snapshot } = await parts.ask({ reviewRounds: 2 })
+
+  const answer = parts.sessions.history(parts.sid).find((m) => m.role === 'agent')
+  assert.equal(answer.meta.stagesPassed, 9, 'шесть этапов плюс три повторённых кругом')
+  assert.equal(answer.meta.stagesPassed, parts.stageLog.rowsOf(run.id).length)
+  assert.equal(snapshot.result.stagesPassed, answer.meta.stagesPassed)
+})
+
+test('без круга возврата пройдено ровно шесть этапов', async () => {
+  const parts = setup()
+  const { snapshot } = await parts.ask()
+  const answer = parts.sessions.history(parts.sid).find((m) => m.role === 'agent')
+  assert.equal(answer.meta.stagesPassed, 6)
+  assert.equal(snapshot.result.stagesPassed, 6)
+})
+
 // --- Решение владельца 2026-09-21: настройки дня 13 живут отдельно --------
 
 test('страж: сохранённые настройки дня 13 не попадают туда, откуда читает день 11', async () => {
