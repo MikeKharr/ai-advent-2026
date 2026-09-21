@@ -9,6 +9,9 @@ import { createHealth } from './health.js'
 
 const MAX_CALLS = 2
 const DATA_RANK = { public: 0, internal: 1, personal: 2 }
+// Обрыв клиента: вызывающий ушёл, отвечать некому — вызов к провайдеру
+// прерывается на месте (ADR 2026-09-21-1747, развилка 1).
+const CLIENT_GONE = 'клиент разорвал соединение'
 const CACHE_KEY_VERSION = '1'
 // Причины `error.cause.code`, которые означают «до провайдера не достучаться»,
 // а не «провайдер ответил плохо». Только они идут в отрицательный кэш.
@@ -52,7 +55,12 @@ export function createRouter({
     return { level: requested }
   }
 
-  async function route(req) {
+  /**
+   * @param req тело запроса
+   * @param signal сигнал обрыва клиента: при `abort` вызов к провайдеру
+   *   прерывается тем же предохранителем, что дедлайн и `budgetMs`.
+   */
+  async function route(req, { signal = null } = {}) {
     const taskClass = resolveClass(req.taskClass)
     const cls = config.classes[taskClass]
     const reasons = []
@@ -208,6 +216,16 @@ export function createRouter({
         })
         break
       }
+      // Клиент уже ушёл — нового вызова не начинаем: он был бы оплачен
+      // и выброшен. Прерывание вызова в полёте — через signal ниже.
+      if (signal?.aborted) {
+        reasons.push({
+          provider: `${p.id}#${p.revision}`,
+          stage: 'call',
+          reason: `${CLIENT_GONE} до вызова`,
+        })
+        break
+      }
       calls += 1
       if (calls === 2)
         fallback = {
@@ -224,6 +242,7 @@ export function createRouter({
         strict,
         requires,
         budgetUntil,
+        signal,
       })
       attempts.push(attempt)
       bump(p, 'attempts')
@@ -277,11 +296,19 @@ export function createRouter({
       // но негодный; второй вызов с тем же лимитом даст то же (ADR §7).
       if (attempt.outcome === 'aborted' || attempt.outcome === 'truncated') break
     }
-    // Свой потолок вызывающего — отдельный код: это не инцидент провайдера.
-    const aborted = attempts.at(-1)?.outcome === 'aborted'
-    const result = aborted
-      ? refuse('aborted', `потолок вызывающего ${req.budgetMs} мс истёк`, reasons)
-      : refuse('all_failed', `все провайдеры класса ${taskClass} недоступны или отказали`, reasons)
+    // Прерывание — отдельный код: это не инцидент провайдера. Причину берём
+    // у самой попытки (потолок вызывающего или обрыв клиента), а если до
+    // вызова не дошло — обрыв клиента виден по сигналу.
+    const aborted = attempts.at(-1)?.outcome === 'aborted' ? attempts.at(-1) : null
+    let result
+    if (aborted) result = refuse('aborted', aborted.reason, reasons)
+    else if (signal?.aborted) result = refuse('aborted', CLIENT_GONE, reasons)
+    else
+      result = refuse(
+        'all_failed',
+        `все провайдеры класса ${taskClass} недоступны или отказали`,
+        reasons,
+      )
     result.attempts = attempts
     result.thinking = thinking
     return result
@@ -289,7 +316,7 @@ export function createRouter({
 
   async function tryProvider(
     p,
-    { req, answerTokens, thinking, inputTokens, schema, strict, requires, budgetUntil },
+    { req, answerTokens, thinking, inputTokens, schema, strict, requires, budgetUntil, signal },
   ) {
     const providerId = `${p.id}#${p.revision}`
     const maxOutputTokens = answerTokens + THINKING_TOKENS[thinking]
@@ -307,12 +334,18 @@ export function createRouter({
       ...extra,
     })
 
-    // Два сигнала: дедлайн вызова — в предохранитель; потолок вызывающего
-    // (budgetMs) только прерывает и в предохранитель не идёт (ADR, «Таймауты»).
+    // Три сигнала: дедлайн вызова — в предохранитель; потолок вызывающего
+    // (budgetMs) и обрыв клиента только прерывают и в предохранитель не идут
+    // (ADR, «Таймауты»; ADR 2026-09-21-1747, развилка 1).
     const ctrl = new AbortController()
     const timers = [setTimeout(() => ctrl.abort('deadline'), deadline)]
     if (budgetUntil !== null)
       timers.push(setTimeout(() => ctrl.abort('budget'), Math.max(0, budgetUntil - now())))
+    const onClientGone = () => ctrl.abort('client')
+    if (signal) {
+      if (signal.aborted) onClientGone()
+      else signal.addEventListener('abort', onClientGone, { once: true })
+    }
 
     health.acquire(p)
     try {
@@ -370,6 +403,11 @@ export function createRouter({
       health.noteQuota(p, error.quota)
       if (ctrl.signal.aborted && ctrl.signal.reason === 'budget')
         return done('aborted', `потолок вызывающего ${req.budgetMs} мс истёк`)
+      // Обрыв клиента — не вина провайдера: предохранитель не трогаем.
+      // Вход провайдер уже принял и, по документации Anthropic, тарифицирует
+      // его — поэтому попытка возвращается в учёт, а не пропадает.
+      if (ctrl.signal.aborted && ctrl.signal.reason === 'client')
+        return done('aborted', CLIENT_GONE)
       if (error.status === 429) {
         health.busy(p, error.retryAfterMs)
         return done('busy', `429, занят${error.retryAfterMs ? ` на ${error.retryAfterMs} мс` : ''}`)
@@ -389,6 +427,7 @@ export function createRouter({
       return done('error', error.message)
     } finally {
       for (const t of timers) clearTimeout(t)
+      signal?.removeEventListener('abort', onClientGone)
       health.release(p)
     }
   }
