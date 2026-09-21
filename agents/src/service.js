@@ -16,6 +16,7 @@ import {
   WINDOW_LIMITS,
 } from './params.js'
 import { TERMINAL } from './runs.js'
+import { STAGED_AGENT_ID } from './staged.js'
 
 const MAX_BODY = 64 * 1024
 /** Комментарий в поток раз в столько: прокси не должен счесть соединение мёртвым за минуты ожидания модели. */
@@ -368,8 +369,11 @@ export function createService({
         return send(res, 400, { ok: false, code: 'bad_input', message: 'Поле paused — да или нет' })
       }
       const run = runs.get(runId)
+      // Пауза — свойство машины состояний дня 13: у запусков дней 6–11 ворот
+      // нет, и флаг на них был бы обещанием, которого никто не исполнит.
       if (
         !run ||
+        run.agent?.id !== STAGED_AGENT_ID ||
         !isProfileId(profileId) ||
         !isSessionId(sessionId) ||
         run.input?.profileId !== profileId ||

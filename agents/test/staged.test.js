@@ -538,6 +538,13 @@ test('ручка паузы: чужой профиль или диалог — 4
     })
     assert.equal(foreign.status, 404)
 
+    const unknown = await fetch(`${base}/v1/runs/11111111-1111-4111-8111-111111111111/pause`, {
+      method: 'POST',
+      headers: auth,
+      body: body(),
+    })
+    assert.equal(unknown.status, 404)
+
     const ok = await fetch(`${base}/v1/runs/${started.run.id}/pause`, {
       method: 'POST',
       headers: auth,
