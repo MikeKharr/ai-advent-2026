@@ -367,16 +367,23 @@ export const TOPIC_FACT_CAP = 60
  */
 export const REVIEW_ROUNDS = { min: 1, max: 3, default: 2 }
 
-/** Предел кругов из входа запуска или из настроек профиля. */
+/**
+ * Предел кругов. Умолчания здесь нет намеренно (решение владельца
+ * 2026-09-21): единственный источник истины — настройки профиля, их читает
+ * день и по ним же резервирует слоты лимитера. Молчаливое умолчание на
+ * стороне агента означало бы второе число: день зарезервировал бы слоты под
+ * одно, а запуск сделал бы круги по другому. Отсутствующее значение — явный
+ * отказ, как и негодное.
+ */
 export function parseReviewRounds(value) {
   const parsed = parseBoundedInt(value, REVIEW_ROUNDS.min, REVIEW_ROUNDS.max)
-  if (!parsed.ok) {
+  if (!parsed.ok || parsed.value === undefined) {
     return {
       ok: false,
       message: `Кругов проверки: целое от ${REVIEW_ROUNDS.min} до ${REVIEW_ROUNDS.max}`,
     }
   }
-  return { ok: true, value: parsed.value ?? REVIEW_ROUNDS.default }
+  return { ok: true, value: parsed.value }
 }
 
 /**

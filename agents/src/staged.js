@@ -227,7 +227,11 @@ export function createStagedAgent({
       if (!factsTokens.ok) return { ok: false, message: factsTokens.message }
       const reviewModel = parseReviewModel(body.reviewModel, agent.defaults)
       if (!reviewModel.ok) return { ok: false, message: reviewModel.message }
-      const reviewRounds = parseReviewRounds(body.reviewRounds ?? agent.defaults.reviewRounds)
+      // Круги берутся только из входа запуска: день читает их из настроек
+      // профиля и по тому же числу резервирует слоты лимитера (решение
+      // владельца 2026-09-21). Умолчания реестра здесь нет — иначе запуск
+      // сделал бы круги по одному числу, а слоты были бы заняты по другому.
+      const reviewRounds = parseReviewRounds(body.reviewRounds)
       if (!reviewRounds.ok) return { ok: false, message: reviewRounds.message }
       const parentId = parseParentId(body.parentId)
       if (!parentId.ok) return { ok: false, message: parentId.message }
@@ -378,6 +382,10 @@ export function createStagedAgent({
             promptSha: data.promptSha,
             promptTokens,
             contextTokens: data.contextTokens,
+            // Потолок ответа этого вызова: при обрыве только он и известен
+            // о выходе — верхняя граница того, что провайдер мог успеть
+            // сгенерировать и выставить в счёт.
+            maxOutputTokens: Number.isFinite(data.answerTokens) ? data.answerTokens : null,
             inputTokens: null,
             outputTokens: null,
           }
@@ -1337,12 +1345,28 @@ export function createStagedAgent({
             const paidInput =
               outcome.inputTokens ??
               (lastCall ? lastCall.promptTokens + lastCall.contextTokens : null)
+            // Цена обрыва — честная верхняя оценка (решение владельца
+            // 2026-09-21): провайдер тарифицирует и уже сгенерированный
+            // выход, а числа его при обрыве не возвращает вовсе. Поэтому
+            // называем вход оценкой и верхнюю границу выхода — потолок
+            // ответа этого вызова, — и прямо говорим, что это оценка
+            // приложения, а не счёт.
+            const maxOutput = lastCall?.maxOutputTokens ?? null
             emit({
               stage: 'warning',
               level: 'warn',
               title: 'Вызов прерван',
-              detail: `вход ${paidInput ?? '?'} токенов оплачен, ответ выброшен`,
-              data: { state: stage.id, inputTokens: paidInput, round: ctx.round },
+              detail:
+                `вход ${paidInput ?? '?'} токенов оплачен; выход — не больше ${maxOutput ?? '?'} токенов, ` +
+                'сколько модель успела сгенерировать до обрыва, оплачено тоже, а ответ выброшен. ' +
+                'Оба числа — оценка приложения, а не счёт поставщика: при обрыве провайдер своих чисел не возвращает.',
+              data: {
+                state: stage.id,
+                inputTokens: paidInput,
+                maxOutputTokens: maxOutput,
+                estimated: true,
+                round: ctx.round,
+              },
             })
             logRow({ stage, index, enteredAt, outcome: 'interrupted' })
             // Этап входится заново: ворота наверху цикла держат запуск, пока

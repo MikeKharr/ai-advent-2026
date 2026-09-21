@@ -127,11 +127,15 @@ function setup({ fetchImpl = router(), pauseTtlMinutes = 60, stageLogFile = null
   })
   const profile = sessions.createProfile({ name: 'Мика' }).profile
   const sid = sessions.createSession({ profileId: profile.id }).id
+  // Предел кругов обязателен во входе запуска: его присылает день, прочитав
+  // настройки профиля (решение владельца 2026-09-21). Помощники тестов
+  // подставляют умолчание настроек, как это сделает день.
   const start = (body = {}) => {
     const parsed = agent.parseInput({
       profileId: profile.id,
       sessionId: sid,
       prompt: 'что нового',
+      reviewRounds: 2,
       ...body,
     })
     if (!parsed.ok) return { refused: parsed.message }
@@ -140,7 +144,13 @@ function setup({ fetchImpl = router(), pauseTtlMinutes = 60, stageLogFile = null
     return { run, done: agent.execute(run) }
   }
   const parse = (body = {}) =>
-    agent.parseInput({ profileId: profile.id, sessionId: sid, prompt: 'что нового', ...body })
+    agent.parseInput({
+      profileId: profile.id,
+      sessionId: sid,
+      prompt: 'что нового',
+      reviewRounds: 2,
+      ...body,
+    })
   /** Правила профиля настоящими операциями хранилища: по пять за вызов. */
   const seedRules = (count, chars = 300) => {
     const aliveId = sessions.append({ sessionId: sid, role: 'user', text: 'о чём мы', tokens: 5 })
@@ -399,7 +409,12 @@ test('на настоящем окружении пауза держит зап�
   const agent = createStagedAgent({ agent: STAGED, runs, sessions, env, fetchImpl, log: () => {} })
   const profile = sessions.createProfile({ name: 'Мика' }).profile
   const sid = sessions.createSession({ profileId: profile.id }).id
-  const parsed = agent.parseInput({ profileId: profile.id, sessionId: sid, prompt: 'что нового' })
+  const parsed = agent.parseInput({
+    profileId: profile.id,
+    sessionId: sid,
+    prompt: 'что нового',
+    reviewRounds: 2,
+  })
   const run = runs.create({ agent, input: parsed.input })
   agent.hold(sid)
   const done = agent.execute(run)
@@ -855,6 +870,47 @@ test('журнал этапов: строка на проход, без текс
   } finally {
     server.close()
   }
+})
+
+test('предел кругов берётся только из входа: без него — отказ, а не умолчание', () => {
+  // Единственный источник истины — настройки профиля: их читает день и по
+  // тому же числу резервирует слоты лимитера (решение владельца 2026-09-21).
+  const { agent, profile, sid } = setup()
+  const input = (extra) =>
+    agent.parseInput({ profileId: profile.id, sessionId: sid, prompt: 'что нового', ...extra })
+
+  assert.equal(input({}).ok, false, 'молчаливого умолчания нет')
+  assert.match(input({}).message, /Кругов проверки/)
+  assert.equal(input({ reviewRounds: null }).ok, false)
+  assert.equal(input({ reviewRounds: 0 }).ok, false)
+  assert.equal(input({ reviewRounds: 4 }).ok, false)
+  assert.equal(input({ reviewRounds: 'два' }).ok, false)
+  for (const rounds of [1, 2, 3]) {
+    const parsed = input({ reviewRounds: rounds })
+    assert.equal(parsed.ok, true)
+    assert.equal(parsed.input.reviewRounds, rounds, 'в запуск уходит ровно присланное число')
+  }
+})
+
+test('цена обрыва названа верхней оценкой: вход, потолок выхода и пометка', async () => {
+  const hanging = router({ hangAnswer: true })
+  const { start, runs } = setup({ fetchImpl: hanging })
+  const started = start({ maxTokens: 777 })
+  await until(() => runs.snapshot(started.run.id).events.some((e) => e.stage === 'llm_call'))
+  runs.pause(started.run.id)
+  await until(() => runs.snapshot(started.run.id).events.some((e) => e.title === 'Вызов прерван'))
+
+  const warning = runs.snapshot(started.run.id).events.find((e) => e.title === 'Вызов прерван')
+  assert.ok(warning.data.inputTokens > 0, 'вход назван числом')
+  assert.equal(warning.data.maxOutputTokens, 777, 'верхняя граница выхода — потолок этого вызова')
+  assert.equal(warning.data.estimated, true)
+  assert.ok(warning.detail.includes(String(warning.data.inputTokens)))
+  assert.ok(warning.detail.includes('777'), 'потолок выхода назван в тексте')
+  assert.match(warning.detail, /оценка приложения, а не счёт поставщика/)
+  assert.equal(warning.detail.includes('?'), false)
+
+  runs.cancelPaused(started.run.id)
+  await finished(started.done)
 })
 
 test('настройки дня 13: проверяющая модель из списка и предел кругов 1–3', async () => {
