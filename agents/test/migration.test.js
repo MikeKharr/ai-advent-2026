@@ -208,3 +208,26 @@ test('миграция не трогает законные значения д�
   assert.deepEqual(profile.stagedSettings, {})
   sessions.close()
 })
+
+test('миграция не затирает уже записанные настройки дня 13', () => {
+  const file = copy()
+  const id = '14141414-1414-4414-8414-141414141414'
+  seedProfile(file, id, { reviewRounds: 3, contextTokens: 32_000 })
+  // Столбец появляется при первом открытии; затем в нём — выбор дня 13.
+  const first = createSessions({ file, ttlMs: 30 * 3600_000, log: () => {} })
+  first.saveStagedSettings({ profileId: id, settings: { reviewRounds: 1 }, at: FIXTURE_AT })
+  first.close()
+  // Возвращаем в общий блок то, что миграция уже убирала: так выглядит база,
+  // побывавшая под прежней реализацией после правки настроек.
+  const seed = new DatabaseSync(file)
+  seed
+    .prepare('UPDATE profiles SET settings = ? WHERE id = ?')
+    .run(JSON.stringify({ reviewRounds: 3, strategy: 'window' }), id)
+  seed.close()
+
+  const sessions = createSessions({ file, ttlMs: 30 * 3600_000, log: () => {} })
+  const profile = sessions.profile(id, FIXTURE_AT)
+  assert.deepEqual(profile.settings, { strategy: 'window' }, 'чужое значение из блока убрано')
+  assert.deepEqual(profile.stagedSettings, { reviewRounds: 1 }, 'записанный выбор не затёрт')
+  sessions.close()
+})

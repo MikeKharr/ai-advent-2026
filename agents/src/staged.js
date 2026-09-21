@@ -1017,6 +1017,20 @@ export function createStagedAgent({
         const answer = ctx.answer
         const controller = new AbortController()
         runs.setAbort(run.id, () => controller.abort())
+        // Обрыв судится по брошенному вызову, а не по состоянию сигнала
+        // после возврата: пауза, пришедшая уже после полученного ответа,
+        // `fetch` не рвёт, и выбрасывать оплаченное пополнение вместе с
+        // записанными фактами и правилами было бы вторым вызовом за то же
+        // (находка ревьюера, PR #183).
+        let abortedCall = false
+        const ask = async (request, callEnv, options) => {
+          try {
+            return await askSummary(request, callEnv, options)
+          } catch (error) {
+            if (controller.signal.aborted) abortedCall = true
+            throw error
+          }
+        }
         let replenished
         try {
           replenished = await policy.replenish({
@@ -1039,6 +1053,7 @@ export function createStagedAgent({
               }
               return emit(fields)
             },
+            ask,
             env,
             fetchImpl,
             now,
@@ -1049,7 +1064,7 @@ export function createStagedAgent({
         } finally {
           runs.setAbort(run.id, null)
         }
-        if (controller.signal.aborted && runs.get(run.id)?.paused) return { interrupted: true }
+        if (abortedCall && runs.get(run.id)?.paused) return { interrupted: true }
         if (replenished.paid) ctx.summaryPaid = true
         ctx.replenished = replenished
 
@@ -1233,6 +1248,11 @@ export function createStagedAgent({
               // посетитель видит на экране своё сообщение и обязан узнать, что
               // ответа не будет (ADR, п. 3, критерий 6).
               if (outcome === 'expired') remember('agent', message, 0, { cancelled: true })
+              // Строка отмены — про ожидание, а не про вызов: `lastCall` от
+              // прерванного этапа уже записан своей строкой, и второй раз
+              // тот же оплаченный вызов в журнале появляться не должен
+              // (находка ревьюера, PR #183).
+              lastCall = null
               logRow({
                 stage: STAGES[index],
                 index,
@@ -1310,12 +1330,19 @@ export function createStagedAgent({
           if (outcome.interrupted) {
             const livePaused = runs.get(run.id)
             if (livePaused) livePaused.interruptedCall = true
+            // Оценка входа: своя, по `estimateTokens`, — числа провайдера при
+            // обрыве не приходит вовсе. Если этап её не назвал (пополнение
+            // строит запрос внутри политики), берём её же из события вызова:
+            // «вход ? токенов» не говорит посетителю ничего.
+            const paidInput =
+              outcome.inputTokens ??
+              (lastCall ? lastCall.promptTokens + lastCall.contextTokens : null)
             emit({
               stage: 'warning',
               level: 'warn',
               title: 'Вызов прерван',
-              detail: `вход ${outcome.inputTokens ?? '?'} токенов оплачен, ответ выброшен`,
-              data: { state: stage.id, inputTokens: outcome.inputTokens ?? null, round: ctx.round },
+              detail: `вход ${paidInput ?? '?'} токенов оплачен, ответ выброшен`,
+              data: { state: stage.id, inputTokens: paidInput, round: ctx.round },
             })
             logRow({ stage, index, enteredAt, outcome: 'interrupted' })
             // Этап входится заново: ворота наверху цикла держат запуск, пока

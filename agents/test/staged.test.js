@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import { loadRegistry } from '../src/registry.js'
 import { createRuns } from '../src/runs.js'
 import { createService } from '../src/service.js'
+import { parseEnv } from '../src/env.js'
 import { createSessions } from '../src/sessions.js'
 import { createStageLog, STAGE_LOG_COLUMNS } from '../src/stage-log.js'
 import { createStagedAgent, STAGES } from '../src/staged.js'
@@ -177,6 +178,19 @@ const until = async (predicate, limitMs = 2000) => {
 
 const stageEvents = (snapshot) => snapshot.events.filter((e) => e.stage === 'state')
 
+/**
+ * Ожидание конца запуска с границей: запуск, который после правки начнёт
+ * ждать снятия паузы там, где не должен, обязан провалить тест сразу, а не
+ * подвесить прогон до таймаута задания.
+ */
+const finished = (done, limitMs = 4000) =>
+  Promise.race([
+    done,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('запуск не завершился в срок')), limitMs).unref?.(),
+    ),
+  ])
+
 // --- Критерий 1: шесть этапов по порядку, промпт у каждого вызова ---------
 
 test('запуск даёт шесть событий state по порядку; у llm_call есть промпт и его отпечаток', async () => {
@@ -245,6 +259,21 @@ test('пауза на этапе без вызова: вызова модели 
   assert.equal(fetchImpl.answers().length, 1)
 })
 
+test('прерванный вызов называет оплаченный вход числом, а не вопросом', async () => {
+  const hanging = router({ hangAnswer: true })
+  const { start, runs } = setup({ fetchImpl: hanging })
+  const started = start()
+  await until(() => runs.snapshot(started.run.id).events.some((e) => e.stage === 'llm_call'))
+  runs.pause(started.run.id)
+  await until(() => runs.snapshot(started.run.id).events.some((e) => e.title === 'Вызов прерван'))
+
+  const warning = runs.snapshot(started.run.id).events.find((e) => e.title === 'Вызов прерван')
+  assert.ok(warning.data.inputTokens > 0, 'оценка входа названа числом')
+  assert.equal(warning.detail.includes('?'), false)
+  runs.cancelPaused(started.run.id)
+  await started.done
+})
+
 test('пауза на вызове: fetch оборван, исход interrupted, возобновление повторяет этап', async () => {
   let starts = 0
   const impl = router({ hangAnswer: false, onAnswerStart: () => (starts += 1) })
@@ -278,6 +307,75 @@ test('пауза на вызове: fetch оборван, исход interrupted
   assert.equal(mine.length, 1)
 })
 
+test('пауза после полученного ответа пополнения не выбрасывает оплаченный вызов', async () => {
+  // Находка ревьюера: обрыв судится по брошенному вызову, а не по флагу
+  // после возврата. Пауза приходит, когда ответ роутера уже получен целиком:
+  // повторять вызов и запись в память профиля нельзя.
+  const base0 = router()
+  let runs = null
+  let runId = null
+  const fetchImpl = async (url, options) => {
+    const response = await base0(url, options)
+    if (!String(url).includes('/v1/models') && JSON.parse(options.body).taskClass === 'summarize') {
+      return {
+        ...response,
+        json: async () => {
+          const json = await response.json()
+          // Пауза ровно между полученным ответом и его разбором.
+          if (runs && runId) runs.pause(runId)
+          return json
+        },
+      }
+    }
+    return response
+  }
+  const parts = setup({ fetchImpl })
+  runs = parts.runs
+  const started = parts.start()
+  runId = started.run.id
+  await until(() => parts.runs.snapshot(runId).events.some((e) => e.stage === 'paused'))
+  assert.equal(
+    base0.calls.filter((c) => c.taskClass === 'summarize').length,
+    1,
+    'вызов пополнения сделан один раз',
+  )
+  parts.runs.resume(runId)
+  await finished(started.done)
+
+  assert.equal(parts.runs.snapshot(runId).status, 'succeeded')
+  assert.equal(
+    base0.calls.filter((c) => c.taskClass === 'summarize').length,
+    1,
+    'оплаченное пополнение не повторено',
+  )
+  const rules = parts.sessions.rulesOf(parts.profile.id)
+  assert.equal(rules.length, 1, 'правило записано один раз')
+})
+
+test('строка отмены в журнале не повторяет вызов прерванного этапа', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'stage-log-')), 'stage-log.csv')
+  const hanging = router({ hangAnswer: true })
+  const parts = setup({ fetchImpl: hanging, stageLogFile: file })
+  const started = parts.start()
+  await until(() => parts.runs.snapshot(started.run.id).events.some((e) => e.stage === 'llm_call'))
+  parts.runs.pause(started.run.id)
+  await until(() => parts.runs.snapshot(started.run.id).events.some((e) => e.stage === 'paused'))
+  parts.runs.cancelPaused(started.run.id)
+  await started.done
+
+  const rows = parts.stageLog.rowsOf(started.run.id)
+  const interrupted = rows.find((r) => r.outcome === 'interrupted')
+  const cancelled = rows.at(-1)
+  assert.equal(interrupted.llm_called, 'true', 'прерванный этап свой вызов называет')
+  assert.ok(Number(interrupted.prompt_tokens) > 0)
+  assert.equal(cancelled.outcome, 'paused')
+  assert.equal(cancelled.llm_called, 'false', 'строка отмены вызова не несёт')
+  assert.equal(cancelled.prompt_id, '')
+  assert.equal(cancelled.prompt_sha8, '')
+  assert.equal(cancelled.prompt_tokens, '')
+  assert.equal(cancelled.run_status, 'cancelled')
+})
+
 test('возобновление без прерванного вызова повторного запроса не делает', async () => {
   const { start, runs, fetchImpl } = setup()
   const started = start()
@@ -287,6 +385,34 @@ test('возобновление без прерванного вызова по
   await started.done
   assert.equal(fetchImpl.answers().length, 1)
   assert.equal(fetchImpl.verdicts().length, 1)
+})
+
+test('на настоящем окружении пауза держит запуск, а не отменяет его мгновенно', async () => {
+  // Находка гейта compliance по PR #183: `PAUSE_TTL_MINUTES`, не заведённая
+  // в `parseEnv`, давала `setTimeout(NaN)` — то есть 1 мс, и первая же пауза
+  // убивала запуск в проде. Окружение здесь настоящее, без подстановок.
+  const { env, errors } = parseEnv({ AGENT_KEY: 'agent-key', ROUTER_APP_KEY: 'app-agents' })
+  assert.deepEqual(errors, [])
+  const sessions = createSessions({ file: ':memory:', ttlMs: 1e9, profileTtlMs: 1e9, log: () => {} })
+  const runs = createRuns()
+  const fetchImpl = router()
+  const agent = createStagedAgent({ agent: STAGED, runs, sessions, env, fetchImpl, log: () => {} })
+  const profile = sessions.createProfile({ name: 'Мика' }).profile
+  const sid = sessions.createSession({ profileId: profile.id }).id
+  const parsed = agent.parseInput({ profileId: profile.id, sessionId: sid, prompt: 'что нового' })
+  const run = runs.create({ agent, input: parsed.input })
+  agent.hold(sid)
+  const done = agent.execute(run)
+
+  runs.pause(run.id)
+  await until(() => runs.snapshot(run.id).events.some((e) => e.stage === 'paused'))
+  await new Promise((r) => setTimeout(r, 80))
+  assert.equal(runs.snapshot(run.id).status, 'running', 'срок паузы — минуты, а не миллисекунда')
+
+  runs.resume(run.id)
+  await done
+  assert.equal(runs.snapshot(run.id).status, 'succeeded')
+  sessions.close()
 })
 
 // --- Критерий 6: срок паузы ----------------------------------------------
@@ -326,6 +452,23 @@ test('на модели с малым пределом отказ называе
   assert.equal(snapshot.error.code, 'budget_too_small')
   assert.match(snapshot.error.message, /потолок этапа сейчас 4300/)
   assert.equal(fetchImpl.answers().length, 0, 'до вызова дело не дошло')
+})
+
+test('потолок считает системный промпт, а не один вход', async () => {
+  // Правила и запрос в предел Groq влезают, а вместе со своим системным
+  // промптом — уже нет: потолок этапа меряется по `system + input`
+  // (ADR, п. 5). Мутация, выкидывающая промпт из измерения, красит этот тест.
+  const withRules = setup()
+  withRules.seedRules(20)
+  const big = await withRules.ask({ model: 'groq-qwen3.6-27b', system: 'я'.repeat(4000) })
+  assert.equal(big.snapshot.status, 'failed')
+  assert.equal(big.snapshot.error.code, 'budget_too_small')
+  assert.equal(withRules.fetchImpl.answers().length, 0)
+
+  const same = setup()
+  same.seedRules(20)
+  const small = await same.ask({ model: 'groq-qwen3.6-27b' })
+  assert.equal(small.snapshot.status, 'succeeded', 'без своего промпта тот же запрос влезает')
 })
 
 test('те же правила на Haiku укладываются в потолок 32 000', async () => {
@@ -450,6 +593,51 @@ test('страж: текст модели есть только в событи�
   )
   assert.ok(remarksEvent.detail.includes('ЗАМЕЧАНИЕМОДЕЛИ'))
   assert.deepEqual(Object.keys(remarksEvent.data).sort(), ['remarksChars', 'round', 'state', 'verdict'])
+})
+
+test('страж: ни обрыв вызова, ни отмена не выносят текст модели в события', async () => {
+  // Замечания уже лежат в состоянии запуска (первый круг отклонён), и второй
+  // вызов ответа обрывается паузой: под проверкой предупреждение «Вызов
+  // прерван», событие отмены и всё, что между ними (находка ревьюера).
+  const hanging = router({ hangAnswer: true })
+  const normal = router({
+    verdicts: [verdictReply(`вердикт: отклонено\nзамечания: ${REMARKS}`)],
+  })
+  let round = 0
+  const fetchImpl = async (url, options) => {
+    if (String(url).includes('/v1/models')) return normal(url, options)
+    const body = JSON.parse(options.body)
+    const isAnswer = body.taskClass === 'layered_dialogue' && body.provider !== 'kimi-k2.6'
+    if (isAnswer && ++round === 2) return hanging(url, options)
+    return normal(url, options)
+  }
+  const { start, runs } = setup({ fetchImpl })
+  const started = start({ reviewRounds: 2 })
+  // Ждём второй круг: вызов ответа на нём висит, и пауза рвёт его на месте.
+  await until(() =>
+    runs
+      .snapshot(started.run.id)
+      .events.some((e) => e.stage === 'llm_call' && e.data.state === 'answer' && e.data.round === 2),
+  )
+  runs.pause(started.run.id)
+  await until(() => runs.snapshot(started.run.id).events.some((e) => e.stage === 'paused'))
+  runs.cancelPaused(started.run.id)
+  await started.done
+
+  const snapshot = runs.snapshot(started.run.id)
+  assert.equal(snapshot.status, 'cancelled')
+  assert.ok(snapshot.events.some((e) => e.title === 'Вызов прерван'))
+  for (const event of snapshot.events) {
+    const isRemarks = event.stage === 'planning' && event.data.state === 'verify'
+    for (const marker of ['ОТВЕТМОДЕЛИ', 'ФАКТМОДЕЛИ', 'ПРАВИЛОМОДЕЛИ', 'ЗАМЕЧАНИЕМОДЕЛИ']) {
+      if (isRemarks && marker === 'ЗАМЕЧАНИЕМОДЕЛИ') continue
+      assert.equal(
+        JSON.stringify(event).includes(marker),
+        false,
+        `${marker} в событии ${event.stage} «${event.title}»`,
+      )
+    }
+  }
 })
 
 test('замечания режутся до 300 знаков после обезвреживания метки', async () => {
@@ -704,6 +892,33 @@ test('без круга возврата пройдено ровно шесть 
   const answer = parts.sessions.history(parts.sid).find((m) => m.role === 'agent')
   assert.equal(answer.meta.stagesPassed, 6)
   assert.equal(snapshot.result.stagesPassed, 6)
+})
+
+test('сводка правится только у сообщения своей сессии', async () => {
+  const parts = setup()
+  const other = parts.sessions.createSession({ profileId: parts.profile.id }).id
+  await parts.ask()
+  const answer = parts.sessions.history(parts.sid).find((m) => m.role === 'agent')
+
+  const foreign = parts.sessions.updateMessageMeta({
+    sessionId: other,
+    messageId: answer.id,
+    meta: { stagesPassed: 999 },
+  })
+  assert.equal(foreign, false, 'чужая сессия сообщение не правит')
+  const after = parts.sessions.history(parts.sid).find((m) => m.id === answer.id)
+  assert.equal(after.meta.stagesPassed, 6, 'сводка на месте')
+
+  const own = parts.sessions.updateMessageMeta({
+    sessionId: parts.sid,
+    messageId: answer.id,
+    meta: { ...answer.meta, stagesPassed: 7 },
+  })
+  assert.equal(own, true)
+  assert.equal(
+    parts.sessions.history(parts.sid).find((m) => m.id === answer.id).meta.stagesPassed,
+    7,
+  )
 })
 
 // --- Решение владельца 2026-09-21: настройки дня 13 живут отдельно --------
