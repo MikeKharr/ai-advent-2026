@@ -354,7 +354,7 @@ export function createStagedAgent({
       const rows = []
       let pauses = 0
 
-      const emit = (fields) => {
+      const emit = (fields, options) => {
         // Этап подмешивается в каждое событие; заданный явно (ворота паузы)
         // остаётся своим.
         const data = { ...(fields.data ?? {}), state: fields.data?.state ?? current.id }
@@ -379,7 +379,7 @@ export function createStagedAgent({
           lastCall.inputTokens = fields.data?.usage?.inputTokens ?? null
           lastCall.outputTokens = fields.data?.usage?.outputTokens ?? null
         }
-        return runs.emit(run.id, { ...fields, data })
+        return runs.emit(run.id, { ...fields, data }, options)
       }
 
       const remember = (role, text, tokens, meta) => {
@@ -1091,8 +1091,11 @@ export function createStagedAgent({
             truncated: answer.truncated,
             durationMs: answer.durationMs,
             systemOverridden,
-            // Сколько кругов запуск потратил: по этому числу день возвращает
-            // лимитеру слоты, зарезервированные и не пригодившиеся (ADR, п. 5).
+            // Сколько кругов запуск потратил: день резервирует `reviewRounds`
+            // слотов лимитера ДО запуска одним синхронным шагом (I-4) и по
+            // этому числу возвращает лишние — по `end` и только если `end`
+            // дошёл. При обрыве потока слоты остаются занятыми: это цена
+            // правила, а не дефект (ADR 2026-09-21-1747, п. 5).
             rounds: ctx.answerCalls,
             reviewRounds,
             reviewModel,
@@ -1197,7 +1200,10 @@ export function createStagedAgent({
                 outcome === 'expired'
                   ? `Запуск отменён: пауза дольше ${env.PAUSE_TTL_MINUTES} минут`
                   : 'Запуск отменён: диалог очищен'
-              if (outcome === 'expired' && ctx.asked) remember('agent', message, 0, { cancelled: true })
+              // Реплика отмены пишется и тогда, когда вопрос записать не успели:
+              // посетитель видит на экране своё сообщение и обязан узнать, что
+              // ответа не будет (ADR, п. 3, критерий 6).
+              if (outcome === 'expired') remember('agent', message, 0, { cancelled: true })
               logRow({
                 stage: STAGES[index],
                 index,

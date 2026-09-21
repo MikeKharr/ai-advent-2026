@@ -196,8 +196,10 @@ export function createRuns({ now = Date.now, ttlMs = 10 * 60_000 } = {}) {
       const run = must(runId)
       if (!run.paused) return Promise.resolve('resume')
       return new Promise((resolve) => {
+        // Таймер не `unref`: запуск на паузе — незавершённая работа сервиса,
+        // и процесс, которому больше нечего делать, обязан дождаться её конца
+        // (отмены), а не уйти молча.
         const timer = setTimeout(() => wake('expired'), ttlMs)
-        timer.unref?.()
         function wake(outcome) {
           clearTimeout(timer)
           run.waiters.delete(wake)
