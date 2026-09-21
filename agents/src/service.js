@@ -195,6 +195,17 @@ export function createService({
   }
 
   /**
+   * Куда писать настройки. У дня 13 свой столбец профиля (решение владельца
+   * 2026-09-21, вариант «а»): его потолки день 11 принять не может, и общий
+   * блок ломал бы сданный день чужими действиями. Путь дня 11 — прежний
+   * `saveSettings`, слово в слово.
+   */
+  const settingsWriter = (params) =>
+    agents.get(params.get('agent') ?? LAYERED_AGENT_ID)?.settingsStore === 'staged'
+      ? (payload) => sessions.saveStagedSettings(payload)
+      : (payload) => sessions.saveSettings(payload)
+
+  /**
    * Отмена запуска дня 13, стоящего на паузе в этом диалоге: очистка диалога
    * и удаление профиля — та же отмена, что и просроченная пауза
    * (ADR 2026-09-21-1747, п. 3). Работающий запуск это не трогает: его держит
@@ -665,7 +676,7 @@ export function createService({
         if (!settings.ok) {
           return send(res, 400, { ok: false, code: 'bad_input', message: settings.message })
         }
-        if (!sessions.saveSettings({ profileId, settings: settings.settings })) {
+        if (!settingsWriter(url.searchParams)({ profileId, settings: settings.settings })) {
           return send(res, 404, { ok: false, code: 'unknown_profile' })
         }
         return send(res, 200, { ok: true, settings: settings.settings })

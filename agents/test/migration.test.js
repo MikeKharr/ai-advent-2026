@@ -152,3 +152,59 @@ test('уборка после миграции сессии дней 7–10 по
   assert.ok(sessions.facts(DAY10), 'факты стратегии на месте')
   sessions.close()
 })
+
+
+// Решение владельца 2026-09-21 (вариант «а»): настройки дня 13, попавшие в
+// общий блок прежней реализацией, переезжают в свой столбец при открытии базы.
+
+const seedProfile = (file, id, settings) => {
+  const seed = new DatabaseSync(file)
+  seed.exec(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, settings TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL
+    );
+  `)
+  seed
+    .prepare(
+      'INSERT INTO profiles (id, name, settings, created_at, last_seen_at) VALUES (?,?,?,?,?)',
+    )
+    .run(id, 'Мика', JSON.stringify(settings), FIXTURE_AT, FIXTURE_AT)
+  seed.close()
+}
+
+test('миграция: значения дня 13 уходят из общего блока в settings_staged', () => {
+  const file = copy()
+  const id = '12121212-1212-4212-8212-121212121212'
+  seedProfile(file, id, {
+    strategy: 'summary',
+    contextTokens: 32_000,
+    summarizeAt: 20_000,
+    reviewModel: 'kimi-k3',
+    reviewRounds: 3,
+  })
+
+  const sessions = createSessions({ file, ttlMs: 30 * 3600_000, log: () => {} })
+  const profile = sessions.profile(id, FIXTURE_AT)
+  assert.deepEqual(profile.settings, { strategy: 'summary' }, 'день 11 видит только своё')
+  assert.deepEqual(profile.stagedSettings, {
+    contextTokens: 32_000,
+    summarizeAt: 20_000,
+    reviewModel: 'kimi-k3',
+    reviewRounds: 3,
+  })
+  sessions.close()
+})
+
+test('миграция не трогает законные значения дня 11', () => {
+  const file = copy()
+  const id = '13131313-1313-4313-8313-131313131313'
+  const settings = { strategy: 'window', contextTokens: 8000, summarizeAt: 8000, window: 5 }
+  seedProfile(file, id, settings)
+
+  const sessions = createSessions({ file, ttlMs: 30 * 3600_000, log: () => {} })
+  const profile = sessions.profile(id, FIXTURE_AT)
+  assert.deepEqual(profile.settings, settings)
+  assert.deepEqual(profile.stagedSettings, {})
+  sessions.close()
+})

@@ -168,6 +168,13 @@ export function createStagedAgent({
     isBusy: lock.isBusy,
     hold: lock.hold,
 
+    /**
+     * Где живут настройки этого агента: свой столбец профиля, а не общий блок
+     * дня 11 (решение владельца 2026-09-21, вариант «а»). Сервис читает это
+     * поле, чтобы не знать имён агентов.
+     */
+    settingsStore: 'staged',
+
     /** Настройки профиля для дня 13: свои потолки и две настройки круга. */
     parseSettings(body) {
       return parseSettings(body, agent.defaults, LAYERED_MODELS, {

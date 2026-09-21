@@ -684,6 +684,81 @@ test('настройки дня 13: проверяющая модель из с�
   assert.equal(agent.parseInput({ reviewModel: 'нет-такой' }).ok, false)
 })
 
+// --- Решение владельца 2026-09-21: настройки дня 13 живут отдельно --------
+
+test('страж: сохранённые настройки дня 13 не попадают туда, откуда читает день 11', async () => {
+  const parts = setup()
+  const { server, base, auth } = await serve(parts)
+  try {
+    // Сначала настройки дня 11 — обычным путём, без параметра агента.
+    const day11 = await fetch(`${base}/v1/profiles/${parts.profile.id}/settings`, {
+      method: 'PUT',
+      headers: auth,
+      body: JSON.stringify({ contextTokens: 3000, strategy: 'summary' }),
+    })
+    assert.equal(day11.status, 200)
+
+    // Затем настройки дня 13 — с потолками, которых день 11 принять не может.
+    const day13 = await fetch(
+      `${base}/v1/profiles/${parts.profile.id}/settings?agent=staged-agent`,
+      {
+        method: 'PUT',
+        headers: auth,
+        body: JSON.stringify({
+          contextTokens: 32_000,
+          summarizeAt: 20_000,
+          reviewModel: 'kimi-k3',
+          reviewRounds: 3,
+        }),
+      },
+    )
+    assert.equal(day13.status, 200)
+
+    // Настоящее чтение того же профиля после настоящей записи.
+    const stored = await fetch(`${base}/v1/profiles/${parts.profile.id}`, { headers: auth }).then(
+      (r) => r.json(),
+    )
+    assert.deepEqual(
+      stored.profile.settings,
+      { contextTokens: 3000, strategy: 'summary' },
+      'в блоке дня 11 — только то, что день 11 туда положил',
+    )
+    assert.deepEqual(stored.profile.stagedSettings, {
+      contextTokens: 32_000,
+      summarizeAt: 20_000,
+      reviewModel: 'kimi-k3',
+      reviewRounds: 3,
+    })
+    // И главное: то, что лежит в блоке дня 11, день 11 обязан принять.
+    const { parseSettings, LAYERED_MODELS } = await import('../src/params.js')
+    assert.equal(parseSettings(stored.profile.settings, {}, LAYERED_MODELS).ok, true)
+  } finally {
+    server.close()
+  }
+})
+
+test('настройки дня 13 не затирают настройки дня 11 и наоборот', async () => {
+  const parts = setup()
+  const { server, base, auth } = await serve(parts)
+  try {
+    const put = (body, query = '') =>
+      fetch(`${base}/v1/profiles/${parts.profile.id}/settings${query}`, {
+        method: 'PUT',
+        headers: auth,
+        body: JSON.stringify(body),
+      })
+    await put({ reviewRounds: 1 }, '?agent=staged-agent')
+    await put({ window: 5 })
+    const stored = await fetch(`${base}/v1/profiles/${parts.profile.id}`, { headers: auth }).then(
+      (r) => r.json(),
+    )
+    assert.deepEqual(stored.profile.settings, { window: 5 })
+    assert.deepEqual(stored.profile.stagedSettings, { reviewRounds: 1 })
+  } finally {
+    server.close()
+  }
+})
+
 test('параметры дней 6–11 не расширены: настройки дня 11 не знают полей круга', async () => {
   const { parseSettings } = await import('../src/params.js')
   const refused = parseSettings({ reviewRounds: 2 }, {}, undefined)
