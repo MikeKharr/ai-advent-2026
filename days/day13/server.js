@@ -276,7 +276,10 @@ const sessionsView = (list) =>
 const profileView = (profile, sessionCap) => ({
   id: profile.id,
   name: profile.name,
-  settings: profile.settings ?? {},
+  // Настройки дня 13 хранятся отдельно от настроек дня 11 на том же профиле:
+  // потолок этапа в 32 000 токенов, записанный в общие настройки, ломал день 11
+  // — он отказывал первым же сообщением. Страница дня 13 видит только свои.
+  settings: profile.stagedSettings ?? {},
   // У правила, как и у факта, стоит имя диалога-источника, а не его
   // идентификатор: монитор говорит, откуда правило взялось, и не раздаёт
   // указатель на чужую переписку (раскладка, п. 10.1).
@@ -442,11 +445,14 @@ async function handleSettings(req, res) {
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/settings`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    const { response, json } = await callAgent(
+      `/v1/profiles/${profileId}/settings?agent=${encodeURIComponent(env.AGENT_ID)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    )
     // Причину отказа пользователь должен видеть словами агента: он их проверял.
     if (response.status === 400 || response.status === 404) {
       return send(res, response.status, {
@@ -1073,6 +1079,10 @@ async function handleState(req, res) {
       // Шесть этапов с их промптами и правилами (ADR, п. 1): текст промпта
       // страница берёт отсюда, а не из событий — в событиях текстов нет.
       stages: agent.stages ?? [],
+      // Потолок этапа (ADR, п. 5) приходит числом, а не зашит в страницу:
+      // окно настроек не должно обещать ни больше, ни меньше того, что примет
+      // сервис. Он же — верхняя граница полей контекста и порога сжатия.
+      stageContextTokens: agent.limits?.stageContextTokens ?? null,
       session: { ttlHours: healthRes.json?.sessionTtlHours ?? env.SESSION_TTL_HOURS },
       // Срок памяти профиля у агента в `/healthz` не объявлен, поэтому число
       // берётся из настройки дня: она обязана совпадать с PROFILE_TTL_DAYS

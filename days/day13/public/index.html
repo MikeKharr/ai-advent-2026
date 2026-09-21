@@ -1587,6 +1587,25 @@
   /** Короткая форма имени модели для строки значений: полная — в окне. */
   const shortModel = (label) => String(label ?? '').replace(/^Claude\s+/i, '');
 
+  /**
+   * Верхняя граница полей контекста и порога сжатия — потолок этапа сервиса.
+   * Число приходит с сервера: окно настроек не должно обещать ни больше, ни
+   * меньше того, что примет сервис.
+   */
+  const applyStageCap = (cap) => {
+    const context = $('p-context');
+    const summarize = $('p-summarize-at');
+    context.max = String(cap);
+    summarize.max = String(cap);
+    context.nextElementSibling.textContent =
+      `Сколько токенов переписки уходит модели: сводка и свежие реплики ` +
+      `(0–${fmtInt(cap)}). Правила и факты темы идут сверх этого числа.`;
+    summarize.nextElementSibling.textContent =
+      `Когда реплики после последней сводки наберут столько токенов, агент ` +
+      `сожмёт их вместе с прежней сводкой (500–${fmtInt(cap)}, меньше размера ` +
+      `контекста). Сжимает всегда Claude Haiku 4.5.`;
+  };
+
   fetch('./api/state')
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
     .then((d) => {
@@ -1599,6 +1618,10 @@
       // Этапы и их промпты — из describe(): в событиях текстов нет.
       if (Array.isArray(d.stages) && d.stages.length > 0) stages = d.stages;
       if (limits.reviewRounds) roundLimits = { ...roundLimits, ...limits.reviewRounds };
+      // Потолок этапа (ADR, п. 5) — единственный токенный потолок дня 13, и он
+      // настоящий: поля контекста и порога сжатия поднимаются до него, а не
+      // остаются на восьми тысячах дня 11.
+      if (Number.isInteger(d.stageContextTokens)) applyStageCap(d.stageContextTokens);
       // Потолок ответа приходит с сервера: окно настроек не должно обещать
       // числа, которого сервис не примет.
       if (Number.isInteger(limits.maxTokens)) {
@@ -2260,13 +2283,18 @@
       announce(`Этап ${index} из ${stages.length}: ${stages[index - 1]?.title ?? d.state}`);
       return true;
     }
+    // `paused` и `resumed` несут этап и круг: полоса встаёт по ним, а не по
+    // тому, что помнила с прошлого события.
+    const at = {};
+    if (Number.isInteger(d.index)) { at.index = d.index; at.done = d.index - 1; }
+    if (Number.isInteger(d.round)) at.round = d.round;
     if (event.stage === 'paused') {
-      setRunView('paused', { mark: 'paused', pausedAt: Date.now() });
+      setRunView('paused', { ...at, mark: 'paused', pausedAt: Date.now() });
       announce('На паузе');
       return true;
     }
     if (event.stage === 'resumed') {
-      setRunView('running', { mark: null, pausedAt: null });
+      setRunView('running', { ...at, mark: null, pausedAt: null });
       announce('Продолжаю');
       return true;
     }
@@ -2548,6 +2576,11 @@
       return;
     }
     const index = Math.max(1, stages.findIndex((x) => x.id === run.state) + 1);
+    // `beat` не хранится: в накопленных событиях его нет, и после перезагрузки
+    // первый удар придёт только из живого потока. Счётчик секунд до него
+    // считается от начала запуска, иначе показывал бы ноль у идущей работы.
+    const since = run.since ? Date.parse(run.since) : NaN;
+    if (Number.isFinite(since)) elapsedMs = Math.max(0, Date.now() - since);
     setRunView(run.paused ? 'paused' : 'running', {
       id: run.id,
       index,
@@ -2754,17 +2787,30 @@
    * `--danger`: ответ получен и оплачен, а «отклонено» — мнение модели, и
    * правду проверка не проверяет. Принятый с первого раза ответ пометки НЕ
    * несёт: отсутствие пометки и есть «принято».
+   *
+   * Текст выбирается по `review.reason`, а не по вердикту: сервис различает
+   * шесть причин, и три из четырёх текстов раскладки отличаются именно ею.
    */
   const NOTE_TEXT = {
-    rejected: (m) =>
-      `Проверка отклонила ответ на круге ${m.round ?? '?'} из ${m.reviewRounds ?? '?'} — ответ отдан как есть.`,
+    rejected: (r) =>
+      `Проверка отклонила ответ на круге ${r.rounds ?? '?'} из ${r.limit ?? '?'} — ответ отдан как есть.`,
     truncated: () => 'Ответ оборван потолком — проверка не проводилась.',
-    skipped: () => 'Проверка пропущена: запрос не влезает в предел проверяющей модели.',
+    budget: () => 'Проверка пропущена: запрос не влезает в предел проверяющей модели.',
     unparsed: () => 'Проверка ответила непонятно — ответ принят.',
+    // Двух причин раскладка не называла — их не было в её контракте. Молчать о
+    // них нельзя: пометка стоит, а объяснения нет.
+    empty: () => 'Модель вернула пустой ответ — проверка не проводилась.',
+    error: () => 'Проверка не состоялась: модель не ответила. Ответ отдан как есть.',
   };
 
   const addVerdict = (li, meta) => {
-    const make = NOTE_TEXT[meta.verdict];
+    const review = meta.review ?? {};
+    // Причину, которой страница не знает, сервис может завести позже. Молча
+    // показать помеченный ответ без пометки нельзя: отсутствие пометки на
+    // экране означает «принято», и это было бы неправдой.
+    const make =
+      NOTE_TEXT[review.reason] ??
+      (meta.marked === true ? () => 'Ответ отдан с пометкой проверки.' : null);
     if (!make) return;
     const note = document.createElement('p');
     note.className = 'noted';
@@ -2775,13 +2821,13 @@
     const prefix = document.createElement('span');
     prefix.className = 'vh';
     prefix.textContent = 'Пометка: ';
-    note.append(mark, prefix, make(meta));
+    note.append(mark, prefix, make({ ...review, limit: meta.reviewRounds ?? review.rounds }));
     li.append(note);
 
     // Замечания — модельный текст: вставляются ТОЛЬКО текстом, разметкой не
     // становятся, и до раскрытия переписку не раздвигают. Обрезка — на
     // сервере; страница держит свою на случай, если сервер её не сделал.
-    const remarks = String(meta.remarks ?? '').trim();
+    const remarks = String(review.remarks ?? '').trim();
     if (!remarks) return;
     const d = document.createElement('details');
     d.className = 'params-d';
@@ -2806,7 +2852,8 @@
     row.className = 'sum';
     const parts = [];
     if (Number.isFinite(meta.stagesPassed)) parts.push(`Этапы: ${meta.stagesPassed}`);
-    if (Number.isInteger(meta.round)) parts.push(`круги ${meta.round}`);
+    // `rounds` — сколько кругов потрачено; круг вердикта живёт в `review.rounds`.
+    if (Number.isInteger(meta.rounds)) parts.push(`круги ${meta.rounds}`);
     if (Number.isFinite(meta.durationMs)) parts.push(fmtDuration(meta.durationMs));
     row.append(parts.length ? `${parts.join(' · ')} · журнал: ` : 'журнал: ');
 

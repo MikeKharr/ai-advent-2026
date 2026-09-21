@@ -1,7 +1,8 @@
 // Интеграционный тест дня 13 против поддельного сервиса агентов. Проверяется
 // то, что день 13 добавил к дню 11, — по критериям приёмки ADR 2026-09-21-1747,
 // п. 11: резерв слотов под круги проверки (16), пауза и возобновление (3, 5),
-// состояние запуска в переписке (7), журнал этапов (9), этапы в `/api/state`.
+// состояние запуска в переписке (7), журнал этапов (9), этапы в `/api/state`,
+// и отдельное хранение настроек дня 13 (`stagedSettings` + `?agent=`).
 // Устройство дня 11 (две cookie, окна лимитера, прокси потока) проверено его
 // собственным тестом и здесь сверяется только на границах, которые день 13
 // сдвинул.
@@ -29,6 +30,12 @@ let endRounds = 1
 /** Прерван ли вызов у запуска: от этого зависит, берёт ли возобновление слот. */
 let interruptedCall = false
 const pauseCalls = []
+const settingsCalls = []
+
+/** Настройки дня 11 на том же профиле: страница дня 13 их видеть не должна. */
+const DAY11_SETTINGS = { strategy: 'window', contextTokens: 3000, model: 'groq-llama' }
+/** Настройки дня 13: свой потолок в 32 000 и свои поля проверки. */
+const STAGED_SETTINGS = { strategy: 'summary', contextTokens: 32000, reviewModel: 'kimi-k2.6', reviewRounds: 3 }
 
 const agent = http.createServer(async (req, res) => {
   const chunks = []
@@ -72,6 +79,16 @@ const agent = http.createServer(async (req, res) => {
     return res.end()
   }
 
+  const settings = path.match(/^\/v1\/profiles\/([^/]+)\/settings$/)
+  if (settings && req.method === 'PUT') {
+    settingsCalls.push({ url: req.url, body: JSON.parse(body) })
+    // Ручка без имени агента настройки дня 13 не узнаёт: 32 000 токенов для
+    // разборщика дня 11 — неизвестное значение.
+    if (!params.get('agent'))
+      return json(400, { ok: false, code: 'bad_input', message: 'Размер контекста: целое от 0 до 8000' })
+    return json(200, { ok: true, settings: JSON.parse(body) })
+  }
+
   const session = path.match(/^\/v1\/sessions\/([^/]+)$/)
   if (session) {
     const id = session[1]
@@ -97,6 +114,24 @@ const agent = http.createServer(async (req, res) => {
     })
   }
 
+  const profile = path.match(/^\/v1\/profiles\/([^/]+)$/)
+  if (profile && req.method === 'GET') {
+    return json(200, {
+      ok: true,
+      sessionCap: 20,
+      profile: {
+        id: PID,
+        name: 'Мика',
+        settings: DAY11_SETTINGS,
+        stagedSettings: STAGED_SETTINGS,
+        rules: [],
+        topics: [],
+        sessions: [{ id: SID, lastSeenAt: 1, messages: 2, topicId: null, topicTitle: null }],
+        lastSession: SID,
+      },
+    })
+  }
+
   if (path === '/v1/agents') {
     return json(200, {
       ok: true,
@@ -110,7 +145,11 @@ const agent = http.createServer(async (req, res) => {
           tools: [],
           models: [{ id: 'anthropic-haiku', label: 'Claude Haiku 4.5' }],
           defaults: { model: 'anthropic-haiku', reviewModel: 'kimi-k2.6', reviewRounds: 2 },
-          limits: { maxTokens: 2048, reviewRounds: { min: 1, max: 3, default: 2 } },
+          limits: {
+            maxTokens: 2048,
+            reviewRounds: { min: 1, max: 3, default: 2 },
+            stageContextTokens: 32000,
+          },
           stages: [
             { id: 'intake', title: 'Приём', prompt: null, rule: 'профиль жив' },
             { id: 'answer', title: 'Вызов модели', prompt: 'текст промпта', rule: null },
@@ -407,6 +446,40 @@ test('журнал без диалога и с негодным идентифи
     headers: { cookie: withSession() },
   })
   assert.equal(bad.status, 404)
+})
+
+/* ---------- отдельное хранение настроек дня 13 ---------- */
+
+test('страница дня 13 видит свои настройки, а не настройки дня 11', async () => {
+  const r = await call('GET', '/api/profile', undefined, { ip: '10.8.0.1', cookie: withSession() })
+  const { profile } = await r.json()
+  assert.deepEqual(profile.settings, STAGED_SETTINGS)
+  assert.equal(
+    profile.settings.contextTokens,
+    32000,
+    'потолок этапа дня 13, а не восемь тысяч дня 11',
+  )
+  assert.notDeepEqual(profile.settings, DAY11_SETTINGS)
+})
+
+test('настройки пишутся под именем агента: без него сервис их отвергает', async () => {
+  settingsCalls.length = 0
+  const r = await call('PUT', '/api/settings', STAGED_SETTINGS, {
+    ip: '10.8.0.2',
+    cookie: withSession(),
+  })
+  assert.equal(r.status, 200, 'с именем агента 32 000 токенов принимаются')
+  assert.equal(settingsCalls.length, 1)
+  assert.match(settingsCalls[0].url, /\?agent=staged-agent$/, 'имя агента в запросе есть')
+  assert.equal(settingsCalls[0].body.contextTokens, 32000)
+  assert.equal(settingsCalls[0].body.reviewRounds, 3)
+})
+
+test('предел кругов и потолок этапа приходят странице числами', async () => {
+  const r = await call('GET', '/api/state', undefined, { ip: '10.8.0.3' })
+  const body = await r.json()
+  assert.equal(body.stageContextTokens, 32000, 'поле контекста не обещает меньше, чем примет сервис')
+  assert.deepEqual(body.limits.reviewRounds, { min: 1, max: 3, default: 2 })
 })
 
 /* ---------- страница ---------- */
