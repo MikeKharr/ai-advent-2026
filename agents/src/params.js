@@ -228,12 +228,12 @@ export const SUMMARIZE_LIMITS = { min: 500, max: 8000 }
  * в днях 7–8. Порог не больше окна контекста: иначе свежие реплики
  * вытеснялись бы окном раньше, чем их успели бы сжать.
  */
-export function parseSummarizeAt(value, contextTokens) {
-  const parsed = parseBoundedInt(value, SUMMARIZE_LIMITS.min, SUMMARIZE_LIMITS.max)
+export function parseSummarizeAt(value, contextTokens, max = SUMMARIZE_LIMITS.max) {
+  const parsed = parseBoundedInt(value, SUMMARIZE_LIMITS.min, max)
   if (!parsed.ok) {
     return {
       ok: false,
-      message: `Порог сводки: целое от ${SUMMARIZE_LIMITS.min} до ${SUMMARIZE_LIMITS.max}`,
+      message: `Порог сводки: целое от ${SUMMARIZE_LIMITS.min} до ${max}`,
     }
   }
   if (parsed.value === undefined) return { ok: true, value: null }
@@ -361,6 +361,38 @@ export const LAYERED_MAX_TOKENS = 2048
 export const TOPIC_FACT_CAP = 60
 
 /**
+ * Круг проверки ответа (ADR 2026-09-21-1747, п. 2): сколько раз запуск может
+ * пройти «Сборку → Вызов → Проверку». Умолчание 2 — цикл виден без настройки;
+ * 1 читается как «цикла нет»: один ответ, одна проверка, возврата нет.
+ */
+export const REVIEW_ROUNDS = { min: 1, max: 3, default: 2 }
+
+/** Предел кругов из входа запуска или из настроек профиля. */
+export function parseReviewRounds(value) {
+  const parsed = parseBoundedInt(value, REVIEW_ROUNDS.min, REVIEW_ROUNDS.max)
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      message: `Кругов проверки: целое от ${REVIEW_ROUNDS.min} до ${REVIEW_ROUNDS.max}`,
+    }
+  }
+  return { ok: true, value: parsed.value ?? REVIEW_ROUNDS.default }
+}
+
+/**
+ * Проверяющая модель. Список тот же, что у рабочей модели дня 13
+ * (`LAYERED_MODELS`): выбор, годный для ответа, годен и для проверки, а
+ * чужой идентификатор провайдера роутеру не уходит вовсе.
+ */
+export function parseReviewModel(value, defaults = {}) {
+  const id = value === undefined || value === null || value === '' ? defaults.reviewModel : value
+  if (!LAYERED_MODELS.some((m) => m.id === id)) {
+    return { ok: false, message: 'Неизвестная проверяющая модель' }
+  }
+  return { ok: true, value: id }
+}
+
+/**
  * Настройки агента за профилем — закрытый список ключей («Уточнения», 6).
  * Проверяются теми же разборщиками, что вход запуска: значение, годное в
  * настройках, обязано быть годным и в запуске, иначе панель сохраняла бы
@@ -378,14 +410,29 @@ const SETTING_KEYS = [
   'maxTokens',
   'stopSequences',
   'system',
+  // Настройки дня 13. Дни 6–11 их не присылают, а разбор идёт только с
+  // `options.review`: у агента без круга проверки этих ключей не бывает.
+  'reviewModel',
+  'reviewRounds',
 ]
 
-export function parseSettings(source, defaults = {}, models = MODELS) {
+/**
+ * `options` — отличия агента дня 13 (ADR 2026-09-21-1747, п. 5): свой потолок
+ * контекста и порога сводки и две настройки круга проверки. Без них разбор
+ * тот же, что у дня 11, и `PARAM_LIMITS` дней 6–11 не меняется.
+ */
+export function parseSettings(source, defaults = {}, models = MODELS, options = {}) {
+  const contextMax = options.contextMax ?? PARAM_LIMITS.contextTokens
+  const summarizeMax = options.summarizeMax ?? SUMMARIZE_LIMITS.max
+  const review = options.review === true
   if (source === null || typeof source !== 'object' || Array.isArray(source)) {
     return { ok: false, message: 'Настройки должны быть объектом' }
   }
   for (const key of Object.keys(source)) {
     if (!SETTING_KEYS.includes(key)) return { ok: false, message: `Неизвестная настройка: ${key}` }
+    if (!review && (key === 'reviewModel' || key === 'reviewRounds')) {
+      return { ok: false, message: `Неизвестная настройка: ${key}` }
+    }
   }
 
   const settings = {}
@@ -402,9 +449,9 @@ export function parseSettings(source, defaults = {}, models = MODELS) {
     settings.model = source.model
   }
 
-  const contextTokens = parseBoundedInt(source.contextTokens, 0, PARAM_LIMITS.contextTokens)
+  const contextTokens = parseBoundedInt(source.contextTokens, 0, contextMax)
   if (!contextTokens.ok) {
-    return { ok: false, message: `Размер контекста: целое от 0 до ${PARAM_LIMITS.contextTokens}` }
+    return { ok: false, message: `Размер контекста: целое от 0 до ${contextMax}` }
   }
   if (contextTokens.value !== undefined) settings.contextTokens = contextTokens.value
 
@@ -417,6 +464,7 @@ export function parseSettings(source, defaults = {}, models = MODELS) {
   const summarizeAt = parseSummarizeAt(
     source.summarizeAt,
     contextTokens.value ?? defaults.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
+    summarizeMax,
   )
   if (!summarizeAt.ok) return summarizeAt
   if (summarizeAt.value !== null) settings.summarizeAt = summarizeAt.value
@@ -451,6 +499,19 @@ export function parseSettings(source, defaults = {}, models = MODELS) {
     const system = parseSystem(source.system)
     if (!system.ok) return system
     settings.system = system.system
+  }
+
+  if (review) {
+    if (has('reviewModel')) {
+      const reviewModel = parseReviewModel(source.reviewModel, defaults)
+      if (!reviewModel.ok) return reviewModel
+      settings.reviewModel = reviewModel.value
+    }
+    if (has('reviewRounds')) {
+      const rounds = parseReviewRounds(source.reviewRounds)
+      if (!rounds.ok) return rounds
+      settings.reviewRounds = rounds.value
+    }
   }
 
   return { ok: true, settings }
@@ -563,7 +624,10 @@ function parseBoundedInt(value, min, max) {
  * день 11 передаёт `LAYERED_MODELS` сам, а дни 6–10 остаются с прежним
  * закрытым списком, не меняясь ни строкой (ADR 2026-09-16-1038).
  */
-export function parseParams(source, { maxOutputTokens, defaults, models = MODELS }) {
+export function parseParams(
+  source,
+  { maxOutputTokens, defaults, models = MODELS, contextMax = PARAM_LIMITS.contextTokens },
+) {
   const prompt = cleanText(source.prompt)
   if (!prompt.ok) return { ok: false, message: 'Поле prompt должно быть строкой' }
   if (prompt.text.length > PARAM_LIMITS.promptChars) {
@@ -589,9 +653,9 @@ export function parseParams(source, { maxOutputTokens, defaults, models = MODELS
   }
 
   // Ноль — законное значение: «отвечай без памяти о разговоре».
-  const contextTokens = parseBoundedInt(source.contextTokens, 0, PARAM_LIMITS.contextTokens)
+  const contextTokens = parseBoundedInt(source.contextTokens, 0, contextMax)
   if (!contextTokens.ok) {
-    return { ok: false, message: `Размер контекста: целое от 0 до ${PARAM_LIMITS.contextTokens}` }
+    return { ok: false, message: `Размер контекста: целое от 0 до ${contextMax}` }
   }
 
   const temperature = parseTemperature(source.temperature)
