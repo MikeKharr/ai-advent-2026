@@ -723,12 +723,17 @@
         class="pid-name" id="pid-name"></span><button class="clear" id="switch-profile"
         type="button">сменить профиль</button></span>
     </div>
-    <!-- Две строки, не три: третья стоила логу 25.6 px (замер ревью раскладки
-         дня 11), а день 13 отдал ещё 65 px полосе запуска. Обязательное по ADR —
-         открытость профиля и непроверенность ответов — живёт на экране входа и
-         в футере, здесь его нет. -->
-    <p class="sub">Агент ведёт ответ по шести этапам: видно, на каком он сейчас, и работу
-    можно остановить и продолжить.
+    <!-- ОДНА строка, не две: это второй рычаг раскладки (п. 1), и он
+         понадобился. Бюджет раскладки считал строку `.sub` за 17 px, ожидая
+         экономии от сокращения трёх строк до двух; фактически строка — 25.6 px,
+         и экономии не вышло. На профиле со своим системным промптом строка
+         значений занимает два ряда, и лог падал до 369 px — ниже порога 380.
+         Одна строка здесь даёт 394.7 px в худшей достижимой настройке.
+         Первый рычаг — сокращение строки значений — не взят: она обязана нести
+         обе модели и предел кругов до отправки (раскладка, п. 7.3), и запас у
+         неё меньше. Обязательное по ADR — открытость профиля и непроверенность
+         ответов — живёт на экране входа и в футере, здесь его нет. -->
+    <p class="sub">Агент ведёт ответ по шести этапам; работу можно остановить и продолжить.
     <button class="about" id="about" type="button" disabled>Об агенте</button></p>
 
     <section class="chat" aria-labelledby="chat-h">
@@ -762,7 +767,10 @@
         <p class="run-state" id="run-state">Узнаю состояние запуска…</p>
         <button class="pause-btn" id="pause" type="button" aria-pressed="false" disabled>Пауза</button>
         <p class="warned" id="runbar-warn" hidden></p>
-        <button class="dlg-btn" id="runbar-retry" type="button" hidden>Повторить</button>
+        <!-- Кнопка ростом с «Паузу», а не с `.dlg-btn`: иначе состояние
+             «ошибка» добавляло полосе ряд, и высота переставала быть
+             одинаковой во всех состояниях. -->
+        <button class="pause-btn" id="runbar-retry" type="button" hidden>Повторить</button>
       </div>
 
       <p class="params-values" id="params-sum"></p>
@@ -1253,6 +1261,8 @@
   let askWarn = null;        // отказ кнопки карточки темы
   /** Тема, выбранная в карточке над пустым логом: уйдёт с первым сообщением. */
   let pickedTopicId = null;
+  /** Истёк ли прежний диалог при последнем чтении переписки. */
+  let chatExpired = false;
 
   /* ---------- экран выбора профиля ---------- */
 
@@ -1379,10 +1389,11 @@
       setRunView('loading', { id: null, index: 0, done: 0, mark: null, round: 1, rounds: null });
       renderMonitor();
       applySettings(profile.settings ?? {});
-      await loadChat();
+      await loadChat({ announceExpiry: false });
       input.focus();
       announce(
-        `Профиль «${profile.name}». Диалогов: ${profile.sessions.length}.`,
+        `Профиль «${profile.name}». Диалогов: ${profile.sessions.length}.` +
+          (chatExpired ? ' Прежний диалог истёк — новое сообщение начнёт новый.' : ''),
       );
     } catch (error) {
       if (error.status === 404) {
@@ -2456,7 +2467,10 @@
     const limit = live ? runState.rounds : reviewRounds();
     const showChip = Number.isInteger(limit) && limit > 1;
     roundChip.hidden = !showChip;
-    if (showChip) roundChip.textContent = `круг ${runState.round} из ${limit}`;
+    // Вне живого запуска номер круга — первый: чип описывает предстоящий
+    // запуск, а не прошедший. Иначе после запуска на двух кругах и смены
+    // предела на три получалась пара «круг 2 из 3», которой не было.
+    if (showChip) roundChip.textContent = `круг ${live ? runState.round : 1} из ${limit}`;
 
     const text = runStateText();
     runStateLine.hidden = text === '';
@@ -2568,11 +2582,43 @@
    * подписки на поток; пульс начинается с первого пришедшего `beat`, не раньше:
    * пульсировать по предположению нельзя.
    */
+  /**
+   * Запуск потерян, если реплика посетителя осталась без ответа, а живого
+   * запуска у сервиса нет. Это ровно тот случай, который ADR называет в
+   * «Последствиях»: перезапуск контейнера теряет запуск, и день 11 оставлял бы
+   * экран молчать об этом. Признак надёжный — в законченном диалоге последняя
+   * реплика всегда за агентом, даже когда он ответил отказом.
+   */
+  const runLooksLost = () => {
+    const list = pathMessages();
+    const last = list[list.length - 1];
+    return Boolean(last && last.role === 'user');
+  };
+
   const adoptRun = (run) => {
     if (!run?.id) {
-      // Запуска нет: либо его и не было, либо он завершился.
-      if (runState.view === 'running' || runState.view === 'paused' || runState.view === 'loading')
-        setRunView('idle', { id: null, index: 0, done: 0, mark: null, round: 1, rounds: null });
+      // Запуска нет: либо его и не было, либо он потерян вместе с сервисом.
+      if (runState.view === 'running' || runState.view === 'paused' || runState.view === 'loading') {
+        const lost = runLooksLost();
+        setRunView(lost ? 'lost' : 'idle', {
+          id: null,
+          index: lost ? runState.index : 0,
+          done: lost ? runState.done : 0,
+          mark: lost ? 'stopped' : null,
+          round: 1,
+          rounds: null,
+        });
+        if (lost) shout('Запуск потерян: сервис перезапущен, реплика без ответа.');
+      }
+      return;
+    }
+    // Отмена по сроку паузы: запуск ещё виден сервису, но он уже терминальный.
+    if (run.status === 'cancelled') {
+      const at = Math.max(1, stages.findIndex((x) => x.id === run.state) + 1);
+      setRunView('cancelled', {
+        id: run.id, index: at, done: at - 1, mark: 'stopped', rounds: null,
+      });
+      shout('Запуск отменён: пауза дольше 60 минут.');
       return;
     }
     const index = Math.max(1, stages.findIndex((x) => x.id === run.state) + 1);
@@ -3175,13 +3221,21 @@
     if (runState.view !== 'running' && runState.view !== 'paused') adoptRun(d.run ?? null);
   };
 
-  const loadChat = async () => {
+  /**
+   * `announceExpiry: false` — когда сразу за чтением переписки говорит тот, кто
+   * её заказал: два объявления подряд затирают друг друга, и пропадает как раз
+   * важное — что прежний диалог истёк. Вызывающий вклеивает эту оговорку в своё
+   * единственное сообщение.
+   */
+  const loadChat = async ({ announceExpiry = true } = {}) => {
     try {
       const d = await api(`./api/chat?${contextParams()}`);
       adoptChat(d);
       askWarn = null;
       renderLog();
-      if (d.expired) announce('Прежний диалог истёк. Новое сообщение начнёт новый.');
+      chatExpired = Boolean(d.expired);
+      if (d.expired && announceExpiry)
+        announce('Прежний диалог истёк. Новое сообщение начнёт новый.');
     } catch (error) {
       restoredFromServer = false;
       spentTokens = null;
@@ -3899,10 +3953,11 @@
     const params = {
       prompt: message,
       model: chosenModel(),
-      // Проверяющая модель и предел кругов уходят с каждым сообщением: день
-      // резервирует по слоту лимитера на круг ДО запуска (ADR, п. 5).
+      // Предела кругов здесь НЕТ намеренно: он живёт только в настройках
+      // профиля (решение владельца), и день читает его оттуда. Число из тела
+      // сообщения сервер отбрасывает — посылать его значило бы делать вид,
+      // что оно на что-то влияет.
       reviewModel: chosenReviewModel(),
-      reviewRounds: reviewRounds(),
       maxTokens: Number($('p-max-tokens').value),
       temperature: Number(temp.value),
       strategy: mode,
@@ -4008,9 +4063,16 @@
       } else if (end.error) {
         answered(end.error.message ?? 'агент не ответил', { error: true });
       }
-      setStatus(run, end.status === 'succeeded' || end.status === 'failed' ? end.status
+      setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
+        ? end.status
         : run.answered ? 'succeeded' : 'failed');
-      finish();
+      // Отмена по сроку паузы — не «готово»: полоса говорит, что случилось.
+      if (end.status === 'cancelled') {
+        shout('Запуск отменён: пауза дольше 60 минут.');
+        finish('cancelled');
+      } else {
+        finish();
+      }
       // Память профиля могла пополниться, тема — смениться, вопрос — появиться.
       await Promise.all([syncChat(), syncProfile()]);
     });

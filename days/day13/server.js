@@ -34,8 +34,8 @@ const PROFILE_COOKIE = 'day13_pid'
 const PENDING_TTL_MS = 10 * 60_000
 /**
  * Предел кругов проверки — тот же, что у агента (ADR, п. 2): 1–3, умолчание 2.
- * День держит своё число, потому что слоты он резервирует до обращения к
- * агенту (I-4) и не может дождаться, пока агент назовёт свой предел.
+ * День приводит число к этим границам сам, потому что резервирует по нему слоты
+ * и по нему же велит агенту работать: оба числа обязаны быть одним числом.
  */
 const REVIEW_ROUNDS = { min: 1, max: 3, default: 2 }
 
@@ -43,6 +43,23 @@ const reviewRoundsOf = (value) => {
   const n = Number(value)
   if (!Number.isInteger(n)) return REVIEW_ROUNDS.default
   return Math.min(REVIEW_ROUNDS.max, Math.max(REVIEW_ROUNDS.min, n))
+}
+
+/**
+ * Предел кругов живёт ТОЛЬКО в настройках профиля — решение владельца.
+ * Посетитель выставляет его один раз в окне настроек, и он действует на все
+ * сообщения; поле в теле сообщения источником не является (см. handleAnswer).
+ *
+ * Чтение настроек — обращение к агенту, но не платное: модель оно не зовёт.
+ * Поэтому оно и стоит до резерва слотов — резерв всё равно предшествует
+ * единственному платному обращению, созданию запуска (I-4).
+ */
+async function readReviewRounds(profileId) {
+  const { response, json } = await callAgent(`/v1/profiles/${profileId}`)
+  if (response.status === 404) return { code: 'unknown_profile' }
+  if (!response.ok) throw new Error(`агент ${response.status}`)
+  // Настроек может не быть вовсе — тогда умолчание, как и у агента.
+  return { rounds: reviewRoundsOf(json?.profile?.stagedSettings?.reviewRounds) }
 }
 
 const { env, errors: envErrors } = parseEnv()
@@ -637,22 +654,44 @@ async function handleAnswer(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
 
+  // Сколько кругов разрешено — знают настройки профиля, и только они.
+  // Читается ДО резерва: резервировать надо ровно столько, сколько будет
+  // потрачено, а денег это чтение не стоит.
+  let rounds
+  try {
+    const limit = await readReviewRounds(profileId)
+    if (limit.code === 'unknown_profile') {
+      return send(
+        res,
+        404,
+        { error: 'Профиль не найден: выберите другой', code: 'unknown_profile' },
+        cookies(dropProfile(), dropSession()),
+      )
+    }
+    rounds = limit.rounds
+  } catch (error) {
+    // Идти дальше нельзя: посетитель выставил предел, и работать по другому
+    // числу молча — ровно то расхождение, ради которого предел свели в одно
+    // место. Денег при этом не потрачено, слот не занят.
+    console.error(`предел кругов: ${error.message}`)
+    return send(res, 502, { error: AGENT_DOWN })
+  }
+
   const ip = clientIp(req)
-  const rounds = reviewRoundsOf(body.reviewRounds)
+  // С этого места и до создания запуска платных обращений нет: слот занят
+  // одним синхронным шагом раньше единственного вызова, который тратит деньги.
   const slot = limiter.reserve(ip, rounds)
   if (!slot.ok) return send(res, 429, { error: slot.message })
 
   // Тема уходит в создание диалога, а не во вход запуска: у агента такого
   // поля нет, и карточка выбора темы над пустым чатом работает через него.
   //
-  // `reviewRounds` переписывается приведённым числом, и это обязательно:
-  // резерв слотов и работа агента должны идти от ОДНОГО числа. Пока уходило
-  // сырое поле, дыра была двойной — негодное значение день отвергал для себя и
-  // всё равно передавал дальше, а при опущенном поле агент брал предел из
-  // настроек профиля, где могла стоять тройка при двух занятых слотах. Один
-  // `PUT /api/settings` (окно записей, не окно вызовов) плюс сообщения без поля
-  // давали три оплаченных круга на два зарезервированных слота.
-  const { topicId, ...rest } = body
+  // `reviewRounds` из тела ОТБРАСЫВАЕТСЯ и ничего не решает: источник числа —
+  // настройки профиля (выше). Агенту уходит ровно то число, под которое заняты
+  // слоты, поэтому расхождение резерва и расхода невозможно по построению, а
+  // не по внимательности: одно число из одного места проходит через обе точки.
+  const { topicId, reviewRounds: fromBody, ...rest } = body
+  void fromBody
   const input = { ...rest, reviewRounds: rounds }
   let sessionId = sessionFromCookie(req)
   const headers = {}
@@ -1091,12 +1130,15 @@ async function handleStageLog(req, res, runId) {
     if (response.status === 404) return send(res, 404, { error: 'Журнал не найден' })
     if (!response.ok) throw new Error(`агент ${response.status}`)
     const csv = await response.text()
-    // Имя файла назначает страница атрибутом `download`; здесь важен только
-    // тип: браузер не должен показать журнал как страницу.
+    // `filename` в заголовке НЕ ставится намеренно: он перебивает атрибут
+    // `download` страницы, и в папке загрузок оказывались одинаковые
+    // `day13-stages.csv` вместо имён со временем запуска. Имя назначает
+    // страница; заголовок остаётся ради `attachment` — журнал не должен
+    // открываться как страница.
     res.writeHead(200, {
       'content-type': 'text/csv; charset=utf-8',
       'cache-control': 'no-store',
-      'content-disposition': `attachment; filename="day13-stages.csv"`,
+      'content-disposition': 'attachment',
       'x-content-type-options': 'nosniff',
     })
     return res.end(csv)

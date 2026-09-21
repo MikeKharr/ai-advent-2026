@@ -40,6 +40,13 @@ const settingsCalls = []
 const DAY11_SETTINGS = { strategy: 'window', contextTokens: 3000, model: 'groq-llama' }
 /** Настройки дня 13: свой потолок в 32 000 и свои поля проверки. */
 const STAGED_SETTINGS = { strategy: 'summary', contextTokens: 32000, reviewModel: 'kimi-k2.6', reviewRounds: 3 }
+/**
+ * Предел кругов профиля — ЕДИНСТВЕННЫЙ источник числа (решение владельца).
+ * Тесты двигают его отсюда, а не телом сообщения.
+ */
+let profileRounds = 2
+/** Настройки профиля отсутствуют вовсе: берётся умолчание. */
+let profileHasSettings = true
 
 const agent = http.createServer(async (req, res) => {
   const chunks = []
@@ -135,7 +142,9 @@ const agent = http.createServer(async (req, res) => {
         id: PID,
         name: 'Мика',
         settings: DAY11_SETTINGS,
-        stagedSettings: STAGED_SETTINGS,
+        stagedSettings: profileHasSettings
+          ? { ...STAGED_SETTINGS, reviewRounds: profileRounds }
+          : undefined,
         rules: [],
         topics: [],
         sessions: [{ id: SID, lastSeenAt: 1, messages: 2, topicId: null, topicTitle: null }],
@@ -183,7 +192,10 @@ process.env.COOKIE_PATH = '/'
 process.env.COOKIE_SECURE = 'false'
 // Окна широкие: у каждого теста свой адрес, а проверки резерва слотов ниже
 // упираются в предел намеренно, своим адресом и своим числом.
-process.env.MAX_DAILY_CALLS = '50'
+// Суточный предел широкий намеренно: слот берётся на КРУГ, и весь прогон
+// тратит их сотнями. На производственных 50 середина прогона упиралась бы в
+// суточный предел, и отказы читались бы как дефекты проверяемых веток.
+process.env.MAX_DAILY_CALLS = '400'
 process.env.RATE_LIMIT_PER_MIN = '4'
 process.env.RATE_LIMIT_PER_HOUR = '12'
 process.env.RATE_LIMIT_WRITES_PER_HOUR = '40'
@@ -256,19 +268,20 @@ test('/api/state отдаёт шесть этапов агента и преде
 
 /* ---------- критерий 16: резерв слотов под круги ---------- */
 
-test('сообщение резервирует reviewRounds слотов до запуска', async () => {
+test('сообщение резервирует слоты по пределу кругов ПРОФИЛЯ', async () => {
   const ip = '10.2.0.1'
   const cookie = withSession()
-  // Минутное окно — четыре слота. Сообщение с тремя кругами занимает три:
-  // столько платных ответов оно может стоить.
-  const first = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  // Минутное окно — четыре слота. Сообщение при пределе профиля в три круга
+  // занимает три: столько платных ответов оно может стоить.
+  const first = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(first.status, 202)
   assert.equal((await first.json()).reserved, 3, 'зарезервировано по слоту на круг')
 
-  // Второго сообщения с тремя кругами окно не выдержит: 3 + 3 > 4. Отказ
-  // случается ДО обращения к агенту — запуска нет вовсе (I-4).
+  // Второго такого сообщения окно не выдержит: 3 + 3 > 4. Отказ случается ДО
+  // создания запуска — единственного платного обращения (I-4).
   const before = agentLog.filter((c) => c.url === '/v1/runs').length
-  const denied = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  const denied = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(denied.status, 429)
   assert.equal(
     agentLog.filter((c) => c.url === '/v1/runs').length,
@@ -277,9 +290,11 @@ test('сообщение резервирует reviewRounds слотов до �
   )
 
   // А на один круг слот ещё есть: резерв считается слотами, а не сообщениями.
-  const one = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+  profileRounds = 1
+  const one = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(one.status, 202)
   assert.equal((await one.json()).reserved, 1)
+  profileRounds = 2
 })
 
 /** Вход последнего запуска, ушедший агенту: смотреть надо сюда, а не в ответ дня. */
@@ -288,48 +303,73 @@ const lastRunInput = () => {
   return JSON.parse(call.body).input
 }
 
-test('агенту уходит ровно то число кругов, под которое взяты слоты', async () => {
-  // Это дыра, а не придирка: пока уходило сырое поле, один `PUT /api/settings`
-  // с `reviewRounds: 3` плюс сообщения БЕЗ поля давали три оплаченных круга на
-  // два зарезервированных слота — тройная недоплата против правила слотов.
-  const cases = [
-    { sent: { prompt: 'да', reviewRounds: 99 }, reserved: 3, ip: '10.2.1.1' },
-    { sent: { prompt: 'да', reviewRounds: 0 }, reserved: 1, ip: '10.2.1.2' },
-    { sent: { prompt: 'да' }, reserved: 2, ip: '10.2.1.3' },
-    { sent: { prompt: 'да', reviewRounds: 'три' }, reserved: 2, ip: '10.2.1.4' },
-    { sent: { prompt: 'да', reviewRounds: 2.5 }, reserved: 2, ip: '10.2.1.5' },
-    { sent: { prompt: 'да', reviewRounds: -7 }, reserved: 1, ip: '10.2.1.6' },
-  ]
-  for (const c of cases) {
-    const r = await call('POST', '/api/answer', c.sent, { ip: c.ip, cookie: withSession() })
-    assert.equal(r.status, 202, JSON.stringify(c.sent))
-    assert.equal((await r.json()).reserved, c.reserved, `резерв для ${JSON.stringify(c.sent)}`)
-    // Главное: у агента то же число, что у лимитера, и никогда сырое.
+test('связка целиком: настройка профиля → резерв → тело запроса к агенту', async () => {
+  // Одно число из одного места проходит через обе точки, поэтому расхождение
+  // резерва и расхода невозможно по построению, а не по внимательности.
+  for (const rounds of [1, 2, 3]) {
+    profileRounds = rounds
+    const r = await call('POST', '/api/answer', { prompt: 'да' }, {
+      ip: `10.2.1.${rounds}`,
+      cookie: withSession(),
+    })
+    assert.equal(r.status, 202)
+    assert.equal((await r.json()).reserved, rounds, `резерв при настройке ${rounds}`)
+    assert.equal(lastRunInput().reviewRounds, rounds, `агенту при настройке ${rounds}`)
+  }
+  profileRounds = 2
+})
+
+test('поле кругов в теле сообщения не меняет ничего', async () => {
+  // Источник числа — настройки профиля. Поле тела отбрасывается, каким бы оно
+  // ни было: иначе один запрос в обход окна настроек ломал бы правило слотов.
+  profileRounds = 2
+  const variants = [99, 0, 1, 3, 'три', 2.5, -7, null, {}]
+  for (const [i, sent] of variants.entries()) {
+    // Свой адрес на итерацию: минутное окно — четыре слота, а проверок девять.
+    const r = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: sent }, {
+      ip: `10.2.2.${i + 1}`,
+      cookie: withSession(),
+    })
+    assert.equal(r.status, 202, JSON.stringify(sent))
+    assert.equal((await r.json()).reserved, 2, `резерв при поле ${JSON.stringify(sent)}`)
     assert.equal(
       lastRunInput().reviewRounds,
-      c.reserved,
-      `агенту ушло не то, что зарезервировано, для ${JSON.stringify(c.sent)}`,
+      2,
+      `агенту ушло поле тела вместо настройки профиля: ${JSON.stringify(sent)}`,
     )
   }
 })
 
-test('опущенное поле не даёт агенту взять предел из настроек профиля', async () => {
-  // Поле должно УЙТИ, а не отсутствовать: иначе агент возьмёт умолчание из
-  // настроек профиля, где может стоять 3 при двух занятых слотах.
-  const r = await call('POST', '/api/answer', { prompt: 'да' }, {
-    ip: '10.2.2.1',
+test('без настроек профиля берётся умолчание в два круга', async () => {
+  profileHasSettings = false
+  const r = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, {
+    ip: '10.2.3.1',
     cookie: withSession(),
   })
   assert.equal(r.status, 202)
-  const input = lastRunInput()
-  assert.ok(
-    Object.hasOwn(input, 'reviewRounds'),
-    'поле кругов обязано присутствовать во входе запуска',
-  )
-  assert.equal(input.reviewRounds, 2)
+  assert.equal((await r.json()).reserved, 2)
+  assert.equal(lastRunInput().reviewRounds, 2)
+  profileHasSettings = true
+})
+
+test('негодное число в настройках профиля приводится к границам', async () => {
+  // Настройки профиля открыты и проверяются агентом, но день не обязан верить
+  // тому, что прочитал: слоты он занимает по своему приведённому числу.
+  const stored = [[99, 3], [0, 1], [-4, 1], ['три', 2]]
+  for (const [i, [value, expected]] of stored.entries()) {
+    profileRounds = value
+    const r = await call('POST', '/api/answer', { prompt: 'да' }, {
+      ip: `10.2.4.${i + 1}`,
+      cookie: withSession(),
+    })
+    assert.equal((await r.json()).reserved, expected, `настройка ${value}`)
+    assert.equal(lastRunInput().reviewRounds, expected, `агенту при настройке ${value}`)
+  }
+  profileRounds = 2
 })
 
 test('тема во вход запуска не уходит, прочие поля доходят как есть', async () => {
+  profileRounds = 2
   await call('POST', '/api/answer', { prompt: 'да', topicId: 7, model: 'kimi-k2.6', maxTokens: 500 }, {
     ip: '10.2.2.2',
     cookie: withSession(),
@@ -345,17 +385,19 @@ test('при одном состоявшемся круге лишние сло�
   const ip = '10.3.0.1'
   endRounds = 1
   const cookie = withSession()
-  const r = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  const r = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(r.status, 202)
+  profileRounds = 1
   await drain(RUN, cookie)
 
   // Три слота заняты, два вернулись — остался один. Минутное окно 4, значит
   // ещё три сообщения по одному кругу должны пройти.
   for (let i = 0; i < 3; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
     assert.equal(next.status, 202, `сообщение ${i + 2} после возврата слотов`)
   }
-  const over = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+  const over = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(over.status, 429, 'возвращено ровно два слота, не больше')
 })
 
@@ -363,10 +405,14 @@ test('состоявшиеся круги слотов не возвращают
   const ip = '10.3.0.2'
   endRounds = 3
   const cookie = withSession()
-  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
+  profileRounds = 1
   await drain(RUN, cookie)
-  const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(next.status, 429, 'три круга съели три слота, четвёртый не найдётся')
+  profileRounds = 2
   endRounds = 1
 })
 
@@ -376,14 +422,16 @@ test('упавший запуск возвращает слоты кругов, 
   // Запуск падает на первом круге: `end` несёт ошибку, числа кругов в нём нет.
   streamMode = 'failed'
   streamRounds = 1
-  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
+  profileRounds = 1
   await drain(RUN, cookie)
   // Занятым остаётся один слот из трёх — минутное окно в 4 пускает ещё троих.
   for (let i = 0; i < 3; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
     assert.equal(next.status, 202, `сообщение ${i + 2} после падения`)
   }
-  const over = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+  const over = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(over.status, 429, 'за состоявшийся круг слот удержан')
   streamMode = 'ok'
 })
@@ -394,10 +442,12 @@ test('падение до первого этапа возвращает все 
   // Ни одного события `state`: запуск не дошёл ни до какого круга.
   streamMode = 'failed'
   streamRounds = 0
-  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
+  profileRounds = 1
   await drain(RUN, cookie)
   for (let i = 0; i < 4; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
     assert.equal(next.status, 202, `сообщение ${i + 2}: все три слота вернулись`)
   }
   streamMode = 'ok'
@@ -409,10 +459,12 @@ test('отказ без трат возвращает все слоты, даж�
   const cookie = withSession()
   streamMode = 'free'
   streamRounds = 2
-  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
+  profileRounds = 1
   await drain(RUN, cookie)
   for (let i = 0; i < 4; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
     assert.equal(next.status, 202, `сообщение ${i + 2}: paidNothing вернул всё`)
   }
   streamMode = 'ok'
@@ -425,11 +477,20 @@ test('оборванный поток слотов не возвращает: з
   // `end` не пришёл вовсе — доказательства завершения нет.
   streamMode = 'cut'
   streamRounds = 1
-  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
-  await drain(RUN, cookie)
-  const over = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 2 }, { ip, cookie })
-  assert.equal(over.status, 429, 'все три слота остаются занятыми')
-  streamMode = 'ok'
+  profileRounds = 3
+  try {
+    await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
+    await drain(RUN, cookie)
+    // Ни один из трёх слотов не вернулся, поэтому следующее такое же
+    // сообщение в минутное окно уже не помещается.
+    const over = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
+    assert.equal(over.status, 429, 'все три слота остаются занятыми')
+  } finally {
+    // Режим потока возвращается даже при провале: иначе оборванный поток
+    // достался бы следующему тесту и тот упал бы за компанию.
+    streamMode = 'ok'
+    profileRounds = 2
+  }
 })
 
 test('слово агента о кругах важнее наблюдения дня', async () => {
@@ -438,13 +499,15 @@ test('слово агента о кругах важнее наблюдения 
   // Событий `state` два, но агент говорит, что круг был один.
   streamRounds = 2
   endRounds = 1
-  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  profileRounds = 3
+  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
+  profileRounds = 1
   await drain(RUN, cookie)
   for (let i = 0; i < 3; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
     assert.equal(next.status, 202, `сообщение ${i + 2}: вернулись два слота по слову агента`)
   }
-  const over = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+  const over = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
   assert.equal(over.status, 429)
   streamRounds = 1
 })
@@ -554,6 +617,13 @@ test('журнал отдаётся как CSV и не исполняется б
   assert.match(r.headers.get('content-type'), /text\/csv/)
   assert.equal(r.headers.get('x-content-type-options'), 'nosniff')
   assert.match(r.headers.get('content-disposition'), /attachment/)
+  // `filename` в заголовке нет намеренно: он перебивал атрибут `download`
+  // страницы, и в папке загрузок оказывались одинаковые `day13-stages.csv`.
+  assert.equal(
+    /filename/.test(r.headers.get('content-disposition')),
+    false,
+    'имя файла назначает страница, а не заголовок',
+  )
   const text = await r.text()
   assert.match(text, /^run_id,state,outcome/)
   assert.equal(text.includes('agent-key'), false)
@@ -582,7 +652,7 @@ test('журнал без диалога и с негодным идентифи
 test('страница дня 13 видит свои настройки, а не настройки дня 11', async () => {
   const r = await call('GET', '/api/profile', undefined, { ip: '10.8.0.1', cookie: withSession() })
   const { profile } = await r.json()
-  assert.deepEqual(profile.settings, STAGED_SETTINGS)
+  assert.deepEqual(profile.settings, { ...STAGED_SETTINGS, reviewRounds: profileRounds })
   assert.equal(
     profile.settings.contextTokens,
     32000,
