@@ -27,6 +27,10 @@ const ALIEN_RUN = '00000000-0000-4000-8000-0000000000aa'
 
 /** Сколько кругов назовёт `end` потока: тест этим двигает возврат слотов. */
 let endRounds = 1
+/** Чем кончится поток: `ok` — результатом, `failed` — ошибкой, `free` — ошибкой без трат, `cut` — ничем. */
+let streamMode = 'ok'
+/** До какого круга дойдут события `state` — то, что день видит своими глазами. */
+let streamRounds = 1
 /** Прерван ли вызов у запуска: от этого зависит, берёт ли возобновление слот. */
 let interruptedCall = false
 const pauseCalls = []
@@ -70,11 +74,19 @@ const agent = http.createServer(async (req, res) => {
   const events = path.match(/^\/v1\/runs\/([^/]+)\/events$/)
   if (events) {
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    res.write(`event: event\ndata: ${JSON.stringify({ seq: 1, stage: 'state' })}\n\n`)
-    const end = {
-      status: 'succeeded',
-      result: { answer: 'ответ', summary: { totalTokens: 100, rounds: endRounds } },
+    // Этапы с номером круга: по ним день считает, до какого круга дошёл запуск.
+    for (let round = 1; round <= streamRounds; round++) {
+      const event = { seq: round, stage: 'state', data: { state: 'answer', index: 3, of: 6, round } }
+      res.write(`id: ${round}\nevent: event\ndata: ${JSON.stringify(event)}\n\n`)
     }
+    // Поток оборвался, не сказав `end`: запуск, возможно, идёт.
+    if (streamMode === 'cut') return res.end()
+    const end =
+      streamMode === 'failed'
+        ? { status: 'failed', error: { code: 'router_error', message: 'модель не ответила', paidNothing: false } }
+        : streamMode === 'free'
+          ? { status: 'failed', error: { code: 'budget_too_small', message: 'мало', paidNothing: true } }
+          : { status: 'succeeded', result: { answer: 'ответ', summary: { totalTokens: 100, rounds: endRounds } } }
     res.write(`event: end\ndata: ${JSON.stringify(end)}\n\n`)
     return res.end()
   }
@@ -270,25 +282,63 @@ test('сообщение резервирует reviewRounds слотов до �
   assert.equal((await one.json()).reserved, 1)
 })
 
-test('предел кругов вне 1–3 приводится к границе, а не доверяется странице', async () => {
-  const ip = '10.2.0.2'
-  const r = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 99 }, {
-    ip,
-    cookie: withSession(),
-  })
-  assert.equal((await r.json()).reserved, 3, '99 кругов — это 3')
+/** Вход последнего запуска, ушедший агенту: смотреть надо сюда, а не в ответ дня. */
+const lastRunInput = () => {
+  const call = agentLog.filter((c) => c.url === '/v1/runs' && c.method === 'POST').pop()
+  return JSON.parse(call.body).input
+}
 
-  const none = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 0 }, {
-    ip: '10.2.0.3',
-    cookie: withSession(),
-  })
-  assert.equal((await none.json()).reserved, 1)
+test('агенту уходит ровно то число кругов, под которое взяты слоты', async () => {
+  // Это дыра, а не придирка: пока уходило сырое поле, один `PUT /api/settings`
+  // с `reviewRounds: 3` плюс сообщения БЕЗ поля давали три оплаченных круга на
+  // два зарезервированных слота — тройная недоплата против правила слотов.
+  const cases = [
+    { sent: { prompt: 'да', reviewRounds: 99 }, reserved: 3, ip: '10.2.1.1' },
+    { sent: { prompt: 'да', reviewRounds: 0 }, reserved: 1, ip: '10.2.1.2' },
+    { sent: { prompt: 'да' }, reserved: 2, ip: '10.2.1.3' },
+    { sent: { prompt: 'да', reviewRounds: 'три' }, reserved: 2, ip: '10.2.1.4' },
+    { sent: { prompt: 'да', reviewRounds: 2.5 }, reserved: 2, ip: '10.2.1.5' },
+    { sent: { prompt: 'да', reviewRounds: -7 }, reserved: 1, ip: '10.2.1.6' },
+  ]
+  for (const c of cases) {
+    const r = await call('POST', '/api/answer', c.sent, { ip: c.ip, cookie: withSession() })
+    assert.equal(r.status, 202, JSON.stringify(c.sent))
+    assert.equal((await r.json()).reserved, c.reserved, `резерв для ${JSON.stringify(c.sent)}`)
+    // Главное: у агента то же число, что у лимитера, и никогда сырое.
+    assert.equal(
+      lastRunInput().reviewRounds,
+      c.reserved,
+      `агенту ушло не то, что зарезервировано, для ${JSON.stringify(c.sent)}`,
+    )
+  }
+})
 
-  const missing = await call('POST', '/api/answer', { prompt: 'да' }, {
-    ip: '10.2.0.4',
+test('опущенное поле не даёт агенту взять предел из настроек профиля', async () => {
+  // Поле должно УЙТИ, а не отсутствовать: иначе агент возьмёт умолчание из
+  // настроек профиля, где может стоять 3 при двух занятых слотах.
+  const r = await call('POST', '/api/answer', { prompt: 'да' }, {
+    ip: '10.2.2.1',
     cookie: withSession(),
   })
-  assert.equal((await missing.json()).reserved, 2, 'умолчание — два круга')
+  assert.equal(r.status, 202)
+  const input = lastRunInput()
+  assert.ok(
+    Object.hasOwn(input, 'reviewRounds'),
+    'поле кругов обязано присутствовать во входе запуска',
+  )
+  assert.equal(input.reviewRounds, 2)
+})
+
+test('тема во вход запуска не уходит, прочие поля доходят как есть', async () => {
+  await call('POST', '/api/answer', { prompt: 'да', topicId: 7, model: 'kimi-k2.6', maxTokens: 500 }, {
+    ip: '10.2.2.2',
+    cookie: withSession(),
+  })
+  const input = lastRunInput()
+  assert.equal(input.topicId, undefined, 'тема уходит в создание диалога, а не в запуск')
+  assert.equal(input.model, 'kimi-k2.6')
+  assert.equal(input.maxTokens, 500)
+  assert.equal(input.prompt, 'да')
 })
 
 test('при одном состоявшемся круге лишние слоты возвращаются по end', async () => {
@@ -318,6 +368,85 @@ test('состоявшиеся круги слотов не возвращают
   const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
   assert.equal(next.status, 429, 'три круга съели три слота, четвёртый не найдётся')
   endRounds = 1
+})
+
+test('упавший запуск возвращает слоты кругов, до которых не дошёл', async () => {
+  const ip = '10.3.0.3'
+  const cookie = withSession()
+  // Запуск падает на первом круге: `end` несёт ошибку, числа кругов в нём нет.
+  streamMode = 'failed'
+  streamRounds = 1
+  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  await drain(RUN, cookie)
+  // Занятым остаётся один слот из трёх — минутное окно в 4 пускает ещё троих.
+  for (let i = 0; i < 3; i++) {
+    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    assert.equal(next.status, 202, `сообщение ${i + 2} после падения`)
+  }
+  const over = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+  assert.equal(over.status, 429, 'за состоявшийся круг слот удержан')
+  streamMode = 'ok'
+})
+
+test('падение до первого этапа возвращает все слоты', async () => {
+  const ip = '10.3.0.4'
+  const cookie = withSession()
+  // Ни одного события `state`: запуск не дошёл ни до какого круга.
+  streamMode = 'failed'
+  streamRounds = 0
+  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  await drain(RUN, cookie)
+  for (let i = 0; i < 4; i++) {
+    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    assert.equal(next.status, 202, `сообщение ${i + 2}: все три слота вернулись`)
+  }
+  streamMode = 'ok'
+  streamRounds = 1
+})
+
+test('отказ без трат возвращает все слоты, даже если круги начинались', async () => {
+  const ip = '10.3.0.5'
+  const cookie = withSession()
+  streamMode = 'free'
+  streamRounds = 2
+  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  await drain(RUN, cookie)
+  for (let i = 0; i < 4; i++) {
+    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    assert.equal(next.status, 202, `сообщение ${i + 2}: paidNothing вернул всё`)
+  }
+  streamMode = 'ok'
+  streamRounds = 1
+})
+
+test('оборванный поток слотов не возвращает: запуск, возможно, идёт', async () => {
+  const ip = '10.3.0.6'
+  const cookie = withSession()
+  // `end` не пришёл вовсе — доказательства завершения нет.
+  streamMode = 'cut'
+  streamRounds = 1
+  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  await drain(RUN, cookie)
+  const over = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 2 }, { ip, cookie })
+  assert.equal(over.status, 429, 'все три слота остаются занятыми')
+  streamMode = 'ok'
+})
+
+test('слово агента о кругах важнее наблюдения дня', async () => {
+  const ip = '10.3.0.7'
+  const cookie = withSession()
+  // Событий `state` два, но агент говорит, что круг был один.
+  streamRounds = 2
+  endRounds = 1
+  await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 3 }, { ip, cookie })
+  await drain(RUN, cookie)
+  for (let i = 0; i < 3; i++) {
+    const next = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+    assert.equal(next.status, 202, `сообщение ${i + 2}: вернулись два слота по слову агента`)
+  }
+  const over = await call('POST', '/api/answer', { prompt: 'да', reviewRounds: 1 }, { ip, cookie })
+  assert.equal(over.status, 429)
+  streamRounds = 1
 })
 
 /* ---------- критерии 3 и 5: пауза ---------- */

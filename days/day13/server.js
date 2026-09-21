@@ -216,10 +216,22 @@ const dropProfile = () => setCookie(PROFILE_COOKIE, '', 0)
 /** Несколько cookie одним ответом: заголовок повторяется, а не склеивается. */
 const cookies = (...values) => (values.length > 0 ? { 'set-cookie': values } : {})
 
+function sweepPending(now = Date.now()) {
+  for (const [id, slot] of pending) if (now - slot.at > PENDING_TTL_MS) pending.delete(id)
+}
+
 function remember(runId, ip, reserved = 1) {
   const now = Date.now()
-  for (const [id, slot] of pending) if (now - slot.at > PENDING_TTL_MS) pending.delete(id)
+  sweepPending(now)
   pending.set(runId, { ip, at: now, reserved })
+}
+
+// Уборка по часам, а не только при новом запуске: иначе адрес последнего
+// запуска лежал бы в памяти до перезапуска, если трафик прекратился, — а
+// связка «запрос → адрес» живёт не дольше нужного (I-10). `unref` не даёт
+// таймеру держать процесс живым.
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(() => sweepPending(), 60_000).unref()
 }
 
 /** Запрос к агенту. Ошибки транспорта отдаются вызывающему как null. */
@@ -632,7 +644,16 @@ async function handleAnswer(req, res) {
 
   // Тема уходит в создание диалога, а не во вход запуска: у агента такого
   // поля нет, и карточка выбора темы над пустым чатом работает через него.
-  const { topicId, ...input } = body
+  //
+  // `reviewRounds` переписывается приведённым числом, и это обязательно:
+  // резерв слотов и работа агента должны идти от ОДНОГО числа. Пока уходило
+  // сырое поле, дыра была двойной — негодное значение день отвергал для себя и
+  // всё равно передавал дальше, а при опущенном поле агент брал предел из
+  // настроек профиля, где могла стоять тройка при двух занятых слотах. Один
+  // `PUT /api/settings` (окно записей, не окно вызовов) плюс сообщения без поля
+  // давали три оплаченных круга на два зарезервированных слота.
+  const { topicId, ...rest } = body
+  const input = { ...rest, reviewRounds: rounds }
   let sessionId = sessionFromCookie(req)
   const headers = {}
   if (!sessionId) {
@@ -862,9 +883,18 @@ async function handleHead(req, res) {
 }
 
 /**
- * Прокси потока событий: байты уходят в браузер как есть, а по дороге
- * читается сообщение `end` — там день узнаёт, сколько кругов проверки
- * случилось на самом деле, и возвращает лишние слоты (ADR, п. 5).
+ * Прокси потока событий: байты уходят в браузер как есть, а по дороге день
+ * считает круги проверки и возвращает лишние слоты (ADR, п. 5).
+ *
+ * Слоты возвращаются ТОЛЬКО по доказанному завершению — по пришедшему `end`.
+ * У него две ветки, и раньше работала одна: при удаче `end` несёт
+ * `result.summary.rounds`, при падении — `error`, и числа кругов там нет
+ * вовсе. Поэтому день считает круги сам, по событиям `state`, которые и так
+ * проходят через него: круг, до которого запуск не дошёл, денег не стоил.
+ *
+ * Случаи, когда `end` не пришёл (вкладку закрыли, поток оборвался), слотов не
+ * возвращают: запуск на стороне агента, возможно, идёт и продолжает тратить
+ * деньги — доказательства завершения нет.
  */
 async function proxyEvents(req, res, runId) {
   const controller = new AbortController()
@@ -902,14 +932,40 @@ async function proxyEvents(req, res, runId) {
   const reader = upstream.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  let endSeen = false
+  /** Имя последнего события: у `data:` своего имени нет. */
+  let kind = null
+  /** До какого круга запуск дошёл по событиям `state`. 0 — не дошёл ни до какого. */
+  let seenRounds = 0
+
+  /** Сколько слотов вернуть по завершившемуся запуску. */
+  const spentRounds = (end) => {
+    // Агент посчитал круги сам — его число точнее наблюдения.
+    const told = Number(end.result?.summary?.rounds ?? end.rounds)
+    return Number.isInteger(told) && told >= 0 ? told : seenRounds
+  }
+
   const inspect = (line) => {
-    if (line === 'event: end') {
-      endSeen = true
+    if (line.startsWith('event: ')) {
+      kind = line.slice(7).trim()
       return
     }
-    if (!endSeen || !line.startsWith('data: ')) return
-    endSeen = false
+    if (!line.startsWith('data: ')) return
+    const name = kind
+    kind = null
+
+    if (name === 'event') {
+      // Вход в этап называет круг: по нему видно, сколько кругов состоялось,
+      // даже когда запуск упал и результата с числом кругов не будет.
+      try {
+        const event = JSON.parse(line.slice(6))
+        const round = Number(event?.data?.round)
+        if (event?.stage === 'state' && Number.isInteger(round) && round > seenRounds)
+          seenRounds = round
+      } catch {}
+      return
+    }
+    if (name !== 'end') return
+
     try {
       const end = JSON.parse(line.slice(6))
       const slot = pending.get(runId)
@@ -920,12 +976,10 @@ async function proxyEvents(req, res, runId) {
         limiter.release(slot.ip, slot.reserved)
         return
       }
-      // Иначе занятым считается по слоту на состоявшийся круг. Число кругов
-      // приходит от агента; если его нет, лишние слоты НЕ возвращаются:
-      // молчание о кругах — повод считать деньги потраченными, а не наоборот.
-      const rounds = Number(end.result?.summary?.rounds ?? end.rounds)
-      if (!Number.isInteger(rounds) || rounds < 1) return
-      const extra = slot.reserved - Math.min(rounds, slot.reserved)
+      // Иначе занятым считается по слоту на состоявшийся круг — и при удаче,
+      // и при падении. Круг, который не начинался, оплачен быть не мог, и
+      // держать за него слот значит наказывать посетителя за нашу поломку.
+      const extra = slot.reserved - Math.min(Math.max(spentRounds(end), 0), slot.reserved)
       if (extra > 0) limiter.release(slot.ip, extra)
     } catch {}
   }

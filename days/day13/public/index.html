@@ -1087,7 +1087,7 @@
       <tbody id="jl-rows"></tbody>
     </table>
   </div>
-  <p class="jl-note" id="jl-note" hidden>В файле 22 колонки: полный состав — в CSV.</p>
+  <p class="jl-note" id="jl-note" hidden>В файле 23 колонки: полный состав — в CSV.</p>
   <div class="dlg-actions">
     <a class="clear" id="jl-csv" href="#" download>CSV</a>
   </div>
@@ -3652,7 +3652,7 @@
     return rows.filter((r) => r.length > 1 || r[0] !== '');
   };
 
-  /** Восемь колонок из 22: в окне 44rem остальные стали бы прокруткой. */
+  /** Восемь колонок из 23: в окне 44rem остальные стали бы прокруткой. */
   const JL_COLUMNS = [
     { key: 'state', of: (v) => stages.find((x) => x.id === v)?.title ?? v },
     { key: 'round' },
@@ -3704,9 +3704,9 @@
       const title = stages.find((x) => x.id === last[at('state')])?.title ?? last[at('state')];
       $('jl-note').textContent =
         `Запуск отменён на этапе «${title}» — дальше строк нет. ` +
-        'В файле 22 колонки: полный состав — в CSV.';
+        'В файле 23 колонки: полный состав — в CSV.';
     } else if (has) {
-      $('jl-note').textContent = 'В файле 22 колонки: полный состав — в CSV.';
+      $('jl-note').textContent = 'В файле 23 колонки: полный состав — в CSV.';
     }
   };
 
