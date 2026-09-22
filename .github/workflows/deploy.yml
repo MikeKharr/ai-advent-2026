@@ -148,8 +148,17 @@ jobs:
           cd ~/ai-advent-2026
 
           echo "==> git pull (Caddyfile, compose.yml, лендинг)"
+          # Контрольная сумма конфигурации входа до обновления дерева: Caddy
+          # читает Caddyfile только при старте, а файл примонтирован файлом,
+          # поэтому `up -d` контейнер не пересоздаёт и новый маршрут не доезжает.
+          # Сравнение до/после решает, нужна ли перезагрузка (ниже).
+          # Пустое значение (файла ещё нет — первая выкатка на свежей машине)
+          # отличается от суммы после pull, то есть уводит в перезагрузку:
+          # ошибаться безопаснее в эту сторону.
+          caddyfile_before=$(sha256sum deploy/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
           git fetch --depth 50 origin main
           git reset --hard origin/main
+          caddyfile_after=$(sha256sum deploy/Caddyfile | cut -d' ' -f1)
 
           cd deploy
           touch .env && chmod 600 .env
@@ -170,6 +179,35 @@ jobs:
           echo "==> перезапуск"
           docker compose up -d --remove-orphans
           docker image prune -f --filter "until=168h" || true
+
+          # Вход приводится в соответствие с конфигурацией — только если она
+          # менялась в этой выкатке. Перезагрузка, а не перезапуск: `caddy
+          # reload` подменяет конфигурацию на живом процессе, не разрывая
+          # слушателей, тогда как restart роняет все адреса на секунды.
+          # Проверка до применения обязательна: `validate` разбирает файл в
+          # том же контейнере, что будет его исполнять, и при ошибке выкатка
+          # падает здесь, а вход остаётся на прежней рабочей конфигурации.
+          # Гейт `caddyfile` в CI проверяет тот же файл, но на другой машине и
+          # до мержа — он не доказывает, что на сервер доехало именно это.
+          # Шаг стоит после `up -d`: контейнеры новых дней к этому моменту
+          # существуют, и активные проверки здоровья reverse_proxy находят
+          # апстримы сразу.
+          if [ "$caddyfile_before" != "$caddyfile_after" ]; then
+            echo "==> Caddyfile изменился, проверка конфигурации на сервере"
+            if ! docker compose exec -T caddy caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile; then
+              echo "::error::проверка Caddyfile на сервере не прошла (негодная конфигурация или не поднят контейнер caddy); вход оставлен на прежней конфигурации"
+              exit 1
+            fi
+            echo "==> перезагрузка конфигурации входа"
+            if ! docker compose exec -T caddy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile; then
+              docker compose logs --tail 50 caddy
+              echo "::error::перезагрузка конфигурации Caddy не удалась"
+              exit 1
+            fi
+            echo "==> конфигурация входа перезагружена"
+          else
+            echo "==> Caddyfile не менялся, вход не трогаем"
+          fi
 
           # У роутера и сервиса агентов нет публичного адреса — их здоровье
           # проверяется здесь, по healthcheck контейнера.
