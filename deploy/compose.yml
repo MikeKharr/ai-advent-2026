@@ -24,6 +24,7 @@ services:
       - day9
       - day10
       - day11
+      - day13
     # Как у всех соседних служб. Отдельно значимо с тех пор, как у блока
     # mail.zpq.ai включён access-лог: он идёт в stderr, а драйвер по
     # умолчанию пишет без потолка и без ротации — на том же одном VPS,
@@ -222,6 +223,28 @@ services:
       # диалога. Профили, слои памяти и темы ведёт агент
       # (ADR 2026-09-15-2024): ключей к моделям у дня по-прежнему нет.
       - path: ./day11.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Дня 12 в репозитории нет: задание пропущено (ADR 2026-09-21-1747).
+  day13:
+    image: ghcr.io/mikekharr/advent-day13:${DAY13_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # Тот же ключ сервиса агентов, что у дней 6–11; свои cookie профиля и
+      # диалога. Машину состояний запуска, паузу, круг проверки и журнал
+      # этапов ведёт агент staged-agent (ADR 2026-09-21-1747): ключей к
+      # моделям у дня по-прежнему нет. Журнал этапов CSV пишет сервис
+      # агентов на свой том agents_data, не день.
+      - path: ./day13.env
         required: false
     environment:
       - NODE_ENV=production
