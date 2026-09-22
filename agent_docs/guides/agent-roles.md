@@ -113,6 +113,7 @@ reviewer + compliance + design-review ──► гейт мержа (парал�
    - `agent_docs/invariants.md`
    - `.claude/**`
    - `AGENTS.md`
+   - `CLAUDE.md`
    - `.agents/skills/day-cycle/`
    - `agent_docs/guides/agent-roles.md`
    - `.github/**`
