@@ -131,6 +131,11 @@ export function assemble({
   // `<request>` и считается в потолке этапа наравне с остальным (ADR
   // 2026-09-21-1747, п. 2). У дня 11 его не бывает.
   review = null,
+  // Блок инвариантов профиля дня 14 (ADR 2026-09-22-0827, п. 4): идёт первым,
+  // до `<personalization>`, и под потолок этапа не подрезается — режется
+  // рабочая память. Готовую строку собирает `invariants.js`: политика знает,
+  // куда блок ставить, но не знает, как он выглядит. У дней 11 и 13 его нет.
+  invariantsBlock = null,
   // Потолки блоков. У дня 13 токенные подпотолки правил и темы сняты
   // (ADR 2026-09-21-1747, п. 5, 4а), потолки в строках остаются.
   caps = ASSEMBLE_CAPS,
@@ -138,6 +143,11 @@ export function assemble({
   const warnings = []
   const blocks = []
   const stats = { rules: 0, rulesTokens: 0, topicFacts: 0, topicTokens: 0, reviewTokens: 0 }
+
+  if (invariantsBlock) {
+    blocks.push(invariantsBlock)
+    stats.invariantsTokens = estimateTokens(invariantsBlock)
+  }
 
   const fittedRules = fitLines(
     rules.map((rule) => `${rule.key} — ${rule.value}`),
@@ -262,6 +272,9 @@ export async function replenish({
   // Потолки частей входа. У дня 13 вход целиком — 32 000, токенные
   // подпотолки частей сняты (ADR 2026-09-21-1747, п. 5).
   caps = REPLENISH_CAPS,
+  // Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 4, этап 5): здесь они
+  // запись и граница тому, что модель запишет правилом. Не подрезаются.
+  invariantsBlock = null,
   // Обрыв вызова паузой дня 13. У дня 11 сигнала нет, и вызов идёт как прежде.
   signal = null,
 }) {
@@ -321,6 +334,7 @@ export async function replenish({
       rules: rulesFitted.lines,
       pending,
       pair: fittedPair.messages,
+      invariants: invariantsBlock,
     })
   const measure = (built) => estimateTokens(built.system) + estimateTokens(built.input)
   let request = build()

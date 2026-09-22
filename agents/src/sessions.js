@@ -9,7 +9,12 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 export { isSessionId } from './params.js'
-import { PARAM_LIMITS, SUMMARIZE_LIMITS, TOPIC_FACT_CAP } from './params.js'
+import {
+  PARAM_LIMITS,
+  PROFILE_INVARIANT_CAP,
+  SUMMARIZE_LIMITS,
+  TOPIC_FACT_CAP,
+} from './params.js'
 import { DatabaseSync } from 'node:sqlite'
 
 const SCHEMA = `
@@ -94,6 +99,20 @@ CREATE TABLE IF NOT EXISTS personalization (
   PRIMARY KEY (profile_id, key)
 );
 
+-- Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 2): короткие правила,
+-- которые человек заводит сам через диалог с формулировщиком. В отличие от
+-- personalization их пишет не модель, а человек, поэтому таблица своя:
+-- вызов пополнения памяти не может их перезаписать. Номер ставит код
+-- (наибольший плюс один) и не переиспользует: номер живёт в вердиктах,
+-- событиях и CSV.
+CREATE TABLE IF NOT EXISTS profile_invariants (
+  profile_id TEXT NOT NULL,
+  num        INTEGER NOT NULL,
+  text       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (profile_id, num)
+);
+
 -- Память фактов: темы профиля и факты в них. Тема переживает сессию и
 -- уходит только вместе с профилем (ADR, п. 6.1). Имя "facts" в базе занято
 -- строкой стратегии рабочей памяти, поэтому таблица — topic_facts.
@@ -137,6 +156,15 @@ function migrate(db) {
   db.exec('CREATE INDEX IF NOT EXISTS sessions_by_profile ON sessions(profile_id, last_seen_at)')
   if (!has('profiles', 'settings_staged')) {
     db.exec("ALTER TABLE profiles ADD COLUMN settings_staged TEXT NOT NULL DEFAULT '{}'")
+  }
+  // Счётчик выданных номеров инвариантов профиля (ADR 2026-09-22-0827, п. 2).
+  // Номер обязан быть «наибольшим КОГДА-ЛИБО выданным плюс один», а не
+  // наибольшим среди живых строк: удаление старшего номера иначе освобождало
+  // бы его, и карточки ответа в логе, вердикты и CSV начинали бы ссылаться не
+  // на то правило (находка reviewer к PR #200). Старые профили получают 0 и
+  // догоняют по первому же заведению.
+  if (!has('profiles', 'invariant_seq')) {
+    db.exec('ALTER TABLE profiles ADD COLUMN invariant_seq INTEGER NOT NULL DEFAULT 0')
   }
   moveStagedSettings(db)
 }
@@ -190,6 +218,9 @@ export function createSessions({
   topicCap = 30,
   topicFactCap = TOPIC_FACT_CAP,
   ruleCap = 40,
+  // Потолок инвариантов профиля (ADR 2026-09-22-0827, п. 2): их заводит
+  // человек, и одиннадцатый получает отказ, а не вытеснение первого.
+  invariantCap = PROFILE_INVARIANT_CAP,
   parkedFactCap = 24,
   now = Date.now,
   log = console.error,
@@ -374,6 +405,34 @@ export function createSessions({
          value = excluded.value, source_session_id = excluded.source_session_id,
          updated_at = excluded.updated_at`,
     ),
+    // --- Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 2) -----------
+    invariants: db.prepare(
+      `SELECT num, text, created_at AS createdAt
+         FROM profile_invariants WHERE profile_id = ? ORDER BY num ASC`,
+    ),
+    countInvariants: db.prepare(
+      'SELECT count(*) AS n FROM profile_invariants WHERE profile_id = ?',
+    ),
+    // Следующий номер — от наибольшего когда-либо выданного, а не от числа
+    // живых строк: удалённый номер остаётся дырой, потому что он уже назван в
+    // вердиктах, событиях и CSV. Счётчик живёт в профиле и не убывает;
+    // `max(num)` рядом — только страховка для профилей, заведённых до
+    // появления столбца.
+    invariantSeq: db.prepare(
+      `SELECT max(p.invariant_seq, coalesce((SELECT max(i.num) FROM profile_invariants i
+                                              WHERE i.profile_id = p.id), 0)) AS n
+         FROM profiles p WHERE p.id = ?`,
+    ),
+    setInvariantSeq: db.prepare('UPDATE profiles SET invariant_seq = ? WHERE id = ?'),
+    // Дубль ищется без учёта регистра: `lower()` SQLite латиницу и кириллицу
+    // складывает по-разному, поэтому сравнение идёт по заранее опущенному
+    // значению из кода, а не по функции базы.
+    invariantTexts: db.prepare('SELECT text FROM profile_invariants WHERE profile_id = ?'),
+    addInvariant: db.prepare(
+      'INSERT INTO profile_invariants (profile_id, num, text, created_at) VALUES (?, ?, ?, ?)',
+    ),
+    dropInvariant: db.prepare('DELETE FROM profile_invariants WHERE profile_id = ? AND num = ?'),
+
     sessionState: db.prepare(
       `SELECT s.profile_id AS profileId, s.topic_id AS topicId, s.pending_topic AS pendingTopic,
               t.title AS topicTitle
@@ -403,7 +462,7 @@ export function createSessions({
     ),
     sessionOwner: db.prepare('SELECT profile_id AS profileId FROM sessions WHERE id = ?'),
 
-    // --- Удаление профиля: девять таблиц одной транзакцией (критерий 2) ---
+    // --- Удаление профиля: десять таблиц одной транзакцией (критерий 2) ---
     // Каждый оператор ограничен профилем и его сессиями. Сессии дней 6–10
     // несут `profile_id` NULL, а `= ?` с непустым идентификатором с NULL не
     // совпадает никогда — поэтому чужая переписка под эти операторы не
@@ -426,6 +485,8 @@ export function createSessions({
     ),
     dropProfileTopics: db.prepare('DELETE FROM topics WHERE profile_id = ?'),
     dropProfileRules: db.prepare('DELETE FROM personalization WHERE profile_id = ?'),
+    // Десятый оператор удаления профиля (ADR 2026-09-22-0827, п. 2).
+    dropProfileInvariants: db.prepare('DELETE FROM profile_invariants WHERE profile_id = ?'),
     dropProfile: db.prepare('DELETE FROM profiles WHERE id = ?'),
 
     // --- Сироты новых таблиц --------------------------------------------
@@ -433,6 +494,9 @@ export function createSessions({
       'DELETE FROM personalization WHERE profile_id NOT IN (SELECT id FROM profiles)',
     ),
     orphanTopics: db.prepare('DELETE FROM topics WHERE profile_id NOT IN (SELECT id FROM profiles)'),
+    orphanInvariants: db.prepare(
+      'DELETE FROM profile_invariants WHERE profile_id NOT IN (SELECT id FROM profiles)',
+    ),
     orphanTopicFacts: db.prepare(
       'DELETE FROM topic_facts WHERE topic_id NOT IN (SELECT id FROM topics)',
     ),
@@ -933,6 +997,7 @@ export function createSessions({
       stmt.orphanFacts.run()
       stmt.orphanCosts.run()
       stmt.orphanRules.run()
+      stmt.orphanInvariants.run()
       stmt.orphanTopics.run()
       // Факты тем — после тем: осиротевшая тема сначала должна исчезнуть.
       stmt.orphanTopicFacts.run()
@@ -1008,6 +1073,9 @@ export function createSessions({
         createdAt: row.createdAt,
         lastSeenAt: row.lastSeenAt,
         rules: stmt.rules.all(id),
+        // Инварианты профиля дня 14: дни 11 и 13 это поле не читают
+        // (ADR 2026-09-22-0827, п. 2).
+        invariants: stmt.invariants.all(id),
         topics: stmt.topics.all(id),
         sessions,
         lastSession: sessions[0]?.id ?? null,
@@ -1067,7 +1135,7 @@ export function createSessions({
 
     /**
      * Удаление профиля со всей связанной памятью — одной транзакцией
-     * (решение владельца 10, критерий 2). После неё ни в одной из девяти
+     * (решение владельца 10, критерий 2). После неё ни в одной из десяти
      * таблиц нет строки этого профиля, его сессий и его тем; чужие сессии
      * (`profile_id` NULL у дней 6–10 и идентификатор другого профиля) ни под
      * один оператор не попадают. Удалить профиль может любой посетитель —
@@ -1090,6 +1158,7 @@ export function createSessions({
           topicFacts: Number(stmt.dropProfileTopicFacts.run(id).changes),
           topics: Number(stmt.dropProfileTopics.run(id).changes),
           rules: Number(stmt.dropProfileRules.run(id).changes),
+          invariants: Number(stmt.dropProfileInvariants.run(id).changes),
           sessions: Number(stmt.dropProfileSessions.run(id).changes),
           profiles: Number(stmt.dropProfile.run(id).changes),
         }
@@ -1151,6 +1220,57 @@ export function createSessions({
     /** Правила профиля, от свежих к старым. */
     rulesOf(profileId) {
       return stmt.rules.all(profileId)
+    },
+
+    // --- Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 2) -----------
+    // Их заводит человек через ворота формулировщика, а не вызов пополнения:
+    // хранилище принимает уже готовый текст и отвечает только за номер,
+    // потолок и дубль.
+
+    /** Инварианты профиля по возрастанию номера. */
+    invariantsOf(profileId) {
+      return stmt.invariants.all(profileId)
+    },
+
+    /**
+     * Завести инвариант. Номер — `max(num) + 1` по профилю: удалённый номер
+     * не переиспользуется. Потолок и дубль проверяются в той же транзакции,
+     * что вставка, — иначе два одновременных приёма дали бы одиннадцатый.
+     * Годность формулировки здесь не судится: это дело ворот (`service.js`).
+     */
+    addInvariant({ profileId, text, at = now() }) {
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return { ok: false, code: 'no_profile' }
+      db.exec('BEGIN')
+      try {
+        if (stmt.countInvariants.get(profileId).n >= invariantCap) {
+          db.exec('ROLLBACK')
+          return { ok: false, code: 'invariants_full' }
+        }
+        const lower = text.toLocaleLowerCase('ru')
+        const dupe = stmt.invariantTexts
+          .all(profileId)
+          .some((row) => row.text.toLocaleLowerCase('ru') === lower)
+        if (dupe) {
+          db.exec('ROLLBACK')
+          return { ok: false, code: 'duplicate' }
+        }
+        const num = (stmt.invariantSeq.get(profileId)?.n ?? 0) + 1
+        stmt.addInvariant.run(profileId, num, text, at)
+        // Счётчик двигается в той же транзакции, что вставка: иначе обрыв
+        // между ними выдал бы следующий номер второй раз.
+        stmt.setInvariantSeq.run(num, profileId)
+        db.exec('COMMIT')
+        return { ok: true, invariant: { num, text, createdAt: at } }
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+    },
+
+    /** Удалить инвариант по номеру. `false` — такого номера в профиле нет. */
+    deleteInvariant({ profileId, num, at = now() }) {
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return false
+      return Number(stmt.dropInvariant.run(profileId, num).changes) > 0
     },
 
     /** Темы профиля с числом фактов, от свежих к старым. */
