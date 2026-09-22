@@ -2893,6 +2893,17 @@
   };
 
   /**
+   * Идентификатор запуска у ответа агента. Сводка его НЕ несёт — он лежит на
+   * самом сообщении (ADR 2026-09-09-0854: «переписка отдаёт `runId` у каждого
+   * сообщения»). Пока страница читала только сводку, строка журнала не
+   * появлялась вовсе: сразу после ответа её затирал `syncChat`, а после
+   * перезагрузки её не было и подавно, и журнал оставался доступен лишь из
+   * монитора — до первой перезагрузки. Порядок именно такой: если сводка
+   * когда-нибудь начнёт нести своё поле, оно окажется точнее.
+   */
+  const runIdOf = (message) => message?.meta?.runId ?? message?.runId ?? null;
+
+  /**
    * Строка журнала под ответом. «смотреть» — кнопка, открывает окно; «CSV» —
    * именно ссылка: это загрузка файла, и правый клик, «сохранить как» и
    * открытие в новой вкладке обязаны работать.
@@ -2903,7 +2914,12 @@
     const row = document.createElement('p');
     row.className = 'sum';
     const parts = [];
-    if (Number.isFinite(meta.stagesPassed)) parts.push(`Этапы: ${meta.stagesPassed}`);
+    // `stagesPassed` считает ПРОХОДЫ этапов, а не этапы: при двух кругах их
+    // девять, а не шесть (приём, три этапа круга, три этапа второго круга,
+    // пополнение, выдача). Подпись «Этапы: 9» рядом с машиной из шести этапов
+    // читалась бы как ошибка экрана, поэтому здесь названо то, что считается.
+    if (Number.isFinite(meta.stagesPassed))
+      parts.push(`Проходов этапов: ${meta.stagesPassed}`);
     // `rounds` — сколько кругов потрачено; круг вердикта живёт в `review.rounds`.
     if (Number.isInteger(meta.rounds)) parts.push(`круги ${meta.rounds}`);
     if (Number.isFinite(meta.durationMs)) parts.push(fmtDuration(meta.durationMs));
@@ -2989,7 +3005,7 @@
       p.textContent = line;
       li.append(p);
     }
-    addJournal(li, { ...meta, at: m.at });
+    addJournal(li, { ...meta, at: m.at, runId: runIdOf(m) });
 
     const details = document.createElement('details');
     details.className = 'params-d';
