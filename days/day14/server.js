@@ -511,7 +511,11 @@ async function handleSettings(req, res) {
  *
  * Слот не возвращается и тогда, когда формулировщик не дал варианта: вызов
  * состоялся и оплачен (ADR, п. 3). Возврат идёт только там, где до вызова
- * дело не дошло.
+ * дело не дошло, и **ровно один раз на один резерв**: прежняя редакция
+ * возвращала слот дважды на любом отказе службы — сначала по признаку
+ * `paid`, потом ещё раз в перехвате, — и счётчик уходил в минус. Чередуя
+ * удачный ход с отказом провайдера, посетитель держал бы суточный лимитер у
+ * нуля бесконечно (находка reviewer и compliance к PR #200).
  */
 async function handleInvariantDraft(req, res) {
   const profileId = requireProfile(req, res)
@@ -523,6 +527,15 @@ async function handleInvariantDraft(req, res) {
   const slot = limiter.reserve(ip, 1)
   if (!slot.ok) return send(res, 429, { error: slot.message })
 
+  // Один возврат на один резерв: повторный вызов не делает ничего. Флаг, а
+  // не внимательность, потому что путей выхода у ручки шесть.
+  let released = false
+  const giveBack = () => {
+    if (released) return
+    released = true
+    limiter.release(ip, 1)
+  }
+
   try {
     const { response, json } = await callAgent(`/v1/profiles/${profileId}/invariants/draft`, {
       method: 'POST',
@@ -530,8 +543,10 @@ async function handleInvariantDraft(req, res) {
       body: JSON.stringify({ text: body.text }),
     })
     if (response.ok) return send(res, 200, { draft: json.draft })
-    // Отказы до вызова модели возвращают слот; оплаченный ход — нет.
-    if (json?.paid !== true) limiter.release(ip, 1)
+    // Отказы до вызова модели возвращают слот; оплаченный ход — нет. Служба
+    // называет это полем `paid`, и отсутствие поля читается как «не оплачен»:
+    // ошибка в сторону посетителя там, где мы не знаем, был ли вызов.
+    if (json?.paid !== true) giveBack()
     if (response.status === 400 || response.status === 404 || response.status === 409) {
       return send(res, response.status, {
         error: json?.message ?? 'Черновик не принят',
@@ -541,9 +556,13 @@ async function handleInvariantDraft(req, res) {
     if (json?.code === 'draft_no_variants') {
       return send(res, 502, { error: json.message, code: 'draft_no_variants', paid: true })
     }
-    throw new Error(`агент ${response.status}`)
+    // Прочий отказ службы — сюда, а не броском в перехват: бросок означал бы
+    // второй возврат того же слота.
+    console.error(`черновик инварианта: агент ${response.status} ${json?.code ?? ''}`)
+    return send(res, 502, { error: AGENT_DOWN, code: json?.code })
   } catch (error) {
-    limiter.release(ip, 1)
+    // Перехват остаётся только для транспорта: службы нет, ответ не разобран.
+    giveBack()
     console.error(`черновик инварианта: ${error.message}`)
     return send(res, 502, { error: AGENT_DOWN })
   }

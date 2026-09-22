@@ -310,6 +310,25 @@ test('«нарушены» без годных номеров — обычное
   assert.equal(snapshot.result.summary.invariants.status, 'unchecked')
 })
 
+test('статус инвариантов — по последнему кругу, а не по первому', async () => {
+  // Круг 1 сказал «соблюдены» и отклонил ответ; круг 2 третьей строки не дал.
+  // Отдаётся ответ круга 2, и пометка обязана говорить о НЁМ (находка
+  // reviewer к PR #200: статус копился и врал про непроверенный ответ).
+  const fetchImpl = router({
+    verdicts: [
+      verdictReply('вердикт: отклонено\nзамечания: коротко\nинварианты: соблюдены'),
+      verdictReply('вердикт: принято\nзамечания:'),
+    ],
+  })
+  const { ask, add } = setup({ fetchImpl })
+  add('Отвечай не длиннее пяти предложений')
+  const { snapshot } = await ask({ reviewRounds: 2 })
+
+  assert.equal(snapshot.result.answer, ANSWER_TEXT)
+  assert.equal(fetchImpl.verdicts().length, 2, 'кругов было два')
+  assert.deepEqual(snapshot.result.summary.invariants, { checked: [1], status: 'unchecked' })
+})
+
 test('без третьей строки статус инвариантов у сообщения — unchecked', async () => {
   const fetchImpl = router({ verdicts: [verdictReply('вердикт: принято\nзамечания:')] })
   const { ask, add } = setup({ fetchImpl })
@@ -324,23 +343,27 @@ test('без третьей строки статус инвариантов у 
 
 test('тот же профиль в дне 13 отвечает без блока инвариантов', async () => {
   const fetchImpl = router()
-  const { sessions, profile, agent } = setup({ agentId: 'staged-agent', fetchImpl })
+  // Профиль у дней 13 и 14 общий: инварианты заводятся тем же хранилищем, а
+  // видеть их должен только `invariant-agent` (ADR 2026-09-22-0827, п. 2).
+  const { sessions, profile, ask } = setup({ agentId: 'staged-agent', fetchImpl })
   sessions.addInvariant({ profileId: profile.id, text: 'Отвечай коротко' })
-  const sid = sessions.createSession({ profileId: profile.id }).id
-  const runs = createRuns()
-  const parsed = agent.parseInput({
-    profileId: profile.id,
-    sessionId: sid,
-    prompt: 'что нового',
-    reviewRounds: 1,
-  })
-  assert.equal(parsed.ok, true, parsed.message)
-  const run = runs.create({ agent, input: parsed.input })
-  void run
+  assert.equal(sessions.invariantsOf(profile.id).length, 1, 'инвариант в профиле есть')
 
+  const { snapshot } = await ask({ reviewRounds: 1 })
+  assert.equal(snapshot.status, 'succeeded')
+
+  // Запуск действительно состоялся: без этой проверки цикл ниже делал бы ноль
+  // итераций и тест был бы зелёным всегда (находка reviewer к PR #200).
+  assert.ok(fetchImpl.calls.length > 0, 'запросы к роутеру были')
+  assert.ok(fetchImpl.answers().length > 0, 'вызов ответа состоялся')
   for (const call of fetchImpl.calls) {
-    assert.ok(!String(call.input ?? '').includes('<invariants>'))
+    assert.ok(!String(call.input ?? '').includes('<invariants>'), 'блока нет ни в одном запросе')
   }
+  // И ни слова об инвариантах в событиях сданного дня.
+  assert.equal(
+    snapshot.events.filter((e) => JSON.stringify(e).includes('нвариант')).length,
+    0,
+  )
 })
 
 // --- Журнал этапов: verify violated, replenish skipped --------------------

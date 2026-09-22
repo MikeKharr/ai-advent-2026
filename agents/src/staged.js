@@ -1009,7 +1009,14 @@ export function createStagedAgent({
         // потому что названное нарушение сильнее её.
         if (inv && ctx.invariants.length > 0) {
           const judged = inv.parseVerdict(called.answer.text, ctx.invariants)
-          if (judged.held) ctx.invariantStatus = 'held'
+          // Статус ставится ПО ЭТОМУ кругу, а не копится: отдаётся ответ
+          // последнего круга, и пометка обязана говорить о вердикте, который
+          // судил именно его. Прежняя редакция накапливала «соблюдены» с
+          // первого круга, и ответ круга, о котором вердикт промолчал, уходил
+          // с чужой пометкой — прямо против гарантии «непроверенный ответ
+          // помечен как непроверенный» (находка reviewer к PR #200; доля
+          // вердиктов с третьей строкой у K2.6 не замерена).
+          ctx.invariantStatus = judged.held ? 'held' : 'unchecked'
           if (judged.violated.length > 0) {
             const broken = ctx.invariants.filter((i) => judged.violated.includes(i.num))
             const named = broken

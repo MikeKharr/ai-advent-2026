@@ -391,12 +391,14 @@
 
   /* Пометка проверки под ответом: ответ получен и оплачен, а «отклонено» —
      мнение модели. Красный сказал бы «ответ неверен», чего проверка не знает. */
-  /* Карточка формулировщика под логом: тот же вес, что у реплики агента,
-     но она не сообщение — у неё нет ни времени, ни автора. */
+  /* Карточка формулировщика — элемент лога, как карточка темы: иначе она
+     отнимает высоту у переписки, и лог сжимается ниже своего порога
+     (находка design-review к PR #200). Она не сообщение — у неё нет ни
+     времени, ни автора, поэтому свой фон и своя рамка. */
   .draft {
     margin:var(--s-3) 0 0; padding:var(--s-3); border:1px solid var(--line);
     border-radius:var(--r-sm); background:var(--surface);
-    font-size:var(--t-sm); line-height:1.5;
+    font-size:var(--t-sm); line-height:1.5; list-style:none;
   }
   .draft-h { margin:0 0 var(--s-2); font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
   .draft-var { margin:var(--s-2) 0 0; display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-2); }
@@ -796,12 +798,6 @@
         <li class="empty" id="empty">Переписки пока нет. Напишите сообщение — агент ответит,
         помня правила и факты этого профиля.</li>
       </ol>
-
-      <!-- Карточка формулировщика: живёт только на странице и в переписку не
-           пишется — модели незачем видеть переговоры о формулировке
-           (ADR 2026-09-22-0827, п. 3). Стоит под логом, а не в нём: его
-           перерисовывает каждый ответ сервера. -->
-      <div class="draft" id="draft-box" hidden></div>
 
       <!-- Полоса запуска: шесть этапов, пульс, счётчик, круг проверки и кнопка
            паузы. Стоит между логом и строкой значений и существует всегда. -->
@@ -1328,6 +1324,12 @@
     index: 0,          // номер текущего этапа, 1..6; 0 — этапа нет
     done: 0,           // сколько этапов пройдено
     mark: null,        // метка текущего этапа: null | 'paused' | 'stopped' | 'skipped'
+    // Номера этапов, пропущенных В ЭТОМ запуске. Метка `mark` живёт только у
+    // текущего этапа, и пропущенный, став пройденным, получал галочку: монитор
+    // писал «Пополнение памяти пропущено», а полоса в ту же секунду —
+    // «✓ Пополнение памяти» (находка design-review к PR #200). В дне 13
+    // пропуск этапа до конца запуска не случался, поэтому чинится здесь.
+    skipped: [],
     round: 1,
     rounds: null,      // предел кругов этого запуска; null — чипа нет
     startedAt: null,
@@ -1489,7 +1491,7 @@
       $('pid-name').title = profile.name;
       // Смена профиля меняет всё: настройки, память, диалоги и ленту событий.
       runs.length = 0;
-      setRunView('loading', { id: null, index: 0, done: 0, mark: null, round: 1, rounds: null });
+      setRunView('loading', { id: null, index: 0, done: 0, mark: null, skipped: [], round: 1, rounds: null });
       renderMonitor();
       applySettings(profile.settings ?? {});
       await loadChat({ announceExpiry: false });
@@ -2393,6 +2395,16 @@
       }
       return false;
     }
+    // Этап, пропущенный целиком (день 14: пополнение при неотданном ответе).
+    // Служба называет это исходом `skipped` в событии планирования.
+    if (event.stage === 'planning' && d.outcome === 'skipped' && d.state) {
+      const at = stages.findIndex((x) => x.id === d.state) + 1;
+      if (at > 0 && !runState.skipped.includes(at)) {
+        runState.skipped = [...runState.skipped, at];
+        renderRunbar();
+      }
+      return true;
+    }
     if (event.stage === 'state') {
       const index = Number.isInteger(d.index)
         ? d.index
@@ -2489,11 +2501,13 @@
    * словом (раскладка, п. 2.3).
    */
   const stageMark = (position, mark) => {
+    // Пропуск проверяется ПЕРЕД «пройден»: пропущенный этап остаётся
+    // прочерком и после того, как запуск ушёл дальше.
+    if (mark === 'skipped') return '–';
     if (position === 'past') return '✓';
     if (position !== 'now') return '';
     if (mark === 'paused') return '‖';
     if (mark === 'stopped') return '×';
-    if (mark === 'skipped') return '–';
     return null; // пульсирующая точка
   };
 
@@ -2509,7 +2523,12 @@
       const mark = document.createElement('span');
       mark.className = 'stage-mark';
       mark.setAttribute('aria-hidden', 'true');
-      const sign = position === 'now' ? stageMark('now', runState.mark) : stageMark(position);
+      const wasSkipped = runState.skipped.includes(n);
+      const sign = wasSkipped
+        ? stageMark(position, 'skipped')
+        : position === 'now'
+          ? stageMark('now', runState.mark)
+          : stageMark(position);
       if (sign === null) {
         const dot = document.createElement('span');
         dot.className = 'pulse';
@@ -2529,7 +2548,8 @@
         vh.textContent = `Этап ${n} из ${stages.length}: `;
         name.append(vh);
       }
-      if (position === 'now' && runState.mark === 'skipped') li.classList.add('is-skipped');
+      if (wasSkipped || (position === 'now' && runState.mark === 'skipped'))
+        li.classList.add('is-skipped');
       name.append(stage.title);
       li.append(mark, name);
       nodes.push(li);
@@ -2705,7 +2725,7 @@
         if (document.activeElement === pauseBtn) input.focus();
         setRunView('loading', { id: null, mark: null });
         await Promise.all([syncChat(), syncProfile()]);
-        if (runState.view === 'loading') setRunView('idle', { index: 0, done: 0, mark: null });
+        if (runState.view === 'loading') setRunView('idle', { index: 0, done: 0, mark: null, skipped: [] });
       }
     } catch (error) {
       // Единственное сообщение при возобновлении — отказ, а не объяснение действия.
@@ -2944,7 +2964,28 @@
 
   /* ---------- формулировщик инвариантов (ADR 2026-09-22-0827, п. 3) ---------- */
 
-  const draftBox = $('draft-box');
+  /**
+   * Карточка формулировщика — элемент лога (ADR 2026-09-22-0827, п. 7), но в
+   * переписку она не пишется: `messages` её не знает, и в `GET /api/chat` её
+   * нет. Поэтому узел живёт здесь, а `renderLog` дописывает его в конец после
+   * каждой перерисовки: иначе ответ сервера стирал бы открытый черновик.
+   */
+  const draftBox = document.createElement('li');
+  draftBox.className = 'draft';
+  draftBox.hidden = true;
+  // Живая область: оценку формулировщика надо услышать, а не только увидеть.
+  draftBox.setAttribute('role', 'group');
+  draftBox.setAttribute('aria-label', 'Формулировщик инварианта');
+
+  /** Дописать карточку в лог после перерисовки. Вызывается из `renderLog`. */
+  const placeDraft = () => {
+    if (draftBox.hidden) {
+      draftBox.remove();
+      return;
+    }
+    log.append(draftBox);
+  };
+
   /** Предел ходов на один черновик держит страница; деньги держит лимитер. */
   const DRAFT_ROUNDS = 3;
   let draftRound = 0;
@@ -2973,6 +3014,14 @@
     draftRound = 0;
     draftBox.hidden = true;
     draftBox.replaceChildren();
+    draftBox.remove();
+  };
+
+  /** Показать карточку в логе и подвести к ней прокрутку. */
+  const openDraft = () => {
+    draftBox.hidden = false;
+    placeDraft();
+    log.scrollTop = log.scrollHeight;
   };
 
   const draftLine = (cls, text) => {
@@ -2996,15 +3045,21 @@
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         draftBox.append(warnLine(data.error ?? `ответ ${response.status}`));
+        shout(`Инвариант не заведён: ${data.error ?? `ответ ${response.status}`}`);
         btn.disabled = false;
         return;
       }
       closeDraft();
       input.value = '';
-      announce(`Инвариант П${data.invariant.num} заведён.`);
+      // Фокус возвращается в поле, как у «Отменить» и «править»: иначе
+      // клавиатурный обход начинается с начала документа (находка
+      // design-review к PR #200).
+      input.focus();
+      announce(`Инвариант П${data.invariant.num} заведён: «${text}». Поле ввода очищено.`);
       await syncProfile();
     } catch {
       draftBox.append(warnLine('Инвариант не заведён: сервер не ответил'));
+      shout('Инвариант не заведён: сервер не ответил.');
       btn.disabled = false;
     } finally {
       draftBusy = false;
@@ -3018,7 +3073,7 @@
    */
   const renderDraft = (draft) => {
     draftBox.replaceChildren();
-    draftBox.hidden = false;
+    openDraft();
 
     const last = draftRound >= DRAFT_ROUNDS;
     draftBox.append(
@@ -3084,19 +3139,64 @@
     cancel.textContent = 'Отменить';
     cancel.onclick = () => {
       closeDraft();
+      input.focus();
       announce('Черновик отменён.');
     };
     row.append(cancel);
     draftBox.append(row);
+
+    // Ответ формулировщика обязан дойти и до программы чтения: сам по себе
+    // он появляется ниже фокуса, и без объявления его не существует
+    // (находка design-review к PR #200). Конфликт — в область тревоги: это
+    // тупик, из которого выход только через удаление инварианта.
+    const count = draft.variants?.length ?? 0;
+    const offered =
+      draft.verdict === 'ok'
+        ? `Формулировка годится, можно принять её или ${count} ${plural(count, 'вариант', 'варианта', 'вариантов')}.`
+        : count === 0
+          ? 'Вариантов нет.'
+          : `${count} ${plural(count, 'вариант', 'варианта', 'вариантов')} на выбор.`;
+    const said =
+      `Формулировщик, ход ${draftRound} из ${DRAFT_ROUNDS}. ` +
+      (draft.verdict === 'ok' ? '' : `Нужно доработать. ${draft.remark ? draft.remark + '. ' : ''}`) +
+      offered +
+      (last ? ' Ходов больше нет: примите вариант или отмените черновик.' : '');
+    if (draft.conflict !== null && draft.conflict !== undefined) {
+      shout(
+        `Черновик противоречит инварианту П${draft.conflict}. Снять противоречие можно, ` +
+          `удалив П${draft.conflict} в окне памяти профиля или изменив смысл черновика. ${said}`,
+      );
+    } else {
+      announce(said);
+    }
+  };
+
+  /**
+   * Занятость карточки, пока идёт платный вызов. Выключенной кнопки для
+   * вызова в несколько секунд мало: место ответа обязано быть видно, и о нём
+   * надо сказать вслух (находка design-review к PR #200).
+   */
+  const draftPending = (text) => {
+    draftBox.replaceChildren();
+    openDraft();
+    draftBox.setAttribute('aria-busy', 'true');
+    draftBox.append(draftLine('draft-h', `Формулировщик · ход ${draftRound + 1} из ${DRAFT_ROUNDS}`));
+    const wait = document.createElement('p');
+    wait.className = 'skel';
+    draftBox.append(wait, draftLine('ask-note', `Проверяю формулировку: «${text}»`));
+    announce('Отправил формулировщику. Жду оценку — это платный вызов, обычно несколько секунд.');
   };
 
   /** Ход формулировщика. Один вызов модели, состояния на сервере нет. */
   const submitDraft = async (text) => {
     if (draftRound >= DRAFT_ROUNDS) {
       draftBox.append(warnLine('Ходов на этот черновик больше нет — примите вариант или отмените'));
+      shout('Ходов на этот черновик больше нет: примите вариант или отмените черновик.');
       return;
     }
     button.disabled = true;
+    input.readOnly = true;
+    draftPending(text);
     try {
       const response = await fetch('./api/invariants/draft', {
         method: 'POST',
@@ -3109,8 +3209,13 @@
         renderDraft(data.draft);
         return;
       }
-      draftBox.hidden = false;
+      openDraft();
       if (data.code === 'draft_no_variants') {
+        // Ход всё равно состоялся и оплачен, поэтому счётчик растёт и здесь:
+        // иначе «Отправить ещё раз» обходил бы предел трёх ходов, и при
+        // устойчивом дефекте инструмента посетитель платил бы без конца
+        // (находка reviewer к PR #200).
+        draftRound += 1;
         // Дефект инструмента, а не отказ: ход оплачен, и это сказано прямо.
         draftBox.replaceChildren(
           draftLine('draft-h', 'Формулировщик не дал варианта'),
@@ -3126,22 +3231,39 @@
         again.type = 'button';
         again.className = 'dlg-btn';
         again.textContent = 'Отправить ещё раз';
+        again.disabled = draftRound >= DRAFT_ROUNDS;
         again.onclick = () => submitDraft(text);
         const cancel = document.createElement('button');
         cancel.type = 'button';
         cancel.className = 'dlg-btn is-second';
         cancel.textContent = 'Отменить';
-        cancel.onclick = () => closeDraft();
+        cancel.onclick = () => {
+          closeDraft();
+          input.focus();
+        };
         row.append(again, cancel);
         draftBox.append(row);
+        if (draftRound >= DRAFT_ROUNDS) {
+          draftBox.append(
+            draftLine('ask-note', 'Ходов на этот черновик больше нет — начните черновик заново.'),
+          );
+        }
+        shout(
+          `Формулировщик не дал варианта — это сбой инструмента, а не отказ вам. Ход ${draftRound} ` +
+            `из ${DRAFT_ROUNDS} оплачен, слот дневного лимита занят.`,
+        );
         return;
       }
       draftBox.replaceChildren(warnLine(data.error ?? `ответ ${response.status}`));
+      shout(`Черновик не принят: ${data.error ?? `ответ ${response.status}`}`);
     } catch {
-      draftBox.hidden = false;
+      openDraft();
       draftBox.replaceChildren(warnLine('Формулировщик не ответил: сервер недоступен'));
+      shout('Формулировщик не ответил: сервер недоступен.');
     } finally {
+      draftBox.removeAttribute('aria-busy');
       button.disabled = false;
+      input.readOnly = false;
     }
   };
 
@@ -3625,6 +3747,9 @@
     } else {
       log.replaceChildren(...nodes);
     }
+    // Карточка формулировщика переживает перерисовку: она не сообщение, и
+    // `replaceChildren` выше её снял.
+    placeDraft();
     $('restored').hidden = !(restoredFromServer && messages.length > 0);
     showHead();
     if (stick) log.scrollTop = log.scrollHeight;
@@ -4616,6 +4741,8 @@
       index: 1,
       done: 0,
       mark: null,
+      // Новый запуск — чистый список пропущенных этапов.
+      skipped: [],
       round: 1,
       rounds: reviewRounds(),
       pausedAt: null,
@@ -4691,7 +4818,7 @@
       sessionName = null;
       pickedTopicId = null;
       cancelEdit();
-      setRunView('idle', { id: null, index: 0, done: 0, mark: null, round: 1, rounds: null });
+      setRunView('idle', { id: null, index: 0, done: 0, mark: null, skipped: [], round: 1, rounds: null });
       await syncProfile();
       renderLog();
       announce('Переписка удалена. Новый диалог начнётся с первого сообщения. Правила и темы профиля остались.');

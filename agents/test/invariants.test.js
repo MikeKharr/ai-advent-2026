@@ -11,10 +11,12 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import {
+  buildInvariantVerifyRequest,
   checkTicket,
   createInvariants,
   createTicketKey,
   invariantsBlock,
+  invariantsRecordBlock,
   parseDraft,
   parseInvariantVerdict,
   signTicket,
@@ -63,7 +65,38 @@ test('номер инварианта — max + 1, удалённый номер
   assert.equal(sessions.deleteInvariant({ profileId, num: 2 }), false)
   const next = sessions.addInvariant({ profileId, text: 'Четвёртое' })
   assert.equal(next.invariant.num, 4, 'после удаления П2 следующий — П4, не П2')
+
+  // Удаление СТАРШЕГО номера его не освобождает: `max(num)` по живым строкам
+  // выдал бы П4 второй раз, и карточки ответа в логе стали бы ссылаться не на
+  // то правило (находка reviewer к PR #200).
+  assert.equal(sessions.deleteInvariant({ profileId, num: 4 }), true)
+  assert.equal(
+    sessions.addInvariant({ profileId, text: 'Пятое' }).invariant.num,
+    5,
+    'после удаления старшего П4 следующий — П5',
+  )
+  // И после удаления всех: счётчик профиля не обнуляется.
+  for (const { num } of sessions.invariantsOf(profileId)) {
+    sessions.deleteInvariant({ profileId, num })
+  }
+  assert.deepEqual(sessions.invariantsOf(profileId), [])
+  assert.equal(sessions.addInvariant({ profileId, text: 'Шестое' }).invariant.num, 6)
   sessions.close()
+})
+
+test('счётчик номеров переживает перезапуск сервиса', () => {
+  // Он живёт в базе, а не в памяти процесса: иначе перезапуск после удаления
+  // старшего номера снова выдал бы его.
+  const { sessions, file } = open()
+  const profileId = newProfile(sessions)
+  sessions.addInvariant({ profileId, text: 'Первое' })
+  sessions.addInvariant({ profileId, text: 'Второе' })
+  sessions.deleteInvariant({ profileId, num: 2 })
+  sessions.close()
+
+  const again = createSessions({ file, ttlMs: 30 * HOUR, profileTtlMs: 30 * DAY, log: () => {} })
+  assert.equal(again.addInvariant({ profileId, text: 'Третье' }).invariant.num, 3)
+  again.close()
 })
 
 test('одиннадцатый инвариант — invariants_full, дубль без учёта регистра — duplicate', () => {
@@ -391,6 +424,29 @@ test('конфликт без варианта доходит до страни�
   assert.equal(body.draft.conflict, 1)
   assert.deepEqual(body.draft.variants, [])
   await s.close()
+})
+
+test('черновик в несуществующем профиле — 404 без вызова', async () => {
+  // Подделанная cookie с годным по форме идентификатором не должна давать
+  // оплаченный ход: класть его результат некуда (находка reviewer к PR #200).
+  const s = await serveInvariants()
+  const ghost = '33333333-3333-4333-8333-333333333333'
+  const r = await s.draft('какой-то черновик', ghost)
+  assert.equal(r.status, 404)
+  assert.equal((await r.json()).code, 'unknown_profile')
+  assert.equal(s.fetchImpl.calls.length, 0, 'вызова не было')
+  await s.close()
+})
+
+test('запрос проверки не несёт преамбулы пополнения', () => {
+  // Проверяющий ничего не записывает: указание «не записывай» из блока
+  // пополнения ему бессмысленно (находка design-review к PR #200).
+  const list = [{ num: 1, text: 'Отвечай коротко' }]
+  const verify = buildInvariantVerifyRequest({ invariants: list, question: 'что', answer: 'вот' })
+  assert.ok(!verify.input.includes('не записывай'), 'чужой преамбулы нет')
+  assert.match(verify.input, /Ответ, нарушающий хотя бы один из них, негоден/)
+  // А в блоке пополнения она остаётся: там она и работает.
+  assert.match(invariantsRecordBlock(list), /не записывай/)
 })
 
 test('черновик длиннее 1000 знаков и пустой — 400 без вызова', async () => {

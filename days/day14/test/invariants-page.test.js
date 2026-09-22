@@ -46,9 +46,22 @@ test('режим «Инвариант» уходит своим каналом, 
   assert.match(page, /fetch\('\.\/api\/invariants'/)
 })
 
-test('карточка формулировщика живёт под логом, а не в переписке', () => {
-  // В лог она не пишется: `renderLog` её не трогает, и `syncChat` не стирает.
-  assert.match(page, /<div class="draft" id="draft-box" hidden><\/div>/)
+test('карточка формулировщика — элемент лога, но не сообщение', () => {
+  // В лог она ставится узлом (`placeDraft`), а в переписку не пишется:
+  // `messages` её не знает, и перерисовка лога её не теряет. Отдельным блоком
+  // под логом она отнимала высоту у переписки — лог сжимался до 128 px
+  // (находка design-review к PR #200).
+  assert.match(page, /const draftBox = document\.createElement\('li'\);/)
+  assert.match(page, /draftBox\.className = 'draft';/)
+  assert.match(page, /const placeDraft = \(\) => \{/)
+  assert.match(page, /log\.append\(draftBox\);/)
+  assert.equal(
+    /<div class="draft" id="draft-box"/.test(page),
+    false,
+    'отдельного блока между логом и полосой запуска больше нет',
+  )
+  // И `renderLog` действительно её возвращает после перерисовки.
+  assert.match(page, /\n    placeDraft\(\);\n    \$\('restored'\)\.hidden/)
   assert.equal(/pushLocal\('draft'/.test(page), false)
 })
 
@@ -123,4 +136,64 @@ test('промпт формулировщика показан в «Об аге�
   assert.match(page, /id="dlg-draft"/)
   assert.match(page, /const text = invariantLimits\?\.prompt \?\? null;/)
   assert.match(page, /if \(d\.invariants\) invariantLimits = \{ \.\.\.invariantLimits, \.\.\.d\.invariants \};/)
+})
+
+// --- Правки по находкам гейтов к PR #200 ---------------------------------
+
+test('«Принять» возвращает фокус в поле, как «Отменить» и «править»', () => {
+  // После нажатия фокус уходил на BODY, и клавиатурный обход начинался с
+  // начала документа (находка design-review).
+  assert.match(page, /input\.focus\(\);\n      announce\(`Инвариант П\$\{data\.invariant\.num\} заведён/)
+  assert.match(page, /cancel\.onclick = \(\) => \{\n      closeDraft\(\);\n      input\.focus\(\);/)
+})
+
+test('ответ формулировщика доходит до программы чтения', () => {
+  // Четыре исхода обязаны прозвучать: оценка, замечание, число вариантов —
+  // в область состояния; конфликт и 502 — в область тревоги.
+  assert.match(page, /announce\(said\);/)
+  assert.match(page, /Формулировщик, ход \$\{draftRound\} из \$\{DRAFT_ROUNDS\}/)
+  assert.match(page, /shout\(\s*`Черновик противоречит инварианту П\$\{draft\.conflict\}/)
+  assert.match(page, /shout\(\s*`Формулировщик не дал варианта/)
+  assert.match(page, /announce\('Отправил формулировщику/)
+})
+
+test('у платного хода есть состояние занятости', () => {
+  assert.match(page, /const draftPending = \(text\) => \{/)
+  assert.match(page, /draftBox\.setAttribute\('aria-busy', 'true'\);/)
+  assert.match(page, /draftBox\.removeAttribute\('aria-busy'\);/)
+  // Поле на время хода заперто: править нечего, ответ ещё не пришёл.
+  assert.match(page, /input\.readOnly = true;/)
+  assert.match(page, /input\.readOnly = false;/)
+  // И его действительно зовут: правило можно оставить верным и перестать
+  // вызывать — следствие будет тем же, признака занятости не появится.
+  assert.match(
+    page,
+    /input\.readOnly = true;\n    draftPending\(text\);/,
+    'ход обязан звать draftPending до обращения к серверу',
+  )
+})
+
+test('«Отправить ещё раз» считается ходом и упирается в предел', () => {
+  // Счётчик рос только на удачном ходе, и при устойчивом дефекте инструмента
+  // посетитель платил бы неограниченно часто (находка reviewer).
+  assert.match(page, /if \(data\.code === 'draft_no_variants'\) \{[\s\S]{0,400}?draftRound \+= 1;/)
+  assert.match(page, /again\.disabled = draftRound >= DRAFT_ROUNDS;/)
+})
+
+test('пропущенный этап остаётся прочерком, а не становится галочкой', () => {
+  // `mark` живёт только у текущего этапа, поэтому пропущенный, став
+  // пройденным, получал «✓» — при том что монитор писал «пропущено»
+  // (находка design-review).
+  const stageMark = loadRule('stageMark')
+  assert.equal(stageMark('past', 'skipped'), '–')
+  assert.equal(stageMark('now', 'skipped'), '–')
+  assert.equal(stageMark('past'), '✓')
+  assert.equal(stageMark('now', 'paused'), '‖')
+  assert.equal(stageMark('next'), '')
+  assert.equal(stageMark('now', null), null)
+
+  // И список пропущенных этапов живёт в состоянии запуска, а не в метке.
+  assert.match(page, /const wasSkipped = runState\.skipped\.includes\(n\);/)
+  assert.match(page, /d\.outcome === 'skipped'/)
+  assert.match(page, /skipped: \[\],/)
 })

@@ -26,6 +26,9 @@ const agent = http.createServer(async (req, res) => {
   const [path] = req.url.split('?')
 
   if (path === `/v1/profiles/${PID}/invariants/draft` && req.method === 'POST') {
+    // `drop` рвёт соединение: так выглядит недоступная служба — `fetch`
+    // бросает, и ручка уходит в перехват, а не в ветку ответа.
+    if (draftReply.drop) return res.destroy()
     return json(draftReply.status, draftReply.body)
   }
   if (path === `/v1/profiles/${PID}/invariants` && req.method === 'POST') {
@@ -69,7 +72,10 @@ process.env.COOKIE_SECURE = 'false'
 process.env.MAX_DAILY_CALLS = '400'
 process.env.RATE_LIMIT_PER_MIN = '2'
 process.env.RATE_LIMIT_PER_HOUR = '12'
-process.env.RATE_LIMIT_WRITES_PER_HOUR = '40'
+// Окно записей узкое намеренно: ниже проверяется, что приём и удаление под
+// ним действительно стоят, а не просто ходят мимо (находка reviewer к PR #200
+// на пустой мутации). У каждого теста свой адрес — окна не мешают друг другу.
+process.env.RATE_LIMIT_WRITES_PER_HOUR = '3'
 
 const { server } = await import('../server.js')
 let base = ''
@@ -159,15 +165,20 @@ test('ответ без варианта доходит словами серв�
 
 test('приём идёт под окном записей и несёт билет', async () => {
   agentLog.length = 0
-  const r = await call(
-    'POST',
-    '/api/invariants',
-    { text: 'Отвечай не длиннее пяти предложений', ticket: 'b'.repeat(64) },
-    { ip: '10.1.5.1' },
-  )
+  const body = { text: 'Отвечай не длиннее пяти предложений', ticket: 'b'.repeat(64) }
+  const r = await call('POST', '/api/invariants', body, { ip: '10.1.5.1' })
   assert.equal(r.status, 200)
   assert.equal((await r.json()).invariant.num, 3)
   assert.equal(JSON.parse(agentLog.at(-1).body).ticket, 'b'.repeat(64))
+
+  // Окно записей — 3 в час на адрес: четвёртый приём отказан, и до службы он
+  // не доходит. Без этой части мутация «принимать мимо окна» была зелёной.
+  await call('POST', '/api/invariants', body, { ip: '10.1.5.1' })
+  await call('POST', '/api/invariants', body, { ip: '10.1.5.1' })
+  agentLog.length = 0
+  const over = await call('POST', '/api/invariants', body, { ip: '10.1.5.1' })
+  assert.equal(over.status, 429)
+  assert.deepEqual(agentLog, [], 'к службе не ходили')
 })
 
 test('приём без билета — 400 no_ticket словами сервиса', async () => {
@@ -176,13 +187,83 @@ test('приём без билета — 400 no_ticket словами серви
   assert.equal((await r.json()).code, 'no_ticket')
 })
 
-test('удаление по номеру: 200 своего, 404 несуществующего', async () => {
+test('удаление по номеру: 200 своего, 404 несуществующего, под окном записей', async () => {
   const ok = await call('DELETE', '/api/invariants/2', undefined, { ip: '10.1.7.1' })
   assert.equal(ok.status, 200)
   assert.equal((await ok.json()).num, 2)
 
   const missing = await call('DELETE', '/api/invariants/9', undefined, { ip: '10.1.7.1' })
   assert.equal(missing.status, 404)
+
+  await call('DELETE', '/api/invariants/3', undefined, { ip: '10.1.7.1' })
+  agentLog.length = 0
+  const over = await call('DELETE', '/api/invariants/4', undefined, { ip: '10.1.7.1' })
+  assert.equal(over.status, 429, 'четвёртое удаление за час — отказ окна записей')
+  assert.deepEqual(agentLog, [])
+})
+
+test('502 от службы возвращает ровно один слот, а не два', async () => {
+  // Прежняя редакция возвращала слот дважды на любом отказе службы: счётчик
+  // уходил в минус, и чередование «удачный ход — отказ провайдера» держало
+  // суточный лимитер у нуля бесконечно (находка reviewer и compliance).
+  // Предел минуты — 2 хода: A(ok) → B(502) → C(ok) → D обязан быть отказан.
+  const ip = '10.1.9.1'
+  draftReply = { status: 200, body: { ok: true, draft: { verdict: 'ok', variants: [] } } }
+  assert.equal((await call('POST', '/api/invariants/draft', { text: 'раз' }, { ip })).status, 200)
+
+  draftReply = {
+    status: 502,
+    body: { ok: false, code: 'router_error', message: 'модель не ответила', paid: false },
+  }
+  const failed = await call('POST', '/api/invariants/draft', { text: 'два' }, { ip })
+  assert.equal(failed.status, 502)
+
+  draftReply = { status: 200, body: { ok: true, draft: { verdict: 'ok', variants: [] } } }
+  assert.equal(
+    (await call('POST', '/api/invariants/draft', { text: 'три' }, { ip })).status,
+    200,
+    'слот, возвращённый за неоплаченный ход, снова доступен — один раз',
+  )
+  agentLog.length = 0
+  const over = await call('POST', '/api/invariants/draft', { text: 'четыре' }, { ip })
+  assert.equal(over.status, 429, 'двойной возврат сделал бы этот ход возможным')
+  assert.deepEqual(agentLog, [], 'к службе не ходили')
+})
+
+test('оборванная связь со службой тоже возвращает ровно один слот', async () => {
+  // Единственный путь, который остаётся у перехвата после починки: вызова не
+  // было, платить не за что.
+  //
+  // Порядок здесь значим: удачный ход идёт ПЕРВЫМ. Лимитер не отдаёт больше,
+  // чем этот адрес занял, поэтому лишний возврат виден только тогда, когда у
+  // адреса есть чужой занятый слот, — он-то и съедается. Начни тест с отказа,
+  // и двойной возврат прошёл бы незамеченным (собственная находка при
+  // мутационной проверке этого же теста).
+  const ip = '10.1.11.1'
+  draftReply = { status: 200, body: { ok: true, draft: { verdict: 'ok', variants: [] } } }
+  assert.equal((await call('POST', '/api/invariants/draft', { text: 'раз' }, { ip })).status, 200)
+
+  draftReply = { drop: true }
+  assert.equal((await call('POST', '/api/invariants/draft', { text: 'два' }, { ip })).status, 502)
+
+  draftReply = { status: 200, body: { ok: true, draft: { verdict: 'ok', variants: [] } } }
+  assert.equal((await call('POST', '/api/invariants/draft', { text: 'три' }, { ip })).status, 200)
+  const over = await call('POST', '/api/invariants/draft', { text: 'четыре' }, { ip })
+  assert.equal(over.status, 429, 'оборванный ход съел бы слот удачного хода')
+})
+
+test('оплаченный ход слот не возвращает', async () => {
+  const ip = '10.1.10.1'
+  draftReply = {
+    status: 502,
+    body: { ok: false, code: 'draft_no_variants', message: 'нет варианта', paid: true },
+  }
+  assert.equal((await call('POST', '/api/invariants/draft', { text: 'раз' }, { ip })).status, 502)
+  assert.equal((await call('POST', '/api/invariants/draft', { text: 'два' }, { ip })).status, 502)
+  agentLog.length = 0
+  const over = await call('POST', '/api/invariants/draft', { text: 'три' }, { ip })
+  assert.equal(over.status, 429, 'вызов состоялся и оплачен — слот назад не идёт')
+  assert.deepEqual(agentLog, [])
 })
 
 test('инварианты профиля приходят странице списком', async () => {
