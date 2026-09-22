@@ -1,9 +1,23 @@
+# Этот Caddy — внутренний: портов наружу нет, сертификатов нет, весь хост
+# приходит сюда из входа проекта zpq (приватный MikeKharr/zpq-ai) по общей
+# сети edge — ADR 2026-09-22-0611. Поэтому нет и опции email: выпускать
+# нечего, а `http://` в адресе ниже отключает автоматический HTTPS.
 {
-	# Адрес для уведомлений Let's Encrypt об истечении сертификата.
-	email admin@zpq.ai
+	servers {
+		# Перед нами всегда ровно один прокси — вход zpq, и он на частном
+		# адресе сети docker. Без этой строки Caddy считает его обычным
+		# клиентом, выбрасывает присланный им X-Forwarded-For и подставляет
+		# вместо адреса посетителя адрес контейнера входа: лимитеры дней
+		# схлопнулись бы на один адрес для всех, и дни начали бы отдавать
+		# 429 друг за другом. С ней {client_ip} — адрес посетителя.
+		# Подделать его снаружи нельзя: заголовок недоверенного клиента
+		# отбрасывает уже вход zpq, а сюда снаружи не достучаться — портов
+		# нет.
+		trusted_proxies static private_ranges
+	}
 }
 
-challenge.zpq.ai {
+http://challenge.zpq.ai {
 	encode gzip zstd
 
 	# Блок применяется ко всем ответам сайта, включая проксируемые в контейнеры
@@ -38,6 +52,7 @@ challenge.zpq.ai {
 		reverse_proxy day1:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -46,6 +61,7 @@ challenge.zpq.ai {
 		reverse_proxy day2:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -54,6 +70,7 @@ challenge.zpq.ai {
 		reverse_proxy day3:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -62,6 +79,7 @@ challenge.zpq.ai {
 		reverse_proxy day4:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -70,6 +88,7 @@ challenge.zpq.ai {
 		reverse_proxy day5:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -78,6 +97,7 @@ challenge.zpq.ai {
 		reverse_proxy day6:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -86,6 +106,7 @@ challenge.zpq.ai {
 		reverse_proxy day7:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -94,6 +115,7 @@ challenge.zpq.ai {
 		reverse_proxy day8:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -102,6 +124,7 @@ challenge.zpq.ai {
 		reverse_proxy day9:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -110,6 +133,7 @@ challenge.zpq.ai {
 		reverse_proxy day10:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -118,6 +142,7 @@ challenge.zpq.ai {
 		reverse_proxy day11:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -126,6 +151,7 @@ challenge.zpq.ai {
 		reverse_proxy day13:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -134,6 +160,7 @@ challenge.zpq.ai {
 		reverse_proxy day14:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -147,6 +174,7 @@ challenge.zpq.ai {
 		reverse_proxy atlas:8080 {
 			health_uri /healthz
 			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 
@@ -154,126 +182,5 @@ challenge.zpq.ai {
 	handle {
 		root * /srv/site
 		file_server
-	}
-}
-
-# --- сайт компании zpq.ai ---
-# Отдельный домен, отдельный корень: статика из site/zpq того же репозитория,
-# каталог site уже примонтирован в контейнер как /srv/site (compose.yml).
-# Заголовка X-Robots-Tag здесь НЕТ намеренно: в отличие от challenge.zpq.ai,
-# сайт компании обязан индексироваться.
-zpq.ai {
-	encode gzip zstd
-
-	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		Referrer-Policy strict-origin-when-cross-origin
-		-Server
-	}
-
-	root * /srv/site/zpq
-	file_server
-
-	handle_errors {
-		rewrite * /404.html
-		file_server
-	}
-}
-
-# www отправляем на апекс: один канонический адрес для поиска.
-www.zpq.ai {
-	redir https://zpq.ai{uri} permanent
-}
-
-# --- почта на домене: администрирование Stalwart ---
-# Решение «почта на домене, путь В» — ADR 2026-09-18-1052 в отдельном
-# (приватном) репозитории zpq-ai: https://github.com/MikeKharr/zpq-ai/pull/2 —
-# в этом репозитории его нет. Как почта появилась здесь — PR #163:
-# https://github.com/MikeKharr/ai-advent-2026/pull/163
-# Сам почтовый сервер — служба mail в
-# compose.yml; наружу она не публикует ничего, и этот блок — её
-# единственный вход: веб-администрирование по внутренней сети.
-# X-Robots-Tag здесь ЕСТЬ намеренно: в отличие от сайта компании,
-# админка индексироваться не должна.
-# Собственный сертификат Stalwart (проксирование http-01) появится тем
-# же PR, что откроет почтовые порты: пока портов нет, ему нечего
-# защищать, а провайдер ACME у Stalwart по умолчанию не заведён.
-mail.zpq.ai {
-	encode gzip zstd
-
-	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		Referrer-Policy strict-origin-when-cross-origin
-		-Server
-
-		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex"
-	}
-
-	# Журнал запросов — с честной оговоркой о том, зачем он тут.
-	# По исходникам Caddy 5xx пишется в журнал ошибок независимо от
-	# access-лога; handle_errors, который понизил бы запись до DEBUG, в
-	# этом блоке отсутствует (он есть только у zpq.ai), глобального log и
-	# servers { } в файле нет. Значит записи быть должны. Измерение говорит
-	# обратное: девять 502 подряд не оставили в журнале caddy ни строки об
-	# ошибке. Противоречие НЕ разрешено — на диагноз оно не влияет (502 всё
-	# равно означает, что пригодного ответа от апстрима не пришло, и взяться
-	# ему больше неоткуда: catch-all в файле нет), но означает, что
-	# наблюдаемость здесь хуже ожидаемой. Access-лог закрывает вопрос в
-	# любом случае: либо это единственный способ увидеть отказ, либо к нему
-	# добавятся подробности запроса.
-	# Заголовки: Authorization, Cookie, Set-Cookie и Proxy-Authorization
-	# Caddy по умолчанию пишет как REDACTED — caddyserver.com/docs/caddyfile/options
-	# и коммит 5bf0ada. Отключается опцией сервера log_credentials в блоке
-	# servers { }: она действует сразу на все блоки сервера, и мы её не
-	# включаем.
-	# Строки запроса это НЕ касается: в access-лог идёт request>uri целиком,
-	# вместе с query, поэтому query фильтруется явно — ниже.
-	# Норма проекта: agent_docs/guides/logging.md — «Access-логи Caddy
-	# выключены намеренно и включаются только с фильтрацией query». Здесь
-	# она соблюдена фильтром, а не исключением из неё.
-	# token — живой токен доступа: Stalwart отдаёт его как ?token= на
-	# /api/live/… для EventSource, который не умеет слать заголовки.
-	# code и state — authorization-code flow webadmin. Остальные ключи
-	# закрыты на упреждение, по RFC 6749 и RFC 8628, которым поставщик
-	# объявляет соответствие; поимённого перечня в его документации нет.
-	log {
-		format filter {
-			request>uri query {
-				replace token REDACTED
-				replace access_token REDACTED
-				replace refresh_token REDACTED
-				replace id_token REDACTED
-				replace code REDACTED
-				replace state REDACTED
-				replace device_code REDACTED
-				replace user_code REDACTED
-				replace client_secret REDACTED
-			}
-			wrap json
-		}
-	}
-
-	# Апстрим — 443 по HTTPS, а не 8080.
-	# Факт: на 8080 соединение не принимается — Caddy отдаёт 502, а живой
-	# слушатель вернул бы хоть какой-то статус.
-	# Причина НЕ установлена, и документация поставщика ожидает обратного:
-	# 8080 остаётся в наборе слушателей по умолчанию и закрывается вручную
-	# оператором — stalw.art/docs/install/security/: «Provided mainly for
-	# initial setup … strongly recommended to disable this port after
-	# setup»; проксирование в 8080 там же описано как обычный шаблон.
-	# Версии, обе совместимы с документацией и обе не проверены: слушатель
-	# выключили при настройке либо мастер записал собственный набор.
-	# Проверить нечем — журнал службы пуст, exec в контейнер запрещён.
-	# 443 с implicit TLS — документированная альтернатива из того же
-	# набора по умолчанию, поэтому переключаемся на неё.
-	# tls_insecure_skip_verify — соединение идёт по внутренней сети compose
-	# к своей же службе, а провайдер ACME у Stalwart не заведён, поэтому
-	# сертификат на той стороне самоподписанный и сверять его не с чем.
-	reverse_proxy https://mail:443 {
-		transport http {
-			tls_insecure_skip_verify
-		}
 	}
 }

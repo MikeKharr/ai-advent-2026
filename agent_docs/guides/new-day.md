@@ -37,9 +37,15 @@
        reverse_proxy dayN:8080 {
            health_uri /healthz
            health_interval 30s
+           header_up X-Forwarded-For {client_ip}
        }
    }
    ```
+
+   `header_up` обязателен и не косметика: перед этим Caddy стоит вход проекта `zpq`
+   (ADR `2026-09-22-0611`), и без этой строки день увидит в `X-Forwarded-For` адрес
+   контейнера входа вместо адреса посетителя — лимитер схлопнется на один адрес
+   для всех. Работает в паре с `trusted_proxies` в начале файла.
 
    `Caddyfile` смонтирован `:ro`, и Caddy сам его не перечитывает. **Проверено на дне 2:
    добавление дня в `depends_on` сервиса `caddy` НЕ заставляет `docker compose up -d`
