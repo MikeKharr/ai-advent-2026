@@ -22,11 +22,11 @@ const REGISTRY = loadRegistry(
 
 const ANSWER_TEXT = 'ОТВЕТМОДЕЛИ про раунды финтеха'
 
-const answerReply = (text = ANSWER_TEXT) => ({
+const answerReply = (text = ANSWER_TEXT, truncated = false) => ({
   ok: true,
   text,
   provider: { id: 'anthropic-haiku', model: 'claude-haiku-4-5', tier: 'cloud-frontier' },
-  truncated: false,
+  truncated,
   durationMs: 100,
   usage: { inputTokens: 500, outputTokens: 40 },
 })
@@ -327,6 +327,38 @@ test('статус инвариантов — по последнему круг
   assert.equal(snapshot.result.answer, ANSWER_TEXT)
   assert.equal(fetchImpl.verdicts().length, 2, 'кругов было два')
   assert.deepEqual(snapshot.result.summary.invariants, { checked: [1], status: 'unchecked' })
+})
+
+test('короткие выходы проверки тоже дают unchecked, а не пометку прошлого круга', async () => {
+  // Из этапа проверки есть три выхода ДО разбора вердикта, и на них
+  // проверяющая модель ответа этого круга не видела вовсе (остаток находки
+  // Б2 reviewer к PR #200). Здесь — обрезанный ответ на втором круге: круг 1
+  // сказал «соблюдены», круг 2 до проверяющего не дошёл.
+  const fetchImpl = router({
+    answers: [answerReply(ANSWER_TEXT), answerReply('Обрезанный ответ', true)],
+    verdicts: [verdictReply('вердикт: отклонено\nзамечания: коротко\nинварианты: соблюдены')],
+  })
+  const { ask, add } = setup({ fetchImpl })
+  add('Отвечай не длиннее пяти предложений')
+  const { snapshot } = await ask({ reviewRounds: 2 })
+
+  assert.equal(snapshot.result.answer, 'Обрезанный ответ')
+  assert.equal(snapshot.result.review.reason, 'truncated', 'второй круг ушёл коротким выходом')
+  assert.equal(fetchImpl.verdicts().length, 1, 'проверяющую модель на втором круге не звали')
+  assert.deepEqual(snapshot.result.summary.invariants, { checked: [1], status: 'unchecked' })
+})
+
+test('пустой ответ на последнем круге тоже даёт unchecked', async () => {
+  const fetchImpl = router({
+    answers: [answerReply(ANSWER_TEXT), answerReply('   ')],
+    verdicts: [verdictReply('вердикт: отклонено\nзамечания: коротко\nинварианты: соблюдены')],
+  })
+  const { ask, add } = setup({ fetchImpl })
+  add('Отвечай не длиннее пяти предложений')
+  const { snapshot } = await ask({ reviewRounds: 2 })
+
+  assert.equal(fetchImpl.verdicts().length, 1)
+  assert.equal(snapshot.result.summary.invariants.status, 'unchecked')
 })
 
 test('без третьей строки статус инвариантов у сообщения — unchecked', async () => {
