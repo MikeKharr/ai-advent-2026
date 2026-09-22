@@ -1353,3 +1353,47 @@ test('anthropic: размышления уходят бюджетом, max_token
     format: { type: 'json_schema', schema: { type: 'object' } },
   })
 })
+
+test('обрыв клиента прерывает вызов, второго не зовёт, в предохранитель не идёт', async () => {
+  // Ответ висит на ручке: снятый проброс тогда валит тест по сроку ниже,
+  // а не вешает прогон.
+  let release
+  const { router, calls } = setup({
+    providers: [PROVIDERS[1], PROVIDERS[0], GUARD],
+    hosts: { [CLOUD]: () => new Promise((resolve) => (release = resolve)), [LAPTOP]: laptopOk },
+  })
+  const client = new AbortController()
+  const routed = router.route({ taskClass: 'other', input: 'текст' }, { signal: client.signal })
+  await new Promise((r) => setImmediate(r))
+  client.abort()
+  const r = await Promise.race([routed, rejectAfter(1000, 'обрыв клиента вызов не прервал')])
+  release(cloudOk())
+
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'aborted')
+  assert.equal(r.attempts.length, 1, 'после обрыва фолбэка нет')
+  assert.equal(r.attempts[0].outcome, 'aborted')
+  assert.equal(r.attempts[0].reason, 'клиент разорвал соединение')
+  assert.ok(r.attempts[0].estimatedInputTokens > 0, 'оценка входа для учёта есть')
+  assert.equal(calls.length, 1, 'второго провайдера не зовём')
+  assert.equal(router.health.unavailableReason(PROVIDERS[1]), null, 'предохранитель не разомкнут')
+  assert.equal(router.health.snapshot(PROVIDERS[1]).failures, 0)
+})
+
+test('клиент оборвался до вызова — провайдер не зовётся вовсе', async () => {
+  const { router, calls } = setup({
+    providers: [PROVIDERS[1], GUARD],
+    hosts: { [CLOUD]: cloudOk },
+  })
+  const client = new AbortController()
+  client.abort()
+  const r = await router.route({ taskClass: 'other', input: 'текст' }, { signal: client.signal })
+
+  assert.equal(r.code, 'aborted')
+  assert.deepEqual(r.attempts, [])
+  assert.equal(calls.length, 0, 'до провайдера дело не дошло — платить не за что')
+})
+
+function rejectAfter(ms, message) {
+  return new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms).unref())
+}
