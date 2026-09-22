@@ -24,6 +24,9 @@ const NUMBERS = {
   PROFILE_CAP: 5,
   // Живых диалогов на профиль — временное рабочее значение той же записи.
   PROFILE_SESSION_CAP: 20,
+  // Запуск дня 13 на паузе дольше этого отменяется: замок сессии снимается,
+  // и диалог не остаётся запертым навсегда (ADR 2026-09-21-1747, п. 3).
+  PAUSE_TTL_MINUTES: 60,
   PORT: 8082,
 }
 
@@ -33,6 +36,9 @@ export function parseEnv(source = process.env) {
     ROUTER_URL: source.ROUTER_URL || 'http://router:8081',
     STORE_FILE: source.STORE_FILE || '/data/store.json',
     SESSIONS_FILE: source.SESSIONS_FILE || '/data/sessions.db',
+    // Журнал этапов дня 13 — на том же томе, что и диалоги
+    // (ADR 2026-09-21-1747, п. 7).
+    STAGE_LOG_FILE: source.STAGE_LOG_FILE || '/data/stage-log.csv',
   }
 
   for (const name of ['AGENT_KEY', 'ROUTER_APP_KEY']) {

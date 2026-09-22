@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 export { isSessionId } from './params.js'
-import { TOPIC_FACT_CAP } from './params.js'
+import { PARAM_LIMITS, SUMMARIZE_LIMITS, TOPIC_FACT_CAP } from './params.js'
 import { DatabaseSync } from 'node:sqlite'
 
 const SCHEMA = `
@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS profiles (
   created_at   INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL
 );
+-- Столбец settings — настройки дня 11 и только они. Настройки дня 13 живут
+-- в своём столбце settings_staged (решение владельца 2026-09-21, вариант «а»):
+-- профиль общий, а потолки разные, и значение, годное дню 13 (контекст до
+-- 32 000), день 11 принять не может — общий блок ломал бы сданный день
+-- чужими действиями.
 
 -- Память персонализации: правила из разговора. Имя правила уникально в
 -- профиле, новое правило заменяет прежнее с тем же именем. Пополняет их
@@ -130,6 +135,44 @@ function migrate(db) {
   }
   // Индекс создаётся после столбца: в старой базе его колонки ещё нет.
   db.exec('CREATE INDEX IF NOT EXISTS sessions_by_profile ON sessions(profile_id, last_seen_at)')
+  if (!has('profiles', 'settings_staged')) {
+    db.exec("ALTER TABLE profiles ADD COLUMN settings_staged TEXT NOT NULL DEFAULT '{}'")
+  }
+  moveStagedSettings(db)
+}
+
+/**
+ * Настройки дня 13, попавшие в общий блок прежней реализацией, переезжают в
+ * свой столбец. Правка одноразовая и самоограниченная: трогается только то,
+ * что день 11 принять не может, — его собственные значения ниже своих
+ * потолков остаются на месте (решение владельца 2026-09-21).
+ */
+function moveStagedSettings(db) {
+  const rows = db.prepare('SELECT id, settings, settings_staged FROM profiles').all()
+  const update = db.prepare('UPDATE profiles SET settings = ?, settings_staged = ? WHERE id = ?')
+  for (const row of rows) {
+    let shared
+    let staged
+    try {
+      shared = JSON.parse(row.settings || '{}')
+      staged = JSON.parse(row.settings_staged || '{}')
+    } catch {
+      continue
+    }
+    if (!shared || typeof shared !== 'object' || Array.isArray(shared)) continue
+    let moved = false
+    const take = (key, alien) => {
+      if (shared[key] === undefined || !alien(shared[key])) return
+      if (staged[key] === undefined) staged[key] = shared[key]
+      delete shared[key]
+      moved = true
+    }
+    take('reviewModel', () => true)
+    take('reviewRounds', () => true)
+    take('contextTokens', (v) => Number(v) > PARAM_LIMITS.contextTokens)
+    take('summarizeAt', (v) => Number(v) > SUMMARIZE_LIMITS.max)
+    if (moved) update.run(JSON.stringify(shared), JSON.stringify(staged), row.id)
+  }
 }
 
 export function createSessions({
@@ -168,6 +211,7 @@ export function createSessions({
       `INSERT INTO messages (session_id, role, text, tokens, at, run_id, meta, parent_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
+    updateMeta: db.prepare('UPDATE messages SET meta = ? WHERE id = ? AND session_id = ?'),
     history: db.prepare(
       `SELECT id, role, text, tokens, at, run_id AS runId, meta, parent_id AS parentId
        FROM messages WHERE session_id = ? ORDER BY id ASC`,
@@ -284,11 +328,15 @@ export function createSessions({
     ),
     countProfiles: db.prepare('SELECT count(*) AS n FROM profiles WHERE last_seen_at >= ?'),
     profile: db.prepare(
-      `SELECT id, name, settings, created_at AS createdAt, last_seen_at AS lastSeenAt
+      `SELECT id, name, settings, settings_staged AS settingsStaged,
+              created_at AS createdAt, last_seen_at AS lastSeenAt
          FROM profiles WHERE id = ? AND last_seen_at >= ?`,
     ),
     touchProfile: db.prepare('UPDATE profiles SET last_seen_at = ? WHERE id = ?'),
     saveSettings: db.prepare('UPDATE profiles SET settings = ?, last_seen_at = ? WHERE id = ?'),
+    saveStagedSettings: db.prepare(
+      'UPDATE profiles SET settings_staged = ?, last_seen_at = ? WHERE id = ?',
+    ),
     staleProfiles: db.prepare('SELECT id FROM profiles WHERE last_seen_at < ?'),
     rules: db.prepare(
       `SELECT key, value, source_session_id AS sourceSessionId, updated_at AS updatedAt
@@ -517,6 +565,19 @@ export function createSessions({
         parentId,
       )
       return Number(info.lastInsertRowid)
+    },
+
+    /**
+     * Сводка у сообщения — заново. Нужна дню 13: ответ пишется на этапе
+     * «Проверка», а число пройденных этапов известно только на «Выдаче»
+     * (ADR 2026-09-21-1747, п. 1). Сообщение обязано принадлежать этой
+     * сессии: номера в базе сквозные, и без проверки правка задевала бы
+     * чужую переписку. Очищенный диалог правится в ноль строк — это и есть
+     * «ничего не воскресло».
+     */
+    updateMessageMeta({ sessionId, messageId, meta }) {
+      const info = stmt.updateMeta.run(meta ? JSON.stringify(meta) : null, messageId, sessionId)
+      return Number(info.changes) > 0
     },
 
     /** Голова текущей ветки или null у линейных сессий дней 6–9. */
@@ -923,6 +984,7 @@ export function createSessions({
       const row = stmt.profile.get(id, at - profileTtlMs)
       if (!row) return null
       let settings = {}
+      let stagedSettings = {}
       try {
         settings = row.settings ? JSON.parse(row.settings) : {}
       } catch {
@@ -930,11 +992,19 @@ export function createSessions({
         // память посетителю нужнее, а окно настроек перезапишет их.
         log(`настройки профиля ${id.slice(0, 8)}… не разобраны`)
       }
+      try {
+        stagedSettings = row.settingsStaged ? JSON.parse(row.settingsStaged) : {}
+      } catch {
+        log(`настройки дня 13 профиля ${id.slice(0, 8)}… не разобраны`)
+      }
       const sessions = stmt.liveSessions.all(id, at - ttlMs)
       return {
         id: row.id,
         name: row.name,
         settings,
+        // Настройки дня 13 — отдельным полем: день 11 читает `settings` и
+        // значений, которых не умеет принять, в нём не встречает.
+        stagedSettings,
         createdAt: row.createdAt,
         lastSeenAt: row.lastSeenAt,
         rules: stmt.rules.all(id),
@@ -981,6 +1051,17 @@ export function createSessions({
     saveSettings({ profileId, settings, at = now() }) {
       if (!stmt.profile.get(profileId, at - profileTtlMs)) return false
       stmt.saveSettings.run(JSON.stringify(settings), at, profileId)
+      return true
+    },
+
+    /**
+     * Настройки дня 13 — в свой столбец, не в общий блок дня 11
+     * (ADR 2026-09-21-1747 и решение владельца 2026-09-21, вариант «а»).
+     * Два столбца пишутся врозь и не затирают друг друга.
+     */
+    saveStagedSettings({ profileId, settings, at = now() }) {
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return false
+      stmt.saveStagedSettings.run(JSON.stringify(settings), at, profileId)
       return true
     },
 

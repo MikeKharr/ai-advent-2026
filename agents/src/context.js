@@ -23,6 +23,7 @@ import {
   personalizationBlock,
   REPLENISH_ANSWER_TOKENS,
   requestBlock,
+  reviewBlock,
   summaryBlock,
   SUMMARY_CLASS,
   SUMMARY_PROVIDER,
@@ -126,20 +127,27 @@ export function assemble({
   factsText = null,
   transcript = [],
   prompt,
+  // Замечания проверки второго и третьего круга дня 13: блок идёт перед
+  // `<request>` и считается в потолке этапа наравне с остальным (ADR
+  // 2026-09-21-1747, п. 2). У дня 11 его не бывает.
+  review = null,
+  // Потолки блоков. У дня 13 токенные подпотолки правил и темы сняты
+  // (ADR 2026-09-21-1747, п. 5, 4а), потолки в строках остаются.
+  caps = ASSEMBLE_CAPS,
 }) {
   const warnings = []
   const blocks = []
-  const stats = { rules: 0, rulesTokens: 0, topicFacts: 0, topicTokens: 0 }
+  const stats = { rules: 0, rulesTokens: 0, topicFacts: 0, topicTokens: 0, reviewTokens: 0 }
 
   const fittedRules = fitLines(
     rules.map((rule) => `${rule.key} — ${rule.value}`),
-    ASSEMBLE_CAPS.rulesTokens,
+    caps.rulesTokens,
   )
   if (fittedRules.dropped > 0) {
     warnings.push({
       code: 'rules_trimmed',
       dropped: fittedRules.dropped,
-      capTokens: ASSEMBLE_CAPS.rulesTokens,
+      capTokens: caps.rulesTokens,
     })
   }
   if (fittedRules.lines.length > 0) {
@@ -153,8 +161,8 @@ export function assemble({
   // Блок идёт и у темы без фактов: иначе модель в вызове ответа не узнаёт
   // даже названия предмета, которым занят диалог (находка ревьюера, PR #153).
   if (topic) {
-    const recent = topic.facts.slice(-ASSEMBLE_CAPS.topicFacts)
-    const fitted = fitLines([...recent].reverse(), ASSEMBLE_CAPS.topicTokens)
+    const recent = topic.facts.slice(-caps.topicFacts)
+    const fitted = fitLines([...recent].reverse(), caps.topicTokens)
     const lines = [...fitted.lines].reverse()
     blocks.push(topicBlock(topic.title, lines))
     stats.topicFacts = lines.length
@@ -163,7 +171,7 @@ export function assemble({
     // штуках сняты другой причиной, и называть её этой было бы неправдой.
     const dropped = recent.length - lines.length
     if (dropped > 0) {
-      warnings.push({ code: 'topic_trimmed', dropped, capTokens: ASSEMBLE_CAPS.topicTokens })
+      warnings.push({ code: 'topic_trimmed', dropped, capTokens: caps.topicTokens })
     }
   }
 
@@ -172,6 +180,11 @@ export function assemble({
   if (summaryText) blocks.push(summaryBlock(summaryText))
   else if (factsText) blocks.push(factsBlock(factsText))
   if (transcript.length > 0) blocks.push(dialogBlock(transcript))
+  if (review) {
+    const block = reviewBlock(review)
+    blocks.push(block)
+    stats.reviewTokens = estimateTokens(block)
+  }
   blocks.push(requestBlock(prompt))
 
   return { input: blocks.join('\n\n'), warnings, stats }
@@ -246,6 +259,11 @@ export async function replenish({
   ask = askSummary,
   now = Date.now,
   log = () => {},
+  // Потолки частей входа. У дня 13 вход целиком — 32 000, токенные
+  // подпотолки частей сняты (ADR 2026-09-21-1747, п. 5).
+  caps = REPLENISH_CAPS,
+  // Обрыв вызова паузой дня 13. У дня 11 сигнала нет, и вызов идёт как прежде.
+  signal = null,
 }) {
   const idle = { called: false, spent: 0, paid: false, report: null }
   // Вызова нет без ответа: платить за пополнение памяти отказавшего запуска
@@ -257,32 +275,32 @@ export async function replenish({
 
   // Каждая часть входа режется своим потолком — сперва в строках, потом в
   // токенах: посторонний, набивший профиль, не растит цену хода остальным.
-  const topicRows = sessions.topicsOf(profileId).slice(0, REPLENISH_CAPS.topicRows)
+  const topicRows = sessions.topicsOf(profileId).slice(0, caps.topicRows)
   const topicsFitted = fitLines(
     topicRows.map((t) => `${t.id} · ${t.title} · ${t.facts} фактов`),
-    REPLENISH_CAPS.topicsTokens,
+    caps.topicsTokens,
   )
   const topics = topicRows.slice(0, topicsFitted.lines.length)
 
   let topic = null
   if (state.topicId) {
     const facts = sessions
-      .topicFactsOf(state.topicId, REPLENISH_CAPS.topicFacts)
+      .topicFactsOf(state.topicId, caps.topicFacts)
       .map((f) => f.text)
-    const fitted = fitLines([...facts].reverse(), REPLENISH_CAPS.topicTokens)
+    const fitted = fitLines([...facts].reverse(), caps.topicTokens)
     topic = { title: state.topicTitle, facts: [...fitted.lines].reverse() }
   }
 
-  const rules = sessions.rulesOf(profileId).slice(0, REPLENISH_CAPS.ruleRows)
+  const rules = sessions.rulesOf(profileId).slice(0, caps.ruleRows)
   const rulesFitted = fitLines(
     rules.map((rule) => `${rule.key} — ${rule.value}`),
-    REPLENISH_CAPS.rulesTokens,
+    caps.rulesTokens,
   )
 
   let pending = null
   if (state.pending) {
-    const parked = state.pending.facts.slice(-REPLENISH_CAPS.pendingFacts)
-    const fitted = fitLines([...parked].reverse(), REPLENISH_CAPS.pendingTokens)
+    const parked = state.pending.facts.slice(-caps.pendingFacts)
+    const fitted = fitLines([...parked].reverse(), caps.pendingTokens)
     pending = { title: state.pending.title, facts: [...fitted.lines].reverse() }
   }
 
@@ -292,7 +310,7 @@ export async function replenish({
   // за потолок, части сбрасываются от наименее ценной к более ценной: список
   // тем, затем факты активной темы, затем — сама пара. Решение о теме и
   // правила остаются: без них вызов теряет смысл.
-  let pairCap = REPLENISH_CAPS.pairTokens
+  let pairCap = caps.pairTokens
   let fittedPair = fitPair(pair, pairCap)
   let topicsSent = topics
   let topicSent = topic
@@ -318,21 +336,21 @@ export async function replenish({
       return 'факты активной темы'
     },
   ]) {
-    if (requestSize <= REPLENISH_CAPS.inputTokens) break
+    if (requestSize <= caps.inputTokens) break
     shed.push(drop())
     request = build()
     requestSize = measure(request)
   }
   // Пара — единственная часть, которая может быть сколь угодно большой:
   // её режем, пока вход не уложится, а не надеемся на её собственный потолок.
-  for (let i = 0; i < 8 && requestSize > REPLENISH_CAPS.inputTokens; i++) {
-    pairCap = Math.max(200, pairCap - (requestSize - REPLENISH_CAPS.inputTokens) - 32)
+  for (let i = 0; i < 8 && requestSize > caps.inputTokens; i++) {
+    pairCap = Math.max(200, pairCap - (requestSize - caps.inputTokens) - 32)
     fittedPair = fitPair(pair, pairCap)
     request = build()
     requestSize = measure(request)
     if (!shed.includes('часть пары реплик')) shed.push('часть пары реплик')
   }
-  const withinCap = requestSize <= REPLENISH_CAPS.inputTokens
+  const withinCap = requestSize <= caps.inputTokens
   if (shed.length > 0 || fittedPair.dropped > 0 || fittedPair.trimmedChars > 0) {
     // Предупреждение называет то, что ушло на самом деле: обещать потолок,
     // которого не удержали, — хуже, чем не обещать ничего.
@@ -348,14 +366,14 @@ export async function replenish({
       detail:
         `${what.join(', ')} не ушли модели; вход вызова — ${requestSize} токенов ` +
         (withinCap
-          ? `при потолке ${REPLENISH_CAPS.inputTokens}`
-          : `сверх потолка ${REPLENISH_CAPS.inputTokens}: подрезать больше нечего`),
+          ? `при потолке ${caps.inputTokens}`
+          : `сверх потолка ${caps.inputTokens}: подрезать больше нечего`),
       data: {
         shed,
         dropped: fittedPair.dropped,
         trimmedChars: fittedPair.trimmedChars,
         requestTokens: requestSize,
-        capTokens: REPLENISH_CAPS.inputTokens,
+        capTokens: caps.inputTokens,
         withinCap,
       },
     })
@@ -380,7 +398,7 @@ export async function replenish({
 
   let answer
   try {
-    answer = await ask(request, env, { fetchImpl })
+    answer = await ask(request, env, { fetchImpl, signal })
   } catch (error) {
     log(`пополнение памяти: ${error.code ?? ''} ${error.message}`)
     emit({

@@ -2,7 +2,7 @@
 // запись валит процесс на старте: агент с пустым промптом или неизвестным
 // инструментом не должен принимать запуски.
 
-import { MODELS } from './params.js'
+import { LAYERED_MODELS, MODELS, REVIEW_ROUNDS } from './params.js'
 
 const KNOWN_TOOLS = new Set(['archive'])
 const ID = /^[a-z][a-z0-9-]{1,40}$/
@@ -52,6 +52,17 @@ export function loadRegistry(raw) {
     // Ноль законен: агент без памяти о разговоре.
     if (!Number.isInteger(d.contextTokens) || d.contextTokens < 0)
       fail(id, 'defaults.contextTokens: ожидалось целое не меньше нуля')
+    // Круг проверки дня 13: у агентов без него этих полей не бывает, а
+    // заданные проверяются теми же границами, что вход запуска и настройки.
+    if (d.reviewModel !== undefined && !LAYERED_MODELS.some((m) => m.id === d.reviewModel))
+      fail(id, 'defaults.reviewModel: неизвестная модель')
+    if (
+      d.reviewRounds !== undefined &&
+      (!Number.isInteger(d.reviewRounds) ||
+        d.reviewRounds < REVIEW_ROUNDS.min ||
+        d.reviewRounds > REVIEW_ROUNDS.max)
+    )
+      fail(id, `defaults.reviewRounds: целое от ${REVIEW_ROUNDS.min} до ${REVIEW_ROUNDS.max}`)
 
     agents.set(id, {
       id,
