@@ -30,16 +30,32 @@ const plural = (n, one, few, many) => {
   return many
 }
 const DRAFT_ROUNDS = 3
-/** Границы предела кругов: страница берёт их у сервиса. */
-const roundLimits = { min: 1, max: 3, default: 2 }
 
-/** Правило из живого исходника страницы, а не его копия в тесте. */
-const loadRule = (name) => {
+/**
+ * Значение объявления со страницы, а не его копия в тесте: копия доказывала бы
+ * число, а не источник — подмена `roundLimits.max` на готовую тройку прошла бы
+ * тест молча (находка reviewer к PR #204).
+ */
+const loadValue = (name) => {
+  const found = page.match(new RegExp(`\\n\\s*(?:let|const) ${name} = (.*?);\\n`))
+  assert.ok(found, `на странице нет объявления ${name} — его переименовали или убрали`)
+  return eval(`(${found[1]})`)
+}
+const roundLimits = loadValue('roundLimits')
+
+/**
+ * Исходный текст правила со страницы. Отдельно от `loadRule`, потому что
+ * правилу, которому нужны помощники самого теста (объявления, длительность,
+ * состояние полосы), `eval` нужен в области теста, а не здесь.
+ */
+const ruleSource = (name) => {
   const found = page.match(new RegExp(`\\n\\s*const ${name} = [\\s\\S]*?\\n  \\};\\n`))
   assert.ok(found, `на странице нет правила ${name} — его переименовали или убрали`)
-  const body = found[0].trim().replace(new RegExp(`^const ${name} = `), '').replace(/;$/, '')
-  return eval(`(${body})`)
+  return found[0].trim().replace(new RegExp(`^const ${name} = `), '').replace(/;$/, '')
 }
+
+/** Правило из живого исходника страницы, а не его копия в тесте. */
+const loadRule = (name) => eval(`(${ruleSource(name)})`)
 
 test('у поля ввода есть переключатель «Сообщение | Инвариант»', () => {
   assert.match(page, /name="mode" value="message" checked/)
@@ -127,20 +143,55 @@ test('под «не отдан» названы три выхода, и кажд
   assert.match(lines[0], /тот же исход и ту же трату/)
   assert.match(lines[1], /Спросить иначе/)
   assert.match(lines[1], /П4/)
-  // 2. Правило — с местом, где оно правится.
+  // 2. Инвариант — с местом, где он правится.
   assert.match(lines[2], /Смягчить или удалить П4/)
   assert.match(lines[2], /«Память профиля»/)
-  // 3. Предел кругов — с местом и с тем, что это даст.
+  // 3. Предел кругов — с местом и с тем, что это даст. Названо то, что видно:
+  // имя шестерёнки живёт только в `aria-label`, видимого текста на экране нет.
   assert.match(lines[3], /Поднять предел кругов — сейчас 1/)
-  assert.match(lines[3], /«Настройки агента»/)
+  assert.match(lines[3], /значок-шестерёнка у левого края/)
+  assert.match(lines[3], /окно «Настройки агента»/)
   assert.match(lines[3], /замечания проверки и попробует ещё раз/)
-
-  // Выход обязан быть настоящим: на потолке кругов поднимать нечего.
-  const atCap = withheldExits({ invariants: [2], round: 3, rounds: 3 }).map((p) => p.text)
-  assert.match(atCap[3], /Предел кругов уже 3 — выше не поднять/)
+  // Потолок кругов берётся у сервиса, а не вписан числом.
+  assert.match(page, /rounds < roundLimits\.max/)
 
   // И карточка собирается именно этим правилом.
   assert.match(page, /li\.append\(\.\.\.withheldExits\(meta\.withheld\)\);/)
+})
+
+test('на потолке кругов выходов названо два — столько же, сколько дано', () => {
+  const withheldExits = loadRule('withheldExits')
+  const atCap = withheldExits({ invariants: [2], round: 3, rounds: roundLimits.max })
+  const lines = atCap.map((p) => p.text)
+  assert.match(lines[3], new RegExp(`Предел кругов уже ${roundLimits.max} — выше не поднять`))
+  // Счёт подчинён тому же условию, что и третий выход: обещать три и дать два
+  // нельзя (находка design-review к PR #204).
+  assert.match(lines[0], /выходов два/)
+  assert.equal(/выходов три/.test(lines[0]), false)
+  // А пока предел есть куда поднимать — выходов действительно три.
+  const room = withheldExits({ invariants: [2], round: 1, rounds: roundLimits.min })
+  assert.match(room[0].text, /выходов три/)
+})
+
+test('выходы зовут инвариант инвариантом, а не правилом', () => {
+  // В окне «Память профиля» это два разных раздела, и различие несущее:
+  // правило из разговора можно не соблюсти — ответ отдадут с пометкой,
+  // инвариант нельзя (находка design-review к PR #204).
+  const withheldExits = loadRule('withheldExits')
+  for (const w of [
+    { invariants: [1], round: 1, rounds: 1 },
+    { invariants: [1, 2], round: 3, rounds: 3 },
+  ]) {
+    for (const p of withheldExits(w)) {
+      assert.equal(/правил/i.test(p.text), false, `слово «правило» в выходе: ${p.text}`)
+    }
+  }
+  // Номеров бывает несколько, и число согласовано с ними.
+  const one = withheldExits({ invariants: [1], round: 1, rounds: 1 }).map((p) => p.text)
+  assert.match(one[0], /назвала нарушенный инвариант профиля П1 на последнем круге/)
+  const two = withheldExits({ invariants: [1, 2], round: 1, rounds: 1 }).map((p) => p.text)
+  assert.match(two[0], /назвала нарушенные инварианты профиля П1, П2 на последнем круге/)
+  assert.match(two[1], /не упирался в П1, П2/)
 })
 
 test('пометка инвариантов не выдаёт мнение модели за доказательство', () => {
@@ -239,6 +290,58 @@ test('пропущенный этап остаётся прочерком, а н
   assert.match(page, /const wasSkipped = runState\.skipped\.includes\(n\);/)
   assert.match(page, /d\.outcome === 'skipped'/)
   assert.match(page, /skipped: \[\],/)
+})
+
+test('неотданный запуск не объявляется как «готово»', () => {
+  // Объявление и полоса — единственное, что слышит программа чтения: выходы
+  // лежат в логе, а он живой областью не является (находка design-review
+  // к PR #204). Правило исполняется, а не ищется регуляркой: подменены только
+  // помощники страницы.
+  const said = []
+  const announce = (text) => said.push(text)
+  const fmtDuration = () => '15,1 с'
+  const STATUS_WORD = { queued: 'в очереди', running: 'идёт' }
+  const setStatus = eval(`(${ruleSource('setStatus')})`)
+
+  setStatus({ name: 'Спросил', status: 'running', warnings: 0, withheld: true }, 'succeeded')
+  assert.equal(said.length, 1)
+  assert.match(said[0], /ответ не отдан за 15,1 с/)
+  assert.equal(/готово/i.test(said[0]), false, '«готово» при неотданном ответе — враньё')
+  assert.match(said[0], /объяснение и выходы в переписке/)
+
+  // Обычный удачный запуск объявляется по-прежнему.
+  setStatus({ name: 'Спросил', status: 'running', warnings: 0 }, 'succeeded')
+  assert.match(said[1], /готово за 15,1 с/)
+  void announce, void fmtDuration, void STATUS_WORD
+})
+
+test('полоса при неотданном ответе говорит «Ответ не отдан», а не «Готово»', () => {
+  const stages = Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, title: `Этап ${i}` }))
+  const fmtDuration = () => '15,1 с'
+  let elapsedMs = 0
+  const PAUSE_TTL_MIN = 60
+  let runState = { view: 'done', done: 6, durationMs: 15100, withheld: true }
+  const runStateText = eval(`(${ruleSource('runStateText')})`)
+  assert.equal(runStateText(), 'Ответ не отдан · 6 этапов · 15,1 с')
+  runState = { view: 'done', done: 6, durationMs: 15100, withheld: false }
+  assert.equal(runStateText(), 'Готово · 6 этапов · 15,1 с')
+  void elapsedMs, void PAUSE_TTL_MIN, void stages
+})
+
+test('«Выдача» при неотданном ответе несёт «×», а не галочку', () => {
+  const stageMark = loadRule('stageMark')
+  const stages = Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, title: `Этап ${i}` }))
+  let runState = { withheld: true, skipped: [5], mark: null }
+  const stageSign = eval(`(${ruleSource('stageSign')})`)
+  // Шестая — «Выдача»: этап состоялся, но отдавать было нечего.
+  assert.equal(stageSign(6, 'past'), '×')
+  // Пятая — пополнение памяти, пропущенное целиком: прочерк, как и был.
+  assert.equal(stageSign(5, 'past'), '–')
+  assert.equal(stageSign(1, 'past'), '✓')
+  // Отданный ответ ничего не меняет.
+  runState = { withheld: false, skipped: [], mark: null }
+  assert.equal(stageSign(6, 'past'), '✓')
+  void stageMark, void stages
 })
 
 test('при «годен» без вариантов фраза не договаривает «или 0 вариантов»', () => {
