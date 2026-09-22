@@ -25,7 +25,13 @@ export async function readJson(response, who, quota = null) {
     error.quota = quota
     throw error
   }
-  if (json === null || typeof json !== 'object') throw new Error(`${who}: тело ответа не JSON`)
+  if (json === null || typeof json !== 'object') {
+    // Статус проставляется и здесь: по нему роутер отличает «ответ пришёл,
+    // но не разобрался» от броска адаптера до отправки запроса.
+    const error = new Error(`${who}: тело ответа не JSON`)
+    error.status = response.status
+    throw error
+  }
   return json
 }
 
