@@ -1330,6 +1330,11 @@
     // «✓ Пополнение памяти» (находка design-review к PR #200). В дне 13
     // пропуск этапа до конца запуска не случался, поэтому чинится здесь.
     skipped: [],
+    // Ответ не отдан: запуск для машины состояний удачен, но отдавать было
+    // нечего. Полоса и метка «Выдачи» обязаны говорить это, а не «Готово»:
+    // объявление и полоса — единственное, что слышит программа чтения, тогда
+    // как выходы живут в логе (находка design-review к PR #204).
+    withheld: false,
     round: 1,
     rounds: null,      // предел кругов этого запуска; null — чипа нет
     startedAt: null,
@@ -2225,7 +2230,10 @@
   const runs = [];
 
   const runHeader = (run) => {
-    let status = STATUS_WORD[run.status] ?? run.status;
+    // «готово» у запуска без ответа — то же враньё, что в объявлении.
+    let status = run.withheld && run.status === 'succeeded'
+      ? 'ответ не отдан'
+      : STATUS_WORD[run.status] ?? run.status;
     if (run.status === 'succeeded' || run.status === 'failed') {
       const parts = [status];
       if (run.durationMs !== null) parts.push(fmtDuration(run.durationMs));
@@ -2370,8 +2378,14 @@
     run.status = status;
     if (status === 'succeeded' || status === 'failed') {
       run.durationMs = run.durationMs ?? (Date.now() - Date.parse(run.startedAt));
+      // «Готово» при неотданном ответе — враньё ровно там, где объявление
+      // единственное, что слышит программа чтения: выходы лежат в логе, и
+      // живой областью он не является.
+      const said = run.withheld
+        ? `ответ не отдан за ${fmtDuration(run.durationMs)}, объяснение и выходы в переписке`
+        : `готово за ${fmtDuration(run.durationMs)}`;
       const tail = status === 'succeeded'
-        ? `готово за ${fmtDuration(run.durationMs)}` +
+        ? said +
           (run.warnings ? `, ${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}` : '')
         : 'ошибка';
       announce(`Запуск «${run.name}»: ${tail}`, from);
@@ -2442,6 +2456,13 @@
   // нигде не выводится из имени функции.
   const addEvent = (run, event, from) => {
     if (!trackRun(event, from)) return;
+    // Событие выдачи со статусом «успешно» приходит РАНЬШЕ результата потока,
+    // и объявление статуса делается здесь же, строкой ниже. Без этого «готово»
+    // произносилось первым, а исправленная фраза не произносилась никогда:
+    // второй вызов `setStatus` выходит на `run.status === status` (находка
+    // design-review к PR #204). Номера нарушенных инвариантов идут в событии,
+    // поэтому признак берётся из данных, а не из заголовка.
+    if (event.data?.withheld) run.withheld = true;
     run.events.unshift(event);
     if (event.level === 'warn') run.warnings += 1;
     if (event.level === 'error') shout(`Ошибка: ${event.title}`);
@@ -2511,6 +2532,25 @@
     return null; // пульсирующая точка
   };
 
+  /**
+   * «Выдача» неотданного ответа: последний этап запуска, кончившегося без
+   * ответа. Одно условие на знак и на приглушение — разойдясь, они дали бы
+   * крестик без приглушения (нит reviewer к PR #204).
+   */
+  const isWithheldStage = (n) => runState.withheld && n === stages.length;
+
+  /**
+   * Знак этапа с номером `n`: неотданный ответ и пропуск идут прежде «пройден».
+   * Вынесено из `renderStagesBar` отдельным правилом, чтобы тест исполнял его,
+   * а не искал знак в разметке.
+   */
+  const stageSign = (n, position) => {
+    if (isWithheldStage(n)) return '×';
+    if (runState.skipped.includes(n)) return stageMark(position, 'skipped');
+    if (position === 'now') return stageMark('now', runState.mark);
+    return stageMark(position);
+  };
+
   const renderStagesBar = () => {
     const nodes = [];
     pulseDot = null;
@@ -2524,11 +2564,12 @@
       mark.className = 'stage-mark';
       mark.setAttribute('aria-hidden', 'true');
       const wasSkipped = runState.skipped.includes(n);
-      const sign = wasSkipped
-        ? stageMark(position, 'skipped')
-        : position === 'now'
-          ? stageMark('now', runState.mark)
-          : stageMark(position);
+      // «Выдача» при неотданном ответе — не пройденный этап: он состоялся, но
+      // отдавать было нечего, и галочка обещала бы отданный ответ. Знак — тот
+      // же `×`, что у прерванного (раскладка дня 13, п. 2.3), а словом состояние
+      // называет статус рядом: «Ответ не отдан».
+      const withheldHere = isWithheldStage(n);
+      const sign = stageSign(n, position);
       if (sign === null) {
         const dot = document.createElement('span');
         dot.className = 'pulse';
@@ -2539,7 +2580,9 @@
       }
       const name = document.createElement('span');
       name.className = 'stage-name';
-      if (position === 'past') li.classList.add('is-past');
+      // Приглушённый цвет, а не акцент пройденного: акцент читался бы как
+      // удача. Знак `×` отличает эту «Выдачу» от пропущенного этапа с `–`.
+      if (position === 'past' && !withheldHere) li.classList.add('is-past');
       if (position === 'now') {
         li.classList.add('is-now');
         li.setAttribute('aria-current', 'step');
@@ -2548,7 +2591,7 @@
         vh.textContent = `Этап ${n} из ${stages.length}: `;
         name.append(vh);
       }
-      if (wasSkipped || (position === 'now' && runState.mark === 'skipped'))
+      if (wasSkipped || withheldHere || (position === 'now' && runState.mark === 'skipped'))
         li.classList.add('is-skipped');
       name.append(stage.title);
       li.append(mark, name);
@@ -2579,7 +2622,8 @@
         return `На паузе ${mins} мин из ${PAUSE_TTL_MIN}.`;
       }
       case 'done':
-        return `Готово · ${runState.done || total} ${plural(runState.done || total, 'этап', 'этапа', 'этапов')}` +
+        return `${runState.withheld ? 'Ответ не отдан' : 'Готово'} · ` +
+          `${runState.done || total} ${plural(runState.done || total, 'этап', 'этапа', 'этапов')}` +
           (runState.durationMs === null ? '' : ` · ${fmtDuration(runState.durationMs)}`);
       case 'cancelled':
         return 'Запуск отменён: пауза дольше 60 минут';
@@ -2675,7 +2719,11 @@
   };
 
   const setRunView = (view, patch = {}) => {
-    Object.assign(runState, patch, { view });
+    // `withheld` гаснет по умолчанию: ключ передаёт только завершение
+    // своего запуска, а патчи подхвата чужого его не несут — и признак
+    // залипал, ставя крестик «Выдаче» идущего запуска (находка reviewer
+    // к PR #204).
+    Object.assign(runState, { withheld: false }, patch, { view });
     if (view === 'paused') startPauseTimer();
     else stopPauseTimer();
     renderRunbar();
@@ -3436,6 +3484,48 @@
   };
 
   /**
+   * Выходы под репликой «Ответ не отдан» (решение владельца после живой
+   * проверки в проде). Объяснение называло только, что случилось: при пределе
+   * в один круг тот же вопрос при тех же правилах даёт тот же исход и ту же
+   * трату, и посетитель без знания устройства платил за слепые повторы.
+   * Выходы живут на странице, а не в тексте агента: они называют кнопки этого
+   * дня, а служба своих страниц не знает — и текст агента лежит в переписке
+   * вечно, тогда как совет про предел кругов верен только при нынешнем
+   * пределе. Поднять предел предлагается лишь тогда, когда его есть куда
+   * поднимать, и число выходов подчинено тому же условию: обещать три и дать
+   * два нельзя.
+   *
+   * Слово здесь всегда «инвариант», никогда «правило»: правило из разговора
+   * можно не соблюсти — ответ отдадут с пометкой, — а инвариант нельзя, и в
+   * окне «Память профиля» это два разных раздела.
+   *
+   * Значок настроек назван нейтрально: его имя живёт только в `aria-label`,
+   * видимого текста «Настройки агента» на экране нет, а нарисованы в нём
+   * восемь прямых лучей — не зубцы шестерёнки (замер design-review к PR #204).
+   */
+  const withheldExits = (w) => {
+    const nums = w.invariants ?? [];
+    const named = nums.map((num) => `П${num}`).join(', ');
+    const many = nums.length > 1;
+    const rounds = Number(w.rounds);
+    const room = Number.isInteger(rounds) && rounds < roundLimits.max;
+    return [
+      `Это не сбой: проверка назвала ${many ? 'нарушенные инварианты' : 'нарушенный инвариант'} ` +
+        `профиля ${named} на последнем круге, и оплаченный ответ не показывается нигде. Тот же ` +
+        `вопрос при тех же инвариантах даст тот же исход и ту же трату — ` +
+        `${room ? 'выходов три' : 'выходов два'}.`,
+      `Спросить иначе: переформулируйте вопрос так, чтобы ответ не упирался в ${named}.`,
+      `Смягчить или удалить ${named}: кнопка «Память профиля», список «Инварианты профиля».`,
+      room
+        ? `Поднять предел кругов — сейчас ${rounds}: значок настроек у левого края, окно ` +
+          '«Настройки агента», «Предел кругов проверки». Тогда агент получит замечания ' +
+          'проверки и попробует ещё раз — каждый круг сверх первого платный.'
+        : `Предел кругов уже ${rounds} — выше не поднять: агент переделывал ответ по ` +
+          `замечаниям и снова нарушил ${many ? 'инварианты' : 'инвариант'} ${named}.`,
+    ].map((text) => draftLine('ask-note', text));
+  };
+
+  /**
    * Идентификатор запуска у ответа агента. Сводка его НЕ несёт — он лежит на
    * самом сообщении (ADR 2026-09-09-0854: «переписка отдаёт `runId` у каждого
    * сообщения»). Пока страница читала только сводку, строка журнала не
@@ -3531,14 +3621,7 @@
     // Ответ не отдан: реплика агента с номером, текстом и кругом. Карточки
     // ответа под ней нет — ответа не существует (ADR, п. 5).
     if (meta.withheld) {
-      li.append(
-        draftLine(
-          'ask-note',
-          'Это не сбой: проверка назвала нарушенный инвариант профиля на последнем круге, ' +
-            'и оплаченный ответ не показывается нигде. Поправьте инвариант в окне памяти ' +
-            'профиля или спросите иначе.',
-        ),
-      );
+      li.append(...withheldExits(meta.withheld));
       return li;
     }
 
@@ -4623,6 +4706,9 @@
       index: view === 'done' ? 0 : runState.index,
       done: view === 'done' ? stages.length : runState.done,
       mark: view === 'done' ? null : 'stopped',
+      // Признак идёт от запуска: ставит его только завершение, а гасит
+      // умолчание `setRunView` — любой следующий вид приходит без ключа.
+      withheld: run.withheld === true,
       durationMs: Date.now() - Date.parse(run.startedAt),
     });
     renderLog({ keepScroll: true });
@@ -4670,9 +4756,16 @@
         const summary = { runId, ...(r.summary ?? {}) };
         // Ответ не отдан: показывается объяснение, которое агент записал в
         // переписку, а сам ответ не существует нигде (решение владельца 2).
-        if (r.withheld) answered(withheldText(r.withheld), { withheld: r.withheld, runId });
-        else
-        answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
+        if (r.withheld) {
+          // Запуск удачен для машины состояний, но ответа нет: полоса,
+          // метка «Выдачи» и объявление говорят это, а не «готово»
+          // (находка design-review к PR #204). Живая область — объявление
+          // и полоса; выходы живут в логе, и объявление ведёт к ним.
+          run.withheld = true;
+          answered(withheldText(r.withheld), { withheld: r.withheld, runId });
+        } else {
+          answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
+        }
         if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
       } else if (end.error) {
         answered(end.error.message ?? 'агент не ответил', { error: true });
@@ -4757,8 +4850,9 @@
       index: 1,
       done: 0,
       mark: null,
-      // Новый запуск — чистый список пропущенных этапов.
+      // Новый запуск — чистый список пропущенных этапов и чистая «Выдача».
       skipped: [],
+      withheld: false,
       round: 1,
       rounds: reviewRounds(),
       pausedAt: null,
