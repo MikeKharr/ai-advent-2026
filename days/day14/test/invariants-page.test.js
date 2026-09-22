@@ -150,7 +150,10 @@ test('под «не отдан» названы три выхода, и кажд
   // 3. Предел кругов — с местом и с тем, что это даст. Названо то, что видно:
   // имя шестерёнки живёт только в `aria-label`, видимого текста на экране нет.
   assert.match(lines[3], /Поднять предел кругов — сейчас 1/)
-  assert.match(lines[3], /значок-шестерёнка у левого края/)
+  // Слово нейтральное: в значке восемь прямых лучей, зубцов шестерёнки нет
+  // (замер design-review к PR #204).
+  assert.match(lines[3], /значок настроек у левого края/)
+  assert.equal(/шестерёнк/i.test(lines[3]), false)
   assert.match(lines[3], /окно «Настройки агента»/)
   assert.match(lines[3], /замечания проверки и попробует ещё раз/)
   // Потолок кругов берётся у сервиса, а не вписан числом.
@@ -374,6 +377,59 @@ test('признак «ответ не отдан» доведён от резу
     /setRunView\('running', \{[\s\S]{0,400}?withheld: false,/,
     'новый запуск обязан начинаться без признака',
   )
+})
+
+test('объявление на настоящем порядке событий: событие выдачи опережает результат', () => {
+  // Событие `done` со статусом «успешно» приходит РАНЬШЕ результата потока, и
+  // объявление делается на нём. Прежде фраза про неотданный ответ не
+  // произносилась никогда: второй вызов `setStatus` выходил на
+  // `run.status === status` (находка design-review к PR #204). Поэтому тест
+  // прогоняет цепочку `addEvent` → `setStatus`, а не подставляет состояние.
+  const said = []
+  const announce = (text) => said.push(text)
+  const fmtDuration = () => '15,1 с'
+  const shout = () => {}
+  const renderMonitor = () => {}
+  const trackRun = () => true
+  const STATUS_WORD = { queued: 'в очереди', running: 'выполняется', succeeded: 'готово' }
+  const setStatus = eval(`(${ruleSource('setStatus')})`)
+  const addEvent = eval(`(${ruleSource('addEvent')})`)
+
+  const run = {
+    name: 'Спросил', status: 'running', warnings: 0, events: [],
+    durationMs: null, startedAt: new Date().toISOString(),
+  }
+  // Ровно то событие, что шлёт служба: заголовок и номера в данных.
+  addEvent(run, {
+    stage: 'done',
+    title: 'Ответ не отдан: нарушен инвариант профиля',
+    status: 'succeeded',
+    durationMs: 15100,
+    data: { state: 'deliver', rounds: 1, withheld: [1] },
+  })
+  assert.equal(said.length, 1, 'объявление делается на событии выдачи')
+  assert.match(said[0], /ответ не отдан за 15,1 с/)
+  assert.equal(/готово/i.test(said[0]), false, '«готово» при неотданном ответе — враньё')
+
+  // И карточка монитора берёт слово оттуда же.
+  const plural = () => ''
+  const runHeader = eval(`(${ruleSource('runHeader')})`)
+  assert.match(runHeader(run), /^ответ не отдан · 15,1 с/)
+  assert.equal(/готово/i.test(runHeader(run)), false)
+
+  // Обычный удачный запуск ничего не теряет.
+  const ok = {
+    name: 'Спросил', status: 'running', warnings: 0, events: [],
+    durationMs: null, startedAt: new Date().toISOString(),
+  }
+  addEvent(ok, {
+    stage: 'done', title: 'Отдал ответ', status: 'succeeded', durationMs: 15100,
+    data: { state: 'deliver', rounds: 1 },
+  })
+  assert.match(said[1], /готово за 15,1 с/)
+  assert.match(runHeader(ok), /^готово · 15,1 с/)
+  void announce, void fmtDuration, void shout, void renderMonitor, void trackRun
+  void STATUS_WORD, void plural
 })
 
 test('признак «ответ не отдан» не залипает на следующем виде полосы', () => {
