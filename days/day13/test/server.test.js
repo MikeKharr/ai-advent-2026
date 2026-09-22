@@ -19,11 +19,15 @@ const SID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const ALIEN_SID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 /** Диалог без живого запуска: паузить нечего. */
 const IDLE_SID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-/** Диалог, чей запуск уже завершён на стороне агента: ручка паузы отдаёт 409. */
+/** Диалог, чей запуск агент считает несуществующим: ручка паузы отдаёт 404. */
 const DONE_SID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+/** Диалог, чей запуск успел завершиться между чтением диалога и ручкой паузы. */
+const FIN_SID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 
 const RUN = '00000000-0000-4000-8000-000000000001'
 const ALIEN_RUN = '00000000-0000-4000-8000-0000000000aa'
+/** Запуск, который агент к моменту паузы уже завершил: его ручка отдаёт 409. */
+const DONE_RUN = '00000000-0000-4000-8000-0000000000dd'
 
 /** Сколько кругов назовёт `end` потока: тест этим двигает возврат слотов. */
 let endRounds = 1
@@ -68,6 +72,8 @@ const agent = http.createServer(async (req, res) => {
   if (pause && req.method === 'POST') {
     pauseCalls.push({ runId: pause[1], body: JSON.parse(body) })
     if (pause[1] === ALIEN_RUN) return json(404, { ok: false, code: 'unknown_run' })
+    if (pause[1] === DONE_RUN)
+      return json(409, { ok: false, code: 'finished', message: 'Запуск уже завершён' })
     return json(200, { ok: true, paused: JSON.parse(body).paused })
   }
 
@@ -118,7 +124,9 @@ const agent = http.createServer(async (req, res) => {
         ? null
         : id === DONE_SID
           ? { id: ALIEN_RUN, status: 'running', state: 'answer', paused: false, interruptedCall: false }
-          : { id: RUN, status: 'running', state: 'answer', paused: false, interruptedCall, since: 1 }
+          : id === FIN_SID
+            ? { id: DONE_RUN, status: 'running', state: 'answer', paused: true, interruptedCall }
+            : { id: RUN, status: 'running', state: 'answer', paused: false, interruptedCall, since: 1 }
     return json(200, {
       ok: true,
       messages: [],
@@ -549,13 +557,31 @@ test('пауза без профиля — 409, без диалога — 409', 
   assert.equal(noSession.status, 409)
 })
 
-test('пауза завершённого запуска — 409 словами агента', async () => {
-  const r = await call('POST', '/api/run/pause', { paused: true }, {
+test('живого запуска нет — «Продолжить» объясняет состояние, а не отказывает', async () => {
+  // Требование владельца 2026-09-22: отказа на осмысленное действие быть не
+  // должно. Запуск мог доработать, пока вкладка была закрыта, — это состояние.
+  const r = await call('POST', '/api/run/pause', { paused: false }, {
     ip: '10.4.0.5',
     cookie: withSession(IDLE_SID),
   })
-  assert.equal(r.status, 409)
-  assert.equal((await r.json()).code, 'no_run')
+  assert.equal(r.status, 200)
+  const body = await r.json()
+  assert.equal(body.finished, true)
+  assert.match(body.message, /заверш/i, 'объяснение словами, а не код')
+})
+
+test('запуск завершился между чтением диалога и ручкой паузы: объяснение и возврат слота', async () => {
+  const ip = '10.4.1.5'
+  interruptedCall = true
+  const cookie = withSession(FIN_SID)
+  // Шесть попыток при минутном окне в 4: слот под повтор вызова каждый раз
+  // возвращается, потому что повтора не было.
+  for (let i = 0; i < 6; i++) {
+    const r = await call('POST', '/api/run/pause', { paused: false }, { ip, cookie })
+    assert.equal(r.status, 200, `попытка ${i + 1}`)
+    assert.equal((await r.json()).finished, true)
+  }
+  interruptedCall = false
 })
 
 test('paused не булево — 400, к агенту запрос не идёт', async () => {

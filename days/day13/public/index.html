@@ -2589,15 +2589,25 @@
       renderRunbar();
     }, 5000);
     try {
-      await api('./api/run/pause', postJson({ paused: wantPaused }));
+      const result = await api('./api/run/pause', postJson({ paused: wantPaused }));
+      // Запуск успел кончиться, пока вкладка была закрыта. Это не отказ на
+      // действие посетителя (требование владельца 2026-09-22), а состояние:
+      // называем его словами и показываем, чем запуск кончился, — ответ или
+      // строку отмены переписка уже несёт.
+      if (result?.finished) {
+        runbarSay(result.message ?? 'Запуск уже завершился.');
+        // «Узнаю состояние» на время чтения: чем кончился запуск, решает
+        // переписка — ответ, строка отмены или реплика, оставшаяся без ответа.
+        setRunView('loading', { id: null, index: 0, done: 0, mark: null });
+        await Promise.all([syncChat(), syncProfile()]);
+        if (runState.view === 'loading') setRunView('idle');
+      }
     } catch (error) {
       // Единственное сообщение при возобновлении — отказ, а не объяснение действия.
       runbarSay(
         error.status === 429
           ? error.message
-          : error.status === 409
-            ? 'Запуск уже завершён'
-            : 'Паузу переключить не удалось — состояние на экране могло разойтись с запуском',
+          : 'Паузу переключить не удалось — состояние на экране могло разойтись с запуском',
       );
     } finally {
       clearTimeout(slow);
@@ -2673,6 +2683,19 @@
       startedAt: run.since ?? null,
       pausedAt: run.paused ? Date.now() : null,
     });
+    // Запуск идёт или стоит на паузе, а эта вкладка его не слушает — так
+    // бывает после перезагрузки и в другом окне того же профиля. Без подписки
+    // экран замирает навсегда: события «Продолжаю», этапы и конец запуска
+    // приходят только в поток (дефект владельца 2026-09-22).
+    if (following?.runId !== run.id) {
+      const asked = [...pathMessages()].reverse().find((m) => m.role === 'user');
+      const local = startRun(asked?.text ?? 'запуск');
+      local.id = run.id;
+      // Время запуска — от сервиса: счётчик «готово за …» иначе считал бы от
+      // момента, когда вкладку открыли.
+      if (run.since) local.startedAt = run.since;
+      followRun(run.id, local, (text, meta) => pushLocal('agent', text, meta));
+    }
   };
 
   /* ---------- шапка диалога ---------- */
@@ -3999,6 +4022,107 @@
     renderLog({ keepScroll: true });
   };
 
+  /**
+   * Конец запуска на экране: кнопка отпущена, полоса встала, монитор
+   * перерисован. Одна и та же для запуска, начатого здесь, и для запуска,
+   * подхваченного у сервиса: после чужого запуска экран обязан выглядеть так
+   * же, как после своего.
+   */
+  const finishRun = (run, view = 'done') => {
+    button.disabled = false;
+    log.removeAttribute('aria-busy');
+    // Фокус, стоявший на «Паузе», уходит на поле сообщения ДО снятия
+    // активности: иначе он ушёл бы на body.
+    if (document.activeElement === pauseBtn) input.focus();
+    setRunView(view, {
+      // Запуск кончился — текущего этапа нет: шесть «✓» и ни одного
+      // aria-current, а не вечно пульсирующая «Выдача».
+      index: view === 'done' ? 0 : runState.index,
+      done: view === 'done' ? stages.length : runState.done,
+      mark: view === 'done' ? null : 'stopped',
+      durationMs: Date.now() - Date.parse(run.startedAt),
+    });
+    renderLog({ keepScroll: true });
+    renderMonitor();
+  };
+
+  /**
+   * Подписка вкладки на поток событий запуска. Одна на вкладку: `following`
+   * помнит, какой запуск она слушает, и второй подписки на тот же не бывает.
+   *
+   * Подписка нужна не только запуску, начатому здесь. Запуск переживает и
+   * перезагрузку страницы, и закрытое окно (ADR 2026-09-21-1747, п. 6), и без
+   * подписки на него вкладка слепа: «Продолжить» снимает паузу у сервиса, а
+   * на экране не меняется ничего — дефект, найденный владельцем 2026-09-22.
+   * Сервис отдаёт новому подписчику сначала накопленные события, потом живые
+   * (`runs.subscribe`), поэтому вторая вкладка видит то же, что первая.
+   */
+  let following = null;
+
+  const followRun = (runId, run, answered) => {
+    if (following?.runId === runId) return;
+    following?.es.close();
+    const es = new EventSource(`./api/runs/${encodeURIComponent(runId)}/events`);
+    following = { runId, es };
+    const finish = (view = 'done') => {
+      if (following?.es === es) following = null;
+      finishRun(run, view);
+    };
+    let ended = false;
+    es.addEventListener('event', (m) => {
+      let ev;
+      try { ev = JSON.parse(m.data); } catch { return; }
+      if (ev.stage === 'warning' && ev.title === 'Историю не сжал') run.summarizeFailed = true;
+      addEvent(run, ev);
+    });
+    es.addEventListener('end', async (m) => {
+      ended = true;
+      es.close();
+      let end = {};
+      try { end = JSON.parse(m.data); } catch {}
+      if (end.result) {
+        run.answered = true;
+        const r = end.result;
+        // Идентификатор запуска — у ответа: без него ссылок на журнал не будет.
+        const summary = { runId, ...(r.summary ?? {}) };
+        answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
+        if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
+      } else if (end.error) {
+        answered(end.error.message ?? 'агент не ответил', { error: true });
+      }
+      setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
+        ? end.status
+        : run.answered ? 'succeeded' : 'failed');
+      // Отмена по сроку паузы — не «готово»: полоса говорит, что случилось.
+      if (end.status === 'cancelled') {
+        shout('Запуск отменён: пауза дольше 60 минут.');
+        finish('cancelled');
+      } else {
+        finish();
+      }
+      // Память профиля могла пополниться, тема — смениться, вопрос — появиться.
+      await Promise.all([syncChat(), syncProfile()]);
+    });
+    es.onerror = async () => {
+      if (ended) return;
+      ended = true;
+      es.close();
+      if (run.answered) { setStatus(run, 'succeeded'); finish(); return; }
+      // Последний известный этап остаётся, пульс останавливается: врать
+      // «готово» о запуске, который, возможно, идёт, нельзя.
+      if (run.events.length > 0) {
+        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа');
+        answered('поток закрылся без ответа', { error: true });
+        finish('partial');
+      } else {
+        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся');
+        answered('связь с агентом прервана', { error: true });
+        finish('idle');
+      }
+      await Promise.all([syncChat(), syncProfile()]);
+    };
+  };
+
   form.onsubmit = async (event) => {
     event.preventDefault();
     const message = input.value.trim();
@@ -4053,23 +4177,7 @@
     cancelEdit({ sent: true });
     showHead();
 
-    const finish = (view = 'done') => {
-      button.disabled = false;
-      log.removeAttribute('aria-busy');
-      // Фокус, стоявший на «Паузе», уходит на поле сообщения ДО снятия
-      // активности: иначе он ушёл бы на body.
-      if (document.activeElement === pauseBtn) input.focus();
-      setRunView(view, {
-        // Запуск кончился — текущего этапа нет: шесть «✓» и ни одного
-        // aria-current, а не вечно пульсирующая «Выдача».
-        index: view === 'done' ? 0 : runState.index,
-        done: view === 'done' ? stages.length : runState.done,
-        mark: view === 'done' ? null : 'stopped',
-        durationMs: Date.now() - Date.parse(run.startedAt),
-      });
-      renderLog({ keepScroll: true });
-      renderMonitor();
-    };
+    const finish = (view = 'done') => finishRun(run, view);
     const answered = (text, meta) => {
       pushLocal('agent', text, meta);
       showParamsSummary();
@@ -4098,60 +4206,7 @@
       return finish('idle');
     }
 
-    const es = new EventSource(`./api/runs/${encodeURIComponent(runId)}/events`);
-    let ended = false;
-    es.addEventListener('event', (m) => {
-      let ev;
-      try { ev = JSON.parse(m.data); } catch { return; }
-      if (ev.stage === 'warning' && ev.title === 'Историю не сжал') run.summarizeFailed = true;
-      addEvent(run, ev);
-    });
-    es.addEventListener('end', async (m) => {
-      ended = true;
-      es.close();
-      let end = {};
-      try { end = JSON.parse(m.data); } catch {}
-      if (end.result) {
-        run.answered = true;
-        const r = end.result;
-        // Идентификатор запуска — у ответа: без него ссылок на журнал не будет.
-        const summary = { runId, ...(r.summary ?? {}) };
-        answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
-        if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
-      } else if (end.error) {
-        answered(end.error.message ?? 'агент не ответил', { error: true });
-      }
-      setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
-        ? end.status
-        : run.answered ? 'succeeded' : 'failed');
-      // Отмена по сроку паузы — не «готово»: полоса говорит, что случилось.
-      if (end.status === 'cancelled') {
-        shout('Запуск отменён: пауза дольше 60 минут.');
-        finish('cancelled');
-      } else {
-        finish();
-      }
-      // Память профиля могла пополниться, тема — смениться, вопрос — появиться.
-      await Promise.all([syncChat(), syncProfile()]);
-    });
-    es.onerror = async () => {
-      if (ended) return;
-      ended = true;
-      es.close();
-      if (run.answered) { setStatus(run, 'succeeded'); finish(); return; }
-      // Последний известный этап остаётся, пульс останавливается: врать
-      // «готово» о запуске, который, возможно, идёт, нельзя.
-      if (run.events.length > 0) {
-        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа');
-        answered('поток закрылся без ответа', { error: true });
-        finish('partial');
-      } else {
-        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся');
-        answered('связь с агентом прервана', { error: true });
-        finish('idle');
-      }
-      await Promise.all([syncChat(), syncProfile()]);
-    };
+    followRun(runId, run, answered);
   };
 
   input.addEventListener('keydown', (event) => {
