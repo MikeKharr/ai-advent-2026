@@ -34,8 +34,17 @@ PR #161 и записана в `guides/new-day.md`: `Caddyfile` примонти
 Шаг стоит после `docker compose up -d --remove-orphans` и до шага «Проверка
 живого сайта».
 
+Сопутствующее: в `deploy/Caddyfile` — комментарий о том, что правка файла
+применяется выкаткой (он же меняет сумму файла, см. «Проверено»). Снято
+предписание «новый маршрут → `restart caddy`» из фазы 9 скилла `/day-cycle`
+(`.agents/skills/day-cycle/SKILL.md`; `.claude/skills/day-cycle` — симлинк) и
+из блока почты в `operations.md`, где после этой правки оно стало ложным.
+Сама команда `restart caddy` в закрытом списке разрешённых не тронута: она
+остаётся законной для других поводов.
+
 Документы: `guides/new-day.md` (ручного шага первого деплоя больше нет),
-`operations.md` (атлас, день 9), `snapshot.md`, пункт закрыт в `backlog.md`.
+`operations.md` (атлас, день 9, почта), `snapshot.md`, пункт закрыт в
+`backlog.md`.
 
 ## Почему так, а не иначе
 
@@ -144,7 +153,8 @@ prune` стоят в нём с самого начала и были бы зап
 
 ## Обновлено
 
-- [x] `.github/workflows/deploy.yml`
+- [x] `.github/workflows/deploy.yml`, `deploy/Caddyfile` (комментарий)
+- [x] `.agents/skills/day-cycle/SKILL.md` — фаза 9, предписание снято
 - [x] `agent_docs/guides/new-day.md`, `agent_docs/operations.md`
 - [x] `agent_docs/snapshot.md`, `backlog.md`, `backlog-closed.md`
 - [ ] Тесты (не применимо: шаг выкатки, доказывается гейтом `caddyfile` и живой выкаткой)
