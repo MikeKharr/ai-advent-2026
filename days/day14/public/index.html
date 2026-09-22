@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Никакого <base>: redir /day13 -> /day13/ на Caddy делает относительные
+<!-- Никакого <base>: redir /day14 -> /day14/ на Caddy делает относительные
      пути верными и в проде, и при локальном запуске (см. README дня 1). -->
-<title>Агент с машиной состояний — AI Advent 2026, день 13</title>
+<title>Агент с инвариантами профиля — AI Advent 2026, день 14</title>
 <style>
   /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
      Значения вне этих шкал — дефект, а не нюанс. */
@@ -17,7 +17,8 @@
     --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
     --line:#e6e6e3; --line-ctl:#8f8f8a;
     --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
-    /* Жёлтого в корпусе нет. Токен заведён ЛОКАЛЬНО в дне 13 по решению
+    /* Жёлтого в корпусе нет. Токен заведён ЛОКАЛЬНО в дне 13 (унаследован
+       днём 14) по решению
        владельца 2026-09-22: «только в дне 13, каждый день наследует лишь от
        предыдущего». Корпус и прошлые дни не трогаются. Контраст пересчитан по
        правилу корпуса: 5.87:1 к --surface и 5.67:1 к --bg — тот же диапазон,
@@ -390,6 +391,17 @@
 
   /* Пометка проверки под ответом: ответ получен и оплачен, а «отклонено» —
      мнение модели. Красный сказал бы «ответ неверен», чего проверка не знает. */
+  /* Карточка формулировщика под логом: тот же вес, что у реплики агента,
+     но она не сообщение — у неё нет ни времени, ни автора. */
+  .draft {
+    margin:var(--s-3) 0 0; padding:var(--s-3); border:1px solid var(--line);
+    border-radius:var(--r-sm); background:var(--surface);
+    font-size:var(--t-sm); line-height:1.5;
+  }
+  .draft-h { margin:0 0 var(--s-2); font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+  .draft-var { margin:var(--s-2) 0 0; display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-2); }
+  .draft-var .draft-text { flex:1 1 20ch; }
+
   .noted { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg); max-width:68ch; }
   .noted .mark { color:var(--fg-mut); font-weight:600; margin-right:var(--s-1); }
 
@@ -695,7 +707,7 @@
 
 <!-- Экран выбора профиля: показывается при каждом заходе, до всего остального. -->
 <section class="gate" id="gate" aria-labelledby="gate-h">
-  <h1 id="gate-h">Агент с машиной состояний</h1>
+  <h1 id="gate-h">Агент с инвариантами профиля</h1>
   <p class="sub">Агент ведёт ответ по шести этапам и помнит вас между диалогами: правила
   работы с вами, факты по темам и текущий разговор.</p>
 
@@ -744,7 +756,7 @@
     </button>
 
     <div class="head-row">
-      <h1>Агент с машиной состояний</h1>
+      <h1>Агент с инвариантами профиля</h1>
       <span class="pid" id="pid"><span class="pid-label">Профиль:</span><span
         class="pid-name" id="pid-name"></span><button class="clear" id="switch-profile"
         type="button">сменить профиль</button></span>
@@ -785,6 +797,12 @@
         помня правила и факты этого профиля.</li>
       </ol>
 
+      <!-- Карточка формулировщика: живёт только на странице и в переписку не
+           пишется — модели незачем видеть переговоры о формулировке
+           (ADR 2026-09-22-0827, п. 3). Стоит под логом, а не в нём: его
+           перерисовывает каждый ответ сервера. -->
+      <div class="draft" id="draft-box" hidden></div>
+
       <!-- Полоса запуска: шесть этапов, пульс, счётчик, круг проверки и кнопка
            паузы. Стоит между логом и строкой значений и существует всегда. -->
       <div class="runbar" id="runbar" data-state="loading">
@@ -804,6 +822,13 @@
       <form id="f" class="composer">
         <p class="edit-bar" id="edit-bar" hidden><span id="edit-what"></span><button
           class="msg-btn" id="edit-cancel" type="button">отменить</button></p>
+        <fieldset class="field mode-set" style="border:0;padding:0;margin:0 0 var(--s-2);">
+          <legend class="vh">Что отправить</legend>
+          <div class="strategies" id="mode">
+            <label class="strategy"><input type="radio" name="mode" value="message" checked><span>Сообщение</span></label>
+            <label class="strategy"><input type="radio" name="mode" value="invariant"><span>Инвариант</span></label>
+          </div>
+        </fieldset>
         <textarea id="p-prompt" rows="3" maxlength="2000" aria-label="Сообщение агенту" required
           placeholder="Например: помоги разобрать, что мы знаем по этой теме"></textarea>
         <div class="submit-row">
@@ -1046,6 +1071,14 @@
     <button class="dlg-btn" id="mem-retry" type="button">Повторить</button>
   </div>
   <div class="mem-body" id="mem-body">
+    <section class="mem-sec" aria-labelledby="mem-i-h">
+      <h2 class="mem-h" id="mem-i-h">Инварианты профиля</h2>
+      <p class="mem-own">Профиль. Правила, которые завели вы сами: формулировку принимает
+      формулировщик, а проверка на каждом ответе называет номера нарушенных — ответ
+      с нарушением не отдаётся. Номер удалённого инварианта не переиспользуется: он уже
+      назван в вердиктах и в журнале. 30 дней, как и остальная память профиля.</p>
+      <div id="mem-invariants"></div>
+    </section>
     <section class="mem-sec" aria-labelledby="mem-p-h">
       <h2 class="mem-h" id="mem-p-h">Память персонализации</h2>
       <p class="mem-own">Профиль. Настройки заданы вами; правила записывает Haiku 4.5 из
@@ -1095,6 +1128,19 @@
   <ol class="br-list" id="dlg-stages" aria-labelledby="dlg-stages-h"></ol>
   <p class="mem-empty" id="dlg-stages-none" hidden>Этапы недоступны: не удалось получить
   состояние агента.</p>
+
+  <!-- Промпт формулировщика стоит рядом с промптами этапов, но отдельно: его
+       вызов идёт своим каналом, мимо запуска (ADR 2026-09-22-0827, п. 3). -->
+  <div class="dlg-actions">
+    <h2 id="dlg-draft-h">Формулировщик инвариантов</h2>
+  </div>
+  <p class="gate-note" id="dlg-draft-note">Отдельный вызов Haiku 4.5 мимо шести этапов:
+  он оценивает черновик правила и предлагает формулировки. Сохранить можно только то,
+  что он признал годным.</p>
+  <textarea class="prompt" id="dlg-draft" rows="6" readonly
+    aria-label="Промпт формулировщика инвариантов" hidden></textarea>
+  <p class="mem-empty" id="dlg-draft-none" hidden>Промпт формулировщика недоступен: не
+  удалось получить состояние агента.</p>
 </dialog>
 
 <!-- Седьмое окно: просмотр журнала этапов. Те же строки, что в CSV. -->
@@ -1266,6 +1312,12 @@
     { id: 'deliver', title: 'Выдача', prompt: null, rule: null },
   ];
   let stages = FALLBACK_STAGES;
+  /**
+   * Потолки инвариантов профиля и промпт формулировщика — от сервиса
+   * (ADR 2026-09-22-0827). Пока состояние не пришло, страница знает только
+   * умолчание записи: десять и двести знаков.
+   */
+  let invariantLimits = { cap: 10, chars: 200, draftChars: 1000, prefix: 'П', prompt: null };
   /** Предел кругов: границы приходят с сервера, умолчание — два. */
   let roundLimits = { min: 1, max: 3, default: 2 };
 
@@ -1420,7 +1472,7 @@
     layout.hidden = true;
     gate.hidden = false;
     profile = null;
-    document.title = 'Агент с машиной состояний — AI Advent 2026, день 13';
+    document.title = 'Агент с инвариантами профиля — AI Advent 2026, день 14';
     loadProfiles({ focus: true }).then(() => {
       announce(`Экран выбора профиля. Профилей: ${profileList.length}.`);
     });
@@ -1679,6 +1731,7 @@
       ttlDays = d.profile?.ttlDays ?? null;
       // Этапы и их промпты — из describe(): в событиях текстов нет.
       if (Array.isArray(d.stages) && d.stages.length > 0) stages = d.stages;
+      if (d.invariants) invariantLimits = { ...invariantLimits, ...d.invariants };
       if (limits.reviewRounds) roundLimits = { ...roundLimits, ...limits.reviewRounds };
       // Потолок этапа (ADR, п. 5) — единственный токенный потолок дня 13, и он
       // настоящий: поля контекста и порога сжатия поднимаются до него, а не
@@ -1694,6 +1747,7 @@
       renderModels();
       renderReviewModels();
       renderStages();
+      renderDraftPrompt();
       renderRunbar();
       // Сроки — с сервера: обещание на странице должно меняться вместе с
       // настройкой, а не расходиться с ней молча.
@@ -2147,6 +2201,14 @@
     });
   };
 
+  /** Промпт формулировщика: приходит от сервиса вместе с потолками. */
+  const renderDraftPrompt = () => {
+    const text = invariantLimits?.prompt ?? null;
+    $('dlg-draft').hidden = !text;
+    $('dlg-draft-none').hidden = Boolean(text);
+    if (text) $('dlg-draft').value = text;
+  };
+
   /* ---------- монитор агента ---------- */
 
   const MAX_RUNS = 5;
@@ -2285,7 +2347,7 @@
       const csv = document.createElement('a');
       csv.className = 'clear';
       csv.href = `api/runs/${encodeURIComponent(run.id)}/log.csv`;
-      csv.download = `day13-stages-${csvStamp(run.startedAt)}.csv`;
+      csv.download = `day14-stages-${csvStamp(run.startedAt)}.csv`;
       csv.textContent = 'CSV';
       foot.append(view, ' ', csv);
       d.append(foot);
@@ -2880,6 +2942,209 @@
     return [did.join(' · '), numbers.join(' · ')];
   };
 
+  /* ---------- формулировщик инвариантов (ADR 2026-09-22-0827, п. 3) ---------- */
+
+  const draftBox = $('draft-box');
+  /** Предел ходов на один черновик держит страница; деньги держит лимитер. */
+  const DRAFT_ROUNDS = 3;
+  let draftRound = 0;
+  let draftBusy = false;
+
+  const modeOf = () =>
+    document.querySelector('input[name="mode"]:checked')?.value ?? 'message';
+
+  /** Что написано на кнопке отправки и в поле: режим виден до нажатия. */
+  const applyMode = () => {
+    const invariant = modeOf() === 'invariant';
+    button.textContent = invariant ? 'Проверить формулировку' : 'Спросить';
+    input.setAttribute(
+      'aria-label',
+      invariant ? 'Черновик инварианта профиля' : 'Сообщение агенту',
+    );
+    input.placeholder = invariant
+      ? 'Например: отвечай не длиннее пяти предложений'
+      : 'Например: помоги разобрать, что мы знаем по этой теме';
+    $('composer-hint').textContent = invariant
+      ? 'Ctrl + Enter — отправить. Формулировку принимает формулировщик: ход стоит вызова модели и слота дневного лимита.'
+      : 'Ctrl + Enter — отправить.';
+  };
+
+  const closeDraft = () => {
+    draftRound = 0;
+    draftBox.hidden = true;
+    draftBox.replaceChildren();
+  };
+
+  const draftLine = (cls, text) => {
+    const p = document.createElement('p');
+    p.className = cls;
+    p.textContent = text;
+    return p;
+  };
+
+  /** Принять формулировку: билет доказывает сервису, что её признала модель. */
+  const acceptInvariant = async (text, ticket, btn) => {
+    if (draftBusy) return;
+    draftBusy = true;
+    btn.disabled = true;
+    try {
+      const response = await fetch('./api/invariants', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, ticket }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        draftBox.append(warnLine(data.error ?? `ответ ${response.status}`));
+        btn.disabled = false;
+        return;
+      }
+      closeDraft();
+      input.value = '';
+      announce(`Инвариант П${data.invariant.num} заведён.`);
+      await syncProfile();
+    } catch {
+      draftBox.append(warnLine('Инвариант не заведён: сервер не ответил'));
+      btn.disabled = false;
+    } finally {
+      draftBusy = false;
+    }
+  };
+
+  /**
+   * Ответ формулировщика на экране. При «годен» кнопка «Принять» стоит у
+   * самого черновика — билет есть только у него и у вариантов; на третьем
+   * ходу поле правки закрывается, и остаются кнопки вариантов и «Отменить».
+   */
+  const renderDraft = (draft) => {
+    draftBox.replaceChildren();
+    draftBox.hidden = false;
+
+    const last = draftRound >= DRAFT_ROUNDS;
+    draftBox.append(
+      draftLine(
+        'draft-h',
+        `Формулировщик · ход ${draftRound} из ${DRAFT_ROUNDS}` +
+          (draft.verdict === 'ok' ? ' · формулировка годится' : ' · нужно доработать'),
+      ),
+    );
+    if (draft.remark) draftBox.append(draftLine('ask-note', draft.remark));
+    if (draft.conflict !== null && draft.conflict !== undefined) {
+      draftBox.append(
+        warnLine(
+          `Противоречит П${draft.conflict} — удалите П${draft.conflict} в окне памяти профиля ` +
+            'или измените смысл черновика.',
+        ),
+      );
+    }
+
+    const offer = (text, ticket, label) => {
+      const row = document.createElement('p');
+      row.className = 'draft-var';
+      const span = document.createElement('span');
+      span.className = 'draft-text';
+      // Текст пришёл от модели: вставляется только текстом.
+      span.textContent = text;
+      const take = document.createElement('button');
+      take.type = 'button';
+      take.className = 'dlg-btn';
+      take.textContent = label;
+      take.onclick = () => acceptInvariant(text, ticket, take);
+      row.append(span, take);
+      if (!last) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'msg-btn';
+        edit.textContent = 'править';
+        edit.onclick = () => {
+          input.value = text;
+          input.focus();
+        };
+        row.append(edit);
+      }
+      draftBox.append(row);
+    };
+
+    if (draft.verdict === 'ok' && draft.ticket) offer(draft.text, draft.ticket, 'Принять');
+    for (const variant of draft.variants ?? []) offer(variant.text, variant.ticket, 'Принять');
+
+    if (last) {
+      draftBox.append(
+        draftLine(
+          'ask-note',
+          'Третий ход — дальше правка не отправляется: примите вариант или начните черновик заново.',
+        ),
+      );
+    }
+    const row = document.createElement('p');
+    row.className = 'ask-row';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'dlg-btn is-second';
+    cancel.textContent = 'Отменить';
+    cancel.onclick = () => {
+      closeDraft();
+      announce('Черновик отменён.');
+    };
+    row.append(cancel);
+    draftBox.append(row);
+  };
+
+  /** Ход формулировщика. Один вызов модели, состояния на сервере нет. */
+  const submitDraft = async (text) => {
+    if (draftRound >= DRAFT_ROUNDS) {
+      draftBox.append(warnLine('Ходов на этот черновик больше нет — примите вариант или отмените'));
+      return;
+    }
+    button.disabled = true;
+    try {
+      const response = await fetch('./api/invariants/draft', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        draftRound += 1;
+        renderDraft(data.draft);
+        return;
+      }
+      draftBox.hidden = false;
+      if (data.code === 'draft_no_variants') {
+        // Дефект инструмента, а не отказ: ход оплачен, и это сказано прямо.
+        draftBox.replaceChildren(
+          draftLine('draft-h', 'Формулировщик не дал варианта'),
+          draftLine(
+            'ask-note',
+            'Это сбой инструмента, а не отказ вам: ход оплачен и слот дневного лимита занят. ' +
+              'Отправьте тот же текст ещё раз.',
+          ),
+        );
+        const row = document.createElement('p');
+        row.className = 'ask-row';
+        const again = document.createElement('button');
+        again.type = 'button';
+        again.className = 'dlg-btn';
+        again.textContent = 'Отправить ещё раз';
+        again.onclick = () => submitDraft(text);
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'dlg-btn is-second';
+        cancel.textContent = 'Отменить';
+        cancel.onclick = () => closeDraft();
+        row.append(again, cancel);
+        draftBox.append(row);
+        return;
+      }
+      draftBox.replaceChildren(warnLine(data.error ?? `ответ ${response.status}`));
+    } catch {
+      draftBox.hidden = false;
+      draftBox.replaceChildren(warnLine('Формулировщик не ответил: сервер недоступен'));
+    } finally {
+      button.disabled = false;
+    }
+  };
+
   /**
    * Карточка вопроса о новой теме — ряд действий под обычной репликой агента
    * (ADR, п. 6.2). Три состояния: ждёт ответа, открыта, продолжено. Знак «✓»
@@ -3003,6 +3268,36 @@
   };
 
   /**
+   * Пометка инвариантов под ответом (ADR 2026-09-22-0827, п. 4, этап 6).
+   * «Соблюдены» — мнение проверяющей модели, а не доказательство, и это
+   * сказано словами. Профиль без инвариантов пометки не несёт вовсе.
+   */
+  const addInvariants = (li, meta) => {
+    const inv = meta.invariants;
+    if (!inv || !Array.isArray(inv.checked) || inv.checked.length === 0) return;
+    const names = inv.checked.map((n) => `П${n}`).join(', ');
+    li.append(
+      draftLine(
+        'sum',
+        inv.status === 'held'
+          ? `Инварианты ${names}: проверяющая модель нарушений не нашла — это её мнение, не доказательство.`
+          : `Инварианты ${names}: не проверены — проверка не назвала их в вердикте.`,
+      ),
+    );
+  };
+
+  /** Текст реплики «Ответ не отдан»: тот же, что агент записал в переписку. */
+  const withheldText = (w) => {
+    const named = (w.invariants ?? [])
+      .map((num, i) => `П${num}` + (w.texts?.[i] ? ` «${w.texts[i]}»` : ''))
+      .join(', ');
+    return (
+      `Ответ не отдан: нарушает инвариант профиля ${named} (круг ${w.round} из ${w.rounds}).` +
+      (w.remarks ? `\nЗамечания проверки: ${w.remarks}` : '')
+    );
+  };
+
+  /**
    * Идентификатор запуска у ответа агента. Сводка его НЕ несёт — он лежит на
    * самом сообщении (ADR 2026-09-09-0854: «переписка отдаёт `runId` у каждого
    * сообщения»). Пока страница читала только сводку, строка журнала не
@@ -3048,7 +3343,7 @@
     csv.href = `api/runs/${encodeURIComponent(runId)}/log.csv`;
     // Имя со временем запуска: иначе в папке загрузок окажутся log.csv,
     // log(1).csv и далее.
-    csv.download = `day13-stages-${csvStamp(meta.at)}.csv`;
+    csv.download = `day14-stages-${csvStamp(meta.at)}.csv`;
     csv.textContent = 'CSV';
     row.append(csv);
     li.append(row);
@@ -3095,6 +3390,20 @@
       return li;
     }
 
+    // Ответ не отдан: реплика агента с номером, текстом и кругом. Карточки
+    // ответа под ней нет — ответа не существует (ADR, п. 5).
+    if (meta.withheld) {
+      li.append(
+        draftLine(
+          'ask-note',
+          'Это не сбой: проверка назвала нарушенный инвариант профиля на последнем круге, ' +
+            'и оплаченный ответ не показывается нигде. Поправьте инвариант в окне памяти ' +
+            'профиля или спросите иначе.',
+        ),
+      );
+      return li;
+    }
+
     if (meta.truncated) li.append(warnLine('Ответ обрезан лимитом токенов'));
     if (meta.summarizeFailed)
       li.append(warnLine('Историю сжать не удалось — модель видела только хвост переписки'));
@@ -3107,6 +3416,7 @@
       );
 
     addVerdict(li, meta);
+    addInvariants(li, meta);
 
     for (const line of summaryLines(meta)) {
       if (!line) continue;
@@ -3578,6 +3888,80 @@
     }
   };
 
+  /**
+   * Инварианты профиля в окне памяти (ADR 2026-09-22-0827, п. 7). Единственная
+   * память профиля, которую человек и заводит, и удаляет сам, — поэтому у
+   * каждой строки есть «удалить», а плашки «записано моделью» нет.
+   */
+  const renderInvariantMemory = () => {
+    const box = $('mem-invariants');
+    box.replaceChildren();
+    const list = profile?.invariants ?? [];
+
+    const count = document.createElement('p');
+    count.className = 'mem-count';
+    const num = document.createElement('span');
+    num.textContent = `${list.length} из ${invariantLimits.cap}`;
+    count.append(num);
+    box.append(count);
+
+    if (list.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'mem-empty';
+      p.textContent =
+        'Пока ни одного. Переключите поле ввода на «Инвариант» и напишите правило — ' +
+        'формулировщик поможет довести формулировку до годной.';
+      box.append(p);
+      return;
+    }
+
+    const ul = document.createElement('ul');
+    ul.className = 'mem-list';
+    for (const item of list) {
+      const li = document.createElement('li');
+      li.className = 'mem-item';
+      const text = document.createElement('span');
+      text.className = 'mem-text';
+      text.textContent = `П${item.num} — ${item.text}`;
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = `заведён вами ${fmtDate(item.createdAt)}`;
+      const drop = document.createElement('button');
+      drop.type = 'button';
+      drop.className = 'msg-btn';
+      drop.textContent = 'удалить';
+      drop.setAttribute('aria-label', `Удалить инвариант П${item.num}`);
+      drop.onclick = async () => {
+        drop.disabled = true;
+        try {
+          const response = await fetch(`./api/invariants/${item.num}`, { method: 'DELETE' });
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            box.append(warnLine(data.error ?? `ответ ${response.status}`));
+            drop.disabled = false;
+            return;
+          }
+          announce(`Инвариант П${item.num} удалён. Номер П${item.num} больше не выдаётся.`);
+          await syncProfile();
+          renderInvariantMemory();
+        } catch {
+          box.append(warnLine('Инвариант не удалён: сервер не ответил'));
+          drop.disabled = false;
+        }
+      };
+      when.append(' · ', drop);
+      li.append(text, when);
+      ul.append(li);
+    }
+    box.append(ul);
+    if (list.length >= invariantLimits.cap)
+      box.append(
+        warnLine(
+          `${invariantLimits.cap} из ${invariantLimits.cap} — новые инварианты не заводятся, пока не удалить лишние`,
+        ),
+      );
+  };
+
   const renderPersonalization = () => {
     const box = $('mem-person');
     box.replaceChildren();
@@ -3745,6 +4129,7 @@
     say($('mem-error'), '');
     $('mem-retry-row').hidden = true;
     $('mem-body').setAttribute('aria-busy', 'true');
+    memSkeleton($('mem-invariants'));
     memSkeleton($('mem-person'));
     memSkeleton($('mem-facts'));
     memSkeleton($('mem-work'));
@@ -3777,7 +4162,9 @@
       say($('mem-error'), 'Память профиля не загрузилась');
       $('mem-retry-row').hidden = false;
       $('mem-person').replaceChildren(warnLine('Настройки и правила не загрузились'));
+      $('mem-invariants').replaceChildren(warnLine('Инварианты профиля не загрузились'));
     } else {
+      renderInvariantMemory();
       renderPersonalization();
     }
     renderTopicMemory(facts, failedFacts);
@@ -3786,8 +4173,12 @@
   $('mem-retry').onclick = () => {
     $('mem-body').setAttribute('aria-busy', 'true');
     memSkeleton($('mem-person'));
+    memSkeleton($('mem-invariants'));
     refreshMemory();
   };
+
+  $('mode').addEventListener('change', applyMode);
+  applyMode();
 
   $('mem-btn').onclick = openMemory;
   $('mem-close').onclick = () => memDlg.close();
@@ -3942,7 +4333,7 @@
       : 'Журнал этапов';
     const csv = $('jl-csv');
     csv.href = `api/runs/${encodeURIComponent(runId)}/log.csv`;
-    csv.download = `day13-stages-${csvStamp(at)}.csv`;
+    csv.download = `day14-stages-${csvStamp(at)}.csv`;
     jlDlg.showModal();
     jlDlg.focus();
     loadJournal();
@@ -4136,6 +4527,10 @@
         const r = end.result;
         // Идентификатор запуска — у ответа: без него ссылок на журнал не будет.
         const summary = { runId, ...(r.summary ?? {}) };
+        // Ответ не отдан: показывается объяснение, которое агент записал в
+        // переписку, а сам ответ не существует нигде (решение владельца 2).
+        if (r.withheld) answered(withheldText(r.withheld), { withheld: r.withheld, runId });
+        else
         answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
         if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
       } else if (end.error) {
@@ -4181,6 +4576,10 @@
       input.reportValidity();
       return;
     }
+
+    // Режим «Инвариант» идёт своим каналом: один вызов формулировщика вместо
+    // шести этапов, и в переписку он не пишется (ADR 2026-09-22-0827, п. 3).
+    if (modeOf() === 'invariant') return submitDraft(message);
 
     const mode = strategy();
     const params = {

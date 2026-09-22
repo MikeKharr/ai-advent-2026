@@ -25,6 +25,7 @@ services:
       - day10
       - day11
       - day13
+      - day14
     # Как у всех соседних служб. Отдельно значимо с тех пор, как у блока
     # mail.zpq.ai включён access-лог: он идёт в stderr, а драйвер по
     # умолчанию пишет без потолка и без ротации — на том же одном VPS,
@@ -245,6 +246,27 @@ services:
       # моделям у дня по-прежнему нет. Журнал этапов CSV пишет сервис
       # агентов на свой том agents_data, не день.
       - path: ./day13.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  day14:
+    image: ghcr.io/mikekharr/advent-day14:${DAY14_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # Тот же ключ сервиса агентов, что у дней 6–13; свои cookie профиля и
+      # диалога. Память инвариантов профиля, ворота формулировщика и проверку
+      # на нарушение ведёт агент invariant-agent (ADR 2026-09-22-0827):
+      # ключей к моделям у дня по-прежнему нет. Билеты формулировщика живут
+      # в памяти процесса сервиса агентов — секрета для них не заводится.
+      - path: ./day14.env
         required: false
     environment:
       - NODE_ENV=production

@@ -1311,6 +1311,10 @@ async function handleState(req, res) {
       // окно настроек не должно обещать ни больше, ни меньше того, что примет
       // сервис. Он же — верхняя граница полей контекста и порога сжатия.
       stageContextTokens: agent.limits?.stageContextTokens ?? null,
+      // Потолки инвариантов профиля и промпт формулировщика (ADR
+      // 2026-09-22-0827, п. 3): страница не хранит эти числа и этот текст
+      // сама — источник один, и разойтись с сервисом им нельзя.
+      invariants: agent.invariants ?? null,
       session: { ttlHours: healthRes.json?.sessionTtlHours ?? env.SESSION_TTL_HOURS },
       // Срок памяти профиля у агента в `/healthz` не объявлен, поэтому число
       // берётся из настройки дня: она обязана совпадать с PROFILE_TTL_DAYS

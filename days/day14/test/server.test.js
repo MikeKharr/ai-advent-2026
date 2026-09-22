@@ -715,7 +715,7 @@ test('страница отдаётся и ключа в ней нет', async (
   assert.equal(r.status, 200)
   const html = await r.text()
   assert.equal(html.includes('agent-key'), false)
-  assert.match(html, /день 13/)
+  assert.match(html, /день 14/)
 })
 
 test('/healthz отвечает и не раскрывает ключ', async () => {
