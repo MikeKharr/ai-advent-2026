@@ -31,13 +31,32 @@ const plural = (n, one, few, many) => {
 }
 const DRAFT_ROUNDS = 3
 
-/** Правило из живого исходника страницы, а не его копия в тесте. */
-const loadRule = (name) => {
+/**
+ * Значение объявления со страницы, а не его копия в тесте: копия доказывала бы
+ * число, а не источник — подмена `roundLimits.max` на готовую тройку прошла бы
+ * тест молча (находка reviewer к PR #204).
+ */
+const valueSource = (name) => {
+  const found = page.match(new RegExp(`\\n\\s*(?:let|const) ${name} = (.*?);\\n`))
+  assert.ok(found, `на странице нет объявления ${name} — его переименовали или убрали`)
+  return found[1]
+}
+const loadValue = (name) => eval(`(${valueSource(name)})`)
+const roundLimits = loadValue('roundLimits')
+
+/**
+ * Исходный текст правила со страницы. Отдельно от `loadRule`, потому что
+ * правилу, которому нужны помощники самого теста (объявления, длительность,
+ * состояние полосы), `eval` нужен в области теста, а не здесь.
+ */
+const ruleSource = (name) => {
   const found = page.match(new RegExp(`\\n\\s*const ${name} = [\\s\\S]*?\\n  \\};\\n`))
   assert.ok(found, `на странице нет правила ${name} — его переименовали или убрали`)
-  const body = found[0].trim().replace(new RegExp(`^const ${name} = `), '').replace(/;$/, '')
-  return eval(`(${body})`)
+  return found[0].trim().replace(new RegExp(`^const ${name} = `), '').replace(/;$/, '')
 }
+
+/** Правило из живого исходника страницы, а не его копия в тесте. */
+const loadRule = (name) => eval(`(${ruleSource(name)})`)
 
 test('у поля ввода есть переключатель «Сообщение | Инвариант»', () => {
   assert.match(page, /name="mode" value="message" checked/)
@@ -110,6 +129,73 @@ test('реплика «Ответ не отдан» несёт номер, те�
   )
   // Карточки ответа под такой репликой нет: ответа не существует.
   assert.match(page, /if \(meta\.withheld\) \{/)
+})
+
+test('под «не отдан» названы три выхода, и каждый говорит, где он делается', () => {
+  const withheldExits = loadRule('withheldExits')
+  const made = withheldExits({ invariants: [4], round: 1, rounds: 1 })
+  assert.equal(made.length, 4, 'объяснение и три выхода')
+  assert.ok(
+    made.every((p) => p.cls === 'ask-note'),
+    'выходы идут тем же абзацем, что и прочие пояснения лога',
+  )
+  const lines = made.map((p) => p.text)
+  // 1. Спросить иначе — и почему просто повторить нельзя.
+  assert.match(lines[0], /тот же исход и ту же трату/)
+  assert.match(lines[1], /Спросить иначе/)
+  assert.match(lines[1], /П4/)
+  // 2. Инвариант — с местом, где он правится.
+  assert.match(lines[2], /Смягчить или удалить П4/)
+  assert.match(lines[2], /«Память профиля»/)
+  // 3. Предел кругов — с местом и с тем, что это даст. Названо то, что видно:
+  // имя шестерёнки живёт только в `aria-label`, видимого текста на экране нет.
+  assert.match(lines[3], /Поднять предел кругов — сейчас 1/)
+  // Слово нейтральное: в значке восемь прямых лучей, зубцов шестерёнки нет
+  // (замер design-review к PR #204).
+  assert.match(lines[3], /значок настроек у левого края/)
+  assert.equal(/шестерёнк/i.test(lines[3]), false)
+  assert.match(lines[3], /окно «Настройки агента»/)
+  assert.match(lines[3], /замечания проверки и попробует ещё раз/)
+  // Потолок кругов берётся у сервиса, а не вписан числом.
+  assert.match(page, /rounds < roundLimits\.max/)
+
+  // И карточка собирается именно этим правилом.
+  assert.match(page, /li\.append\(\.\.\.withheldExits\(meta\.withheld\)\);/)
+})
+
+test('на потолке кругов выходов названо два — столько же, сколько дано', () => {
+  const withheldExits = loadRule('withheldExits')
+  const atCap = withheldExits({ invariants: [2], round: 3, rounds: roundLimits.max })
+  const lines = atCap.map((p) => p.text)
+  assert.match(lines[3], new RegExp(`Предел кругов уже ${roundLimits.max} — выше не поднять`))
+  // Счёт подчинён тому же условию, что и третий выход: обещать три и дать два
+  // нельзя (находка design-review к PR #204).
+  assert.match(lines[0], /выходов два/)
+  assert.equal(/выходов три/.test(lines[0]), false)
+  // А пока предел есть куда поднимать — выходов действительно три.
+  const room = withheldExits({ invariants: [2], round: 1, rounds: roundLimits.min })
+  assert.match(room[0].text, /выходов три/)
+})
+
+test('выходы зовут инвариант инвариантом, а не правилом', () => {
+  // В окне «Память профиля» это два разных раздела, и различие несущее:
+  // правило из разговора можно не соблюсти — ответ отдадут с пометкой,
+  // инвариант нельзя (находка design-review к PR #204).
+  const withheldExits = loadRule('withheldExits')
+  for (const w of [
+    { invariants: [1], round: 1, rounds: 1 },
+    { invariants: [1, 2], round: 3, rounds: 3 },
+  ]) {
+    for (const p of withheldExits(w)) {
+      assert.equal(/правил/i.test(p.text), false, `слово «правило» в выходе: ${p.text}`)
+    }
+  }
+  // Номеров бывает несколько, и число согласовано с ними.
+  const one = withheldExits({ invariants: [1], round: 1, rounds: 1 }).map((p) => p.text)
+  assert.match(one[0], /назвала нарушенный инвариант профиля П1 на последнем круге/)
+  const two = withheldExits({ invariants: [1, 2], round: 1, rounds: 1 }).map((p) => p.text)
+  assert.match(two[0], /назвала нарушенные инварианты профиля П1, П2 на последнем круге/)
+  assert.match(two[1], /не упирался в П1, П2/)
 })
 
 test('пометка инвариантов не выдаёт мнение модели за доказательство', () => {
@@ -208,6 +294,160 @@ test('пропущенный этап остаётся прочерком, а н
   assert.match(page, /const wasSkipped = runState\.skipped\.includes\(n\);/)
   assert.match(page, /d\.outcome === 'skipped'/)
   assert.match(page, /skipped: \[\],/)
+})
+
+test('неотданный запуск не объявляется как «готово»', () => {
+  // Объявление и полоса — единственное, что слышит программа чтения: выходы
+  // лежат в логе, а он живой областью не является (находка design-review
+  // к PR #204). Правило исполняется, а не ищется регуляркой: подменены только
+  // помощники страницы.
+  const said = []
+  const announce = (text) => said.push(text)
+  const fmtDuration = () => '15,1 с'
+  const STATUS_WORD = { queued: 'в очереди', running: 'идёт' }
+  const setStatus = eval(`(${ruleSource('setStatus')})`)
+
+  setStatus({ name: 'Спросил', status: 'running', warnings: 0, withheld: true }, 'succeeded')
+  assert.equal(said.length, 1)
+  assert.match(said[0], /ответ не отдан за 15,1 с/)
+  assert.equal(/готово/i.test(said[0]), false, '«готово» при неотданном ответе — враньё')
+  assert.match(said[0], /объяснение и выходы в переписке/)
+
+  // Обычный удачный запуск объявляется по-прежнему.
+  setStatus({ name: 'Спросил', status: 'running', warnings: 0 }, 'succeeded')
+  assert.match(said[1], /готово за 15,1 с/)
+  void announce, void fmtDuration, void STATUS_WORD
+})
+
+test('полоса при неотданном ответе говорит «Ответ не отдан», а не «Готово»', () => {
+  const stages = Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, title: `Этап ${i}` }))
+  const fmtDuration = () => '15,1 с'
+  let elapsedMs = 0
+  const PAUSE_TTL_MIN = 60
+  let runState = { view: 'done', done: 6, durationMs: 15100, withheld: true }
+  const runStateText = eval(`(${ruleSource('runStateText')})`)
+  assert.equal(runStateText(), 'Ответ не отдан · 6 этапов · 15,1 с')
+  runState = { view: 'done', done: 6, durationMs: 15100, withheld: false }
+  assert.equal(runStateText(), 'Готово · 6 этапов · 15,1 с')
+  void elapsedMs, void PAUSE_TTL_MIN, void stages
+})
+
+test('«Выдача» при неотданном ответе несёт «×», а не галочку', () => {
+  const stageMark = loadRule('stageMark')
+  const stages = Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, title: `Этап ${i}` }))
+  let runState = { withheld: true, skipped: [5], mark: null }
+  const isWithheldStage = eval(`(${valueSource('isWithheldStage')})`)
+  const stageSign = eval(`(${ruleSource('stageSign')})`)
+  // Знак и приглушение идут от одного условия: разойдясь, они дали бы
+  // крестик без приглушения (нит reviewer к PR #204).
+  assert.match(page, /const withheldHere = isWithheldStage\(n\);/)
+  void isWithheldStage
+  // Шестая — «Выдача»: этап состоялся, но отдавать было нечего.
+  assert.equal(stageSign(6, 'past'), '×')
+  // Пятая — пополнение памяти, пропущенное целиком: прочерк, как и был.
+  assert.equal(stageSign(5, 'past'), '–')
+  assert.equal(stageSign(1, 'past'), '✓')
+  // Отданный ответ ничего не меняет.
+  runState = { withheld: false, skipped: [], mark: null }
+  assert.equal(stageSign(6, 'past'), '✓')
+  void stageMark, void stages
+})
+
+test('признак «ответ не отдан» доведён от результата до полосы', () => {
+  // Правила выше проверяются с подставленным состоянием, поэтому проводка
+  // нуждается в своём стороже: без неё правила живы, а экран возвращается к
+  // «Готово», и ничто не краснеет (находка reviewer к PR #204).
+
+  // 1. Результат запуска ставит признак — рядом с показом объяснения.
+  assert.match(
+    page,
+    /if \(r\.withheld\) \{[\s\S]{0,400}?run\.withheld = true;[\s\S]{0,200}?answered\(withheldText\(r\.withheld\)/,
+    'результат с `withheld` обязан ставить признак запуска',
+  )
+  // 2. Завершение переносит его в полосу.
+  assert.match(page, /withheld: run\.withheld === true,/)
+  assert.match(
+    page,
+    /const finishRun = \(run, view = 'done'\) => \{[\s\S]*?withheld: run\.withheld === true,/,
+    'перенос живёт именно в завершении запуска',
+  )
+  // 3. Старт своего запуска начинает с чистой «Выдачи».
+  assert.match(
+    page,
+    /setRunView\('running', \{[\s\S]{0,400}?withheld: false,/,
+    'новый запуск обязан начинаться без признака',
+  )
+})
+
+test('объявление на настоящем порядке событий: событие выдачи опережает результат', () => {
+  // Событие `done` со статусом «успешно» приходит РАНЬШЕ результата потока, и
+  // объявление делается на нём. Прежде фраза про неотданный ответ не
+  // произносилась никогда: второй вызов `setStatus` выходил на
+  // `run.status === status` (находка design-review к PR #204). Поэтому тест
+  // прогоняет цепочку `addEvent` → `setStatus`, а не подставляет состояние.
+  const said = []
+  const announce = (text) => said.push(text)
+  const fmtDuration = () => '15,1 с'
+  const shout = () => {}
+  const renderMonitor = () => {}
+  const trackRun = () => true
+  const STATUS_WORD = { queued: 'в очереди', running: 'выполняется', succeeded: 'готово' }
+  const setStatus = eval(`(${ruleSource('setStatus')})`)
+  const addEvent = eval(`(${ruleSource('addEvent')})`)
+
+  const run = {
+    name: 'Спросил', status: 'running', warnings: 0, events: [],
+    durationMs: null, startedAt: new Date().toISOString(),
+  }
+  // Ровно то событие, что шлёт служба: заголовок и номера в данных.
+  addEvent(run, {
+    stage: 'done',
+    title: 'Ответ не отдан: нарушен инвариант профиля',
+    status: 'succeeded',
+    durationMs: 15100,
+    data: { state: 'deliver', rounds: 1, withheld: [1] },
+  })
+  assert.equal(said.length, 1, 'объявление делается на событии выдачи')
+  assert.match(said[0], /ответ не отдан за 15,1 с/)
+  assert.equal(/готово/i.test(said[0]), false, '«готово» при неотданном ответе — враньё')
+
+  // И карточка монитора берёт слово оттуда же.
+  const plural = () => ''
+  const runHeader = eval(`(${ruleSource('runHeader')})`)
+  assert.match(runHeader(run), /^ответ не отдан · 15,1 с/)
+  assert.equal(/готово/i.test(runHeader(run)), false)
+
+  // Обычный удачный запуск ничего не теряет.
+  const ok = {
+    name: 'Спросил', status: 'running', warnings: 0, events: [],
+    durationMs: null, startedAt: new Date().toISOString(),
+  }
+  addEvent(ok, {
+    stage: 'done', title: 'Отдал ответ', status: 'succeeded', durationMs: 15100,
+    data: { state: 'deliver', rounds: 1 },
+  })
+  assert.match(said[1], /готово за 15,1 с/)
+  assert.match(runHeader(ok), /^готово · 15,1 с/)
+  void announce, void fmtDuration, void shout, void renderMonitor, void trackRun
+  void STATUS_WORD, void plural
+})
+
+test('признак «ответ не отдан» не залипает на следующем виде полосы', () => {
+  // Подхват чужого запуска патча с ключом не несёт, и признак оставался:
+  // «Выдача» идущего запуска с первой секунды несла крестик (находка reviewer
+  // к PR #204). Умолчание гасит его, а завершение по-прежнему ставит.
+  let runState = { view: 'done', withheld: true, index: 0 }
+  const startPauseTimer = () => {}
+  const stopPauseTimer = () => {}
+  const renderRunbar = () => {}
+  const setRunView = eval(`(${ruleSource('setRunView')})`)
+
+  setRunView('running', { index: 1 })
+  assert.equal(runState.withheld, false, 'подхват чужого запуска гасит признак')
+
+  setRunView('done', { withheld: true })
+  assert.equal(runState.withheld, true, 'завершение по-прежнему ставит признак')
+  void startPauseTimer, void stopPauseTimer, void renderRunbar
 })
 
 test('при «годен» без вариантов фраза не договаривает «или 0 вариантов»', () => {
