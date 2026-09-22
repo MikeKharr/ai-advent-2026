@@ -44,18 +44,27 @@ jobs:
             base="$(git rev-parse -q --verify HEAD^ || git rev-list --max-parents=0 HEAD)"
           fi
           # Разбор тот же, что в .github/scripts/deploy-units.sh: тесты на PR
-          # выбирают те же единицы, что выкатка для тех же путей. Без -z git
-          # берёт в кавычки путь с `"`, `\`, табом или не-ASCII, и такой путь
-          # не находит свою единицу.
+          # выбирают те же единицы, что выкатка для тех же путей, — кроме
+          # одного исключения ниже: правка в days/day13 поднимает здесь ещё и
+          # agents. Исключение только для тестов: службу день не меняет, и
+          # лишняя выкатка прод-сервиса — вред, поэтому в deploy-units.sh его
+          # нет. Без -z git берёт в кавычки путь с `"`, `\`, табом или
+          # не-ASCII, и такой путь не находит свою единицу.
           changed=$(set -o pipefail; git diff -z --name-only "$base" HEAD | tr '\n\0' '?\n') || { echo "::error::git diff ${base}..HEAD упал — затронутые единицы не определены"; exit 1; }
           # Единица сборки — день (days/dayN), сервис (router, agents) или атлас.
           # Граф атласа строится из входов atlas/atlas.config.json: правка любого
           # из них пересобирает атлас, и только его. Версия инструмента живёт в
           # atlas-tool.sh — её смена тоже пересобирает витрину.
           atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
+          # Исключение из совпадения с deploy-units.sh: день 13 работает через
+          # службу агентов, и их связку проверяет agents/test/day13-reconnect.test.js
+          # — тест из единицы agents. Без этой строки правка только в
+          # days/day13 его не прогоняет, и дефект на стыке дня и службы
+          # проходит молча (находка reviewer к PR #192). Имя `agents` здесь
+          # готовое, из пути ничего не выводится.
           # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
           # идёт только [a-z0-9]+ с каталогом единицы в дереве.
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day13/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
