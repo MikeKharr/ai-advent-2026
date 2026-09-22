@@ -21,6 +21,16 @@ const page = readFileSync(join(here, '..', 'public', 'index.html'), 'utf8')
  */
 const draftLine = (cls, text) => ({ cls, text })
 
+/** Склонение со страницы: правило ниже строит фразу через него. */
+const plural = (n, one, few, many) => {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return one
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few
+  return many
+}
+const DRAFT_ROUNDS = 3
+
 /** Правило из живого исходника страницы, а не его копия в тесте. */
 const loadRule = (name) => {
   const found = page.match(new RegExp(`\\n\\s*const ${name} = [\\s\\S]*?\\n  \\};\\n`))
@@ -151,7 +161,9 @@ test('ответ формулировщика доходит до програм
   // Четыре исхода обязаны прозвучать: оценка, замечание, число вариантов —
   // в область состояния; конфликт и 502 — в область тревоги.
   assert.match(page, /announce\(said\);/)
-  assert.match(page, /Формулировщик, ход \$\{draftRound\} из \$\{DRAFT_ROUNDS\}/)
+  // Фразу строит отдельное правило — его содержание проверено ниже; здесь
+  // важно, что отрисовка действительно его зовёт и объявляет результат.
+  assert.match(page, /const said = draftSaid\(draft, draftRound, last\);/)
   assert.match(page, /shout\(\s*`Черновик противоречит инварианту П\$\{draft\.conflict\}/)
   assert.match(page, /shout\(\s*`Формулировщик не дал варианта/)
   assert.match(page, /announce\('Отправил формулировщику/)
@@ -196,4 +208,45 @@ test('пропущенный этап остаётся прочерком, а н
   assert.match(page, /const wasSkipped = runState\.skipped\.includes\(n\);/)
   assert.match(page, /d\.outcome === 'skipped'/)
   assert.match(page, /skipped: \[\],/)
+})
+
+test('при «годен» без вариантов фраза не договаривает «или 0 вариантов»', () => {
+  // Ноль вариантов — штатный исход «годен»: предлагать нечего. Ветку привнесла
+  // сама правка про объявления, и гейт облика снял её дословно дважды.
+  const draftSaid = loadRule('draftSaid')
+
+  assert.equal(
+    draftSaid({ verdict: 'ok', variants: [] }, 1, false),
+    'Формулировщик, ход 1 из 3. Формулировка годится — можно принять её.',
+  )
+  assert.equal(
+    /0 вариант/.test(draftSaid({ verdict: 'ok', variants: [] }, 1, false)),
+    false,
+    'числа ноль в фразе быть не должно вовсе',
+  )
+
+  // «Годен» с вариантами фразу не теряет: их предлагают наравне с черновиком.
+  assert.equal(
+    draftSaid({ verdict: 'ok', variants: [{ text: 'а' }, { text: 'б' }] }, 2, false),
+    'Формулировщик, ход 2 из 3. Формулировка годится, можно принять её или 2 варианта.',
+  )
+})
+
+test('при «доработать» звучат замечание, число вариантов и предел ходов', () => {
+  const draftSaid = loadRule('draftSaid')
+
+  assert.equal(
+    draftSaid({ verdict: 'revise', remark: 'слишком общо', variants: [{ text: 'а' }] }, 1, false),
+    'Формулировщик, ход 1 из 3. Нужно доработать. слишком общо. 1 вариант на выбор.',
+  )
+  assert.equal(
+    draftSaid({ verdict: 'revise', remark: '', variants: [{ text: 'а' }, { text: 'б' }, { text: 'в' }] }, 3, true),
+    'Формулировщик, ход 3 из 3. Нужно доработать. 3 варианта на выбор.' +
+      ' Ходов больше нет: примите вариант или отмените черновик.',
+  )
+  // Тупик по конфликту: вариантов нет, и об этом сказано прямо.
+  assert.equal(
+    draftSaid({ verdict: 'revise', remark: 'противоречит П2', variants: [] }, 1, false),
+    'Формулировщик, ход 1 из 3. Нужно доработать. противоречит П2. Вариантов нет.',
+  )
 })
