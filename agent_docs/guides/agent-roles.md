@@ -103,12 +103,27 @@ reviewer + compliance + design-review ──► гейт мержа (парал�
 5. Класс C сверяет не автор, а оркестратор (или другой экземпляр), по
    списку файлов PR: только документы и лендинг; ни кода, ни `deploy/`, ни
    workflow, ни `.claude/`, ни защищённых путей.
-6. Защищённые пути — всегда класс A, гейт `compliance` обязателен:
-   `agent_docs/invariants.md`, `.claude/**`, `AGENTS.md`,
-   `.agents/skills/day-cycle/`, `agent_docs/guides/agent-roles.md`,
-   `.github/**`, `deploy/**`, `router/config/**`. PR с ними сливает агент
-   по этой же норме (ADR `2026-09-11-1743`); изменение самих норм гейтов и
-   процесса несёт ADR, которое принимает владелец.
+6. Защищённые пути — всегда класс A, гейт `compliance` обязателен. Каждый
+   затронутый ими файл диффа называется в описании PR — путём или образцом
+   ниже; расхождение краснеет в `docs-guard`. Список читает и человек, и шаг
+   гейта (`.github/scripts/protected-paths.mjs`), поэтому маркеры вокруг него
+   не убирать.
+
+   <!-- protected-paths:begin -->
+   - `agent_docs/invariants.md`
+   - `.claude/**`
+   - `AGENTS.md`
+   - `CLAUDE.md`
+   - `.agents/skills/day-cycle/`
+   - `agent_docs/guides/agent-roles.md`
+   - `.github/**`
+   - `deploy/**`
+   - `router/config/**`
+   <!-- protected-paths:end -->
+
+   PR с ними сливает агент по этой же норме (ADR `2026-09-11-1743`);
+   изменение самих норм гейтов и процесса несёт ADR, которое принимает
+   владелец.
 7. После выкатки — проверка живого адреса и уведомление владельцу. Красный
    `healthz` — следующий PR не сливать, откат решает владелец.
 

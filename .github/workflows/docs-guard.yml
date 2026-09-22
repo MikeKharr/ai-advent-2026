@@ -1,12 +1,22 @@
 name: docs-guard
 
 on:
+  # edited — чтобы исправленное описание PR само перекрашивало гейт защищённых
+  # путей: иначе зелёного пришлось бы добиваться пустым коммитом.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
 permissions:
   contents: read
+
+# Правка описания PR перезапускает гейт целиком, включая клон инструмента
+# атласа по сети. Быстрая череда правок не должна множить параллельные прогоны:
+# считается последний. На push в main группа своя и ничего не отменяется.
+concurrency:
+  group: docs-guard-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   guard:
@@ -14,8 +24,9 @@ jobs:
     steps:
       # В job исполняется внешний код (инструмент атласа) — токену на диске
       # делать нечего.
+      # fetch-depth: 0 — шагу защищённых путей нужен базовый коммит PR для diff.
       - uses: actions/checkout@v4
-        with: { persist-credentials: false }
+        with: { persist-credentials: false, fetch-depth: 0 }
 
       - name: Лимит длины файлов состояния (300 строк)
         run: |
@@ -34,6 +45,30 @@ jobs:
 
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
+
+      # Описание PR есть только в событии pull_request; на push в main сверять
+      # не с чем. Тело описания — недоверенный ввод: уходит через env, не через
+      # ${{ }} внутри run.
+      #
+      # Список защищённых путей — из БАЗОВОГО коммита (объединяется с головным
+      # в скрипте): иначе PR, вычеркнувший строку из списка, судился бы уже по
+      # укороченному и снял бы защиту молча.
+      #
+      # --no-renames: по умолчанию git печатает только назначение переименования,
+      # и вынос файла ИЗ защищённого каталога страж бы не потребовал назвать.
+      # -z — потому что без него git берёт в кавычки путь с `"`, `\`, табом или
+      # не-ASCII. Сбой git — своё сообщение и красный шаг, а не пустой список.
+      - name: Защищённые пути названы в описании PR
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          ROLES_BASE_FILE: ${{ runner.temp }}/agent-roles-base.md
+        run: |
+          roles=agent_docs/guides/agent-roles.md
+          git show "$BASE:$roles" > "$ROLES_BASE_FILE" || { echo "::error::git show ${BASE}:${roles} упал — базовый список защищённых путей не прочитан"; exit 1; }
+          git diff -z --no-renames --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed" || { echo "::error::git diff ${BASE}..HEAD упал — затронутые пути не определены"; exit 1; }
+          node .github/scripts/protected-paths.mjs < "$RUNNER_TEMP/changed"
 
       # Порог «не в будущем» — время запуска шага, UTC (ADR 2026-09-11-1046).
       - name: Имена атомарных документов (формат, время, не в будущем)
