@@ -1,4 +1,10 @@
 {
+	# Правка этого файла применяется самой выкаткой: `deploy.yml` сверяет его
+	# контрольную сумму с последней удачно применённой и при расхождении делает
+	# `caddy validate` и `caddy reload` в контейнере входа, до проверки живого
+	# адреса. Ручной `docker compose restart caddy` для нового маршрута больше
+	# не нужен (`agent_docs/development-history/2026-09-22-1244-deploy-caddy-reload.md`).
+
 	# Адрес для уведомлений Let's Encrypt об истечении сертификата.
 	email admin@zpq.ai
 }
