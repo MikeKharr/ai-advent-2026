@@ -111,7 +111,13 @@ export function createService({
   sessions = null,
   // Журнал этапов дня 13. Без него ручка CSV отвечает 404: журнала нет.
   stageLog = null,
+  /**
+   * Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 3). Без него три
+   * ручки инвариантов отвечают 404: памяти инвариантов у сервиса нет.
+   */
+  invariants = null,
   env,
+  fetchImpl = fetch,
   log = console.error,
 }) {
   /**
@@ -645,7 +651,9 @@ export function createService({
         return send(res, 200, { ok: true, profile: created.profile })
       }
 
-      const match = path.match(/^\/v1\/profiles\/([^/]+)(\/settings|\/sessions|\/topics\/\d+)?$/)
+      const match = path.match(
+        /^\/v1\/profiles\/([^/]+)(\/settings|\/sessions|\/topics\/\d+|\/invariants|\/invariants\/draft|\/invariants\/\d{1,9})?$/,
+      )
       if (!match) return send(res, 404, { ok: false, code: 'not_found' })
       const [, profileId, tail] = match
       if (!isProfileId(profileId)) return send(res, 404, { ok: false, code: 'unknown_profile' })
@@ -718,6 +726,65 @@ export function createService({
             })),
           },
         })
+      }
+
+      // --- Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 3) ---------
+      // Ход формулировщика — единственная ручка сервиса, которая зовёт
+      // модель сама, мимо запуска: слот лимитера под неё занимает день,
+      // до этого вызова (I-4).
+      if (tail?.startsWith('/invariants')) {
+        if (!invariants) return send(res, 404, { ok: false, code: 'not_found' })
+
+        if (tail === '/invariants/draft' && req.method === 'POST') {
+          const parsed = await jsonBody(req, res)
+          if (!parsed.ok) return
+          const result = await invariants.draft({
+            profileId,
+            text: parsed.body?.text,
+            env,
+            fetchImpl,
+          })
+          if (!result.ok) {
+            return send(res, result.status, {
+              ok: false,
+              code: result.code,
+              message: result.message,
+              // Оплачен ли ход: страница обязана сказать это честно, когда
+              // формулировщик не дал варианта.
+              paid: result.paid === true,
+            })
+          }
+          return send(res, 200, { ok: true, draft: result.draft })
+        }
+
+        if (tail === '/invariants' && req.method === 'POST') {
+          const parsed = await jsonBody(req, res)
+          if (!parsed.ok) return
+          const result = invariants.accept({
+            profileId,
+            text: parsed.body?.text,
+            ticket: parsed.body?.ticket,
+          })
+          if (!result.ok) {
+            return send(res, result.status, {
+              ok: false,
+              code: result.code,
+              message: result.message,
+            })
+          }
+          return send(res, 200, { ok: true, invariant: result.invariant })
+        }
+
+        const numMatch = tail.match(/^\/invariants\/(\d{1,9})$/)
+        if (numMatch && req.method === 'DELETE') {
+          const num = Number(numMatch[1])
+          if (!sessions.deleteInvariant({ profileId, num })) {
+            return send(res, 404, { ok: false, code: 'unknown_invariant' })
+          }
+          return send(res, 200, { ok: true, num })
+        }
+
+        return send(res, 404, { ok: false, code: 'not_found' })
       }
 
       if (tail === '/sessions' && req.method === 'GET') {

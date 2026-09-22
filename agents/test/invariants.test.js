@@ -5,12 +5,14 @@
 
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import {
   checkTicket,
+  createInvariants,
   createTicketKey,
   invariantsBlock,
   parseDraft,
@@ -19,7 +21,10 @@ import {
   VERIFY_INVARIANTS_PROMPT,
 } from '../src/invariants.js'
 import { VERIFY_PROMPT } from '../src/llm.js'
+import { createRuns } from '../src/runs.js'
+import { createService } from '../src/service.js'
 import { createSessions } from '../src/sessions.js'
+import { ENV } from './fixtures.js'
 
 const HOUR = 3600_000
 const DAY = 24 * HOUR
@@ -232,4 +237,210 @@ test('блок инвариантов обезвреживает метку и �
 test('промпт проверки дня 13 не меняется промптом дня 14', () => {
   assert.notEqual(VERIFY_INVARIANTS_PROMPT, VERIFY_PROMPT)
   assert.match(VERIFY_INVARIANTS_PROMPT, /инварианты: соблюдены \| нарушены/)
+})
+
+// --- Ручки сервиса: ворота, приём, удаление (критерии 3, 3а, 11) ---------
+
+/** Поддельный роутер формулировщика: один ответ на ход, вызовы считаются. */
+function draftRouter(replies) {
+  const calls = []
+  let no = 0
+  const impl = async (url, options = {}) => {
+    calls.push(JSON.parse(options.body))
+    const text = replies[Math.min(no++, replies.length - 1)]
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        text,
+        provider: { id: 'anthropic-haiku', model: 'claude-haiku-4-5' },
+        truncated: false,
+        usage: { inputTokens: 300, outputTokens: 60 },
+      }),
+    }
+  }
+  impl.calls = calls
+  return impl
+}
+
+async function serveInvariants(replies = ['оценка: годен\nзамечание:']) {
+  const { sessions } = open()
+  const fetchImpl = draftRouter(replies)
+  const invariants = createInvariants({ sessions })
+  const server = createServer(
+    createService({
+      agents: new Map(),
+      archive: { state: () => ({}) },
+      runs: createRuns(),
+      sessions,
+      invariants,
+      env: ENV,
+      fetchImpl,
+      log: () => {},
+    }),
+  )
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  server.unref()
+  const base = `http://127.0.0.1:${server.address().port}`
+  const auth = { authorization: 'Bearer agent-key' }
+  const call = (method, path, body) =>
+    fetch(`${base}${path}`, {
+      method,
+      headers: body === undefined ? auth : { ...auth, 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  const profileId = newProfile(sessions)
+  return {
+    sessions,
+    invariants,
+    fetchImpl,
+    profileId,
+    draft: (text, id = profileId) => call('POST', `/v1/profiles/${id}/invariants/draft`, { text }),
+    accept: (body, id = profileId) => call('POST', `/v1/profiles/${id}/invariants`, body),
+    del: (num, id = profileId) => call('DELETE', `/v1/profiles/${id}/invariants/${num}`),
+    get: (id = profileId) => call('GET', `/v1/profiles/${id}`),
+    close: () => new Promise((resolve) => server.close(resolve)),
+  }
+}
+
+test('черновик «годен»: билет у самого текста, один вызов Haiku на ход', async () => {
+  const s = await serveInvariants(['оценка: годен\nзамечание:'])
+  const response = await s.draft('Отвечай не длиннее пяти предложений')
+  const body = await response.json()
+
+  assert.equal(response.status, 200)
+  assert.equal(body.draft.verdict, 'ok')
+  assert.equal(body.draft.text, 'Отвечай не длиннее пяти предложений')
+  assert.match(body.draft.ticket, /^[0-9a-f]{64}$/)
+  assert.equal(s.fetchImpl.calls.length, 1, 'один вызов на ход')
+  assert.equal(s.fetchImpl.calls[0].provider, 'anthropic-haiku')
+  assert.equal(s.fetchImpl.calls[0].taskClass, 'summarize')
+
+  const accepted = await s.accept({ text: body.draft.text, ticket: body.draft.ticket })
+  assert.equal(accepted.status, 200)
+  assert.deepEqual((await accepted.json()).invariant.num, 1)
+  assert.equal(s.fetchImpl.calls.length, 1, 'приём модель не зовёт')
+  await s.close()
+})
+
+test('черновик «доработать»: билет у каждого варианта, у черновика — нет', async () => {
+  const s = await serveInvariants([
+    'оценка: доработать\nзамечание: слишком общо\nвариант: Отвечай не длиннее пяти предложений\nвариант: Отвечай одним абзацем',
+  ])
+  const body = await (await s.draft('пиши покороче')).json()
+
+  assert.equal(body.draft.verdict, 'revise')
+  assert.equal(body.draft.text, null, 'у черновика билета нет')
+  assert.equal(body.draft.ticket, null)
+  assert.equal(body.draft.variants.length, 2)
+  for (const variant of body.draft.variants) assert.match(variant.ticket, /^[0-9a-f]{64}$/)
+
+  const accepted = await s.accept(body.draft.variants[1])
+  assert.equal(accepted.status, 200)
+  assert.equal((await accepted.json()).invariant.text, 'Отвечай одним абзацем')
+  await s.close()
+})
+
+test('POST без билета и с чужим билетом — 400 no_ticket', async () => {
+  const s = await serveInvariants()
+  const text = 'Отвечай не длиннее пяти предложений'
+
+  const bare = await s.accept({ text })
+  assert.equal(bare.status, 400)
+  assert.equal((await bare.json()).code, 'no_ticket')
+
+  // Билет того же текста, но другого профиля.
+  const other = newProfile(s.sessions)
+  const foreign = await s.accept({ text, ticket: s.invariants.ticket(other, text) })
+  assert.equal(foreign.status, 400)
+  assert.equal((await foreign.json()).code, 'no_ticket')
+
+  // Билет другого текста этого профиля.
+  const wrong = await s.accept({ text, ticket: s.invariants.ticket(s.profileId, 'другое') })
+  assert.equal(wrong.status, 400)
+  assert.equal((await wrong.json()).code, 'no_ticket')
+
+  // Билеты, созданные другим экземпляром сервиса (перезапуск), мертвы.
+  const restarted = createInvariants({ sessions: s.sessions })
+  const stale = await s.accept({ text, ticket: restarted.ticket(s.profileId, text) })
+  assert.equal(stale.status, 400)
+  assert.equal((await stale.json()).code, 'no_ticket')
+  await s.close()
+})
+
+test('«доработать» без варианта и без конфликта — 502 draft_no_variants, ход оплачен', async () => {
+  const s = await serveInvariants(['оценка: доработать\nзамечание: не годится'])
+  const response = await s.draft('пиши покороче')
+  const body = await response.json()
+
+  assert.equal(response.status, 502)
+  assert.equal(body.code, 'draft_no_variants')
+  assert.equal(body.paid, true)
+  assert.equal(s.fetchImpl.calls.length, 1, 'повторного вызова нет')
+  await s.close()
+})
+
+test('конфликт без варианта доходит до страницы, а не превращается в отказ', async () => {
+  const s = await serveInvariants(['оценка: доработать\nзамечание: противоречит\nконфликт: П1'])
+  s.sessions.addInvariant({ profileId: s.profileId, text: 'Всегда приводи ссылки' })
+  const response = await s.draft('никогда не приводи ссылки')
+  const body = await response.json()
+
+  assert.equal(response.status, 200)
+  assert.equal(body.draft.conflict, 1)
+  assert.deepEqual(body.draft.variants, [])
+  await s.close()
+})
+
+test('черновик длиннее 1000 знаков и пустой — 400 без вызова', async () => {
+  const s = await serveInvariants()
+  const long = await s.draft('я'.repeat(1001))
+  assert.equal(long.status, 400)
+  const empty = await s.draft('   ')
+  assert.equal(empty.status, 400)
+  assert.equal(s.fetchImpl.calls.length, 0, 'вызова не было')
+  await s.close()
+})
+
+test('одиннадцатый — 409 invariants_full, 201 знак — 400, дубль — 400', async () => {
+  const s = await serveInvariants()
+  const put = async (text) => {
+    const ticket = s.invariants.ticket(s.profileId, text)
+    return s.accept({ text, ticket })
+  }
+  for (let i = 1; i <= 10; i++) assert.equal((await put(`Правило ${i}`)).status, 200)
+
+  const full = await put('Одиннадцатое')
+  assert.equal(full.status, 409)
+  assert.equal((await full.json()).code, 'invariants_full')
+  // Ход черновика при полном профиле тоже не оплачивается.
+  assert.equal((await s.draft('ещё одно')).status, 409)
+  assert.equal(s.fetchImpl.calls.length, 0)
+
+  const long = await put('я'.repeat(201))
+  assert.equal(long.status, 400)
+  assert.equal((await long.json()).code, 'bad_input')
+
+  await s.del(1)
+  const dupe = await put('пРаВиЛо 2')
+  assert.equal(dupe.status, 400)
+  assert.equal((await dupe.json()).code, 'duplicate')
+  await s.close()
+})
+
+test('удаление по номеру: 200 и дыра в нумерации, чужой номер — 404', async () => {
+  const s = await serveInvariants()
+  for (const text of ['Первое', 'Второе']) {
+    await s.accept({ text, ticket: s.invariants.ticket(s.profileId, text) })
+  }
+  assert.equal((await s.del(1)).status, 200)
+  assert.equal((await s.del(1)).status, 404)
+
+  const profile = (await (await s.get()).json()).profile
+  assert.deepEqual(
+    profile.invariants.map((i) => i.num),
+    [2],
+  )
+  await s.close()
 })

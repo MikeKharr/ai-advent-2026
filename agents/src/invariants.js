@@ -15,6 +15,7 @@
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import {
+  askSummary,
   cleanLine,
   estimateTokens,
   safeTag,
@@ -313,7 +314,9 @@ export function checkTicket(key, profileId, text, ticket) {
  * Объект опции `invariants` у `createStagedAgent`. У агента дня 13 опция
  * равна `null`, и каждое место вызова в `staged.js` — `if (inv)`.
  */
-export function createInvariants({ sessions }) {
+export function createInvariants({ sessions, ask = askSummary }) {
+  // Ключ билетов — один на сервис, случайный, только в памяти процесса.
+  const ticketKey = createTicketKey()
   return {
     cap: PROFILE_INVARIANT_CAP,
     chars: INVARIANT_CHARS,
@@ -336,6 +339,127 @@ export function createInvariants({ sessions }) {
     render: renderInvariant,
     numbers: renderNumbers,
     tokens: (list) => (list.length === 0 ? 0 : estimateTokens(invariantsBlock(list))),
+    normalize: normalizeInvariant,
+
+    /** Билет на формулировку, которую формулировщик признал годной. */
+    ticket: (profileId, text) => signTicket(ticketKey, profileId, text),
+
+    /**
+     * Приём формулировки. Без годного билета — отказ: ворота держит сервис,
+     * а не страница (решение владельца 1). Вызова модели здесь нет.
+     */
+    accept({ profileId, text: raw, ticket }) {
+      const text = normalizeInvariant(raw)
+      if (text === '' || text.length > INVARIANT_CHARS) {
+        return {
+          ok: false,
+          status: 400,
+          code: 'bad_input',
+          message: `Инвариант — от 1 до ${INVARIANT_CHARS} знаков`,
+        }
+      }
+      if (!checkTicket(ticketKey, profileId, text, ticket)) {
+        return {
+          ok: false,
+          status: 400,
+          code: 'no_ticket',
+          message:
+            'Эту формулировку не признал формулировщик. Отправьте её на проверку заново — ' +
+            'принять можно только годную.',
+        }
+      }
+      const saved = sessions.addInvariant({ profileId, text })
+      if (saved.ok) return { ok: true, invariant: saved.invariant }
+      if (saved.code === 'invariants_full') {
+        return {
+          ok: false,
+          status: 409,
+          code: 'invariants_full',
+          message: `Инвариантов не больше ${PROFILE_INVARIANT_CAP}: удалите лишние`,
+        }
+      }
+      if (saved.code === 'duplicate') {
+        return { ok: false, status: 400, code: 'duplicate', message: 'Такой инвариант уже есть' }
+      }
+      return { ok: false, status: 404, code: 'unknown_profile', message: 'Профиль не найден' }
+    },
+
+    /**
+     * Ход формулировщика: один вызов Haiku, состояния на сервере нет.
+     * Отказы до вызова — длина черновика и полный профиль: платить за ход,
+     * итог которого некуда положить, незачем.
+     */
+    async draft({ profileId, text: raw, env, fetchImpl = fetch }) {
+      const text = normalizeInvariant(raw)
+      if (text === '') {
+        return { ok: false, status: 400, code: 'bad_input', message: 'Напишите черновик правила' }
+      }
+      if (text.length > INVARIANT_DRAFT_CHARS) {
+        return {
+          ok: false,
+          status: 400,
+          code: 'bad_input',
+          message: `Черновик — не длиннее ${INVARIANT_DRAFT_CHARS} знаков`,
+        }
+      }
+      const existing = this.snapshot(profileId)
+      if (existing.length >= PROFILE_INVARIANT_CAP) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'invariants_full',
+          message: `Инвариантов не больше ${PROFILE_INVARIANT_CAP}: удалите лишние`,
+        }
+      }
+
+      const request = buildDraftRequest({ invariants: existing, text })
+      let answer
+      try {
+        answer = await ask(request, env, { fetchImpl })
+      } catch (error) {
+        return {
+          ok: false,
+          status: 502,
+          code: error.code ?? 'router_error',
+          message: error.message,
+          paid: false,
+        }
+      }
+      const parsed = parseDraft(answer.text, existing)
+      const variants = parsed.variants.map((variant) => ({
+        text: variant,
+        ticket: signTicket(ticketKey, profileId, variant),
+      }))
+
+      // Обязательство формата: «доработать» без единого годного варианта и
+      // без названного конфликта — дефект инструмента, а не отказ человеку.
+      // Ход оплачен, и это сказано прямо (п. 3, решение владельца 1).
+      if (parsed.verdict !== 'ok' && variants.length === 0 && parsed.conflict === null) {
+        return {
+          ok: false,
+          status: 502,
+          code: 'draft_no_variants',
+          message: 'Формулировщик не дал варианта — отправьте ещё раз',
+          paid: true,
+          usage: answer.usage,
+        }
+      }
+      return {
+        ok: true,
+        paid: true,
+        usage: answer.usage,
+        provider: answer.provider ?? null,
+        draft: {
+          verdict: parsed.verdict,
+          remark: parsed.remark,
+          conflict: parsed.conflict,
+          // Билет у самого черновика — только при «годен» (критерий 3а).
+          text: parsed.verdict === 'ok' ? text : null,
+          ticket: parsed.verdict === 'ok' ? signTicket(ticketKey, profileId, text) : null,
+          variants,
+        },
+      }
+    },
   }
 }
 

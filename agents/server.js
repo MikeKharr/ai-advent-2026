@@ -105,7 +105,16 @@ if (sessions) {
   }, 10 * 60_000).unref()
 }
 
-const handler = createService({ agents, archive, runs, sessions, stageLog, env, log })
+const handler = createService({
+  agents,
+  archive,
+  runs,
+  sessions,
+  stageLog,
+  invariants,
+  env,
+  log,
+})
 http.createServer(handler).listen(env.PORT, () => {
   log({
     event: 'start',
