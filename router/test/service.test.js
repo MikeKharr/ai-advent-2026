@@ -665,6 +665,63 @@ test('529 overloaded: провайдер отказал до генерации 
   }
 })
 
+test('500 у провайдера: ноль по обоим концам, как и у 529', async () => {
+  // Нижний край границы 5xx. 529 закреплён тестом выше, но граница — это
+  // константа: сдвиг на единицу увёл бы 500–528, включая 502 и 503, в оценку
+  // выхода, то есть ровно в ту протечку, которую правило и закрывает.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: {
+      [LAPTOP]: () => httpJson(500, { error: { message: 'internal server error' } }),
+      [CLOUD]: cloudOk,
+    },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'server_error')
+    assert.equal(lines[0].inputTokens, 0, 'вход до модели не дошёл')
+    assert.equal(lines[0].outputTokens, 0, 'генерации не было — оценки нет')
+  } finally {
+    await s.close()
+  }
+})
+
+test('ошибка без кода состояния: ответа не было — оценки выхода нет', async () => {
+  // Разделительная черта между «ответ пришёл, но не разобрался» и броском до
+  // отправки: первое несёт код состояния, второе — нет. Если `bad_response`
+  // начнёт глотать бесстатусные броски, запрос, не покинувший процесс,
+  // получит полную оценку выхода.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: { [LAPTOP]: () => new Error('адаптер упал до отправки'), [CLOUD]: cloudOk },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'error')
+    assert.equal(lines[0].outputTokens, 0, 'в сеть ничего не ушло — генерации не было')
+  } finally {
+    await s.close()
+  }
+})
+
 test('перегрузка у обоих провайдеров: фантомных токенов в книге нет', async () => {
   // Окно перегрузки: перебор на 5xx не прерывается, и до правки каждая такая
   // попытка приносила полную оценку выхода — две за запрос.
