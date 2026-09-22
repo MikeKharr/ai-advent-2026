@@ -1232,22 +1232,38 @@ export function createStagedAgent({
           // Ворота паузы — перед каждым этапом, включая повторный вход после
           // обрыва вызова (ADR, п. 3).
           const live = runs.get(run.id)
-          if (live?.paused) {
-            pauses += 1
-            emit({
-              stage: 'paused',
-              title: 'Пауза',
-              detail: `запуск стоит на этапе «${STAGES[index].title}»`,
-              data: {
-                state: STAGES[index].id,
-                index: index + 1,
-                of: STAGES.length,
-                round: ctx.round,
-                interruptedCall: live.interruptedCall,
-              },
-            })
-            const outcome = await runs.waitResume(run.id, pauseTtlMs)
+          // Отмена проверяется до решения ждать: её могли попросить, пока
+          // запуск разматывал прерванный вызов, и ворот тогда ещё не было
+          // (находка гейта, PR #183).
+          if (live?.cancelRequested || live?.paused) {
+            let outcome = 'cancel'
+            if (!live.cancelRequested) {
+              pauses += 1
+              emit({
+                stage: 'paused',
+                title: 'Пауза',
+                detail: `запуск стоит на этапе «${STAGES[index].title}»`,
+                data: {
+                  state: STAGES[index].id,
+                  index: index + 1,
+                  of: STAGES.length,
+                  round: ctx.round,
+                  interruptedCall: live.interruptedCall,
+                },
+              })
+              outcome = await runs.waitResume(run.id, pauseTtlMs)
+            }
             if (outcome !== 'resume') {
+              // Запуск мог быть завершён не этим циклом: тогда ни писать
+              // реплику, ни завершать второй раз нельзя — остаётся снять
+              // замок в `finally` и дописать журнал тем статусом, который у
+              // запуска уже стоит.
+              const current = runs.get(run.id)
+              if (!current || TERMINAL.has(current.status)) {
+                lastCall = null
+                flushLog(current?.status ?? 'cancelled')
+                return
+              }
               const message =
                 outcome === 'expired'
                   ? `Запуск отменён: пауза дольше ${env.PAUSE_TTL_MINUTES} минут`

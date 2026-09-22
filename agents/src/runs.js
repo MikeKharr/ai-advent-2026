@@ -103,6 +103,11 @@ export function createRuns({ now = Date.now, ttlMs = 10 * 60_000 } = {}) {
         paused: false,
         pausedAt: null,
         interruptedCall: false,
+        // Отмена — состояние, а не побудка: между нажатием паузы и воротами
+        // этапа запуск может разматывать прерванный вызов, и ожидающих в
+        // этот момент нет. Побудка тогда никого не будит, а ворота встают на
+        // полный срок паузы (находка гейта, PR #183).
+        cancelRequested: false,
         // Обрыв вызова в полёте ставит сюда исполнитель этапа: пауза рвёт
         // `fetch` к роутеру на месте, а не ждёт границы этапа.
         abort: null,
@@ -178,10 +183,15 @@ export function createRuns({ now = Date.now, ttlMs = 10 * 60_000 } = {}) {
       return { ok: true, run }
     },
 
-    /** Отмена запуска, стоящего на паузе: ворота просыпаются с исходом `cancel`. */
+    /**
+     * Отмена запуска, стоящего на паузе. Намерение записывается в запуск, и
+     * только потом будятся те, кто уже ждёт: пришедшая раньше ворот отмена
+     * иначе терялась бы, а диалог ждал бы её час.
+     */
     cancelPaused(runId) {
       const run = runs.get(runId)
       if (!run || TERMINAL.has(run.status) || !run.paused) return false
+      run.cancelRequested = true
       for (const wake of [...run.waiters]) wake('cancel')
       return true
     },
@@ -194,6 +204,9 @@ export function createRuns({ now = Date.now, ttlMs = 10 * 60_000 } = {}) {
      */
     waitResume(runId, ttlMs) {
       const run = must(runId)
+      // Отмена сильнее паузы и сильнее снятия паузы: её попросили, пока
+      // запуск шёл к воротам, и ждать после неё нечего.
+      if (run.cancelRequested) return Promise.resolve('cancel')
       if (!run.paused) return Promise.resolve('resume')
       return new Promise((resolve) => {
         // Таймер не `unref`: запуск на паузе — незавершённая работа сервиса,
@@ -247,6 +260,10 @@ export function createRuns({ now = Date.now, ttlMs = 10 * 60_000 } = {}) {
       run.finishedAt = now()
       run.paused = false
       run.abort = null
+      // Ожидающих будим, а не выбрасываем: побудка гасит и свой таймер срока
+      // паузы. Брошенный таймер держал бы процесс живым до часа и будил бы
+      // уже отцепленный цикл (находка гейта, PR #183).
+      for (const wake of [...run.waiters]) wake('cancel')
       run.waiters.clear()
       run.result = result
       run.error = error
@@ -291,6 +308,7 @@ export function createRuns({ now = Date.now, ttlMs = 10 * 60_000 } = {}) {
         round: run.round,
         paused: run.paused,
         interruptedCall: run.interruptedCall,
+        cancelRequested: run.cancelRequested,
       }
     },
 

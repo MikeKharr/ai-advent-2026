@@ -19,6 +19,8 @@ import { TERMINAL } from './runs.js'
 import { STAGED_AGENT_ID } from './staged.js'
 
 const MAX_BODY = 64 * 1024
+/** Сколько ждать подтверждения отмены запуска на паузе, прежде чем отвечать. */
+const CANCEL_WAIT_MS = 5_000
 /** Комментарий в поток раз в столько: прокси не должен счесть соединение мёртвым за минуты ожидания модели. */
 const SSE_PING_MS = 15_000
 const RUN_ID = /^[0-9a-f-]{36}$/
@@ -208,24 +210,37 @@ export function createService({
   /**
    * Отмена запуска дня 13, стоящего на паузе в этом диалоге: очистка диалога
    * и удаление профиля — та же отмена, что и просроченная пауза
-   * (ADR 2026-09-21-1747, п. 3). Работающий запуск это не трогает: его держит
-   * замок сессии, и ручки выше отвечают 409.
+   * (ADR 2026-09-21-1747, п. 3). Работающий (не на паузе) запуск отсюда не
+   * отменяется: удаление профиля отвечает на него 409 ниже, а очистка
+   * диалога дням 6–11 разрешена и без этого — ответ такого запуска в
+   * очищенный диалог не попадёт (`onlyIfLive` в хранилище).
    */
   const cancelPausedRun = async (sessionId) => {
     const run = runs.forSession?.(sessionId)
     if (!run?.paused) return
     // Ждём терминального события: замок сессии снимает сам исполнитель, и
     // проверка занятости сразу после отмены увидела бы его ещё занятым.
+    // Ожидание ограничено по времени: ручка посетителя не должна висеть,
+    // сколько бы ни занял чужой цикл (находка гейта, PR #183).
     await new Promise((resolve) => {
-      const off = runs.subscribe(run.id, (message) => {
-        if (message.type !== 'end') return
+      // `off` объявлен до подписки: готовый запуск отдаёт `end` прямо в
+      // `subscribe`, то есть до того, как вернётся отписка.
+      let off = () => {}
+      const timer = setTimeout(() => {
         off()
+        log(`запуск ${run.id}: отмена не подтверждена за ${CANCEL_WAIT_MS} мс`)
         resolve()
-      })
-      if (!runs.cancelPaused(run.id)) {
+      }, CANCEL_WAIT_MS)
+      timer.unref?.()
+      const done = () => {
+        clearTimeout(timer)
         off()
         resolve()
       }
+      off = runs.subscribe(run.id, (message) => {
+        if (message.type === 'end') done()
+      })
+      if (!runs.cancelPaused(run.id)) done()
     })
   }
 

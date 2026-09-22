@@ -430,6 +430,44 @@ test('на настоящем окружении пауза держит зап�
   sessions.close()
 })
 
+test('отмена, пришедшая до ворот, не теряется: ждать после неё нечего', () => {
+  // Находка гейта: между нажатием паузы и воротами этапа ожидающих нет, и
+  // побудка никого не будила — ворота потом вставали на полный срок паузы.
+  const runs = createRuns()
+  const run = runs.create({ agent: { id: 'staged-agent', version: '1.0.0' }, input: {} })
+  runs.emit(run.id, { stage: 'received', title: 'x' })
+  assert.equal(runs.pause(run.id).ok, true)
+  assert.equal(runs.cancelPaused(run.id), true, 'отмена принята, хотя никто ещё не ждёт')
+  assert.equal(runs.get(run.id).cancelRequested, true, 'намерение записано в запуск')
+
+  // Ворота, вошедшие после отмены, не ждут ни миллисекунды — и не час.
+  const outcome = runs.waitResume(run.id, 60 * 60_000)
+  return outcome.then((value) => assert.equal(value, 'cancel'))
+})
+
+test('снятие паузы не отменяет уже запрошенную отмену', async () => {
+  const runs = createRuns()
+  const run = runs.create({ agent: { id: 'staged-agent', version: '1.0.0' }, input: {} })
+  runs.emit(run.id, { stage: 'received', title: 'x' })
+  runs.pause(run.id)
+  runs.cancelPaused(run.id)
+  runs.resume(run.id)
+  assert.equal(await runs.waitResume(run.id, 60 * 60_000), 'cancel')
+})
+
+test('завершение запуска будит ожидающих и гасит таймер срока паузы', async () => {
+  const runs = createRuns()
+  const run = runs.create({ agent: { id: 'staged-agent', version: '1.0.0' }, input: {} })
+  runs.emit(run.id, { stage: 'received', title: 'x' })
+  runs.pause(run.id)
+  const waiting = runs.waitResume(run.id, 60 * 60_000)
+  runs.finish(run.id, {
+    status: 'cancelled',
+    event: { stage: 'done', title: 'снаружи' },
+  })
+  assert.equal(await waiting, 'cancel', 'ожидающий не висит до срока паузы')
+})
+
 // --- Критерий 6: срок паузы ----------------------------------------------
 
 test('пауза дольше срока: запуск отменён, замок снят, реплика записана, end ушёл', async () => {
@@ -804,6 +842,43 @@ test('удаление профиля с запуском на паузе: за�
     assert.equal(parts.runs.snapshot(started.run.id).status, 'cancelled')
     assert.equal(parts.agent.isBusy(parts.sid), false, 'замок снят')
     await started.done
+  } finally {
+    server.close()
+  }
+})
+
+test('очистка диалога при запуске на паузе отвечает сразу и очищает', async () => {
+  // Окно находки гейта: запуск на паузе, но до ворот ещё не дошёл. Здесь он
+  // внутри «Сборки» — ждёт пределов моделей, которые роутер отдаёт не сразу,
+  // — и ожидающих у ворот в этот момент нет.
+  const base0 = router()
+  const fetchImpl = async (url, options) => {
+    if (String(url).includes('/v1/models')) await new Promise((r) => setTimeout(r, 200))
+    return base0(url, options)
+  }
+  const parts = setup({ fetchImpl })
+  const { server, base, auth } = await serve(parts)
+  try {
+    const started = parts.start()
+    await until(() =>
+      parts.runs.snapshot(started.run.id).events.some((e) => e.data?.state === 'assemble'),
+    )
+    parts.runs.pause(started.run.id)
+
+    const answered = await Promise.race([
+      fetch(`${base}/v1/sessions/${parts.sid}?profile=${parts.profile.id}`, {
+        method: 'DELETE',
+        headers: auth,
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('очистка диалога не ответила')), 4000).unref?.(),
+      ),
+    ])
+    assert.equal(answered.status, 200)
+    assert.equal(parts.runs.snapshot(started.run.id).status, 'cancelled')
+    assert.equal(parts.sessions.history(parts.sid).length, 0, 'переписка очищена')
+    assert.equal(parts.agent.isBusy(parts.sid), false, 'замок снят')
+    await finished(started.done)
   } finally {
     server.close()
   }
