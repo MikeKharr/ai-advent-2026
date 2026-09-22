@@ -107,6 +107,12 @@ else
   sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only
 fi
 
+# Общая сеть входа: compose.yml объявляет её external, то есть сам не создаёт.
+# Без неё `docker compose up -d` откажется стартовать с ошибкой про
+# отсутствующую сеть (ADR 2026-09-22-0611). Создаётся один раз, идемпотентно.
+log "Общая сеть edge"
+docker network inspect edge >/dev/null 2>&1 || docker network create edge
+
 log "Файлы окружения"
 sudo -u "$APP_USER" touch "${APP_DIR}/deploy/.env"
 sudo -u "$APP_USER" chmod 600 "${APP_DIR}/deploy/.env"
@@ -126,13 +132,22 @@ cat <<EOF
 
 2. A-запись challenge.zpq.ai → $(curl -s -4 ifconfig.me 2>/dev/null || echo '<IP этого сервера>')
    Дождаться, пока dig +short challenge.zpq.ai отдаёт этот адрес.
-   Caddy выпустит сертификат сам, только когда DNS уже резолвится.
 
-3. Первый запуск:
+3. Вход на сервер — ОТДЕЛЬНЫЙ проект, и он поднимается ПЕРВЫМ.
+   Этот репозиторий больше не публикует 80 и 443 и сертификатов не
+   выпускает: его Caddy внутренний, слушает http на общей сети edge под
+   алиасом advent (ADR 2026-09-22-0611). Порты, TLS и сертификаты всех
+   имён держит приватный MikeKharr/zpq-ai; он же проксирует в advent:80.
+   Поднять его по инструкции того репозитория (~/zpq-ai/deploy) и только
+   потом делать шаг 4 — иначе снаружи не ответит ничего.
+
+4. Первый запуск адвента:
      cd ${APP_DIR}/deploy && docker compose up -d
 
-4. Проверка:
+5. Проверка (через вход zpq-ai, поэтому https):
      curl -I https://challenge.zpq.ai/day1/
+   Если вход ещё не поднят, изнутри сервера:
+     docker compose exec -T caddy wget -qS -O /dev/null http://localhost/day1/healthz
 
 Дальнейшие деплои идут через GitHub Actions при мерже в main.
 ────────────────────────────────────────────────────────

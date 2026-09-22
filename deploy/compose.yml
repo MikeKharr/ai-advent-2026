@@ -1,17 +1,28 @@
 name: advent
 
 services:
+  # Внутренний Caddy: портов наружу нет, TLS нет (http://challenge.zpq.ai).
+  # 80, 443 и сертификаты всех четырёх имён держит вход проекта zpq
+  # (приватный MikeKharr/zpq-ai), он же проксирует сюда весь хост
+  # challenge.zpq.ai — ADR 2026-09-22-0611. Тома caddy_data и caddy_config
+  # здесь больше не объявлены: сертификаты уехали к тому Caddy как внешние
+  # тома advent_caddy_data и advent_caddy_config. Именно поэтому их не
+  # тронет даже `down -v` в этом проекте.
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    expose:
+      - "80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ../site:/srv/site:ro
-      - caddy_data:/data      # сертификаты, переживают пересоздание контейнера
-      - caddy_config:/config
+    networks:
+      # default — сеть проекта: по ней Caddy ходит в контейнеры дней.
+      default:
+      # edge — общая с проектом zpq: под алиасом advent сюда приходит вход.
+      edge:
+        aliases:
+          - advent
     depends_on:
       - day1
       - day2
@@ -26,10 +37,9 @@ services:
       - day11
       - day13
       - day14
-    # Как у всех соседних служб. Отдельно значимо с тех пор, как у блока
-    # mail.zpq.ai включён access-лог: он идёт в stderr, а драйвер по
-    # умолчанию пишет без потолка и без ротации — на том же одном VPS,
-    # где переполнение диска останавливает учёт расхода (router/src/ledger.js).
+    # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
+    # без ротации — на том же одном VPS, где переполнение диска
+    # останавливает учёт расхода (router/src/ledger.js).
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -331,57 +341,19 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  # Почтовый сервер домена zpq.ai. Решение «почта на домене, путь В» —
-  # ADR 2026-09-18-1052 в отдельном (приватном) репозитории zpq-ai:
-  # https://github.com/MikeKharr/zpq-ai/pull/2 — в этом репозитории его нет.
-  # Как почта появилась здесь — PR #163:
-  # https://github.com/MikeKharr/ai-advent-2026/pull/163
-  # Наружу не публикуется НИЧЕГО: почтовые порты (25 — приём, 465 —
-  # submission, 993 — IMAP) пока закрыты, поэтому посторонний не может
-  # прислать контейнеру ни байта. Откроет их отдельный PR — по решению
-  # владельца и когда дойдёт до почтового клиента.
-  # Администрирование доступно только Caddy по внутренней сети compose.
-  # Caddy ходит на https://mail:443: на 8080 соединение не принимается
-  # (502), причина не установлена — разбор и ссылки в Caddyfile, блок
-  # mail.zpq.ai.
-  # Секретов в репозитории нет и быть не должно: учётные данные первого
-  # администратора Stalwart печатает в свой журнал при первом старте —
-  # но прочитать их сейчас нечем, `docker compose logs mail` пуст, потому
-  # что трассировщик Console не заведён; заводится он только из админки
-  # (Settings › Telemetry › Tracers). Дальше всё настраивается через
-  # админку и живёт в томе mail_etc.
-  mail:
-    image: stalwartlabs/stalwart:v0.16
-    restart: unless-stopped
-    hostname: mail.zpq.ai
-    expose:
-      - "8080"
-    # Внешний адрес службы. Без него Stalwart строит ссылки в документах
-    # обнаружения (OAuth, OIDC, JMAP) от внутреннего адреса контейнера, и
-    # они ведут внутрь сети compose. Не секрет: то же имя стоит в Caddyfile
-    # и в публичном DNS.
-    environment:
-      - STALWART_PUBLIC_URL=https://mail.zpq.ai
-    volumes:
-      - mail_etc:/etc/stalwart    # настройка, переживает пересоздание контейнера
-      - mail_data:/var/lib/stalwart   # письма и индексы
-    # Гигабайт, а не 512 МБ: у RocksDB буфер записи 128 МБ, кеши по
-    # умолчанию растут до предела, и сопровождающий советует начинать с 1 ГБ.
-    # Зациклившийся по нехватке памяти контейнер поднимает сам Docker
-    # (restart: unless-stopped), а `restart mail` агенту разрешён (ADR
-    # 2026-09-18-1839) и сбрасывает растущую задержку повторов. Устойчивую
-    # нехватку памяти перезапуск не лечит — только правка этого лимита
-    # через PR и выкатку.
-    mem_limit: 1g
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
+# caddy_data, caddy_config, mail_etc и mail_data здесь больше не объявлены:
+# их подхватывает проект zpq как внешние тома advent_caddy_data,
+# advent_caddy_config, advent_mail_etc и advent_mail_data (ADR 2026-09-22-0611).
+# Данные никуда не копировались и не переименовывались — переехало только то,
+# кто их монтирует. Объявление снято тем же изменением, что убирает службы:
+# иначе `down -v` в этом проекте удалил бы сертификаты и почту.
 volumes:
-  caddy_data:
-  caddy_config:
   router_data:
   agents_data:
   day5_data:
-  mail_etc:
-  mail_data:
+
+# Общая сеть входа. Создаётся один раз руками: `docker network create edge`.
+# Внешняя с обеих сторон, поэтому ни один из двух проектов её не удаляет.
+networks:
+  edge:
+    external: true

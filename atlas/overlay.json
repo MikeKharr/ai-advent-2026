@@ -103,7 +103,7 @@
     { "id": "anthropic-api", "title": "Anthropic Messages API", "kind": "llm", "note": "Дни 1–4 ходят в API напрямую своим ключом, мимо роутера. Провайдер anthropic-haiku в providers.json — тот же API за роутером." },
     { "id": "ghcr", "title": "GitHub Container Registry", "kind": "registry", "note": "Образы единиц деплоя; сервер только тянет тег." },
     { "id": "github-actions", "title": "GitHub Actions", "kind": "ci", "note": "Сборка образов и выкатка; секреты в secrets.*." },
-    { "id": "letsencrypt", "title": "Let's Encrypt", "kind": "tls", "note": "Сертификаты challenge.zpq.ai, выпускает Caddy." },
+    { "id": "letsencrypt", "title": "Let's Encrypt", "kind": "tls", "note": "Сертификат challenge.zpq.ai выпускает вход проекта zpq (приватный MikeKharr/zpq-ai), не Caddy адвента: ADR 2026-09-22-0611." },
     { "id": "tailscale", "title": "Tailscale", "kind": "network", "note": "Частная сеть до ноутбука владельца, где живёт Ollama." }
   ],
 
