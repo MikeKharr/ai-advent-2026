@@ -7,13 +7,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createNewsAnalyst } from './src/agent.js'
 import { parseEnv } from './src/env.js'
+import { createInvariants } from './src/invariants.js'
 import { createLayeredAgent, LAYERED_AGENT_ID } from './src/layered.js'
 import { loadRegistry } from './src/registry.js'
 import { createRuns } from './src/runs.js'
 import { createService } from './src/service.js'
 import { createSessions } from './src/sessions.js'
 import { createStageLog } from './src/stage-log.js'
-import { createStagedAgent, STAGED_AGENT_ID } from './src/staged.js'
+import { createStagedAgent, INVARIANT_AGENT_ID, STAGED_AGENT_ID } from './src/staged.js'
 import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -64,13 +65,22 @@ try {
 // он живёт в `stage-log.js` и отвечает `false`.
 const stageLog = createStageLog({ file: env.STAGE_LOG_FILE, log })
 
-/** Реестр агентов → исполнители: аналитик новостей, слои памяти, машина состояний. */
+// Шов дня 14: один объект на сервис. Ключ билетов создаётся при старте и
+// нигде не хранится (ADR 2026-09-22-0827, п. 3).
+const invariants = sessions ? createInvariants({ sessions }) : null
+
+/**
+ * Реестр агентов → исполнители: аналитик новостей, слои памяти, машина
+ * состояний и она же с инвариантами профиля.
+ */
 const agents = new Map()
 for (const entry of registry.values()) {
   let agent
   if (entry.id === LAYERED_AGENT_ID) agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
   else if (entry.id === STAGED_AGENT_ID)
     agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })
+  else if (entry.id === INVARIANT_AGENT_ID)
+    agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log, invariants })
   else agent = createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log })
   agents.set(entry.id, agent)
 }

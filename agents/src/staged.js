@@ -59,6 +59,14 @@ import { createSessionLock, explainRouterError, paidNothing, seconds } from './s
 export const STAGED_AGENT_ID = 'staged-agent'
 
 /**
+ * Агент дня 14 — та же машина с одним швом (ADR 2026-09-22-0827, п. 1).
+ * Настройки у него общие с днём 13: тот же столбец `settings_staged`,
+ * те же диапазоны. Последствие названо в записи — проверяющая модель,
+ * выставленная в дне 14, действует и в дне 13 на том же профиле.
+ */
+export const INVARIANT_AGENT_ID = 'invariant-agent'
+
+/**
  * Потолок `system + input` каждого вызова этого агента (решение владельца,
  * ADR 2026-09-21-1747, п. 5). Действующий потолок — меньшее из него и
  * предела выбранной модели: у Groq и ноутбука это их 4 300–5 200.
@@ -149,6 +157,12 @@ export function createStagedAgent({
   env,
   sessions = null,
   stageLog = null,
+  /**
+   * Шов дня 14 (ADR 2026-09-22-0827, п. 1): объект из `invariants.js` или
+   * `null`. У агента дня 13 он равен `null`, и каждое место ниже — `if (inv)`;
+   * ни одного его промпта, события и числа это не меняет.
+   */
+  invariants: inv = null,
   policy = defaultPolicy,
   fetchImpl = fetch,
   now = Date.now,
@@ -286,6 +300,11 @@ export function createStagedAgent({
         'stage.verify': VERIFY_PROMPT,
         'stage.replenish': buildReplenishRequest({}).system,
       }
+      // День 14 проверяет своим промптом: промпт дня 13 остаётся на месте и
+      // со своим `sha8`, а окно «Об агенте» показывает тот текст, что уйдёт.
+      if (inv) prompts['stage.verify'] = inv.prompts['stage.verify.invariants']
+      // Промпт формулировщика к этапам не относится: его вызов идёт своим
+      // каналом, мимо запуска, — но показать его «Об агенте» обязано.
       return {
         id: agent.id,
         name: agent.name,
@@ -303,6 +322,19 @@ export function createStagedAgent({
           prompt: stage.promptId ? prompts[stage.promptId] : null,
           rule: stage.rule,
         })),
+        // Инварианты профиля дня 14: их потолки и промпт формулировщика.
+        // Страница не хранит эти числа сама — как и предел кругов.
+        ...(inv
+          ? {
+              invariants: {
+                cap: inv.cap,
+                chars: inv.chars,
+                draftChars: inv.draftChars,
+                prefix: inv.prefix,
+                prompt: inv.prompts['invariant.draft'],
+              },
+            }
+          : {}),
         limits: {
           promptChars: PARAM_LIMITS.promptChars,
           systemChars: PARAM_LIMITS.systemChars,
@@ -350,6 +382,11 @@ export function createStagedAgent({
         modelAsked: false,
         replenished: null,
         proposal: null,
+        // Снимок инвариантов профиля на приёме и что с ними стало на выдаче
+        // (ADR 2026-09-22-0827, п. 4). Без шва — пустой список и `unchecked`.
+        invariants: [],
+        invariantStatus: 'unchecked',
+        withheld: null,
       }
       const tree = strategy !== null
       let nextParent = tree
@@ -510,6 +547,29 @@ export function createStagedAgent({
           })
           return { failed: true }
         }
+        // Снимок инвариантов профиля — одним запросом на приёме: что зафик-
+        // сировано здесь, то и проверяется на выдаче (ADR 2026-09-22-0827,
+        // п. 4). Пустой список стоит ноль токенов дальше по всем этапам.
+        if (inv) {
+          ctx.invariants = inv.snapshot(profileId)
+          const tokens = inv.tokens(ctx.invariants)
+          emit({
+            stage: 'planning',
+            title:
+              ctx.invariants.length === 0
+                ? 'Инварианты профиля: нет'
+                : `Инварианты профиля: ${inv.numbers(ctx.invariants)} — ${ctx.invariants.length} из ${inv.cap}, ~${tokens} токенов`,
+            detail:
+              ctx.invariants.length === 0
+                ? 'блока инвариантов не будет ни в одном запросе'
+                : 'проверяются третьей строкой вердикта; на остальных этапах это иерархия промпта, а не проверка',
+            data: {
+              invariants: ctx.invariants.map((i) => i.num),
+              cap: inv.cap,
+              invariantTokens: tokens,
+            },
+          })
+        }
         return { done: true }
       }
 
@@ -642,8 +702,11 @@ export function createStagedAgent({
             }
           : null
 
+        const invariantsBlock =
+          inv && ctx.invariants.length > 0 ? inv.block(ctx.invariants) : null
         const build = (transcript) =>
           policy.assemble({
+            invariantsBlock,
             rules: ctx.rules,
             topic: ctx.topic,
             summaryText: recalled.summaryText,
@@ -849,12 +912,17 @@ export function createStagedAgent({
           return { done: true, verdict: 'marked' }
         }
 
-        const request = buildVerifyRequest({
+        const verifyArgs = {
           rules: ctx.rules.map((rule) => `${rule.key} — ${rule.value}`),
           question: params.prompt,
           answer: text,
           truncated: ctx.answer.truncated,
-        })
+        }
+        // День 14 проверяет своим промптом и с блоком инвариантов; день 13 —
+        // прежним, слово в слово (ADR 2026-09-22-0827, п. 5).
+        const request = inv
+          ? inv.verifyRequest({ ...verifyArgs, invariants: ctx.invariants })
+          : buildVerifyRequest(verifyArgs)
         const size = estimateTokens(request.system) + estimateTokens(request.input)
         const limits = await limitsOf()
         const reviewBudget = effectiveBudget(reviewModel, inputBudgetFor(reviewModel), limits)
@@ -877,7 +945,7 @@ export function createStagedAgent({
           return { done: true, verdict: 'skipped' }
         }
 
-        current.promptId = 'stage.verify'
+        current.promptId = inv ? 'stage.verify.invariants' : 'stage.verify'
         current.promptText = request.system
         const started = now()
         emit({
@@ -935,6 +1003,66 @@ export function createStagedAgent({
         // Единственный модельный текст в событиях: замечания проверки. Метка
         // обезврежена, срез жёсткий — 300 знаков (ADR, «Последствия»).
         const remarks = safeRemarks(parsed.remarks)
+
+        // Третья строка вердикта — единственная настоящая проверка дня 14
+        // (ADR 2026-09-22-0827, п. 4 и 5). Разбирается до строки «вердикт»,
+        // потому что названное нарушение сильнее её.
+        if (inv && ctx.invariants.length > 0) {
+          const judged = inv.parseVerdict(called.answer.text, ctx.invariants)
+          if (judged.held) ctx.invariantStatus = 'held'
+          if (judged.violated.length > 0) {
+            const broken = ctx.invariants.filter((i) => judged.violated.includes(i.num))
+            const named = broken
+              .map((i) => `Нарушен инвариант профиля ${inv.render(i)}`)
+              .join('\n')
+            if (parsed.verdict === 'accepted') {
+              emit({
+                stage: 'planning',
+                title: 'Проверка: «принято» вместе с названным нарушением — считаю нарушением',
+                detail: `${inv.numbers(broken)}: инвариант сильнее строки вердикта`,
+                data: { verdict: 'violated', round: ctx.round, invariants: judged.violated },
+              })
+            }
+            const last = ctx.round >= reviewRounds
+            if (last) {
+              // Последний круг: ответ не отдаётся вовсе (решение владельца 2).
+              ctx.withheld = {
+                invariants: judged.violated,
+                texts: broken.map((i) => i.text),
+                remarks,
+                round: ctx.round,
+                rounds: reviewRounds,
+              }
+              emit({
+                stage: 'planning',
+                title: `Проверка: нарушен ${inv.numbers(broken)} на круге ${ctx.round} из ${reviewRounds} — ответ не отдан`,
+                detail: remarks,
+                data: {
+                  verdict: 'violated',
+                  round: ctx.round,
+                  invariants: judged.violated,
+                  remarksChars: remarks.length,
+                },
+              })
+              return { done: true, verdict: 'violated', withheld: true }
+            }
+            // Не последний круг: модель видит дословно, что нарушила.
+            ctx.review = safeRemarks(`${named}. ${remarks}`)
+            emit({
+              stage: 'planning',
+              title: `Проверка: нарушен ${inv.numbers(broken)}, круг ${ctx.round + 1} из ${reviewRounds}`,
+              detail: remarks,
+              data: {
+                verdict: 'violated',
+                round: ctx.round,
+                invariants: judged.violated,
+                remarksChars: remarks.length,
+              },
+            })
+            return { done: true, verdict: 'violated', back: true }
+          }
+        }
+
         if (parsed.verdict === null) {
           ctx.marked = { verdict: 'unparsed', remarks, rounds: ctx.round, reason: 'unparsed' }
           emit({
@@ -1009,6 +1137,16 @@ export function createStagedAgent({
           review: ctx.marked
             ? { ...ctx.marked }
             : { verdict: ctx.verdict, remarks: '', rounds: ctx.round },
+          // Пометка инвариантов — у сообщения, как и пометка проверки:
+          // карточка ответа показывает её и после перезагрузки (п. 4, этап 6).
+          ...(inv
+            ? {
+                invariants: {
+                  checked: ctx.invariants.map((i) => i.num),
+                  status: ctx.invariantStatus,
+                },
+              }
+            : {}),
           ...(strategy !== null ? { strategy } : {}),
           ...(summarizeAt !== null ? { summarizeAt } : {}),
         }
@@ -1022,6 +1160,19 @@ export function createStagedAgent({
       }
 
       const replenishStage = async () => {
+        // Ответ не отдан — пополнять память нечем: оплаченного ответа не
+        // существует ни для переписки, ни для правил. Пропуск обеспечен
+        // порядком этапов, а не намерением: вердикт ставится на четвёртом
+        // этапе, пополнение идёт пятым (ADR 2026-09-22-0827, п. 4 и 5).
+        if (ctx.withheld) {
+          emit({
+            stage: 'planning',
+            title: 'Пополнение памяти пропущено: ответ не отдан',
+            detail: 'вызова не было; ни фактов, ни правил из этого ответа не записано',
+            data: { outcome: 'skipped', round: ctx.round },
+          })
+          return { done: true, skipped: true }
+        }
         const answer = ctx.answer
         const controller = new AbortController()
         runs.setAbort(run.id, () => controller.abort())
@@ -1067,6 +1218,10 @@ export function createStagedAgent({
             now,
             log,
             caps: STAGED_REPLENISH_CAPS,
+            // Блок инвариантов в запросе пополнения — граница тому, что
+            // модель запишет правилом (ADR 2026-09-22-0827, п. 4, этап 5).
+            invariantsBlock:
+              inv && ctx.invariants.length > 0 ? inv.recordBlock(ctx.invariants) : null,
             signal: controller.signal,
           })
         } finally {
@@ -1098,12 +1253,34 @@ export function createStagedAgent({
           (answer.usage.outputTokens ?? estimateTokens(answer.text))
         const totalTokens = answerTokens + ctx.summarySpent + (ctx.replenished?.spent ?? 0)
 
+        // След для посетителя, когда ответ не отдан (ADR 2026-09-22-0827,
+        // п. 5): номер, текст, круг и замечания. Сам ответ не показывается
+        // нигде — ни в переписке, ни в результате, ни в событии.
+        if (ctx.withheld) {
+          const named = ctx.withheld.invariants
+            .map((num, i) => `${inv.numbers([num])} «${ctx.withheld.texts[i]}»`)
+            .join(', ')
+          const text =
+            `Ответ не отдан: нарушает инвариант профиля ${named} ` +
+            `(круг ${ctx.withheld.round} из ${ctx.withheld.rounds}).` +
+            (ctx.withheld.remarks ? `\nЗамечания проверки: ${ctx.withheld.remarks}` : '')
+          remember('agent', text, 0, {
+            withheld: {
+              invariants: ctx.withheld.invariants,
+              round: ctx.withheld.round,
+              rounds: ctx.withheld.rounds,
+            },
+          })
+        }
+
         if (ctx.memoryFailed) {
           emit({
             stage: 'warning',
             level: 'warn',
             title: 'Не записал разговор',
-            detail: 'ответ показан, но в переписку не попал — после перезагрузки его не будет',
+            detail: ctx.withheld
+              ? 'объяснение показано, но в переписку не попало'
+              : 'ответ показан, но в переписку не попал — после перезагрузки его не будет',
             data: { memory: 'failed' },
           })
         }
@@ -1132,7 +1309,20 @@ export function createStagedAgent({
         runs.finish(run.id, {
           status: 'succeeded',
           result: {
-            answer: answer.text,
+            // Ответ с названным нарушением не отдаётся: его нет ни здесь, ни
+            // в переписке, ни в событиях (решение владельца 2).
+            answer: ctx.withheld ? null : answer.text,
+            ...(ctx.withheld
+              ? {
+                  withheld: {
+                    invariants: ctx.withheld.invariants,
+                    texts: ctx.withheld.texts,
+                    remarks: ctx.withheld.remarks,
+                    round: ctx.withheld.round,
+                    rounds: ctx.withheld.rounds,
+                  },
+                }
+              : {}),
             memoryFailed: ctx.memoryFailed,
             summary: ctx.summary,
             context: ctx.context,
@@ -1165,9 +1355,14 @@ export function createStagedAgent({
           },
           event: {
             stage: 'done',
-            title: 'Отдал ответ',
+            title: ctx.withheld ? 'Ответ не отдан: нарушен инвариант профиля' : 'Отдал ответ',
             detail: `весь запуск ${seconds(totalMs)}`,
-            data: { state: 'deliver', rounds: ctx.answerCalls, marked: ctx.marked !== null },
+            data: {
+              state: 'deliver',
+              rounds: ctx.answerCalls,
+              marked: ctx.marked !== null,
+              ...(ctx.withheld ? { withheld: ctx.withheld.invariants } : {}),
+            },
             durationMs: totalMs,
           },
         })
@@ -1393,8 +1588,9 @@ export function createStagedAgent({
           if (stage.id === 'verify') {
             ctx.verdict = outcome.verdict
             // Отклонённый ответ в рабочую память не идёт: в переписке
-            // остаётся принятый или последний.
-            if (!outcome.back) keepAnswer()
+            // остаётся принятый или последний. Неотданный — тем более:
+            // оплаченный ответ с названным нарушением не пишется никуда.
+            if (!outcome.back && !outcome.withheld) keepAnswer()
             logRow({ stage, index, enteredAt, outcome: 'done', verdict: outcome.verdict })
             if (outcome.back) {
               ctx.round += 1
@@ -1405,7 +1601,7 @@ export function createStagedAgent({
             index += 1
             continue
           }
-          logRow({ stage, index, enteredAt, outcome: 'done' })
+          logRow({ stage, index, enteredAt, outcome: outcome.skipped ? 'skipped' : 'done' })
           index += 1
         }
       } catch (error) {

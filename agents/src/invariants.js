@@ -316,7 +316,9 @@ export function checkTicket(key, profileId, text, ticket) {
 export function createInvariants({ sessions }) {
   return {
     cap: PROFILE_INVARIANT_CAP,
+    chars: INVARIANT_CHARS,
     draftChars: INVARIANT_DRAFT_CHARS,
+    prefix: INVARIANT_PREFIX,
     prompts: {
       'stage.verify.invariants': VERIFY_INVARIANTS_PROMPT,
       'invariant.draft': INVARIANT_DRAFT_PROMPT,

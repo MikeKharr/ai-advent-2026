@@ -568,7 +568,17 @@ export function cleanLine(raw) {
  * Части входа приходят уже подрезанными: потолки в токенах — правило политики
  * (`context.js`), а не транспорта.
  */
-export function buildReplenishRequest({ topics = [], topic = null, rules = [], pending = null, pair = [] }) {
+export function buildReplenishRequest({
+  topics = [],
+  topic = null,
+  rules = [],
+  pending = null,
+  pair = [],
+  // Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 4, этап 5). Блок
+  // приходит готовой строкой из `invariants.js` и идёт первым; системный
+  // промпт от него не зависит, поэтому `sha8` промпта дня 13 не меняется.
+  invariants = null,
+}) {
   const system =
     'Ты ведёшь память агента о человеке по трём слоям: темы (о чём он работает), факты в ' +
     'теме и правила работы с ним. Тебе дают список тем профиля, активную тему с её фактами, ' +
@@ -591,6 +601,7 @@ export function buildReplenishRequest({ topics = [], topic = null, rules = [], p
     'записывать нечего — верни одну строку «тема: продолжить». Пиши по-русски.'
 
   const parts = []
+  if (invariants) parts.push(invariants)
   if (topics.length > 0) {
     const lines = topics.map((t) => `${t.id} · ${safeTag(t.title, 'topics')} · ${t.facts} фактов`)
     parts.push(
