@@ -105,7 +105,22 @@ export function createService({
       })
     }
 
-    const result = await router.route(body)
+    // Обрыв клиента доводится до вызова провайдера (ADR 2026-09-21-1747,
+    // развилка 1): «остановить обмен с моделью» иначе останавливает только
+    // обмен приложение ↔ роутер. Сигнал даёт `res`, а не `req`: на Node 22
+    // `req` закрывается и на обычном пути — сразу после чтения тела.
+    const clientGone = new AbortController()
+    const onClose = () => {
+      if (!res.writableFinished) clientGone.abort('client')
+    }
+    res.on('close', onClose)
+
+    let result
+    try {
+      result = await router.route(body, { signal: clientGone.signal })
+    } finally {
+      res.off('close', onClose)
+    }
     // Учитывается каждый вызов провайдера, включая неудачный. Без usage —
     // по оценке входа, с пометкой; кроме исходов, где вход до модели не дошёл
     // (транспорт, 429, 4xx): они в журнале с нулём.
@@ -134,6 +149,13 @@ export function createService({
         fallback: result.fallback?.from != null && attempt.provider !== result.fallback.from,
         estimated: attempt.usage == null,
       })
+    }
+    // Учёт выше сделан до этой точки и безусловно: ушедший клиент не отменяет
+    // того, что вход провайдер уже принял и тарифицировал. Отвечать только
+    // некому.
+    if (clientGone.signal.aborted) {
+      log({ event: 'client_gone', app: app.id, taskClass, outcome: result.code ?? 'ok' })
+      return
     }
     const status = result.ok ? 200 : (STATUS[result.code] ?? 422)
     return send(res, status, {

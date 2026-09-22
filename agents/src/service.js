@@ -16,8 +16,11 @@ import {
   WINDOW_LIMITS,
 } from './params.js'
 import { TERMINAL } from './runs.js'
+import { STAGED_AGENT_ID } from './staged.js'
 
 const MAX_BODY = 64 * 1024
+/** Сколько ждать подтверждения отмены запуска на паузе, прежде чем отвечать. */
+const CANCEL_WAIT_MS = 5_000
 /** Комментарий в поток раз в столько: прокси не должен счесть соединение мёртвым за минуты ожидания модели. */
 const SSE_PING_MS = 15_000
 const RUN_ID = /^[0-9a-f-]{36}$/
@@ -101,7 +104,16 @@ function factsView(row) {
   }
 }
 
-export function createService({ agents, archive, runs, sessions = null, env, log = console.error }) {
+export function createService({
+  agents,
+  archive,
+  runs,
+  sessions = null,
+  // Журнал этапов дня 13. Без него ручка CSV отвечает 404: журнала нет.
+  stageLog = null,
+  env,
+  log = console.error,
+}) {
   /**
    * Счётчики сессий для /healthz: их отказ не должен валить проверку, но и
    * выглядеть как «памяти нет по настройке» тоже не должен — оператор идёт
@@ -172,6 +184,65 @@ export function createService({ agents, archive, runs, sessions = null, env, log
    * а запуск шёл бы с другим (находка ревьюера, PR #151).
    */
   const settingsDefaults = () => agents.get(LAYERED_AGENT_ID)?.defaults ?? {}
+
+  /**
+   * Разбор настроек агента, чьи настройки правятся. День 13 присылает
+   * `?agent=staged-agent`: у него свои потолки и две настройки круга проверки
+   * (ADR 2026-09-21-1747, п. 5). Без параметра — путь дня 11, слово в слово.
+   */
+  const settingsParser = (params) => {
+    const agent = agents.get(params.get('agent') ?? LAYERED_AGENT_ID)
+    if (agent?.parseSettings) return (body) => agent.parseSettings(body)
+    return (body) => parseSettings(body, settingsDefaults(), LAYERED_MODELS)
+  }
+
+  /**
+   * Куда писать настройки. У дня 13 свой столбец профиля (решение владельца
+   * 2026-09-21, вариант «а»): его потолки день 11 принять не может, и общий
+   * блок ломал бы сданный день чужими действиями. Путь дня 11 — прежний
+   * `saveSettings`, слово в слово.
+   */
+  const settingsWriter = (params) =>
+    agents.get(params.get('agent') ?? LAYERED_AGENT_ID)?.settingsStore === 'staged'
+      ? (payload) => sessions.saveStagedSettings(payload)
+      : (payload) => sessions.saveSettings(payload)
+
+  /**
+   * Отмена запуска дня 13, стоящего на паузе в этом диалоге: очистка диалога
+   * и удаление профиля — та же отмена, что и просроченная пауза
+   * (ADR 2026-09-21-1747, п. 3). Работающий (не на паузе) запуск отсюда не
+   * отменяется: удаление профиля отвечает на него 409 ниже, а очистка
+   * диалога дням 6–11 разрешена и без этого — ответ такого запуска в
+   * очищенный диалог не попадёт (`onlyIfLive` в хранилище).
+   */
+  const cancelPausedRun = async (sessionId) => {
+    const run = runs.forSession?.(sessionId)
+    if (!run?.paused) return
+    // Ждём терминального события: замок сессии снимает сам исполнитель, и
+    // проверка занятости сразу после отмены увидела бы его ещё занятым.
+    // Ожидание ограничено по времени: ручка посетителя не должна висеть,
+    // сколько бы ни занял чужой цикл (находка гейта, PR #183).
+    await new Promise((resolve) => {
+      // `off` объявлен до подписки: готовый запуск отдаёт `end` прямо в
+      // `subscribe`, то есть до того, как вернётся отписка.
+      let off = () => {}
+      const timer = setTimeout(() => {
+        off()
+        log(`запуск ${run.id}: отмена не подтверждена за ${CANCEL_WAIT_MS} мс`)
+        resolve()
+      }, CANCEL_WAIT_MS)
+      timer.unref?.()
+      const done = () => {
+        clearTimeout(timer)
+        off()
+        resolve()
+      }
+      off = runs.subscribe(run.id, (message) => {
+        if (message.type === 'end') done()
+      })
+      if (!runs.cancelPaused(run.id)) done()
+    })
+  }
 
   /** Тело запроса как JSON или отказ 400: один разбор на все ручки профиля. */
   const jsonBody = async (req, res) => {
@@ -310,6 +381,74 @@ export function createService({ agents, archive, runs, sessions = null, env, log
       return send(res, 200, { ok: true, run: snapshot, finished: TERMINAL.has(snapshot.status) })
     }
 
+    // Пауза и возобновление запуска дня 13 (ADR 2026-09-21-1747, п. 3).
+    // Чужой профиль или диалог — 404: номера запусков сквозные, и «не ваш»
+    // не должно отличаться от «нет такого». Завершённый запуск — 409.
+    const pauseMatch = path.match(/^\/v1\/runs\/([^/]+)\/pause$/)
+    if (pauseMatch && req.method === 'POST') {
+      const runId = pauseMatch[1]
+      if (!RUN_ID.test(runId)) return send(res, 404, { ok: false, code: 'unknown_run' })
+      const parsed = await jsonBody(req, res)
+      if (!parsed.ok) return
+      const { paused, profileId, sessionId } = parsed.body ?? {}
+      if (typeof paused !== 'boolean') {
+        return send(res, 400, { ok: false, code: 'bad_input', message: 'Поле paused — да или нет' })
+      }
+      const run = runs.get(runId)
+      // Пауза — свойство машины состояний дня 13: у запусков дней 6–11 ворот
+      // нет, и флаг на них был бы обещанием, которого никто не исполнит.
+      if (
+        !run ||
+        run.agent?.id !== STAGED_AGENT_ID ||
+        !isProfileId(profileId) ||
+        !isSessionId(sessionId) ||
+        run.input?.profileId !== profileId ||
+        run.input?.sessionId !== sessionId
+      ) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      const changed = paused ? runs.pause(runId) : runs.resume(runId)
+      if (!changed.ok) {
+        return send(res, 409, {
+          ok: false,
+          code: 'finished',
+          message: 'Запуск уже завершён',
+        })
+      }
+      return send(res, 200, { ok: true, run: runs.view(run) })
+    }
+
+    // Журнал этапов запуска: строки этого диалога и этого профиля
+    // (ADR 2026-09-21-1747, п. 7). Чужой диалог — 404.
+    const logMatch = path.match(/^\/v1\/runs\/([^/]+)\/log\.csv$/)
+    if (logMatch && req.method === 'GET') {
+      const runId = logMatch[1]
+      if (!RUN_ID.test(runId) || !stageLog || !sessions) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      const sessionId = url.searchParams.get('session')
+      const profileId = url.searchParams.get('profile')
+      if (!isSessionId(sessionId) || !isProfileId(profileId)) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      if (sessions.sessionProfile(sessionId) !== profileId) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      const rows = stageLog.rowsOf(runId)
+      // Принадлежность запуска проверяется по строкам журнала, а не по памяти
+      // сервиса: готовый запуск живёт в ней десять минут, а ссылка у ответа
+      // в переписке — тридцать часов.
+      if (rows.length === 0 || rows.some((row) => row.session_id !== sessionId)) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      res.writeHead(200, {
+        'content-type': 'text/csv; charset=utf-8',
+        'cache-control': 'no-store',
+        'content-disposition': `attachment; filename="stages-${runId}.csv"`,
+      })
+      return res.end(stageLog.csvOf(runId))
+    }
+
     // Переписка сессии: читает и удаляет её только тот, кто знает
     // идентификатор из cookie (ADR 2026-09-09-1906).
     const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/)
@@ -344,6 +483,10 @@ export function createService({ agents, archive, runs, sessions = null, env, log
           facts: factsView(sessions.facts(sessionId)),
           // Голова текущей ветки; null у линейных сессий дней 6–9.
           head: sessions.head(sessionId),
+          // Живой запуск этого диалога: машина состояний дня 13 переживает
+          // перезагрузку страницы (ADR 2026-09-21-1747, п. 6). У дней 6–11
+          // здесь `null`, пока запуск не идёт.
+          run: runs.view(runs.forSession?.(sessionId) ?? null),
           // Что накоплено к следующему сообщению. Без параметров — ответ
           // дней 7–9; со стратегией счётчик считается по ней и по
           // действующему окну этой модели (ADR 2026-09-14-0447, п. 3).
@@ -351,6 +494,9 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         })
       }
       if (req.method === 'DELETE') {
+        // Запуск на паузе в этом диалоге отменяется вместе с ним: иначе он
+        // держал бы замок до конца срока паузы.
+        await cancelPausedRun(sessionId)
         return send(res, 200, { ok: true, removed: sessions.clear(sessionId) })
       }
       return send(res, 404, { ok: false, code: 'not_found' })
@@ -516,6 +662,10 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         // Пока в диалоге профиля идёт запуск, удалять нельзя: запись ответа
         // воскресила бы строку удалённой сессии, и «удаление без следа»
         // держалось бы ровно до конца этого запуска (compliance, фаза 3).
+        // Запуск на паузе отменяется вместе с профилем — это та же отмена,
+        // что и просроченная пауза (ADR 2026-09-21-1747, п. 3). Работающий
+        // запуск по-прежнему держит удаление: ответ воскресил бы строку.
+        for (const session of sessions.sessionsOf(profileId)) await cancelPausedRun(session.id)
         if (sessions.sessionsOf(profileId).some((s) => busy(s.id))) {
           return send(res, 409, {
             ok: false,
@@ -537,11 +687,11 @@ export function createService({ agents, archive, runs, sessions = null, env, log
         // Список — тот же, что у входа запуска дня 11: настройки этой ручки
         // принадлежат агенту дня 11, и модель, годная в запуске, обязана быть
         // годной в настройках (ADR 2026-09-16-1038).
-        const settings = parseSettings(parsed.body, settingsDefaults(), LAYERED_MODELS)
+        const settings = settingsParser(url.searchParams)(parsed.body)
         if (!settings.ok) {
           return send(res, 400, { ok: false, code: 'bad_input', message: settings.message })
         }
-        if (!sessions.saveSettings({ profileId, settings: settings.settings })) {
+        if (!settingsWriter(url.searchParams)({ profileId, settings: settings.settings })) {
           return send(res, 404, { ok: false, code: 'unknown_profile' })
         }
         return send(res, 200, { ok: true, settings: settings.settings })
