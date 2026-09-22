@@ -490,6 +490,55 @@ test('оценка выхода прерванной попытки попада
   }
 })
 
+test('оценка выхода прерванной попытки включает бюджет размышлений', async () => {
+  // Класс `translate` закреплён за уровнем medium: потолок выхода у него —
+  // не answerTokens (800), а answerTokens + бюджет размышлений. Классы без
+  // размышлений эти два выражения не различают, поэтому проверка здесь.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  let release
+  const s = await start({
+    hosts: { [LAPTOP]: () => new Promise((r) => (release = r)), [CLOUD]: cloudOk },
+    file,
+    apps: {
+      admin: { secretEnv: 'ROUTER_ADMIN_KEY' },
+      apps: [
+        {
+          id: 'smoke',
+          secretEnv: 'APP_KEY_SMOKE',
+          classes: ['translate'],
+          limits: { dailyTokens: 50000, dailyCostUsd: 1 },
+        },
+      ],
+    },
+  })
+  try {
+    const client = new AbortController()
+    const request = fetch(`${s.base}/v1/route`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${ENV.APP_KEY_SMOKE}`,
+      },
+      body: JSON.stringify({ taskClass: 'translate', input: 'длинный текст запроса' }),
+      signal: client.signal,
+    }).catch((e) => e)
+    await waitFor(() => s.calls.length === 1)
+    client.abort()
+    await request
+    await waitFor(() => existsSync(file) && readFileSync(file, 'utf8').trim() !== '')
+
+    const line = JSON.parse(readFileSync(file, 'utf8').trim())
+    assert.equal(line.outcome, 'aborted')
+    assert.equal(line.thinking, 'medium')
+    // Ноутбук — Ollama: бюджет размышлений входит в num_predict тела запроса.
+    assert.equal(line.outputTokens, s.calls[0].body.options.num_predict)
+    assert.equal(line.outputTokens, 800 + 2500, 'ответ класса плюс бюджет размышлений')
+  } finally {
+    release?.(httpJson(200, ollamaGenerate()))
+    await s.close()
+  }
+})
+
 async function waitFor(cond) {
   for (let i = 0; i < 200; i++) {
     if (cond()) return
