@@ -66,17 +66,17 @@ description: /day-cycle — оркестрация полного цикла д�
    `deploy/put-secrets.sh` руками владельца**: значение не появляется ни в
    команде, ни в транскрипте. Новый маршрут применяет сама
    выкатка — `caddy validate` и `caddy reload` в `deploy.yml`; ручного
-   `restart caddy` для этого не нужно. Канонические серверные команды — две точные
+   `restart caddy` для этого не нужно. Канонические серверные команды — точные
    строки без хвостов, allowlist требует буквального совпадения:
    `ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai
-   'cd ai-advent-2026/deploy && docker compose ps'` и та же форма с
-   `docker compose restart caddy`. Окна подтверждения на ssh нет (ADR
+   'cd ai-advent-2026/deploy && docker compose ps'`, та же форма с
+   `docker compose restart caddy` и те же две формы в `cd zpq-ai/deploy`
+   (проект compose `zpq`: вход, сайт и почта, ADR `2026-09-22-1824`).
+   Окна подтверждения на ssh нет (ADR
    `2026-09-11-1230`); закрытый список того, что агент выполняет на
    сервере сам, в `cd ai-advent-2026/deploy`:
    `docker compose ps`; `docker compose logs <единица> --tail N` или с
-   `--since …`; `docker compose restart caddy`; `docker compose restart mail`
-   — дословно, применить настройку почты и сбросить растущую задержку
-   повторов после разового пика памяти (ADR `2026-09-18-1839`);
+   `--since …`; `docker compose restart caddy`;
    `grep -c '^NAME=' <файл>`
    и `grep -o '^[A-Z_]*=' <файл>` — имена без значений; копия
    существующего `AGENT_KEY` из `agents.env` в `dayN.env` единицы, которая
@@ -94,6 +94,10 @@ description: /day-cycle — оркестрация полного цикла д�
    разрешены только две строки выше дословно; другой аргумент, другой файл,
    `node -e`, другой контейнер, другие флаги — запрещённый `exec`; всё, что
    меняет состояние прода или печатает значение из `deploy/*.env`.
+   В `cd zpq-ai/deploy` — только чтение и вход: `docker compose ps`;
+   `docker compose logs <единица> --tail N` или с `--since …`;
+   `docker compose restart caddy`. `restart mail` там не разрешён; правка
+   и выкатка `zpq-ai` — из того репозитория.
    Расширение списка — ADR, которое принимает владелец.
    **Предмет списка — то, что агент запускает по ssh сам**, сочиняя команду
    по своему усмотрению; шаг `deploy.yml` — не агент, а `main`, и запреты

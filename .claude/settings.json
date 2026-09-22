@@ -29,7 +29,8 @@
       "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose restart caddy')",
       "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose exec -T router node admin.js spend')",
       "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose exec -T router node admin.js metrics')",
-      "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose restart mail')"
+      "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd zpq-ai/deploy && docker compose ps')",
+      "Bash(ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd zpq-ai/deploy && docker compose restart caddy')"
     ],
     "deny": [
       "Read(./deploy/*.env)",
