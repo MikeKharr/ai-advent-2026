@@ -552,7 +552,7 @@ export const DELTA_LIMITS = {
 }
 
 /** Управляющие символы и разметка списка в начале строки ответа модели. */
-function cleanLine(raw) {
+export function cleanLine(raw) {
   return String(raw)
     .replace(/[\x00-\x1f\x7f]/g, ' ')
     .replace(/^\s*(?:[-*•]\s*)?/, '')
