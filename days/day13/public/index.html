@@ -1136,7 +1136,24 @@
 
   /* ---------- общее ---------- */
 
-  const announce = (text) => { live.textContent = ''; live.textContent = text; };
+  /**
+   * Живая область молчит, пока вкладка проигрывает накопленные события
+   * подхваченного запуска: это история, а не смена состояния. Без этого
+   * подхват укладывал в `#live` пять текстов за 4 мс, и два из них были ложны
+   * в момент произнесения («в очереди», «выполняется» — у запуска, стоящего
+   * на паузе). Окно — секунда: ровно тот предел, который раскладка (п. 13)
+   * ставит объявлениям, и считается оно по часам браузера, а не по меткам
+   * событий, — часы страницы и сервиса могут разойтись, а окно от этого не
+   * зависит. Накопленные события приходят одним потоком за миллисекунды,
+   * живые — после.
+   */
+  let quietLiveUntil = 0;
+
+  const announce = (text) => {
+    if (Date.now() < quietLiveUntil) return;
+    live.textContent = '';
+    live.textContent = text;
+  };
   const shout = (text) => { alertBox.textContent = ''; alertBox.textContent = text; };
 
   const fmtInt = (n) => Number(n).toLocaleString('ru-RU');
@@ -2353,16 +2370,23 @@
       status: run.status, durationMs: null,
     });
 
-  const startRun = (name) => {
+  /**
+   * Новая карточка в мониторе. Статус и время запуска задаются вызывающим:
+   * у подхваченного запуска они известны от сервиса, и ставить их после
+   * отрисовки значило бы показать «в очереди» и время открытия вкладки —
+   * враньё, которое само исправляется только накопленными событиями, а при
+   * пустой ленте не исправляется никогда.
+   */
+  const startRun = (name, { status = 'queued', startedAt = new Date().toISOString(), quiet = false } = {}) => {
     for (const r of runs) r.open = false;
     const run = {
-      key: String(Date.now()), name, status: 'queued', startedAt: new Date().toISOString(),
+      key: String(Date.now()), name, status, startedAt,
       events: [], warnings: 0, durationMs: null, open: true, answered: false,
     };
     runs.unshift(run);
     if (runs.length > MAX_RUNS) runs.length = MAX_RUNS;
     renderMonitor();
-    announce(`Запуск «${name}»: в очереди`);
+    if (!quiet) announce(`Запуск «${name}»: в очереди`);
     return run;
   };
 
@@ -2594,13 +2618,21 @@
       // действие посетителя (требование владельца 2026-09-22), а состояние:
       // называем его словами и показываем, чем запуск кончился, — ответ или
       // строку отмены переписка уже несёт.
+      // Ветка ниже гасит кнопку «Пауза» (`loading`, `idle` и `lost` держат её
+      // выключенной), поэтому фокус спасается ДО снятия активности — ровно
+      // как в `finishRun`, иначе он уходит на body (раскладка, п. 4.4).
+      //
+      // «Узнаю состояние» — на время чтения: чем кончился запуск, решает
+      // переписка (ответ, строка отмены или реплика, оставшаяся без ответа).
+      // Место остановки при этом не обнуляется: терять его незачем, а у `lost`
+      // и `cancelled` крестик обязан стоять на текущем этапе (раскладка,
+      // п. 4.1). Обнуление ждёт до самого `idle`.
       if (result?.finished) {
         runbarSay(result.message ?? 'Запуск уже завершился.');
-        // «Узнаю состояние» на время чтения: чем кончился запуск, решает
-        // переписка — ответ, строка отмены или реплика, оставшаяся без ответа.
-        setRunView('loading', { id: null, index: 0, done: 0, mark: null });
+        if (document.activeElement === pauseBtn) input.focus();
+        setRunView('loading', { id: null, mark: null });
         await Promise.all([syncChat(), syncProfile()]);
-        if (runState.view === 'loading') setRunView('idle');
+        if (runState.view === 'loading') setRunView('idle', { index: 0, done: 0, mark: null });
       }
     } catch (error) {
       // Единственное сообщение при возобновлении — отказ, а не объяснение действия.
@@ -2687,13 +2719,21 @@
     // бывает после перезагрузки и в другом окне того же профиля. Без подписки
     // экран замирает навсегда: события «Продолжаю», этапы и конец запуска
     // приходят только в поток (дефект владельца 2026-09-22).
+    // Карточка подхваченного запуска правдива с первой отрисовки: статус и
+    // время берутся у сервиса, а не остаются «в очереди» и «сейчас» рядом с
+    // полосой, которая уже говорит «На паузе». «Запуск в очереди» при подхвате
+    // не объявляется вовсе — запуск начат не здесь и не сейчас, — а всё, что
+    // случилось до этой секунды, придёт накопленным: полоса и монитор по этим
+    // событиям встают, живая область о них молчит (раскладка, п. 13).
     if (following?.runId !== run.id) {
       const asked = [...pathMessages()].reverse().find((m) => m.role === 'user');
-      const local = startRun(asked?.text ?? 'запуск');
+      const local = startRun(asked?.text ?? 'запуск', {
+        status: run.status ?? 'running',
+        startedAt: run.since ?? undefined,
+        quiet: true,
+      });
       local.id = run.id;
-      // Время запуска — от сервиса: счётчик «готово за …» иначе считал бы от
-      // момента, когда вкладку открыли.
-      if (run.since) local.startedAt = run.since;
+      quietLiveUntil = Date.now() + 1000;
       followRun(run.id, local, (text, meta) => pushLocal('agent', text, meta));
     }
   };
