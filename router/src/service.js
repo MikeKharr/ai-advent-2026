@@ -7,6 +7,14 @@ import { costUsd, EMPTY_SUM, resetAt } from './ledger.js'
 
 const MAX_BODY = 512 * 1024
 const NOT_REACHED = new Set(['unreachable', 'busy', 'rejected'])
+// Исходы, где запрос ушёл в сеть и провайдер уже генерировал, а измерения
+// не вернулось: обрыв клиента и потолок budgetMs (`aborted`), дедлайн вызова
+// (`timeout`), пятисотый провайдера после начала генерации (`error`). Кто
+// дёрнул стоп-кран, на счёт провайдера не влияет — сгенерированное он
+// тарифицирует, поэтому выход у них идёт по оценке, как и вход. Пустой ответ
+// при 200 (`empty`) сюда не входит: там измерение провайдера есть, и ноль на
+// выходе — его цифра, а не допущение.
+const OUTPUT_ESTIMATED = new Set(['aborted', 'timeout', 'error'])
 const STATUS = { all_failed: 503, aborted: 504 }
 
 export function createService({
@@ -123,9 +131,9 @@ export function createService({
     }
     // Учитывается каждый вызов провайдера, включая неудачный. Без usage —
     // по оценке входа, с пометкой; кроме исходов, где вход до модели не дошёл
-    // (транспорт, 429, 4xx): они в журнале с нулём. У прерванной попытки
-    // (обрыв клиента, потолок budgetMs) по оценке идёт и выход: запрос был
-    // на ходу, и провайдер тарифицирует его целиком. Оценка — верхняя
+    // (транспорт, 429, 4xx): они в журнале с нулём. У попытки, оборвавшейся
+    // на ходу (OUTPUT_ESTIMATED), по оценке идёт и выход: запрос был в сети,
+    // и провайдер тарифицирует сгенерированное. Оценка — верхняя
     // граница: тот же потолок выхода, что лимит зарезервировал под попытку
     // до вызова. Она завышает, поэтому попадает в отчёт с пометкой
     // `estimated`.
@@ -137,7 +145,7 @@ export function createService({
       }
       const usage = attempt.usage ?? {
         inputTokens: NOT_REACHED.has(attempt.outcome) ? 0 : attempt.estimatedInputTokens,
-        outputTokens: attempt.outcome === 'aborted' ? attempt.estimatedOutputTokens : 0,
+        outputTokens: OUTPUT_ESTIMATED.has(attempt.outcome) ? attempt.estimatedOutputTokens : 0,
         webSearches: 0,
       }
       ledger.record({
