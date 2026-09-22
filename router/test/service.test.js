@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { loadConfig } from '../src/config.js'
 import { createLedger } from '../src/ledger.js'
 import { createStaticRegistry } from '../src/registry.js'
-import { createRouter } from '../src/router.js'
+import { createRouter, estimateTokens } from '../src/router.js'
 import { createService } from '../src/service.js'
 import {
   anthropicMessage,
@@ -382,6 +382,18 @@ test('класс вне списка приложения — 403; /v1/spend и 
   }
 })
 
+test('удачный вызов в отчёте не помечен оценкой', async () => {
+  const s = await start({ hosts: { [LAPTOP]: laptopOk, [CLOUD]: cloudOk } })
+  try {
+    assert.equal((await s.post({ taskClass: 'summarize', input: 'текст' })).status, 200)
+    const spend = await (await s.get('/v1/spend')).json()
+    assert.equal(spend.apps.smoke.calls, 1)
+    assert.deepEqual(spend.apps.smoke.estimated, { tokens: 0, costUsd: 0, calls: 0 })
+  } finally {
+    await s.close()
+  }
+})
+
 test('обрыв клиента прерывает вызов провайдера, попытка остаётся в книге расхода', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ledger-'))
   const file = join(dir, 'ledger.jsonl')
@@ -417,12 +429,61 @@ test('обрыв клиента прерывает вызов провайдер
     assert.equal(lines[0].outcome, 'aborted')
     assert.equal(lines[0].estimated, true, 'usage провайдер не вернул — вход по оценке, с пометкой')
     assert.ok(lines[0].inputTokens > 0, 'вход не ноль: он принят и оплачен')
-    assert.equal(lines[0].outputTokens, 0)
+    // Выход тоже не ноль: провайдер тарифицирует прерванный запрос целиком,
+    // и в учёт идёт верхняя граница — max_tokens ровно этого вызова.
+    // Ноутбук — Ollama: потолок вызова уехал в options.num_predict.
+    assert.equal(lines[0].outputTokens, s.calls[0].body.options.num_predict)
+    assert.ok(lines[0].outputTokens > 0, 'выход по оценке, а не ноль')
 
     // И книга расхода это видит: следующий запрос стартует с меньшим остатком.
     const spend = await (await s.get('/v1/spend')).json()
     assert.equal(spend.apps.smoke.calls, 1)
-    assert.equal(spend.apps.smoke.tokens, lines[0].inputTokens)
+    assert.equal(spend.apps.smoke.tokens, lines[0].inputTokens + lines[0].outputTokens)
+    // Пометка «оценка» доезжает до отчёта: завышение видно, а не растворено.
+    assert.deepEqual(spend.apps.smoke.estimated, {
+      tokens: lines[0].inputTokens + lines[0].outputTokens,
+      costUsd: lines[0].costUsd,
+      calls: 1,
+    })
+    assert.deepEqual(spend.monthly.smoke.estimated, spend.apps.smoke.estimated)
+  } finally {
+    release?.(httpJson(200, anthropicMessage()))
+    await s.close()
+  }
+})
+
+test('оценка выхода прерванной попытки попадает и в деньги', async () => {
+  // Класс `other` обслуживает облако: у него, в отличие от ноутбука, есть цена.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  let release
+  const s = await start({
+    hosts: { [CLOUD]: () => new Promise((r) => (release = r)), [LAPTOP]: laptopOk },
+    file,
+  })
+  try {
+    const client = new AbortController()
+    const request = fetch(`${s.base}/v1/route`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${ENV.APP_KEY_SMOKE}`,
+      },
+      body: JSON.stringify({ taskClass: 'other', input: 'длинный текст запроса' }),
+      signal: client.signal,
+    }).catch((e) => e)
+    await waitFor(() => s.calls.length === 1)
+    client.abort()
+    await request
+    await waitFor(() => existsSync(file) && readFileSync(file, 'utf8').trim() !== '')
+
+    const spend = await (await s.get('/v1/spend')).json()
+    assert.equal(spend.apps.smoke.calls, 1)
+    assert.equal(
+      spend.apps.smoke.tokens,
+      estimateTokens('длинный текст запроса') + s.calls[0].body.max_tokens,
+    )
+    assert.ok(spend.apps.smoke.costUsd > 0, 'выход по оценке дошёл до денег')
+    assert.equal(spend.apps.smoke.estimated.costUsd, spend.apps.smoke.costUsd)
   } finally {
     release?.(httpJson(200, anthropicMessage()))
     await s.close()

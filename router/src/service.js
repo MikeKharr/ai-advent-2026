@@ -123,7 +123,11 @@ export function createService({
     }
     // Учитывается каждый вызов провайдера, включая неудачный. Без usage —
     // по оценке входа, с пометкой; кроме исходов, где вход до модели не дошёл
-    // (транспорт, 429, 4xx): они в журнале с нулём.
+    // (транспорт, 429, 4xx): они в журнале с нулём. У прерванной попытки
+    // (обрыв клиента, потолок budgetMs) по оценке идёт и выход: запрос был
+    // на ходу, и провайдер тарифицирует его целиком. Оценка — верхняя
+    // граница, max_tokens вызова: она завышает, поэтому попадает в отчёт
+    // с пометкой `estimated`.
     for (const attempt of result.attempts ?? []) {
       const p = providerOf(attempt.provider)
       if (!p) {
@@ -132,7 +136,7 @@ export function createService({
       }
       const usage = attempt.usage ?? {
         inputTokens: NOT_REACHED.has(attempt.outcome) ? 0 : attempt.estimatedInputTokens,
-        outputTokens: 0,
+        outputTokens: attempt.outcome === 'aborted' ? attempt.estimatedOutputTokens : 0,
         webSearches: 0,
       }
       ledger.record({
@@ -187,7 +191,7 @@ export function createService({
         const report = ledger.report(now())
         for (const app of apps)
           report.apps[app.id] = {
-            ...(report.apps[app.id] ?? { tokens: 0, costUsd: 0, calls: 0 }),
+            ...(report.apps[app.id] ?? emptySpend()),
             limits: app.limits,
             left: budgetLeft(app, now()),
           }
@@ -289,6 +293,10 @@ function safeEqual(a, b) {
 function send(res, status, payload) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(payload))
+}
+
+function emptySpend() {
+  return { tokens: 0, costUsd: 0, calls: 0, estimated: { tokens: 0, costUsd: 0, calls: 0 } }
 }
 
 function round(x) {

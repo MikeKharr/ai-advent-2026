@@ -1375,6 +1375,8 @@ test('обрыв клиента прерывает вызов, второго н
   assert.equal(r.attempts[0].outcome, 'aborted')
   assert.equal(r.attempts[0].reason, 'клиент разорвал соединение')
   assert.ok(r.attempts[0].estimatedInputTokens > 0, 'оценка входа для учёта есть')
+  // Выход провайдер не вернул, но оплачен: в учёт идёт потолок этого вызова.
+  assert.equal(r.attempts[0].estimatedOutputTokens, 1024, 'оценка выхода — max_tokens вызова')
   assert.equal(calls.length, 1, 'второго провайдера не зовём')
   assert.equal(router.health.unavailableReason(PROVIDERS[1]), null, 'предохранитель не разомкнут')
   assert.equal(router.health.snapshot(PROVIDERS[1]).failures, 0)

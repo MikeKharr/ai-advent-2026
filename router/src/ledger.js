@@ -19,7 +19,14 @@ export function resetAt(ms) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)).toISOString()
 }
 
-const EMPTY = () => ({ tokens: 0, costUsd: 0, calls: 0 })
+// `estimated` — та часть суммы, что записана по оценке, а не по usage
+// провайдера: оценка завышает, и отчёт обязан это показывать.
+const EMPTY = () => ({
+  tokens: 0,
+  costUsd: 0,
+  calls: 0,
+  estimated: { tokens: 0, costUsd: 0, calls: 0 },
+})
 
 export function createLedger({ file, now = Date.now }) {
   /**
@@ -34,6 +41,11 @@ export function createLedger({ file, now = Date.now }) {
     s.tokens += entry.inputTokens + entry.outputTokens
     s.costUsd += entry.costUsd
     s.calls += 1
+    if (entry.estimated) {
+      s.estimated.tokens += entry.inputTokens + entry.outputTokens
+      s.estimated.costUsd += entry.costUsd
+      s.estimated.calls += 1
+    }
   }
   const bump = (k, entry) => {
     if (!sums.has(k)) sums.set(k, { total: EMPTY(), byClass: {}, byProvider: {} })
@@ -64,7 +76,11 @@ export function createLedger({ file, now = Date.now }) {
     }
   }
 
-  const rounded = (s) => ({ ...s, costUsd: round(s.costUsd) })
+  const rounded = (s) => ({
+    ...s,
+    costUsd: round(s.costUsd),
+    estimated: { ...s.estimated, costUsd: round(s.estimated.costUsd) },
+  })
   const view = (s) => ({
     ...rounded(s.total),
     byClass: Object.fromEntries(Object.entries(s.byClass).map(([k, v]) => [k, rounded(v)])),
