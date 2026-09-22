@@ -30,6 +30,8 @@ const plural = (n, one, few, many) => {
   return many
 }
 const DRAFT_ROUNDS = 3
+/** Границы предела кругов: страница берёт их у сервиса. */
+const roundLimits = { min: 1, max: 3, default: 2 }
 
 /** Правило из живого исходника страницы, а не его копия в тесте. */
 const loadRule = (name) => {
@@ -110,6 +112,35 @@ test('реплика «Ответ не отдан» несёт номер, те�
   )
   // Карточки ответа под такой репликой нет: ответа не существует.
   assert.match(page, /if \(meta\.withheld\) \{/)
+})
+
+test('под «не отдан» названы три выхода, и каждый говорит, где он делается', () => {
+  const withheldExits = loadRule('withheldExits')
+  const made = withheldExits({ invariants: [4], round: 1, rounds: 1 })
+  assert.equal(made.length, 4, 'объяснение и три выхода')
+  assert.ok(
+    made.every((p) => p.cls === 'ask-note'),
+    'выходы идут тем же абзацем, что и прочие пояснения лога',
+  )
+  const lines = made.map((p) => p.text)
+  // 1. Спросить иначе — и почему просто повторить нельзя.
+  assert.match(lines[0], /тот же исход и ту же трату/)
+  assert.match(lines[1], /Спросить иначе/)
+  assert.match(lines[1], /П4/)
+  // 2. Правило — с местом, где оно правится.
+  assert.match(lines[2], /Смягчить или удалить П4/)
+  assert.match(lines[2], /«Память профиля»/)
+  // 3. Предел кругов — с местом и с тем, что это даст.
+  assert.match(lines[3], /Поднять предел кругов — сейчас 1/)
+  assert.match(lines[3], /«Настройки агента»/)
+  assert.match(lines[3], /замечания проверки и попробует ещё раз/)
+
+  // Выход обязан быть настоящим: на потолке кругов поднимать нечего.
+  const atCap = withheldExits({ invariants: [2], round: 3, rounds: 3 }).map((p) => p.text)
+  assert.match(atCap[3], /Предел кругов уже 3 — выше не поднять/)
+
+  // И карточка собирается именно этим правилом.
+  assert.match(page, /li\.append\(\.\.\.withheldExits\(meta\.withheld\)\);/)
 })
 
 test('пометка инвариантов не выдаёт мнение модели за доказательство', () => {
