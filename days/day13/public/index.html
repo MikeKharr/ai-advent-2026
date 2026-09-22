@@ -1137,20 +1137,28 @@
   /* ---------- общее ---------- */
 
   /**
-   * Живая область молчит, пока вкладка проигрывает накопленные события
-   * подхваченного запуска: это история, а не смена состояния. Без этого
-   * подхват укладывал в `#live` пять текстов за 4 мс, и два из них были ложны
-   * в момент произнесения («в очереди», «выполняется» — у запуска, стоящего
-   * на паузе). Окно — секунда: ровно тот предел, который раскладка (п. 13)
-   * ставит объявлениям, и считается оно по часам браузера, а не по меткам
-   * событий, — часы страницы и сервиса могут разойтись, а окно от этого не
-   * зависит. Накопленные события приходят одним потоком за миллисекунды,
-   * живые — после.
+   * Окно тишины для объявлений, пришедших ИЗ ПОТОКА событий. Подхват запуска
+   * получает от сервиса всё, что случилось до подписки, и без окна укладывал
+   * в `#live` пять текстов за 4 мс, из них два ложных в момент произнесения
+   * («в очереди», «выполняется» — у запуска, стоящего на паузе).
+   *
+   * Окно — секунда: ровно тот предел, который раскладка (п. 13) ставит
+   * объявлениям. Считается оно по часам браузера, а не по меткам событий:
+   * часы страницы и сервиса могут разойтись, и сравнение чужих часов со
+   * своими глушило бы живое столько, сколько расхождение.
+   *
+   * Глушится ТОЛЬКО поток. Объявления перехода — «Профиль …», «Диалог …» —
+   * говорят посетителю, куда он пришёл, и к запуску отношения не имеют:
+   * молчание на них оставляло бы в живой области прежнюю, уже ложную строку.
+   * Поэтому признак ставится по источнику вызова, а не по имени функции:
+   * `failRun` из потока событий молчит, он же из отправки сообщения — нет.
    */
   let quietLiveUntil = 0;
+  /** Признак «вызов пришёл из потока событий»: ставится в обработчиках потока. */
+  const FROM_STREAM = { fromStream: true };
 
-  const announce = (text) => {
-    if (Date.now() < quietLiveUntil) return;
+  const announce = (text, { fromStream = false } = {}) => {
+    if (fromStream && Date.now() < quietLiveUntil) return;
     live.textContent = '';
     live.textContent = text;
   };
@@ -2293,7 +2301,7 @@
     monEmpty.hidden = runs.length > 0;
   };
 
-  const setStatus = (run, status) => {
+  const setStatus = (run, status, from) => {
     if (run.status === status) return;
     run.status = status;
     if (status === 'succeeded' || status === 'failed') {
@@ -2302,9 +2310,9 @@
         ? `готово за ${fmtDuration(run.durationMs)}` +
           (run.warnings ? `, ${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}` : '')
         : 'ошибка';
-      announce(`Запуск «${run.name}»: ${tail}`);
+      announce(`Запуск «${run.name}»: ${tail}`, from);
     } else {
-      announce(`Запуск «${run.name}»: ${STATUS_WORD[status]}`);
+      announce(`Запуск «${run.name}»: ${STATUS_WORD[status]}`, from);
     }
   };
 
@@ -2312,7 +2320,7 @@
    * События машины состояний двигают полосу запуска. `beat` в ленте монитора
    * не показывается и никуда не пишется: это удар пульса, а не событие.
    */
-  const trackRun = (event) => {
+  const trackRun = (event, from) => {
     const d = event.data ?? {};
     if (event.stage === 'beat') {
       if (Number.isFinite(d.elapsedMs)) elapsedMs = d.elapsedMs;
@@ -2334,7 +2342,7 @@
         mark: null,
         round: Number.isInteger(d.round) ? d.round : runState.round,
       });
-      announce(`Этап ${index} из ${stages.length}: ${stages[index - 1]?.title ?? d.state}`);
+      announce(`Этап ${index} из ${stages.length}: ${stages[index - 1]?.title ?? d.state}`, from);
       return true;
     }
     // `paused` и `resumed` несут этап и круг: полоса встаёт по ним, а не по
@@ -2344,31 +2352,34 @@
     if (Number.isInteger(d.round)) at.round = d.round;
     if (event.stage === 'paused') {
       setRunView('paused', { ...at, mark: 'paused', pausedAt: Date.now() });
-      announce('На паузе');
+      announce('На паузе', from);
       return true;
     }
     if (event.stage === 'resumed') {
       setRunView('running', { ...at, mark: null, pausedAt: null });
-      announce('Продолжаю');
+      announce('Продолжаю', from);
       return true;
     }
     return true;
   };
 
-  const addEvent = (run, event) => {
-    if (!trackRun(event)) return;
+  // `from` — откуда пришло событие: `{ fromStream: true }` у пришедшего из
+  // потока, ничего у сделанного страницей. Признак идёт вниз до `announce` и
+  // нигде не выводится из имени функции.
+  const addEvent = (run, event, from) => {
+    if (!trackRun(event, from)) return;
     run.events.unshift(event);
     if (event.level === 'warn') run.warnings += 1;
     if (event.level === 'error') shout(`Ошибка: ${event.title}`);
-    if (event.status && event.status !== run.status) setStatus(run, event.status);
+    if (event.status && event.status !== run.status) setStatus(run, event.status, from);
     if (event.stage === 'done' && event.durationMs) run.durationMs = event.durationMs;
     renderMonitor();
   };
-  const pageEvent = (run, level, title, detail = '') =>
+  const pageEvent = (run, level, title, detail = '', from) =>
     addEvent(run, {
       at: new Date().toISOString(), stage: 'страница', level, title, detail,
       status: run.status, durationMs: null,
-    });
+    }, from);
 
   /**
    * Новая карточка в мониторе. Статус и время запуска задаются вызывающим:
@@ -2390,11 +2401,11 @@
     return run;
   };
 
-  const failRun = (run, title, detail) => {
+  const failRun = (run, title, detail, from) => {
     run.status = 'failed';
-    pageEvent(run, 'error', title, detail);
+    pageEvent(run, 'error', title, detail, from);
     run.durationMs = Date.now() - Date.parse(run.startedAt);
-    announce(`Запуск «${run.name}»: ошибка`);
+    announce(`Запуск «${run.name}»: ошибка`, from);
     renderMonitor();
   };
 
@@ -4113,7 +4124,7 @@
       let ev;
       try { ev = JSON.parse(m.data); } catch { return; }
       if (ev.stage === 'warning' && ev.title === 'Историю не сжал') run.summarizeFailed = true;
-      addEvent(run, ev);
+      addEvent(run, ev, FROM_STREAM);
     });
     es.addEventListener('end', async (m) => {
       ended = true;
@@ -4132,7 +4143,7 @@
       }
       setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
         ? end.status
-        : run.answered ? 'succeeded' : 'failed');
+        : run.answered ? 'succeeded' : 'failed', FROM_STREAM);
       // Отмена по сроку паузы — не «готово»: полоса говорит, что случилось.
       if (end.status === 'cancelled') {
         shout('Запуск отменён: пауза дольше 60 минут.');
@@ -4147,15 +4158,15 @@
       if (ended) return;
       ended = true;
       es.close();
-      if (run.answered) { setStatus(run, 'succeeded'); finish(); return; }
+      if (run.answered) { setStatus(run, 'succeeded', FROM_STREAM); finish(); return; }
       // Последний известный этап остаётся, пульс останавливается: врать
       // «готово» о запуске, который, возможно, идёт, нельзя.
       if (run.events.length > 0) {
-        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа');
+        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа', FROM_STREAM);
         answered('поток закрылся без ответа', { error: true });
         finish('partial');
       } else {
-        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся');
+        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся', FROM_STREAM);
         answered('связь с агентом прервана', { error: true });
         finish('idle');
       }
