@@ -8,12 +8,13 @@ import { loadConfig } from '../src/config.js'
 import { createLedger } from '../src/ledger.js'
 import { createStaticRegistry } from '../src/registry.js'
 import { createRouter, estimateTokens } from '../src/router.js'
-import { createService } from '../src/service.js'
+import { createService, NOT_REACHED, OUTPUT_ESTIMATED } from '../src/service.js'
 import {
   anthropicMessage,
   ENV,
   groqCompletion,
   httpJson,
+  httpText,
   ollamaGenerate,
   PROVIDERS,
   scriptedFetch,
@@ -189,7 +190,7 @@ test('неудачный вызов без usage списывается по о�
   const s = await start({
     hosts: {
       [LAPTOP]: () => unreachable('ECONNREFUSED'),
-      [CLOUD]: () => httpJson(500, {}),
+      [CLOUD]: timesOut,
     },
   })
   try {
@@ -200,8 +201,9 @@ test('неудачный вызов без usage списывается по о�
     assert.equal(res.status, 503)
     const spend = await (await s.get('/v1/spend')).json()
     assert.equal(spend.apps.smoke.calls, 2, 'обе неудачные попытки в журнале')
-    // Недоступный ноутбук вход не принял — ноль; 500 от облака — по оценке.
-    assert.equal(spend.apps.smoke.tokens, 100, 'оценка входа только за дошедший вызов')
+    // Недоступный ноутбук вход не принял — ноль; у таймаута облака по оценке
+    // идут оба конца: вход 100 и потолок выхода класса summarize (500).
+    assert.equal(spend.apps.smoke.tokens, 100 + 500, 'оценка только за дошедший вызов')
   } finally {
     await s.close()
   }
@@ -537,6 +539,311 @@ test('оценка выхода прерванной попытки включа
     release?.(httpJson(200, ollamaGenerate()))
     await s.close()
   }
+})
+
+// Класс `translate` закреплён за уровнем размышлений medium, и его обслуживают
+// оба провайдера по очереди: ноутбук, потом облако. Потолок выхода у него —
+// не answerTokens, поэтому мутация «забыть бюджет размышлений» видна.
+const TRANSLATE_APPS = {
+  admin: { secretEnv: 'ROUTER_ADMIN_KEY' },
+  apps: [
+    {
+      id: 'smoke',
+      secretEnv: 'APP_KEY_SMOKE',
+      classes: ['translate'],
+      limits: { dailyTokens: 50000, dailyCostUsd: 1 },
+    },
+  ],
+}
+
+// Дедлайн вызова истёк: fetch отклонён так же, как это делает undici.
+const timesOut = () => Object.assign(new Error('дедлайн вызова истёк'), { name: 'TimeoutError' })
+
+test('таймаут: выход попытки идёт в книгу по оценке, а не нулём', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: { [LAPTOP]: timesOut, [CLOUD]: cloudOk },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    const res = await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })
+    assert.equal(res.status, 200, 'фолбэк на облако ответил')
+
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines.length, 2)
+    assert.equal(lines[0].outcome, 'timeout')
+    assert.equal(lines[0].estimated, true, 'usage провайдер не вернул — запись по оценке')
+    assert.ok(lines[0].inputTokens > 0, 'вход не ноль: он принят и оплачен')
+    // Запрос ушёл в сеть, провайдер генерировал и тарифицирует сгенерированное:
+    // выход идёт по той же оценке, что и у обрыва клиента.
+    // Ноутбук — Ollama: потолок вызова уехал в options.num_predict.
+    assert.equal(lines[0].outputTokens, s.calls[0].body.options.num_predict)
+    assert.equal(lines[0].outputTokens, 800 + 2500, 'ответ класса плюс бюджет размышлений')
+    assert.equal(lines[1].outcome, 'ok')
+    assert.equal(lines[1].estimated, false, 'у удачной попытки измерение провайдера')
+  } finally {
+    await s.close()
+  }
+})
+
+test('таймаут у обоих провайдеров: недоучёт был дважды за один запрос', async () => {
+  // На таймауте перебор не прерывается — зовётся второй провайдер, и попыток
+  // без измерения за один запрос выходит две.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: { [LAPTOP]: timesOut, [CLOUD]: timesOut },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    const res = await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })
+    assert.equal(res.status, 503)
+    assert.equal(s.calls.length, 2, 'таймаут не прерывает перебор: зовётся и второй')
+
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines.length, 2, 'обе попытки в книге')
+    assert.deepEqual(
+      lines.map((l) => l.outcome),
+      ['timeout', 'timeout'],
+    )
+    assert.equal(lines[0].outputTokens, s.calls[0].body.options.num_predict)
+    assert.equal(lines[0].outputTokens, 800 + 2500)
+    // У облака с размышлениями адаптер поднимает max_tokens под бюджет
+    // провайдера (4096), и это уже не та величина, что зарезервировал лимит.
+    // В книгу идёт зарезервированная — иначе оценка разойдётся с потолком.
+    assert.equal(s.calls[1].body.max_tokens, 800 + 4096)
+    assert.equal(lines[1].outputTokens, 800 + 2500, 'в книге — зарезервированная оценка')
+    assert.ok(lines[1].costUsd > 0, 'выход по оценке дошёл до денег')
+
+    const spend = await (await s.get('/v1/spend')).json()
+    assert.equal(spend.apps.smoke.calls, 2)
+    assert.equal(
+      spend.apps.smoke.tokens,
+      lines[0].inputTokens + lines[0].outputTokens + lines[1].inputTokens + lines[1].outputTokens,
+    )
+    assert.equal(spend.apps.smoke.estimated.calls, 2, 'обе суммы помечены оценкой')
+  } finally {
+    await s.close()
+  }
+})
+
+test('529 overloaded: провайдер отказал до генерации — в книге ноль', async () => {
+  // 529 у Anthropic — обратное давление, тот же ответ «не сейчас», что и 429:
+  // ничего не сгенерировано и ничего не тарифицировано. Оценке там взяться
+  // неоткуда, иначе перегрузка выест суточный потолок приложения.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: {
+      [LAPTOP]: () => httpJson(529, { error: { type: 'overloaded_error' } }),
+      [CLOUD]: cloudOk,
+    },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'server_error')
+    assert.equal(lines[0].inputTokens, 0, 'вход до модели не дошёл')
+    assert.equal(lines[0].outputTokens, 0, 'генерации не было — оценки нет')
+    assert.equal(lines[0].costUsd, 0)
+  } finally {
+    await s.close()
+  }
+})
+
+test('500 у провайдера: ноль по обоим концам, как и у 529', async () => {
+  // Нижний край границы 5xx. 529 закреплён тестом выше, но граница — это
+  // константа: сдвиг на единицу увёл бы 500–528, включая 502 и 503, в оценку
+  // выхода, то есть ровно в ту протечку, которую правило и закрывает.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: {
+      [LAPTOP]: () => httpJson(500, { error: { message: 'internal server error' } }),
+      [CLOUD]: cloudOk,
+    },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'server_error')
+    assert.equal(lines[0].inputTokens, 0, 'вход до модели не дошёл')
+    assert.equal(lines[0].outputTokens, 0, 'генерации не было — оценки нет')
+  } finally {
+    await s.close()
+  }
+})
+
+test('ошибка без кода состояния: ответа не было — оценки выхода нет', async () => {
+  // Разделительная черта между «ответ пришёл, но не разобрался» и броском до
+  // отправки: первое несёт код состояния, второе — нет. Если `bad_response`
+  // начнёт глотать бесстатусные броски, запрос, не покинувший процесс,
+  // получит полную оценку выхода.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: { [LAPTOP]: () => new Error('адаптер упал до отправки'), [CLOUD]: cloudOk },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'error')
+    assert.equal(lines[0].outputTokens, 0, 'в сеть ничего не ушло — генерации не было')
+  } finally {
+    await s.close()
+  }
+})
+
+test('перегрузка у обоих провайдеров: фантомных токенов в книге нет', async () => {
+  // Окно перегрузки: перебор на 5xx не прерывается, и до правки каждая такая
+  // попытка приносила полную оценку выхода — две за запрос.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const overloaded = () => httpJson(529, { error: { type: 'overloaded_error' } })
+  const s = await start({
+    hosts: { [LAPTOP]: overloaded, [CLOUD]: overloaded },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    const res = await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })
+    assert.equal(res.status, 503)
+    assert.equal(s.calls.length, 2, 'перебор на 5xx не прерывается')
+
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines.length, 2)
+    assert.deepEqual(
+      lines.map((l) => l.inputTokens + l.outputTokens),
+      [0, 0],
+      'за отказ до генерации не списывается ничего',
+    )
+    const spend = await (await s.get('/v1/spend')).json()
+    assert.equal(spend.apps.smoke.tokens, 0)
+    assert.equal(spend.apps.smoke.costUsd, 0, 'перегрузка не ест суточный потолок')
+  } finally {
+    await s.close()
+  }
+})
+
+test('200 с неразборным телом: генерация была — выход по оценке', async () => {
+  // Ответ пришёл, провайдер отработал и тарифицирует сгенерированное; что
+  // конверт не разобрался — наша беда, а не основание списать ноль.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: { [LAPTOP]: () => httpText(200, 'не JSON вовсе'), [CLOUD]: cloudOk },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'bad_response')
+    assert.ok(lines[0].inputTokens > 0)
+    assert.equal(lines[0].outputTokens, s.calls[0].body.options.num_predict)
+    assert.equal(lines[0].outputTokens, 800 + 2500)
+  } finally {
+    await s.close()
+  }
+})
+
+test('429 у провайдера: ноль на обоих концах, а не оценка', async () => {
+  // Самый частый из отказов. Если он когда-нибудь попадёт в множество
+  // оценки, книга начнёт расти на занятости — этот тест этого не пропустит.
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: {
+      [LAPTOP]: () => httpJson(429, { error: { message: 'rate limit' } }),
+      [CLOUD]: cloudOk,
+    },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'busy')
+    assert.equal(lines[0].inputTokens, 0)
+    assert.equal(lines[0].outputTokens, 0)
+  } finally {
+    await s.close()
+  }
+})
+
+test('4xx: отказ до модели по-прежнему идёт в книгу с нулём', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.jsonl')
+  const s = await start({
+    hosts: {
+      [LAPTOP]: () => httpJson(400, { error: { message: 'bad request' } }),
+      [CLOUD]: cloudOk,
+    },
+    file,
+    apps: TRANSLATE_APPS,
+  })
+  try {
+    assert.equal(
+      (await s.post({ taskClass: 'translate', input: 'длинный текст запроса' })).status,
+      200,
+    )
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+    assert.equal(lines[0].outcome, 'rejected')
+    assert.equal(lines[0].inputTokens, 0)
+    assert.equal(lines[0].outputTokens, 0)
+  } finally {
+    await s.close()
+  }
+})
+
+test('исход не может быть одновременно «до модели не дошло» и «выход по оценке»', () => {
+  // Структурный сторож против дрейфа множеств: попытка, у которой вход
+  // списан нулём, не может иметь оценки выхода — это разные половины одного
+  // вопроса «дошёл ли запрос до генерации».
+  const both = [...OUTPUT_ESTIMATED].filter((o) => NOT_REACHED.has(o))
+  assert.deepEqual(both, [], 'множества учёта пересеклись')
 })
 
 async function waitFor(cond) {

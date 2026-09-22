@@ -1136,7 +1136,32 @@
 
   /* ---------- общее ---------- */
 
-  const announce = (text) => { live.textContent = ''; live.textContent = text; };
+  /**
+   * Окно тишины для объявлений, пришедших ИЗ ПОТОКА событий. Подхват запуска
+   * получает от сервиса всё, что случилось до подписки, и без окна укладывал
+   * в `#live` пять текстов за 4 мс, из них два ложных в момент произнесения
+   * («в очереди», «выполняется» — у запуска, стоящего на паузе).
+   *
+   * Окно — секунда: ровно тот предел, который раскладка (п. 13) ставит
+   * объявлениям. Считается оно по часам браузера, а не по меткам событий:
+   * часы страницы и сервиса могут разойтись, и сравнение чужих часов со
+   * своими глушило бы живое столько, сколько расхождение.
+   *
+   * Глушится ТОЛЬКО поток. Объявления перехода — «Профиль …», «Диалог …» —
+   * говорят посетителю, куда он пришёл, и к запуску отношения не имеют:
+   * молчание на них оставляло бы в живой области прежнюю, уже ложную строку.
+   * Поэтому признак ставится по источнику вызова, а не по имени функции:
+   * `failRun` из потока событий молчит, он же из отправки сообщения — нет.
+   */
+  let quietLiveUntil = 0;
+  /** Признак «вызов пришёл из потока событий»: ставится в обработчиках потока. */
+  const FROM_STREAM = { fromStream: true };
+
+  const announce = (text, { fromStream = false } = {}) => {
+    if (fromStream && Date.now() < quietLiveUntil) return;
+    live.textContent = '';
+    live.textContent = text;
+  };
   const shout = (text) => { alertBox.textContent = ''; alertBox.textContent = text; };
 
   const fmtInt = (n) => Number(n).toLocaleString('ru-RU');
@@ -2276,7 +2301,7 @@
     monEmpty.hidden = runs.length > 0;
   };
 
-  const setStatus = (run, status) => {
+  const setStatus = (run, status, from) => {
     if (run.status === status) return;
     run.status = status;
     if (status === 'succeeded' || status === 'failed') {
@@ -2285,9 +2310,9 @@
         ? `готово за ${fmtDuration(run.durationMs)}` +
           (run.warnings ? `, ${run.warnings} ${plural(run.warnings, 'предупреждение', 'предупреждения', 'предупреждений')}` : '')
         : 'ошибка';
-      announce(`Запуск «${run.name}»: ${tail}`);
+      announce(`Запуск «${run.name}»: ${tail}`, from);
     } else {
-      announce(`Запуск «${run.name}»: ${STATUS_WORD[status]}`);
+      announce(`Запуск «${run.name}»: ${STATUS_WORD[status]}`, from);
     }
   };
 
@@ -2295,7 +2320,7 @@
    * События машины состояний двигают полосу запуска. `beat` в ленте монитора
    * не показывается и никуда не пишется: это удар пульса, а не событие.
    */
-  const trackRun = (event) => {
+  const trackRun = (event, from) => {
     const d = event.data ?? {};
     if (event.stage === 'beat') {
       if (Number.isFinite(d.elapsedMs)) elapsedMs = d.elapsedMs;
@@ -2317,7 +2342,7 @@
         mark: null,
         round: Number.isInteger(d.round) ? d.round : runState.round,
       });
-      announce(`Этап ${index} из ${stages.length}: ${stages[index - 1]?.title ?? d.state}`);
+      announce(`Этап ${index} из ${stages.length}: ${stages[index - 1]?.title ?? d.state}`, from);
       return true;
     }
     // `paused` и `resumed` несут этап и круг: полоса встаёт по ним, а не по
@@ -2327,50 +2352,60 @@
     if (Number.isInteger(d.round)) at.round = d.round;
     if (event.stage === 'paused') {
       setRunView('paused', { ...at, mark: 'paused', pausedAt: Date.now() });
-      announce('На паузе');
+      announce('На паузе', from);
       return true;
     }
     if (event.stage === 'resumed') {
       setRunView('running', { ...at, mark: null, pausedAt: null });
-      announce('Продолжаю');
+      announce('Продолжаю', from);
       return true;
     }
     return true;
   };
 
-  const addEvent = (run, event) => {
-    if (!trackRun(event)) return;
+  // `from` — откуда пришло событие: `{ fromStream: true }` у пришедшего из
+  // потока, ничего у сделанного страницей. Признак идёт вниз до `announce` и
+  // нигде не выводится из имени функции.
+  const addEvent = (run, event, from) => {
+    if (!trackRun(event, from)) return;
     run.events.unshift(event);
     if (event.level === 'warn') run.warnings += 1;
     if (event.level === 'error') shout(`Ошибка: ${event.title}`);
-    if (event.status && event.status !== run.status) setStatus(run, event.status);
+    if (event.status && event.status !== run.status) setStatus(run, event.status, from);
     if (event.stage === 'done' && event.durationMs) run.durationMs = event.durationMs;
     renderMonitor();
   };
-  const pageEvent = (run, level, title, detail = '') =>
+  const pageEvent = (run, level, title, detail = '', from) =>
     addEvent(run, {
       at: new Date().toISOString(), stage: 'страница', level, title, detail,
       status: run.status, durationMs: null,
-    });
+    }, from);
 
-  const startRun = (name) => {
+  /**
+   * Новая карточка в мониторе. Статус и время запуска задаются вызывающим:
+   * у подхваченного запуска они известны от сервиса, и ставить их после
+   * отрисовки значило бы показать «в очереди» и время открытия вкладки —
+   * враньё, которое само исправляется только накопленными событиями, а при
+   * пустой ленте не исправляется никогда.
+   */
+  const startRun = (name, { status = 'queued', startedAt = new Date().toISOString(), quiet = false } = {}) => {
     for (const r of runs) r.open = false;
     const run = {
-      key: String(Date.now()), name, status: 'queued', startedAt: new Date().toISOString(),
+      key: String(Date.now()), name, status, startedAt,
       events: [], warnings: 0, durationMs: null, open: true, answered: false,
     };
     runs.unshift(run);
     if (runs.length > MAX_RUNS) runs.length = MAX_RUNS;
     renderMonitor();
-    announce(`Запуск «${name}»: в очереди`);
+    if (!quiet) announce(`Запуск «${name}»: в очереди`);
     return run;
   };
 
-  const failRun = (run, title, detail) => {
+  const failRun = (run, title, detail, from) => {
     run.status = 'failed';
-    pageEvent(run, 'error', title, detail);
+    pageEvent(run, 'error', title, detail, from);
     run.durationMs = Date.now() - Date.parse(run.startedAt);
-    announce(`Запуск «${run.name}»: ошибка`);
+    announce(`Запуск «${run.name}»: ошибка`, from);
     renderMonitor();
   };
 
@@ -2589,15 +2624,33 @@
       renderRunbar();
     }, 5000);
     try {
-      await api('./api/run/pause', postJson({ paused: wantPaused }));
+      const result = await api('./api/run/pause', postJson({ paused: wantPaused }));
+      // Запуск успел кончиться, пока вкладка была закрыта. Это не отказ на
+      // действие посетителя (требование владельца 2026-09-22), а состояние:
+      // называем его словами и показываем, чем запуск кончился, — ответ или
+      // строку отмены переписка уже несёт.
+      // Ветка ниже гасит кнопку «Пауза» (`loading`, `idle` и `lost` держат её
+      // выключенной), поэтому фокус спасается ДО снятия активности — ровно
+      // как в `finishRun`, иначе он уходит на body (раскладка, п. 4.4).
+      //
+      // «Узнаю состояние» — на время чтения: чем кончился запуск, решает
+      // переписка (ответ, строка отмены или реплика, оставшаяся без ответа).
+      // Место остановки при этом не обнуляется: терять его незачем, а у `lost`
+      // и `cancelled` крестик обязан стоять на текущем этапе (раскладка,
+      // п. 4.1). Обнуление ждёт до самого `idle`.
+      if (result?.finished) {
+        runbarSay(result.message ?? 'Запуск уже завершился.');
+        if (document.activeElement === pauseBtn) input.focus();
+        setRunView('loading', { id: null, mark: null });
+        await Promise.all([syncChat(), syncProfile()]);
+        if (runState.view === 'loading') setRunView('idle', { index: 0, done: 0, mark: null });
+      }
     } catch (error) {
       // Единственное сообщение при возобновлении — отказ, а не объяснение действия.
       runbarSay(
         error.status === 429
           ? error.message
-          : error.status === 409
-            ? 'Запуск уже завершён'
-            : 'Паузу переключить не удалось — состояние на экране могло разойтись с запуском',
+          : 'Паузу переключить не удалось — состояние на экране могло разойтись с запуском',
       );
     } finally {
       clearTimeout(slow);
@@ -2673,6 +2726,27 @@
       startedAt: run.since ?? null,
       pausedAt: run.paused ? Date.now() : null,
     });
+    // Запуск идёт или стоит на паузе, а эта вкладка его не слушает — так
+    // бывает после перезагрузки и в другом окне того же профиля. Без подписки
+    // экран замирает навсегда: события «Продолжаю», этапы и конец запуска
+    // приходят только в поток (дефект владельца 2026-09-22).
+    // Карточка подхваченного запуска правдива с первой отрисовки: статус и
+    // время берутся у сервиса, а не остаются «в очереди» и «сейчас» рядом с
+    // полосой, которая уже говорит «На паузе». «Запуск в очереди» при подхвате
+    // не объявляется вовсе — запуск начат не здесь и не сейчас, — а всё, что
+    // случилось до этой секунды, придёт накопленным: полоса и монитор по этим
+    // событиям встают, живая область о них молчит (раскладка, п. 13).
+    if (following?.runId !== run.id) {
+      const asked = [...pathMessages()].reverse().find((m) => m.role === 'user');
+      const local = startRun(asked?.text ?? 'запуск', {
+        status: run.status ?? 'running',
+        startedAt: run.since ?? undefined,
+        quiet: true,
+      });
+      local.id = run.id;
+      quietLiveUntil = Date.now() + 1000;
+      followRun(run.id, local, (text, meta) => pushLocal('agent', text, meta));
+    }
   };
 
   /* ---------- шапка диалога ---------- */
@@ -3999,6 +4073,107 @@
     renderLog({ keepScroll: true });
   };
 
+  /**
+   * Конец запуска на экране: кнопка отпущена, полоса встала, монитор
+   * перерисован. Одна и та же для запуска, начатого здесь, и для запуска,
+   * подхваченного у сервиса: после чужого запуска экран обязан выглядеть так
+   * же, как после своего.
+   */
+  const finishRun = (run, view = 'done') => {
+    button.disabled = false;
+    log.removeAttribute('aria-busy');
+    // Фокус, стоявший на «Паузе», уходит на поле сообщения ДО снятия
+    // активности: иначе он ушёл бы на body.
+    if (document.activeElement === pauseBtn) input.focus();
+    setRunView(view, {
+      // Запуск кончился — текущего этапа нет: шесть «✓» и ни одного
+      // aria-current, а не вечно пульсирующая «Выдача».
+      index: view === 'done' ? 0 : runState.index,
+      done: view === 'done' ? stages.length : runState.done,
+      mark: view === 'done' ? null : 'stopped',
+      durationMs: Date.now() - Date.parse(run.startedAt),
+    });
+    renderLog({ keepScroll: true });
+    renderMonitor();
+  };
+
+  /**
+   * Подписка вкладки на поток событий запуска. Одна на вкладку: `following`
+   * помнит, какой запуск она слушает, и второй подписки на тот же не бывает.
+   *
+   * Подписка нужна не только запуску, начатому здесь. Запуск переживает и
+   * перезагрузку страницы, и закрытое окно (ADR 2026-09-21-1747, п. 6), и без
+   * подписки на него вкладка слепа: «Продолжить» снимает паузу у сервиса, а
+   * на экране не меняется ничего — дефект, найденный владельцем 2026-09-22.
+   * Сервис отдаёт новому подписчику сначала накопленные события, потом живые
+   * (`runs.subscribe`), поэтому вторая вкладка видит то же, что первая.
+   */
+  let following = null;
+
+  const followRun = (runId, run, answered) => {
+    if (following?.runId === runId) return;
+    following?.es.close();
+    const es = new EventSource(`./api/runs/${encodeURIComponent(runId)}/events`);
+    following = { runId, es };
+    const finish = (view = 'done') => {
+      if (following?.es === es) following = null;
+      finishRun(run, view);
+    };
+    let ended = false;
+    es.addEventListener('event', (m) => {
+      let ev;
+      try { ev = JSON.parse(m.data); } catch { return; }
+      if (ev.stage === 'warning' && ev.title === 'Историю не сжал') run.summarizeFailed = true;
+      addEvent(run, ev, FROM_STREAM);
+    });
+    es.addEventListener('end', async (m) => {
+      ended = true;
+      es.close();
+      let end = {};
+      try { end = JSON.parse(m.data); } catch {}
+      if (end.result) {
+        run.answered = true;
+        const r = end.result;
+        // Идентификатор запуска — у ответа: без него ссылок на журнал не будет.
+        const summary = { runId, ...(r.summary ?? {}) };
+        answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
+        if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
+      } else if (end.error) {
+        answered(end.error.message ?? 'агент не ответил', { error: true });
+      }
+      setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
+        ? end.status
+        : run.answered ? 'succeeded' : 'failed', FROM_STREAM);
+      // Отмена по сроку паузы — не «готово»: полоса говорит, что случилось.
+      if (end.status === 'cancelled') {
+        shout('Запуск отменён: пауза дольше 60 минут.');
+        finish('cancelled');
+      } else {
+        finish();
+      }
+      // Память профиля могла пополниться, тема — смениться, вопрос — появиться.
+      await Promise.all([syncChat(), syncProfile()]);
+    });
+    es.onerror = async () => {
+      if (ended) return;
+      ended = true;
+      es.close();
+      if (run.answered) { setStatus(run, 'succeeded', FROM_STREAM); finish(); return; }
+      // Последний известный этап остаётся, пульс останавливается: врать
+      // «готово» о запуске, который, возможно, идёт, нельзя.
+      if (run.events.length > 0) {
+        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа', FROM_STREAM);
+        answered('поток закрылся без ответа', { error: true });
+        finish('partial');
+      } else {
+        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся', FROM_STREAM);
+        answered('связь с агентом прервана', { error: true });
+        finish('idle');
+      }
+      await Promise.all([syncChat(), syncProfile()]);
+    };
+  };
+
   form.onsubmit = async (event) => {
     event.preventDefault();
     const message = input.value.trim();
@@ -4053,23 +4228,7 @@
     cancelEdit({ sent: true });
     showHead();
 
-    const finish = (view = 'done') => {
-      button.disabled = false;
-      log.removeAttribute('aria-busy');
-      // Фокус, стоявший на «Паузе», уходит на поле сообщения ДО снятия
-      // активности: иначе он ушёл бы на body.
-      if (document.activeElement === pauseBtn) input.focus();
-      setRunView(view, {
-        // Запуск кончился — текущего этапа нет: шесть «✓» и ни одного
-        // aria-current, а не вечно пульсирующая «Выдача».
-        index: view === 'done' ? 0 : runState.index,
-        done: view === 'done' ? stages.length : runState.done,
-        mark: view === 'done' ? null : 'stopped',
-        durationMs: Date.now() - Date.parse(run.startedAt),
-      });
-      renderLog({ keepScroll: true });
-      renderMonitor();
-    };
+    const finish = (view = 'done') => finishRun(run, view);
     const answered = (text, meta) => {
       pushLocal('agent', text, meta);
       showParamsSummary();
@@ -4098,60 +4257,7 @@
       return finish('idle');
     }
 
-    const es = new EventSource(`./api/runs/${encodeURIComponent(runId)}/events`);
-    let ended = false;
-    es.addEventListener('event', (m) => {
-      let ev;
-      try { ev = JSON.parse(m.data); } catch { return; }
-      if (ev.stage === 'warning' && ev.title === 'Историю не сжал') run.summarizeFailed = true;
-      addEvent(run, ev);
-    });
-    es.addEventListener('end', async (m) => {
-      ended = true;
-      es.close();
-      let end = {};
-      try { end = JSON.parse(m.data); } catch {}
-      if (end.result) {
-        run.answered = true;
-        const r = end.result;
-        // Идентификатор запуска — у ответа: без него ссылок на журнал не будет.
-        const summary = { runId, ...(r.summary ?? {}) };
-        answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
-        if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
-      } else if (end.error) {
-        answered(end.error.message ?? 'агент не ответил', { error: true });
-      }
-      setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
-        ? end.status
-        : run.answered ? 'succeeded' : 'failed');
-      // Отмена по сроку паузы — не «готово»: полоса говорит, что случилось.
-      if (end.status === 'cancelled') {
-        shout('Запуск отменён: пауза дольше 60 минут.');
-        finish('cancelled');
-      } else {
-        finish();
-      }
-      // Память профиля могла пополниться, тема — смениться, вопрос — появиться.
-      await Promise.all([syncChat(), syncProfile()]);
-    });
-    es.onerror = async () => {
-      if (ended) return;
-      ended = true;
-      es.close();
-      if (run.answered) { setStatus(run, 'succeeded'); finish(); return; }
-      // Последний известный этап остаётся, пульс останавливается: врать
-      // «готово» о запуске, который, возможно, идёт, нельзя.
-      if (run.events.length > 0) {
-        failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа');
-        answered('поток закрылся без ответа', { error: true });
-        finish('partial');
-      } else {
-        failRun(run, 'Связь с агентом прервана', 'поток событий не открылся');
-        answered('связь с агентом прервана', { error: true });
-        finish('idle');
-      }
-      await Promise.all([syncChat(), syncProfile()]);
-    };
+    followRun(runId, run, answered);
   };
 
   input.addEventListener('keydown', (event) => {
