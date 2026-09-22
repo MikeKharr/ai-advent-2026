@@ -2523,12 +2523,19 @@
   };
 
   /**
-   * Знак этапа с номером `n`: пропуск и неотданный ответ идут прежде «пройден».
+   * «Выдача» неотданного ответа: последний этап запуска, кончившегося без
+   * ответа. Одно условие на знак и на приглушение — разойдясь, они дали бы
+   * крестик без приглушения (нит reviewer к PR #204).
+   */
+  const isWithheldStage = (n) => runState.withheld && n === stages.length;
+
+  /**
+   * Знак этапа с номером `n`: неотданный ответ и пропуск идут прежде «пройден».
    * Вынесено из `renderStagesBar` отдельным правилом, чтобы тест исполнял его,
    * а не искал знак в разметке.
    */
   const stageSign = (n, position) => {
-    if (runState.withheld && n === stages.length) return '×';
+    if (isWithheldStage(n)) return '×';
     if (runState.skipped.includes(n)) return stageMark(position, 'skipped');
     if (position === 'now') return stageMark('now', runState.mark);
     return stageMark(position);
@@ -2551,7 +2558,7 @@
       // отдавать было нечего, и галочка обещала бы отданный ответ. Знак — тот
       // же `×`, что у прерванного (раскладка дня 13, п. 2.3), а словом состояние
       // называет статус рядом: «Ответ не отдан».
-      const withheldHere = runState.withheld && n === stages.length;
+      const withheldHere = isWithheldStage(n);
       const sign = stageSign(n, position);
       if (sign === null) {
         const dot = document.createElement('span');
@@ -2702,7 +2709,11 @@
   };
 
   const setRunView = (view, patch = {}) => {
-    Object.assign(runState, patch, { view });
+    // `withheld` гаснет по умолчанию: ключ передаёт только завершение
+    // своего запуска, а патчи подхвата чужого его не несут — и признак
+    // залипал, ставя крестик «Выдаче» идущего запуска (находка reviewer
+    // к PR #204).
+    Object.assign(runState, { withheld: false }, patch, { view });
     if (view === 'paused') startPauseTimer();
     else stopPauseTimer();
     renderRunbar();
@@ -4684,8 +4695,8 @@
       index: view === 'done' ? 0 : runState.index,
       done: view === 'done' ? stages.length : runState.done,
       mark: view === 'done' ? null : 'stopped',
-      // Признак идёт от запуска, а не остаётся от прошлого: следующий запуск
-      // на той же полосе снимает его сам.
+      // Признак идёт от запуска: ставит его только завершение, а гасит
+      // умолчание `setRunView` — любой следующий вид приходит без ключа.
       withheld: run.withheld === true,
       durationMs: Date.now() - Date.parse(run.startedAt),
     });

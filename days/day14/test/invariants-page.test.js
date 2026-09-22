@@ -36,11 +36,12 @@ const DRAFT_ROUNDS = 3
  * число, а не источник — подмена `roundLimits.max` на готовую тройку прошла бы
  * тест молча (находка reviewer к PR #204).
  */
-const loadValue = (name) => {
+const valueSource = (name) => {
   const found = page.match(new RegExp(`\\n\\s*(?:let|const) ${name} = (.*?);\\n`))
   assert.ok(found, `на странице нет объявления ${name} — его переименовали или убрали`)
-  return eval(`(${found[1]})`)
+  return found[1]
 }
+const loadValue = (name) => eval(`(${valueSource(name)})`)
 const roundLimits = loadValue('roundLimits')
 
 /**
@@ -332,7 +333,12 @@ test('«Выдача» при неотданном ответе несёт «×�
   const stageMark = loadRule('stageMark')
   const stages = Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, title: `Этап ${i}` }))
   let runState = { withheld: true, skipped: [5], mark: null }
+  const isWithheldStage = eval(`(${valueSource('isWithheldStage')})`)
   const stageSign = eval(`(${ruleSource('stageSign')})`)
+  // Знак и приглушение идут от одного условия: разойдясь, они дали бы
+  // крестик без приглушения (нит reviewer к PR #204).
+  assert.match(page, /const withheldHere = isWithheldStage\(n\);/)
+  void isWithheldStage
   // Шестая — «Выдача»: этап состоялся, но отдавать было нечего.
   assert.equal(stageSign(6, 'past'), '×')
   // Пятая — пополнение памяти, пропущенное целиком: прочерк, как и был.
@@ -342,6 +348,50 @@ test('«Выдача» при неотданном ответе несёт «×�
   runState = { withheld: false, skipped: [], mark: null }
   assert.equal(stageSign(6, 'past'), '✓')
   void stageMark, void stages
+})
+
+test('признак «ответ не отдан» доведён от результата до полосы', () => {
+  // Правила выше проверяются с подставленным состоянием, поэтому проводка
+  // нуждается в своём стороже: без неё правила живы, а экран возвращается к
+  // «Готово», и ничто не краснеет (находка reviewer к PR #204).
+
+  // 1. Результат запуска ставит признак — рядом с показом объяснения.
+  assert.match(
+    page,
+    /if \(r\.withheld\) \{[\s\S]{0,400}?run\.withheld = true;[\s\S]{0,200}?answered\(withheldText\(r\.withheld\)/,
+    'результат с `withheld` обязан ставить признак запуска',
+  )
+  // 2. Завершение переносит его в полосу.
+  assert.match(page, /withheld: run\.withheld === true,/)
+  assert.match(
+    page,
+    /const finishRun = \(run, view = 'done'\) => \{[\s\S]*?withheld: run\.withheld === true,/,
+    'перенос живёт именно в завершении запуска',
+  )
+  // 3. Старт своего запуска начинает с чистой «Выдачи».
+  assert.match(
+    page,
+    /setRunView\('running', \{[\s\S]{0,400}?withheld: false,/,
+    'новый запуск обязан начинаться без признака',
+  )
+})
+
+test('признак «ответ не отдан» не залипает на следующем виде полосы', () => {
+  // Подхват чужого запуска патча с ключом не несёт, и признак оставался:
+  // «Выдача» идущего запуска с первой секунды несла крестик (находка reviewer
+  // к PR #204). Умолчание гасит его, а завершение по-прежнему ставит.
+  let runState = { view: 'done', withheld: true, index: 0 }
+  const startPauseTimer = () => {}
+  const stopPauseTimer = () => {}
+  const renderRunbar = () => {}
+  const setRunView = eval(`(${ruleSource('setRunView')})`)
+
+  setRunView('running', { index: 1 })
+  assert.equal(runState.withheld, false, 'подхват чужого запуска гасит признак')
+
+  setRunView('done', { withheld: true })
+  assert.equal(runState.withheld, true, 'завершение по-прежнему ставит признак')
+  void startPauseTimer, void stopPauseTimer, void renderRunbar
 })
 
 test('при «годен» без вариантов фраза не договаривает «или 0 вариантов»', () => {
