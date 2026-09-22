@@ -430,6 +430,21 @@ export function createRouter({
       // 4xx кроме 429 — ошибка вызывающего (кривая схема, параметры), а не
       // поломка провайдера: в предохранитель не идёт, общий ресурс не гасит.
       if (error.status >= 400 && error.status < 500) return done('rejected', error.message)
+      // 5xx — отказ поставщика до генерации, и 529 (overloaded у Anthropic)
+      // здесь самый частый: это то же «не сейчас», что и 429. Отдельный исход
+      // нужен учёту: за такую попытку провайдер не берёт ничего, и оценке
+      // там взяться неоткуда.
+      if (error.status >= 500) {
+        health.failure(p)
+        return done('server_error', error.message)
+      }
+      // Ответ пришёл с успешным кодом, но тело не разобралось: провайдер
+      // отработал и тарифицирует сгенерированное — в отличие от бросков
+      // адаптера до отправки, которые статуса не несут вовсе.
+      if (error.status !== undefined) {
+        health.failure(p)
+        return done('bad_response', error.message)
+      }
       health.failure(p)
       return done('error', error.message)
     } finally {
