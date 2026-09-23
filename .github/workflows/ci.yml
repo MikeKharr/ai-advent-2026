@@ -52,7 +52,14 @@ jobs:
           fi
           while IFS= read -r f; do
             unit=${f#./}
-            names=$(jq -r '.dependencies // {} | keys[]' "$f") || { echo "::error file=${unit}::package.json не разобран"; fail=1; continue; }
+            # Три раздела, а не один: `optionalDependencies` ставится тем же
+            # `npm ci` и доезжает до образа (`--omit=dev` его не снимает),
+            # `peerDependencies` объявляет ту же чужую единицу зависимостью.
+            # Читать только `.dependencies` значило бы отдать границу за одно
+            # переименование раздела (находка reviewer к PR дня 16).
+            # `devDependencies` намеренно не в счёт: в образ они не едут.
+            runtime='[(.dependencies // {}), (.optionalDependencies // {}), (.peerDependencies // {})] | add'
+            names=$(jq -r "$runtime | keys[]" "$f") || { echo "::error file=${unit}::package.json не разобран"; fail=1; continue; }
             for name in $names; do
               if [ "$unit" != mcp/package.json ]; then
                 echo "::error file=${unit}::runtime-зависимость ${name}: правило «Node 22 без runtime-зависимостей» (ADR 2026-09-07-1525); исключение — только единица mcp/"
@@ -65,11 +72,16 @@ jobs:
               esac
               # Версия точная, без ^ и ~: поднятие версии SDK — отдельный PR
               # класса A с гейтом compliance, а не тихий разброс диапазона.
-              version=$(jq -r --arg n "$name" '.dependencies[$n]' "$f")
-              case "$version" in
-                [0-9]*.[0-9]*.[0-9]*) echo "ok: ${unit} — ${name}@${version}" ;;
-                *) echo "::error file=${unit}::версия ${name} не точная: ${version} (ADR 2026-09-23-1227, п. 2)"; fail=1 ;;
-              esac
+              version=$(jq -r --arg n "$name" "$runtime | .[\$n]" "$f")
+              # Шаблон якорится с обоих концов: без хвостового якоря запись
+              # вида `1.30.0 || 2.0.0` — диапазон из двух версий — проходила
+              # бы как точная (находка reviewer к PR дня 16).
+              if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+                echo "ok: ${unit} — ${name}@${version}"
+              else
+                echo "::error file=${unit}::версия ${name} не точная: ${version} (ADR 2026-09-23-1227, п. 2)"
+                fail=1
+              fi
             done
           done <<< "$files"
           [ "$fail" -eq 0 ] || exit 1

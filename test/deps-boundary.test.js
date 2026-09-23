@@ -59,7 +59,7 @@ const CLEAN = {
   'agents/package.json': { name: 'agents' },
   'router/package.json': { name: 'router' },
   'days/day16/package.json': { name: 'day16' },
-  'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0', zod: '3.25.76' } },
+  'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0', zod: '4.6.5' } },
 }
 
 test('дерево по правилам — код 0', () => {
@@ -76,15 +76,58 @@ test('приманка: dependencies у чужой единицы — код 1 �
 })
 
 test('приманка: зависимость в mcp вне списка — код 1', () => {
-  const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0', zod: '3.25.76', express: '5.1.0' } } })
+  const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0', zod: '4.6.5', express: '5.1.0' } } })
   assert.equal(run.status, 1, run.output)
   assert.match(run.output, /вне списка исключения/)
 })
 
 test('приманка: диапазон вместо точной версии — код 1', () => {
-  const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '^1.30.0', zod: '3.25.76' } } })
+  const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '^1.30.0', zod: '4.6.5' } } })
   assert.equal(run.status, 1, run.output)
   assert.match(run.output, /не точная/)
+})
+
+// Разделы-синонимы: `optionalDependencies` ставится тем же `npm ci` и
+// доезжает до прод-образа, `peerDependencies` объявляет ту же чужую единицу
+// зависимостью. Страж, который читает только `.dependencies`, обходится
+// переименованием раздела — приманки ниже это и стерегут.
+test('приманка: optionalDependencies у чужой единицы — код 1', () => {
+  const run = runStep({ ...CLEAN, 'router/package.json': { name: 'router', optionalDependencies: { express: '5.1.0' } } })
+  assert.equal(run.status, 1, run.output)
+  assert.match(run.output, /router\/package\.json/)
+  assert.match(run.output, /express/)
+})
+
+test('приманка: optionalDependencies в mcp вне списка — код 1', () => {
+  const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0', zod: '4.6.5' }, optionalDependencies: { hono: '4.9.0' } } })
+  assert.equal(run.status, 1, run.output)
+  assert.match(run.output, /вне списка исключения/)
+  assert.match(run.output, /hono/)
+})
+
+test('приманка: peerDependencies у чужой единицы — код 1', () => {
+  const run = runStep({ ...CLEAN, 'agents/package.json': { name: 'agents', peerDependencies: { zod: '4.6.5' } } })
+  assert.equal(run.status, 1, run.output)
+  assert.match(run.output, /agents\/package\.json/)
+})
+
+test('приманка: «1.30.0 || 2.0.0» — не точная версия, код 1', () => {
+  const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0 || 2.0.0', zod: '4.6.5' } } })
+  assert.equal(run.status, 1, run.output)
+  assert.match(run.output, /не точная/)
+})
+
+test('приманка: «1.30.0-beta.1 x» и «=1.30.0» — тоже не точные', () => {
+  for (const version of ['1.30.0 x', '=1.30.0', '1.30.0.0', ' 1.30.0']) {
+    const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: version, zod: '4.6.5' } } })
+    assert.equal(run.status, 1, `${version}: ${run.output}`)
+    assert.match(run.output, /не точная/)
+  }
+})
+
+test('предвыпускная точная версия принимается', () => {
+  const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.31.0-rc.1', zod: '4.6.5' } } })
+  assert.equal(run.status, 0, run.output)
 })
 
 test('приманка: зависимость в новой единице верхнего уровня — код 1', () => {
