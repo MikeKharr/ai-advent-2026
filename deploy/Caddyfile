@@ -164,6 +164,15 @@ http://challenge.zpq.ai {
 		}
 	}
 
+	redir /day15 /day15/ permanent
+	handle_path /day15/* {
+		reverse_proxy day15:8080 {
+			health_uri /healthz
+			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
 	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
 
 	# --- атлас проекта ---
