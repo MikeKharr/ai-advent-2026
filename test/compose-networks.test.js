@@ -57,9 +57,19 @@ test('приманка: mcp добавили в сеть по умолчанию
   assert.match(problems(decoy).join('\n'), /только в сети mcp/)
 })
 
-test('приманка: день 16 добавили в сеть по умолчанию — рядом с secrets.env', () => {
+// Мостик у дня 16 — главный сценарий стража: изоляция службы держится не
+// тем, что до неё не дотянуться, а тем, что дотянуться не через кого. Судим
+// по problems(), а не по разбору: проверка разборщика выглядела бы покрытием
+// и им не была бы (находка `compliance` к PR дня 16).
+test('приманка: день 16 добавили в сеть по умолчанию — мостик к secrets.env', () => {
   const decoy = inService(TEXT, 'day16', / {4}networks:\n {6}- mcp\n/, '    networks:\n      - mcp\n      - default\n')
-  assert.deepEqual(parseServices(decoy).get('day16'), ['mcp', 'default'])
+  assert.deepEqual(parseServices(decoy).get('day16'), ['mcp', 'default'], 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба day16 должна быть только в сети mcp/)
+})
+
+test('приманка: у дня 16 убрали ключ networks — он в сети по умолчанию', () => {
+  const decoy = inService(TEXT, 'day16', / {4}networks:\n {6}- mcp\n/, '')
+  assert.match(problems(decoy).join('\n'), /у службы day16 нет ключа networks/)
 })
 
 test('приманка: router пустили в сеть mcp', () => {

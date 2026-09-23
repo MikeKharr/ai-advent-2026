@@ -20,6 +20,14 @@ export const COMPOSE = 'deploy/compose.yml'
 export const ISOLATED = 'mcp'
 /** Кто ещё вправе быть в сети `mcp`: вход и день, ради которого она заведена. */
 export const ALLOWED_IN_NETWORK = ['caddy', 'mcp', 'day16']
+/**
+ * Жильцы сети: им положена РОВНО ОДНА сеть — своя. `caddy` в этот список не
+ * входит намеренно: он вход, обе сети ему положены по работе. Без этого
+ * различения список выше разрешал бы дню 16 быть в `mcp` и в сети по
+ * умолчанию одновременно — мостик из изолированной сети туда, где `router`,
+ * `agents` и `secrets.env` (находка `compliance` к PR дня 16).
+ */
+export const ONLY_IN_NETWORK = ['mcp', 'day16']
 
 const COMMENT = /^\s*#/
 
@@ -75,15 +83,20 @@ export function problems(text) {
   const services = parseServices(text)
   const found = []
 
-  const own = services.get(ISOLATED)
-  if (own === undefined) {
+  if (!services.has(ISOLATED)) {
     found.push(`службы ${ISOLATED} нет в ${COMPOSE}`)
     return found
   }
-  if (own === null) {
-    found.push(`у службы ${ISOLATED} нет ключа networks: — она в сети по умолчанию, вместе с router и agents`)
-  } else if (own.length !== 1 || own[0] !== ISOLATED) {
-    found.push(`служба ${ISOLATED} должна быть только в сети ${ISOLATED}, а объявлена в: ${own.join(', ') || '(пусто)'}`)
+
+  for (const name of ONLY_IN_NETWORK) {
+    // Уехавшая служба — не дыра: дыра была бы, останься она с двумя сетями.
+    if (!services.has(name)) continue
+    const networks = services.get(name)
+    if (networks === null) {
+      found.push(`у службы ${name} нет ключа networks: — она в сети по умолчанию, вместе с router, agents и secrets.env`)
+    } else if (networks.length !== 1 || networks[0] !== ISOLATED) {
+      found.push(`служба ${name} должна быть только в сети ${ISOLATED}, а объявлена в: ${networks.join(', ') || '(пусто)'}`)
+    }
   }
 
   for (const [name, networks] of services) {
@@ -102,5 +115,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(`::error::изоляция сети ${ISOLATED} нарушена — ADR 2026-09-23-1227, п. 5`)
     process.exit(1)
   }
-  console.log(`ok: служба ${ISOLATED} только в своей сети, в сети ${ISOLATED} — только ${ALLOWED_IN_NETWORK.join(', ')}`)
+  console.log(`ok: ${ONLY_IN_NETWORK.join(' и ')} — каждая только в сети ${ISOLATED}; в сети ${ISOLATED} — только ${ALLOWED_IN_NETWORK.join(', ')}`)
 }
