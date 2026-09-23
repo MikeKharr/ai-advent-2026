@@ -32,6 +32,7 @@ import {
   VERIFY_REMARKS_CHARS,
 } from './llm.js'
 import { recall } from './memory.js'
+import { registryPrompts } from './prompts.js'
 import {
   inputBudgetFor,
   isProfileId,
@@ -65,6 +66,13 @@ export const STAGED_AGENT_ID = 'staged-agent'
  * выставленная в дне 14, действует и в дне 13 на том же профиле.
  */
 export const INVARIANT_AGENT_ID = 'invariant-agent'
+
+/**
+ * Агент дня 15 — та же машина с двумя опциями (ADR 2026-09-23-0646):
+ * промпты профиля (`prompts`) и седьмой этап в таблице (`stages`). Копии
+ * `staged.js` под день 15 нет — она отвергнута ещё в ADR 2026-09-22-0827.
+ */
+export const PROMPT_AGENT_ID = 'prompt-agent'
 
 /**
  * Потолок `system + input` каждого вызова этого агента (решение владельца,
@@ -144,7 +152,30 @@ export const STAGES = [
   },
 ]
 
-const INDEX_OF = Object.fromEntries(STAGES.map((stage, i) => [stage.id, i]))
+/**
+ * Семь этапов дня 15 (ADR 2026-09-23-0646, п. 4). «Сборка контекста»
+ * уточняется, а не заменяется: она собирает блоки и меряет их под потолок,
+ * а новый `prepare` складывает из них итоговый запрос — ровно в том виде, в
+ * каком он уйдёт роутеру, — и пишет его текст в журнал. Вызова модели у него
+ * нет, поэтому `promptId` равен `null`, как у «Приёма» и «Выдачи».
+ *
+ * Возврат с «Проверки» идёт на «Сборку», значит `prepare` проходит на каждом
+ * круге: одна строка `run_prompts` на круг, и видно, чем круги отличались.
+ */
+export const PREPARE_STAGES = [
+  STAGES[0],
+  {
+    ...STAGES[1],
+    rule: `пределы модели, рабочая память по стратегии, правила и тема; блоки собраны и измерены под потолок этапа ${STAGE_CONTEXT_TOKENS} токенов; вызов только при стратегии «сводка» и наступившем пороге`,
+  },
+  {
+    id: 'prepare',
+    title: 'Подготовка промпта',
+    promptId: null,
+    rule: 'итоговые system и input ровно в том виде, в каком уйдут роутеру; отпечаток, токены и текст — в журнал; вызова модели нет',
+  },
+  ...STAGES.slice(2),
+]
 
 /** Подрезка замечаний: сначала обезвреживание метки, потом жёсткий срез. */
 export function safeRemarks(text) {
@@ -163,12 +194,27 @@ export function createStagedAgent({
    * ни одного его промпта, события и числа это не меняет.
    */
   invariants: inv = null,
+  /**
+   * Шов дня 15 (ADR 2026-09-23-0646, п. 2): объект `{ ownsSystem, resolve }`
+   * из `prompts.js`. Умолчание `registryPrompts` отдаёт пустую карту, и
+   * каждое место ниже читает промпт через него без ветвления — третьим
+   * флагом у места вызова это не стало (предел назван в ADR 2026-09-22-0827).
+   */
+  prompts = registryPrompts,
+  /** Таблица этапов: шесть у дней 13 и 14, семь у дня 15 (ADR, п. 4). */
+  stages = STAGES,
+  /**
+   * Потолок ответа: 2048 у дней 13 и 14, 32 000 у дня 15 (ADR, п. 5). Одно
+   * число на вход запуска, настройки и поле страницы.
+   */
+  maxOutputTokens = LAYERED_MAX_TOKENS,
   policy = defaultPolicy,
   fetchImpl = fetch,
   now = Date.now,
   log = console.error,
 }) {
   const baseSystem = agent.systemPrompt
+  const indexOf = Object.fromEntries(stages.map((stage, i) => [stage.id, i]))
   const limitsOf = () => fetchLimits(env, agent.taskClass, { fetchImpl }).catch(() => null)
   const lock = createSessionLock()
   const pauseTtlMs = env.PAUSE_TTL_MINUTES * 60_000
@@ -189,12 +235,20 @@ export function createStagedAgent({
      */
     settingsStore: 'staged',
 
+    /**
+     * Шов промптов профиля — наружу для сервиса: ход формулировщика идёт
+     * мимо запуска, своей ручкой, и промпт `invariant.draft` ему нужно
+     * взять там же, где его берёт машина (ADR 2026-09-23-0646, п. 2).
+     */
+    profilePrompts: prompts,
+
     /** Настройки профиля для дня 13: свои потолки и две настройки круга. */
     parseSettings(body) {
       return parseSettings(body, agent.defaults, LAYERED_MODELS, {
         review: true,
         contextMax: STAGE_CONTEXT_TOKENS,
         summarizeMax: STAGE_CONTEXT_TOKENS,
+        maxTokensMax: maxOutputTokens,
       })
     },
 
@@ -202,7 +256,14 @@ export function createStagedAgent({
     parseInput(body) {
       if (!body || typeof body !== 'object')
         return { ok: false, message: 'input должен быть объектом' }
-      for (const field of FOREIGN_FIELDS) {
+      // Промпт ответа дня 15 принадлежит профилю, поэтому `system` во входе
+      // запуска для него — такое же постороннее поле, как `sphere` (ADR
+      // 2026-09-23-0646, п. 2): иначе прямой `POST` подменил бы системный
+      // промпт мимо профиля, и окно «Об агенте» показывало бы не тот текст,
+      // которым агент на деле отвечает. У дней 13 и 14 `ownsSystem` ложно, и
+      // поле принимается по-прежнему.
+      const foreign = prompts.ownsSystem ? [...FOREIGN_FIELDS, 'system'] : FOREIGN_FIELDS
+      for (const field of foreign) {
         if (body[field] !== undefined && body[field] !== null && body[field] !== '') {
           return { ok: false, message: `Поле ${field} этому агенту не передаётся` }
         }
@@ -217,7 +278,7 @@ export function createStagedAgent({
         return { ok: false, message: 'Диалог не найден в этом профиле' }
 
       const parsed = parseParams(body, {
-        maxOutputTokens: LAYERED_MAX_TOKENS,
+        maxOutputTokens,
         defaults: agent.defaults,
         models: LAYERED_MODELS,
         contextMax: STAGE_CONTEXT_TOKENS,
@@ -294,7 +355,7 @@ export function createStagedAgent({
       })
       // Промпты этапов — те же константы, что уйдут в модель. У сжатия текст
       // зависит от порога: показывается с умолчанием контекста реестра.
-      const prompts = {
+      const texts = {
         'stage.summary': buildSummaryRequest(null, [], agent.defaults.contextTokens).system,
         'stage.answer': baseSystem,
         'stage.verify': VERIFY_PROMPT,
@@ -302,7 +363,7 @@ export function createStagedAgent({
       }
       // День 14 проверяет своим промптом: промпт дня 13 остаётся на месте и
       // со своим `sha8`, а окно «Об агенте» показывает тот текст, что уйдёт.
-      if (inv) prompts['stage.verify'] = inv.prompts['stage.verify.invariants']
+      if (inv) texts['stage.verify.invariants'] = inv.prompts['stage.verify.invariants']
       // Промпт формулировщика к этапам не относится: его вызов идёт своим
       // каналом, мимо запуска, — но показать его «Об агенте» обязано.
       return {
@@ -316,12 +377,24 @@ export function createStagedAgent({
         models,
         presets: [],
         defaults: agent.defaults,
-        stages: STAGES.map((stage) => ({
-          id: stage.id,
-          title: stage.title,
-          prompt: stage.promptId ? prompts[stage.promptId] : null,
-          rule: stage.rule,
-        })),
+        stages: stages.map((stage) => {
+          // День 14 и день 15 проверяют своим промптом: у этапа `verify` это
+          // `stage.verify.invariants`, и окно «Об агенте» обязано показать
+          // тот текст, что уйдёт, под тем идентификатором, которым его
+          // правят. Промпт дня 13 остаётся на месте и со своим `sha8`.
+          const promptId =
+            inv && stage.id === 'verify' ? 'stage.verify.invariants' : stage.promptId
+          return {
+            id: stage.id,
+            title: stage.title,
+            // Идентификатор промпта — ключ правки в окне «Об агенте» и в
+            // ручке `PUT /v1/profiles/:id/prompts/:promptId`: страница не
+            // выводит его из названия этапа сама.
+            promptId,
+            prompt: promptId ? texts[promptId] : null,
+            rule: stage.rule,
+          }
+        }),
         // Инварианты профиля дня 14: их потолки и промпт формулировщика.
         // Страница не хранит эти числа сама — как и предел кругов.
         ...(inv
@@ -342,7 +415,7 @@ export function createStagedAgent({
           stageContextTokens: STAGE_CONTEXT_TOKENS,
           stopSequences: PARAM_LIMITS.stopSequences,
           stopChars: PARAM_LIMITS.stopChars,
-          maxTokens: LAYERED_MAX_TOKENS,
+          maxTokens: maxOutputTokens,
           // Страница не хранит эти числа сама: предел кругов растёт в цене
           // запуска, и разойтись с сервисом ему нельзя.
           reviewRounds: { ...REVIEW_ROUNDS },
@@ -355,7 +428,18 @@ export function createStagedAgent({
       const strategy = run.input.strategy ?? null
       const windowSize = run.input.window ?? null
       const summarizeAt = run.input.summarizeAt ?? null
-      const system = run.input.system ?? baseSystem
+      // Снимок промптов профиля — одним запросом на запуск, как снимок
+      // инвариантов: один текст на все круги. Берётся до первого события, а
+      // не в теле «Приёма», потому что `received` обязан назвать источник
+      // промпта ответа, а он идёт раньше первого этапа (ADR
+      // 2026-09-23-0646, п. 2, «снимок на Приёме» — тот же один запрос).
+      const profilePrompts = prompts.resolve(profileId)
+      /** Текст промпта или умолчание; `null` у места вызова — «как было». */
+      const promptOf = (id) => profilePrompts.get(id) ?? null
+      const promptSource = (id) => (profilePrompts.has(id) ? 'profile' : 'registry')
+      // Промпт ответа: профильный сильнее входа запуска — и у дня 15 входа с
+      // `system` не бывает вовсе, `parseInput` его отвергает.
+      const system = promptOf('stage.answer') ?? run.input.system ?? baseSystem
       const systemOverridden = run.input.system !== null && run.input.system !== undefined
       const startedAt = now()
 
@@ -386,6 +470,9 @@ export function createStagedAgent({
         // (ADR 2026-09-22-0827, п. 4). Без шва — пустой список и `unchecked`.
         invariants: [],
         invariantStatus: 'unchecked',
+        // Итоговый запрос круга, составленный этапом `prepare` (ADR
+        // 2026-09-23-0646, п. 4). У дней 13 и 14 этапа нет, и поле — `null`.
+        prepared: null,
         withheld: null,
       }
       const tree = strategy !== null
@@ -411,6 +498,11 @@ export function createStagedAgent({
           const requestTokens = Number.isFinite(data.requestTokens) ? data.requestTokens : 0
           data.promptId = current.promptId
           data.promptSha = promptSha8(current.promptText ?? '')
+          // Откуда взят текст этого вызова (ADR 2026-09-23-0646, п. 2).
+          // Текста в событии по-прежнему нет — только источник, отпечаток и
+          // размер (ADR 2026-09-09-0854, п. 4). У дней 13 и 14 шва нет, и
+          // поля тоже: их события не меняются ни одним ключом.
+          if (prompts.ownsSystem) data.promptSource = promptSource(current.promptId)
           data.promptTokens = promptTokens
           // Вход без промпта: столько стоит контекст этапа сам по себе.
           data.contextTokens = Math.max(0, requestTokens - promptTokens)
@@ -461,7 +553,15 @@ export function createStagedAgent({
 
       /** Строка журнала на проход этапа. Текстов в ней нет — только числа и коды. */
       const attempts = new Map()
-      const logRow = ({ stage, index, enteredAt, outcome, verdict = '', errorCode = '' }) => {
+      const logRow = ({
+        stage,
+        index,
+        enteredAt,
+        outcome,
+        verdict = '',
+        errorCode = '',
+        promptChars = '',
+      }) => {
         const attempt = (attempts.get(stage.id) ?? 0) + 1
         attempts.set(stage.id, attempt)
         const left = now()
@@ -489,6 +589,10 @@ export function createStagedAgent({
           verdict,
           run_status: runs.get(run.id)?.status ?? 'running',
           error_code: errorCode,
+          // Длина итогового запроса у этапа «Подготовка промпта» дня 15;
+          // у прочих этапов пусто. Сам текст — в SQLite, не здесь (ADR
+          // 2026-09-23-0646, п. 4).
+          prompt_chars: promptChars,
         })
       }
 
@@ -570,6 +674,29 @@ export function createStagedAgent({
             },
           })
         }
+        // Какие из пяти промптов взяты из профиля (ADR 2026-09-23-0646,
+        // п. 2). Текстов в событии нет — только идентификаторы и длины:
+        // это тот же запрет, что у промптов этапов (ADR 2026-09-09-0854,
+        // п. 4). Событие есть и тогда, когда переписан ноль промптов: иначе
+        // «промптов профиля нет» и «шва нет» выглядели бы одинаково.
+        if (prompts.ownsSystem) {
+          const own = [...profilePrompts.keys()].sort()
+          emit({
+            stage: 'planning',
+            title:
+              own.length === 0
+                ? 'Промпты профиля: все пять из реестра'
+                : `Промпты профиля: ${own.join(', ')}`,
+            detail:
+              own.length === 0
+                ? 'ни один промпт не переписан'
+                : own.map((id) => `${id} — ${profilePrompts.get(id).length} знаков`).join('\n'),
+            data: {
+              prompts: own,
+              chars: Object.fromEntries(own.map((id) => [id, profilePrompts.get(id).length])),
+            },
+          })
+        }
         return { done: true }
       }
 
@@ -581,7 +708,12 @@ export function createStagedAgent({
         )
         const source = fitDialog(fresh, cap)
         const sourceTokens = (previous?.tokens ?? 0) + source.tokens
-        const request = buildSummaryRequest(previous?.text ?? null, source.messages, summarizeAt)
+        const request = buildSummaryRequest(
+          previous?.text ?? null,
+          source.messages,
+          summarizeAt,
+          promptOf('stage.summary'),
+        )
         const requestSize = estimateTokens(request.system) + estimateTokens(request.input)
         current.promptId = 'stage.summary'
         current.promptText = request.system
@@ -788,6 +920,61 @@ export function createStagedAgent({
         return { done: true }
       }
 
+      /**
+       * Седьмой этап дня 15 — «Подготовка промпта» (ADR 2026-09-23-0646,
+       * п. 4). Вызова модели у него нет: он складывает из собранных блоков
+       * итоговый запрос ровно в том виде, в каком тот уйдёт роутеру — два
+       * поля, `system` и `input`, — считает отпечаток и токены и пишет
+       * текст в SQLite одной строкой на круг.
+       *
+       * Почему отдельным этапом, а не строкой в «Сборке»: «Сборка» меряет
+       * блоки под потолок и может подрезать рабочую память, а записать
+       * следует то, что ушло после всех подрезок. Возврат с «Проверки» идёт
+       * на «Сборку», поэтому этап проходит на каждом круге, и строки кругов
+       * видно рядом.
+       */
+      const prepareStage = () => {
+        const input = ctx.assembled.input
+        const tokens = estimateTokens(system) + estimateTokens(input)
+        // Отпечаток — по паре целиком: промпт тот же, а контекст круга
+        // другой, и `sha8` обязан это различать. Отпечаток системного
+        // промпта сам по себе уже есть в событии вызова и в журнале.
+        const sha8 = promptSha8(`${system}\n\n${input}`)
+        ctx.prepared = { system, input, tokens, sha8 }
+        // Диалога может уже не быть: «очистить» во время запуска. Тогда
+        // текст не пишется — очищенная переписка не оживает промптом круга,
+        // доехавшим после нажатия.
+        const stored = sessions.addRunPrompt({
+          runId: run.id,
+          sessionId,
+          round: ctx.round,
+          system,
+          input,
+          sha8,
+          tokens,
+        })
+        emit({
+          stage: 'planning',
+          title: `Промпт подготовлен: ${tokens} токенов, sha8 ${sha8}`,
+          detail:
+            `${system.length} знаков системного промпта и ${input.length} знаков запроса; ` +
+            (stored
+              ? 'текст сохранён — его видно в журнале запуска'
+              : 'текст не сохранён: диалог не найден'),
+          data: {
+            promptTokens: tokens,
+            promptSha: sha8,
+            promptChars: system.length + input.length,
+            systemChars: system.length,
+            inputChars: input.length,
+            round: ctx.round,
+            stored,
+            promptSource: promptSource('stage.answer'),
+          },
+        })
+        return { done: true, promptChars: system.length + input.length }
+      }
+
       const answerStage = async () => {
         // Реплика посетителя записывается один раз на запуск: повторный вход
         // после обрыва её не удваивает (ADR, п. 1).
@@ -933,7 +1120,11 @@ export function createStagedAgent({
         // День 14 проверяет своим промптом и с блоком инвариантов; день 13 —
         // прежним, слово в слово (ADR 2026-09-22-0827, п. 5).
         const request = inv
-          ? inv.verifyRequest({ ...verifyArgs, invariants: ctx.invariants })
+          ? inv.verifyRequest({
+              ...verifyArgs,
+              invariants: ctx.invariants,
+              system: promptOf('stage.verify.invariants'),
+            })
           : buildVerifyRequest(verifyArgs)
         const size = estimateTokens(request.system) + estimateTokens(request.input)
         const limits = await limitsOf()
@@ -1227,7 +1418,8 @@ export function createStagedAgent({
             emit: (fields) => {
               if (fields.stage === 'llm_call') {
                 current.promptId = 'stage.replenish'
-                current.promptText = buildReplenishRequest({}).system
+                current.promptText =
+                  promptOf('stage.replenish') ?? buildReplenishRequest({}).system
               }
               return emit(fields)
             },
@@ -1241,6 +1433,7 @@ export function createStagedAgent({
             // модель запишет правилом (ADR 2026-09-22-0827, п. 4, этап 5).
             invariantsBlock:
               inv && ctx.invariants.length > 0 ? inv.recordBlock(ctx.invariants) : null,
+            system: promptOf('stage.replenish'),
             signal: controller.signal,
           })
         } finally {
@@ -1304,8 +1497,8 @@ export function createStagedAgent({
           })
         }
         logRow({
-          stage: STAGES[INDEX_OF.deliver],
-          index: INDEX_OF.deliver,
+          stage: stages[indexOf.deliver],
+          index: indexOf.deliver,
           enteredAt: deliverEnteredAt,
           outcome: 'done',
         })
@@ -1407,9 +1600,14 @@ export function createStagedAgent({
             promptChars: params.prompt.length,
             stopSequences: params.stopSequences.length,
             strategy,
-            systemOverridden,
+            // У дня 15 источник промпта ответа вместо признака подмены:
+            // подменить его входом запуска нельзя, а взят он может быть из
+            // профиля (ADR 2026-09-23-0646, п. 2).
+            ...(prompts.ownsSystem
+              ? { promptSource: promptSource('stage.answer') }
+              : { systemOverridden }),
             systemChars: system.length,
-            stages: STAGES.length,
+            stages: stages.length,
           },
         })
         if (systemOverridden) {
@@ -1442,7 +1640,7 @@ export function createStagedAgent({
         beat.unref?.()
 
         let index = 0
-        while (index < STAGES.length) {
+        while (index < stages.length) {
           // Ворота паузы — перед каждым этапом, включая повторный вход после
           // обрыва вызова (ADR, п. 3).
           const live = runs.get(run.id)
@@ -1456,11 +1654,11 @@ export function createStagedAgent({
               emit({
                 stage: 'paused',
                 title: 'Пауза',
-                detail: `запуск стоит на этапе «${STAGES[index].title}»`,
+                detail: `запуск стоит на этапе «${stages[index].title}»`,
                 data: {
-                  state: STAGES[index].id,
+                  state: stages[index].id,
                   index: index + 1,
-                  of: STAGES.length,
+                  of: stages.length,
                   round: ctx.round,
                   interruptedCall: live.interruptedCall,
                 },
@@ -1492,7 +1690,7 @@ export function createStagedAgent({
               // (находка ревьюера, PR #183).
               lastCall = null
               logRow({
-                stage: STAGES[index],
+                stage: stages[index],
                 index,
                 enteredAt: now(),
                 outcome: 'paused',
@@ -1506,8 +1704,8 @@ export function createStagedAgent({
                 event: {
                   stage: 'done',
                   title: message,
-                  detail: `запуск стоял на этапе «${STAGES[index].title}»`,
-                  data: { state: STAGES[index].id, reason: outcome },
+                  detail: `запуск стоял на этапе «${stages[index].title}»`,
+                  data: { state: stages[index].id, reason: outcome },
                   durationMs: now() - startedAt,
                 },
               })
@@ -1517,11 +1715,11 @@ export function createStagedAgent({
             emit({
               stage: 'resumed',
               title: resumed.interruptedCall ? 'Продолжаю: вызов повторяется' : 'Продолжаю',
-              detail: `этап «${STAGES[index].title}»`,
+              detail: `этап «${stages[index].title}»`,
               data: {
-                state: STAGES[index].id,
+                state: stages[index].id,
                 index: index + 1,
-                of: STAGES.length,
+                of: stages.length,
                 round: ctx.round,
                 interruptedCall: resumed.interruptedCall,
               },
@@ -1529,19 +1727,19 @@ export function createStagedAgent({
             resumed.interruptedCall = false
           }
 
-          const stage = STAGES[index]
+          const stage = stages[index]
           const enteredAt = now()
           lastCall = null
           current = { id: stage.id, index, promptId: null, promptText: null }
           runs.setState(run.id, { state: stage.id, index, round: ctx.round })
           emit({
             stage: 'state',
-            title: `Этап ${index + 1} из ${STAGES.length}: ${stage.title}`,
+            title: `Этап ${index + 1} из ${stages.length}: ${stage.title}`,
             detail: stage.promptId ? '' : `без вызова модели: ${stage.rule}`,
             data: {
               state: stage.id,
               index: index + 1,
-              of: STAGES.length,
+              of: stages.length,
               round: ctx.round,
               promptId: stage.promptId,
               promptTokens: null,
@@ -1552,6 +1750,7 @@ export function createStagedAgent({
           let outcome
           if (stage.id === 'intake') outcome = intake()
           else if (stage.id === 'assemble') outcome = await assembleStage()
+          else if (stage.id === 'prepare') outcome = prepareStage()
           else if (stage.id === 'answer') outcome = await answerStage()
           else if (stage.id === 'verify') outcome = await verifyStage()
           else if (stage.id === 'replenish') outcome = await replenishStage()
@@ -1614,13 +1813,19 @@ export function createStagedAgent({
             if (outcome.back) {
               ctx.round += 1
               ctx.answer = null
-              index = INDEX_OF.assemble
+              index = indexOf.assemble
               continue
             }
             index += 1
             continue
           }
-          logRow({ stage, index, enteredAt, outcome: outcome.skipped ? 'skipped' : 'done' })
+          logRow({
+            stage,
+            index,
+            enteredAt,
+            outcome: outcome.skipped ? 'skipped' : 'done',
+            promptChars: outcome.promptChars ?? '',
+          })
           index += 1
         }
       } catch (error) {

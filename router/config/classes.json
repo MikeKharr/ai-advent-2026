@@ -20,7 +20,7 @@
     "requires": ["text_generation"],
     "thinking": "none",
     "answerTokens": 1024,
-    "maxAnswerTokens": 2048,
+    "maxAnswerTokens": 32000,
     "dataClass": "public"
   },
   "extract_json": {

@@ -131,6 +131,11 @@ export function buildInvariantVerifyRequest({
   question = '',
   answer = '',
   truncated = false,
+  // Промпт профиля дня 15 (ADR 2026-09-23-0646, п. 2). Переписанный промпт
+  // может сломать формат трёх строк, который разбирает код: тогда вердикт —
+  // «не разобран, считаю принятым, с пометкой», а третьей строки нет и
+  // статус инвариантов `unchecked`. Разборщики не меняются.
+  system = null,
 }) {
   const parts = []
   if (invariants.length > 0) parts.push(invariantsVerifyBlock(invariants))
@@ -146,7 +151,7 @@ export function buildInvariantVerifyRequest({
     parts.push('Ответ упёрся в потолок токенов и оборван: обрыв в вину ассистенту не ставь.')
   }
   return {
-    system: VERIFY_INVARIANTS_PROMPT,
+    system: system ?? VERIFY_INVARIANTS_PROMPT,
     input: parts.join('\n\n'),
     answerTokens: VERIFY_ANSWER_TOKENS,
   }
@@ -216,7 +221,7 @@ export const INVARIANT_DRAFT_PROMPT =
  * Запрос хода формулировщика. Состояния на сервере нет: каждый ход несёт
  * черновик целиком, а список заведённых берётся из профиля (п. 3).
  */
-export function buildDraftRequest({ invariants = [], text = '' }) {
+export function buildDraftRequest({ invariants = [], text = '', system = null }) {
   const parts = []
   if (invariants.length > 0) {
     parts.push(
@@ -227,7 +232,11 @@ export function buildDraftRequest({ invariants = [], text = '' }) {
     parts.push('Заведённых инвариантов в профиле пока нет.')
   }
   parts.push(`Черновик человека:\n<draft>\n${safeTag(text, 'draft')}\n</draft>`)
-  return { system: INVARIANT_DRAFT_PROMPT, input: parts.join('\n\n'), answerTokens: DRAFT_ANSWER_TOKENS }
+  return {
+    system: system ?? INVARIANT_DRAFT_PROMPT,
+    input: parts.join('\n\n'),
+    answerTokens: DRAFT_ANSWER_TOKENS,
+  }
 }
 
 /**
@@ -404,7 +413,7 @@ export function createInvariants({ sessions, ask = askSummary }) {
      * Отказы до вызова — длина черновика и полный профиль: платить за ход,
      * итог которого некуда положить, незачем.
      */
-    async draft({ profileId, text: raw, env, fetchImpl = fetch }) {
+    async draft({ profileId, text: raw, env, fetchImpl = fetch, system = null }) {
       const text = normalizeInvariant(raw)
       if (text === '') {
         return { ok: false, status: 400, code: 'bad_input', message: 'Напишите черновик правила' }
@@ -438,7 +447,7 @@ export function createInvariants({ sessions, ask = askSummary }) {
         }
       }
 
-      const request = buildDraftRequest({ invariants: existing, text })
+      const request = buildDraftRequest({ invariants: existing, text, system })
       let answer
       try {
         answer = await ask(request, env, { fetchImpl })

@@ -121,7 +121,11 @@ test('ход черновика идёт под слотом запусков и
   assert.equal(r.status, 200)
   const body = await r.json()
   assert.equal(body.draft.variants.length, 1)
-  assert.equal(agentLog.at(-1).url, `/v1/profiles/${PID}/invariants/draft`)
+  // Имя агента в запросе есть: промпт формулировщика берётся из профиля
+  // только для того агента, чей шов читает таблицу промптов (ADR
+  // 2026-09-23-0646, п. 2). Без параметра служба отдала бы умолчание
+  // реестра, и правка промпта в окне «Об агенте» не действовала бы.
+  assert.equal(agentLog.at(-1).url, `/v1/profiles/${PID}/invariants/draft?agent=prompt-agent`)
 })
 
 test('без слота лимитера хода нет: 429 и вызова к сервису не было', async () => {

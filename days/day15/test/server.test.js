@@ -167,7 +167,7 @@ const agent = http.createServer(async (req, res) => {
       ok: true,
       agents: [
         {
-          id: 'invariant-agent',
+          id: 'prompt-agent',
           name: 'Агент с инвариантами профиля',
           version: '1.0.0',
           purpose: 'назначение',
@@ -696,7 +696,7 @@ test('настройки пишутся под именем агента: без
   })
   assert.equal(r.status, 200, 'с именем агента 32 000 токенов принимаются')
   assert.equal(settingsCalls.length, 1)
-  assert.match(settingsCalls[0].url, /\?agent=invariant-agent$/, 'имя агента в запросе есть')
+  assert.match(settingsCalls[0].url, /\?agent=prompt-agent$/, 'имя агента в запросе есть')
   assert.equal(settingsCalls[0].body.contextTokens, 32000)
   assert.equal(settingsCalls[0].body.reviewRounds, 3)
 })

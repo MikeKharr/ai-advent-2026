@@ -9,12 +9,20 @@ import { createNewsAnalyst } from './src/agent.js'
 import { parseEnv } from './src/env.js'
 import { createInvariants } from './src/invariants.js'
 import { createLayeredAgent, LAYERED_AGENT_ID } from './src/layered.js'
+import { STAGED15_MAX_TOKENS } from './src/params.js'
+import { createProfilePrompts, registryPrompts } from './src/prompts.js'
 import { loadRegistry } from './src/registry.js'
 import { createRuns } from './src/runs.js'
 import { createService } from './src/service.js'
 import { createSessions } from './src/sessions.js'
 import { createStageLog } from './src/stage-log.js'
-import { createStagedAgent, INVARIANT_AGENT_ID, STAGED_AGENT_ID } from './src/staged.js'
+import {
+  createStagedAgent,
+  INVARIANT_AGENT_ID,
+  PREPARE_STAGES,
+  PROMPT_AGENT_ID,
+  STAGED_AGENT_ID,
+} from './src/staged.js'
 import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -69,6 +77,11 @@ const stageLog = createStageLog({ file: env.STAGE_LOG_FILE, log })
 // нигде не хранится (ADR 2026-09-22-0827, п. 3).
 const invariants = sessions ? createInvariants({ sessions }) : null
 
+// Шов дня 15: промпты профиля из таблицы. Без хранилища — умолчание реестра;
+// запуск у такого агента всё равно не начнётся («Память профилей недоступна»),
+// но и падать на чтении промптов ему незачем.
+const profilePrompts = sessions ? createProfilePrompts({ sessions }) : registryPrompts
+
 /**
  * Реестр агентов → исполнители: аналитик новостей, слои памяти, машина
  * состояний и она же с инвариантами профиля.
@@ -81,6 +94,21 @@ for (const entry of registry.values()) {
     agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })
   else if (entry.id === INVARIANT_AGENT_ID)
     agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log, invariants })
+  // День 15 — та же машина с двумя опциями и своим потолком ответа
+  // (ADR 2026-09-23-0646, пп. 2, 4 и 5).
+  else if (entry.id === PROMPT_AGENT_ID)
+    agent = createStagedAgent({
+      agent: entry,
+      runs,
+      sessions,
+      stageLog,
+      env,
+      log,
+      invariants,
+      prompts: profilePrompts,
+      stages: PREPARE_STAGES,
+      maxOutputTokens: STAGED15_MAX_TOKENS,
+    })
   else agent = createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log })
   agents.set(entry.id, agent)
 }

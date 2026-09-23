@@ -1180,6 +1180,11 @@ export function createSessions({
         // Инварианты профиля дня 14: дни 11 и 13 это поле не читают
         // (ADR 2026-09-22-0827, п. 2).
         invariants: stmt.invariants.all(id),
+        // Промпты профиля дня 15 (ADR 2026-09-23-0646, п. 1): только
+        // переписанные. Чего здесь нет, то берётся из умолчания реестра —
+        // и окно «Об агенте» говорит это строкой источника у каждого
+        // промпта. Дни 11, 13 и 14 поле не читают.
+        prompts: Object.fromEntries(stmt.prompts.all(id).map((r) => [r.promptId, r.text])),
         topics: stmt.topics.all(id),
         sessions,
         lastSession: sessions[0]?.id ?? null,

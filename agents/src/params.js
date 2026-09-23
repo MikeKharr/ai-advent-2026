@@ -354,6 +354,21 @@ export function parseProfileName(value) {
 export const LAYERED_MAX_TOKENS = 2048
 
 /**
+ * Потолок ответа агента дня 15 (ADR 2026-09-23-0646, п. 5, решение
+ * владельца). Своя константа, а не поднятый `LAYERED_MAX_TOKENS`: дни 11–14
+ * остаются на 2048, и их разборщики выше него не пропускают. Граница живёт
+ * в четырёх местах — `parseParams` входа запуска, `parseSettings` настроек,
+ * `describe().limits.maxTokens` для поля страницы и `maxAnswerTokens` класса
+ * `layered_dialogue` в роутере; разойдясь, они дали бы поле, обещающее
+ * больше, чем примет роутер.
+ *
+ * Цена названа в ADR: 32 000 токенов выхода Haiku — около $0,16 за вызов,
+ * и до трёх кругов на сообщение. Таймаут вызова ответа считается по этому же
+ * числу (`answerTimeoutMs` в `llm.js`): 240 000 мс не хватило бы.
+ */
+export const STAGED15_MAX_TOKENS = 32_000
+
+/**
  * Потолок фактов одной темы (ADR 2026-09-15-2024, п. 6.1) — временное рабочее
  * значение решения владельца 8. Одно число на хранилище, запуск и ручку
  * монитора: тремя копиями они разошлись бы молча.
@@ -462,6 +477,10 @@ const SETTING_KEYS = [
  */
 export function parseSettings(source, defaults = {}, models = MODELS, options = {}) {
   const contextMax = options.contextMax ?? PARAM_LIMITS.contextTokens
+  // Потолок ответа — опция того же вида, что `contextMax` (ADR
+  // 2026-09-23-0646, п. 5): он свой только у дня 15, и дни 11–14 без неё
+  // по-прежнему не пропускают выше `LAYERED_MAX_TOKENS`.
+  const maxTokensMax = options.maxTokensMax ?? LAYERED_MAX_TOKENS
   const summarizeMax = options.summarizeMax ?? SUMMARIZE_LIMITS.max
   const review = options.review === true
   if (source === null || typeof source !== 'object' || Array.isArray(source)) {
@@ -524,9 +543,9 @@ export function parseSettings(source, defaults = {}, models = MODELS, options = 
   if (!temperature.ok) return { ok: false, message: 'Температура: число от 0 до 1 с шагом 0.1' }
   if (temperature.value !== undefined) settings.temperature = temperature.value
 
-  const maxTokens = parseBoundedInt(source.maxTokens, 1, LAYERED_MAX_TOKENS)
+  const maxTokens = parseBoundedInt(source.maxTokens, 1, maxTokensMax)
   if (!maxTokens.ok) {
-    return { ok: false, message: `Лимит токенов: целое от 1 до ${LAYERED_MAX_TOKENS}` }
+    return { ok: false, message: `Лимит токенов: целое от 1 до ${maxTokensMax}` }
   }
   if (maxTokens.value !== undefined) settings.maxTokens = maxTokens.value
 
@@ -593,6 +612,26 @@ export function parseSystem(value) {
     return { ok: false, message: `Системный промпт длиннее ${PARAM_LIMITS.systemChars} символов` }
   }
   return { ok: true, system: cleaned.text }
+}
+
+/**
+ * Промпт профиля дня 15 (ADR 2026-09-23-0646, п. 1): та же чистка и тот же
+ * потолок, что у системного промпта, но своими словами — из пяти промптов
+ * системный только один, и «Системный промпт не может быть пустым» в ответ
+ * на пустой промпт сводки было бы неправдой.
+ *
+ * Пустой текст — отказ, а не сброс к умолчанию: сброс делает `DELETE`
+ * строки, и пустая строка стала бы записью «промпт длиной ноль».
+ */
+export function parsePrompt(value) {
+  if (typeof value !== 'string') return { ok: false, message: 'Промпт должен быть строкой' }
+  const cleaned = cleanText(value)
+  if (!cleaned.ok) return { ok: false, message: 'Промпт должен быть строкой' }
+  if (cleaned.text.length === 0) return { ok: false, message: 'Промпт не может быть пустым' }
+  if (cleaned.text.length > PARAM_LIMITS.systemChars) {
+    return { ok: false, message: `Промпт длиннее ${PARAM_LIMITS.systemChars} символов` }
+  }
+  return { ok: true, text: cleaned.text }
 }
 
 /** Управляющие символы, кроме перевода строки: он значим в prompt и stop. */
