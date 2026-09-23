@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createLimiter } from '../src/limits.js'
 
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+
 const env = { RATE_LIMIT_PER_MIN: 3, RATE_LIMIT_PER_HOUR: 5, REFUSAL_SIGNAL_PER_HOUR: 2 }
 
 test('минутное окно закрывается и открывается через минуту', () => {
@@ -56,8 +59,9 @@ test('сигнал о переборе — ровно на том отказе, 
 
   assert.deepEqual(limiter.noteRefusal('8.8.8.8'), { count: 1, signal: false })
   assert.deepEqual(limiter.noteRefusal('8.8.8.8'), { count: 2, signal: true })
-  // Дальше счёт идёт, сигнала нет: он был бы уже не сигналом.
-  assert.deepEqual(limiter.noteRefusal('8.8.8.8'), { count: 3, signal: false })
+  // Дальше счёт не идёт и сигнала нет: порог отвечен, а хранить сверх него
+  // нечего — именно на этом росте служба и истощалась.
+  assert.deepEqual(limiter.noteRefusal('8.8.8.8'), { count: 2, signal: false })
 })
 
 test('окно отказов истекает через час и сигнал может прозвучать снова', () => {
@@ -95,4 +99,43 @@ test('адрес отказов не живёт дольше часового о
   t += 3_600_001
   limiter.noteRefusal('5.5.5.5')
   assert.equal(limiter.stats().refusedIps, 1)
+})
+
+test('поток отказов не растёт: хранимых отметок не больше порога', () => {
+  const limiter = createLimiter(env, { now: () => 1_000_000 })
+
+  // Десять порогов подряд с одного адреса.
+  for (let i = 0; i < env.REFUSAL_SIGNAL_PER_HOUR * 10; i += 1) limiter.noteRefusal('7.7.7.7')
+
+  // Не «примерно столько» и не «меньше некоторого», а ровно порог: любая
+  // форма, копящая отметки дальше, делает цену одного отказа линейной по
+  // накопленному, а поток отказов — квадратичным. Это и было вето по PR #220.
+  assert.equal(limiter.stats().refusalMarks, env.REFUSAL_SIGNAL_PER_HOUR)
+  assert.equal(limiter.stats().refusedIps, 1)
+})
+
+test('насыщенное окно отказов истекает и считает заново', () => {
+  let t = 1_000_000
+  const limiter = createLimiter(env, { now: () => t })
+
+  for (let i = 0; i < 50; i += 1) limiter.noteRefusal('7.7.7.7')
+  assert.equal(limiter.stats().refusalMarks, env.REFUSAL_SIGNAL_PER_HOUR)
+
+  t += 3_600_001
+  assert.deepEqual(limiter.noteRefusal('7.7.7.7'), { count: 1, signal: false })
+  assert.equal(limiter.stats().refusalMarks, 1)
+})
+
+test('замолчавший адрес убирается полным обходом, не позже минуты после окна', () => {
+  let t = 1_000_000
+  const limiter = createLimiter(env, { now: () => t })
+
+  limiter.noteRefusal('6.6.6.6')
+  assert.equal(limiter.stats().refusedIps, 1)
+
+  // Час с минутой спустя первый же чужой запрос убирает замолчавший адрес.
+  t += HOUR + MINUTE + 1
+  limiter.noteRefusal('1.1.1.1')
+  assert.equal(limiter.stats().refusedIps, 1)
+  assert.equal(limiter.stats().refusalMarks, 1)
 })

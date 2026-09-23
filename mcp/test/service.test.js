@@ -41,9 +41,24 @@ test('эндпоинт без ключа неотличим от несущес�
 
   const secret = await rpc(service.base, LIST, { key: null })
   const nowhere = await rpc(service.base, LIST, { key: null, path: '/no-such-path' })
-  // Сверяются целиком: код, тело и все заголовки, кроме меняющихся от
-  // запроса к запросу. Любая лишняя строка в одном из ответов — снова
-  // подсказка, что по одному из адресов что-то есть.
+
+  // Сверка двух ответов друг с другом ловит расхождение, но слепа к общему
+  // отпечатку: оба рождены одной функцией, и заголовок, дописанный в неё,
+  // окажется в обоих. Поэтому сначала — сверка с БУКВАЛЬНЫМ ожидаемым
+  // набором: в ответе ровно эти заголовки и ни одного сверх.
+  const expected = { 'content-length': '0', 'cache-control': 'no-store' }
+  const own = (res) => {
+    const headers = { ...res.headers }
+    // Их ставит сам `node:http` на каждый ответ, к службе они отношения не имеют.
+    delete headers.date
+    delete headers.connection
+    delete headers['keep-alive']
+    return headers
+  }
+  assert.deepEqual(own(secret), expected)
+  assert.deepEqual(own(nowhere), expected)
+
+  // И только теперь — что оба ответа совпадают целиком, включая тело и код.
   assert.deepEqual(shape(secret), shape(nowhere))
 })
 

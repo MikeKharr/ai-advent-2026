@@ -149,8 +149,11 @@ export function createService({ env, limiter, createSession, tools = [], log = (
     if (!safeEqual(bearer(req), env.MCP_KEY)) {
       const { count, signal } = limiter.noteRefusal(ip)
       log({ event: 'refuse', path: url.pathname, code: 'unauthorized' })
-      // Одна строка за окно на адрес: «кто-то перебирает». Ответ прохожему
-      // от неё не меняется — меняется то, что мы об этом знаем.
+      // Одна строка за окно на адрес: перебирают. Адреса в записи нет и не
+      // должно быть: журнал контейнера переживает часовое окно, и адрес в
+      // нём хранился бы дольше окна, против I-10. Сигнал отвечает «перебор
+      // идёт», а не «кто именно» — связка «кто» живёт только в памяти
+      // лимитера и не дольше часа.
       if (signal) log({ event: 'refusal_burst', path: url.pathname, count })
       return nothingHere(res)
     }
