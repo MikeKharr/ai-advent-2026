@@ -1,6 +1,6 @@
 // День 15: машина состояний дня 13 плюс память инвариантов профиля
 // (ADR 2026-09-22-0827). День 13 при этом не меняется: у дня 15 свой каталог,
-// свои cookie и свой агент `invariant-agent`.
+// свои cookie и свой агент `prompt-agent`.
 //
 // Устройство дня 11 сохраняется целиком: день отвечает за публичный адрес,
 // лимитер и cookie; память — правила, темы с фактами и переписка — живёт у
@@ -323,6 +323,10 @@ const profileView = (profile, sessionCap) => ({
   // Инварианты профиля дня 15: их завёл человек, поэтому источника-диалога
   // у них нет — только номер, текст и дата (ADR 2026-09-22-0827, п. 2).
   invariants: profile.invariants ?? [],
+  // Промпты профиля дня 15 (ADR 2026-09-23-0646, п. 1): только переписанные.
+  // Умолчания сюда не копируются — их страница берёт из описания агента
+  // (`/api/state`), и источник у каждого промпта один.
+  prompts: profile.prompts ?? {},
   topics: profile.topics ?? [],
   sessions: sessionsView(profile.sessions),
   sessionCap,
@@ -357,7 +361,12 @@ async function handleProfileState(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}`)
+    // Имя агента: свой потолок ответа день 15 хранит под своим ключом, и
+    // страница обязана увидеть его обычным `maxTokens` (ADR 2026-09-23-0646,
+    // п. 5). Без параметра служба отдала бы общий столбец как есть.
+    const { response, json } = await callAgent(
+      `/v1/profiles/${profileId}?agent=${encodeURIComponent(env.AGENT_ID)}`,
+    )
     if (response.status === 404) {
       return send(
         res,
@@ -537,11 +546,14 @@ async function handleInvariantDraft(req, res) {
   }
 
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/invariants/draft`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: body.text }),
-    })
+    const { response, json } = await callAgent(
+      `/v1/profiles/${profileId}/invariants/draft?agent=${encodeURIComponent(env.AGENT_ID)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: body.text }),
+      },
+    )
     if (response.ok) return send(res, 200, { draft: json.draft })
     // Отказы до вызова модели возвращают слот; оплаченный ход — нет. Служба
     // называет это полем `paid`, и отсутствие поля читается как «не оплачен»:
@@ -612,6 +624,87 @@ async function handleInvariantDelete(req, res, num) {
   } catch (error) {
     console.error(`удаление инварианта: ${error.message}`)
     return send(res, 502, { error: AGENT_DOWN })
+  }
+}
+
+/* ---------- промпты профиля (ADR 2026-09-23-0646, п. 1) ---------- */
+
+/**
+ * Правка промпта профиля. Денег не стоит — стоит следующий запуск, — поэтому
+ * окно здесь то же, что у остальных записей профиля, а не слот запусков.
+ * Пять идентификаторов проверяет служба: закрытый список живёт у неё.
+ */
+async function handlePromptSave(req, res, promptId) {
+  if (!reserveWrite(req, res)) return
+  const profileId = requireProfile(req, res)
+  if (!profileId) return
+  const body = await jsonBody(req)
+  if (!body) return send(res, 400, { error: 'тело не JSON' })
+  try {
+    const { response, json } = await callAgent(
+      `/v1/profiles/${profileId}/prompts/${encodeURIComponent(promptId)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: body.text }),
+      },
+    )
+    if (response.ok) return send(res, 200, { prompt: json.prompt })
+    // Причину отказа посетитель видит словами службы: она их проверяла.
+    if (response.status === 400 || response.status === 404) {
+      return send(res, response.status, {
+        error: json?.message ?? 'Промпт не сохранён',
+        code: json?.code,
+      })
+    }
+    throw new Error(`агент ${response.status}`)
+  } catch (error) {
+    console.error(`промпт ${promptId}: ${error.message}`)
+    return send(res, 502, { error: AGENT_DOWN })
+  }
+}
+
+/** Возврат промпта к умолчанию реестра — удалением строки профиля. */
+async function handlePromptReset(req, res, promptId) {
+  if (!reserveWrite(req, res)) return
+  const profileId = requireProfile(req, res)
+  if (!profileId) return
+  try {
+    const { response, json } = await callAgent(
+      `/v1/profiles/${profileId}/prompts/${encodeURIComponent(promptId)}`,
+      { method: 'DELETE' },
+    )
+    if (response.ok) return send(res, 200, { promptId, removed: json?.removed === true })
+    if (response.status === 404) {
+      return send(res, 404, { error: json?.message ?? 'Промпт не найден', code: json?.code })
+    }
+    throw new Error(`агент ${response.status}`)
+  } catch (error) {
+    console.error(`сброс промпта ${promptId}: ${error.message}`)
+    return send(res, 502, { error: AGENT_DOWN })
+  }
+}
+
+/**
+ * Тексты промптов запуска по кругам (ADR 2026-09-23-0646, п. 4). Профиль и
+ * диалог день подставляет из cookie — чужой запуск служба не отдаёт, как и
+ * журнал этапов.
+ */
+async function handleRunPrompts(req, res, runId) {
+  const profileId = requireProfile(req, res)
+  if (!profileId) return
+  const sessionId = sessionFromCookie(req)
+  if (!sessionId) return send(res, 404, { error: 'Текст промпта не найден' })
+  try {
+    const { response, json } = await callAgent(
+      `/v1/runs/${runId}/prompts?profile=${profileId}&session=${sessionId}`,
+    )
+    if (response.status === 404) return send(res, 404, { error: 'Текст промпта не найден' })
+    if (!response.ok) throw new Error(`агент ${response.status}`)
+    return send(res, 200, { prompts: json.prompts ?? [] })
+  } catch (error) {
+    console.error(`тексты промптов ${runId}: ${error.message}`)
+    return send(res, 502, { error: 'Текст промпта не загрузился: агент не ответил.' })
   }
 }
 
@@ -1369,6 +1462,12 @@ const server = http.createServer(async (req, res) => {
   const invariant = path.match(/^\/api\/invariants\/(\d{1,9})$/)
   if (invariant && req.method === 'DELETE') return handleInvariantDelete(req, res, invariant[1])
 
+  // Пять промптов профиля: правка и возврат к умолчанию. Идентификатор
+  // сверяет служба — закрытый список у неё, и второй копии ему здесь не место.
+  const prompt = path.match(/^\/api\/prompts\/([a-z][a-z.]{1,40})$/)
+  if (prompt && req.method === 'PUT') return handlePromptSave(req, res, prompt[1])
+  if (prompt && req.method === 'DELETE') return handlePromptReset(req, res, prompt[1])
+
   if (path === '/api/sessions' && req.method === 'GET') return handleSessions(req, res)
   if (path === '/api/session' && req.method === 'POST') return handleCreateSession(req, res)
   if (path === '/api/session/select' && req.method === 'POST') return handleSelectSession(req, res)
@@ -1379,6 +1478,12 @@ const server = http.createServer(async (req, res) => {
 
   if (path === '/api/answer' && req.method === 'POST') return handleAnswer(req, res)
   if (path === '/api/run/pause' && req.method === 'POST') return handlePause(req, res)
+
+  const runPrompts = path.match(/^\/api\/runs\/([^/]+)\/prompts$/)
+  if (runPrompts && req.method === 'GET') {
+    if (!RUN_ID.test(runPrompts[1])) return send(res, 404, { error: 'Текст промпта не найден' })
+    return handleRunPrompts(req, res, runPrompts[1])
+  }
 
   const stageLog = path.match(/^\/api\/runs\/([^/]+)\/log\.csv$/)
   if (stageLog && req.method === 'GET') {

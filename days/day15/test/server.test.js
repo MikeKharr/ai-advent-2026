@@ -167,7 +167,7 @@ const agent = http.createServer(async (req, res) => {
       ok: true,
       agents: [
         {
-          id: 'invariant-agent',
+          id: 'prompt-agent',
           name: 'Агент с инвариантами профиля',
           version: '1.0.0',
           purpose: 'назначение',
@@ -686,6 +686,12 @@ test('страница дня 13 видит свои настройки, а не
     'потолок этапа дня 13, а не восемь тысяч дня 11',
   )
   assert.notDeepEqual(profile.settings, DAY11_SETTINGS)
+  // Имя агента в запросе профиля: свой потолок ответа день 15 хранит под
+  // своим ключом — общий занят днями 13 и 14, — и разворачивает его служба
+  // по имени агента (ADR 2026-09-23-0646, п. 5). Без параметра поле потолка
+  // показывало бы умолчание реестра вместо сохранённых 32 000.
+  const read = agentLog.filter((c) => c.method === 'GET' && c.url.startsWith('/v1/profiles/'))
+  assert.match(read.at(-1).url, /\?agent=prompt-agent$/, 'имя агента в запросе профиля есть')
 })
 
 test('настройки пишутся под именем агента: без него сервис их отвергает', async () => {
@@ -696,7 +702,7 @@ test('настройки пишутся под именем агента: без
   })
   assert.equal(r.status, 200, 'с именем агента 32 000 токенов принимаются')
   assert.equal(settingsCalls.length, 1)
-  assert.match(settingsCalls[0].url, /\?agent=invariant-agent$/, 'имя агента в запросе есть')
+  assert.match(settingsCalls[0].url, /\?agent=prompt-agent$/, 'имя агента в запросе есть')
   assert.equal(settingsCalls[0].body.contextTokens, 32000)
   assert.equal(settingsCalls[0].body.reviewRounds, 3)
 })

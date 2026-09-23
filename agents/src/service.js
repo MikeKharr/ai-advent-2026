@@ -10,7 +10,9 @@ import {
   isSessionId,
   LAYERED_MODELS,
   parseProfileName,
+  parsePrompt,
   parseSettings,
+  PROFILE_PROMPT_IDS,
   STRATEGIES,
   TOPIC_FACT_CAP,
   WINDOW_LIMITS,
@@ -208,6 +210,30 @@ export function createService({
    * блок ломал бы сданный день чужими действиями. Путь дня 11 — прежний
    * `saveSettings`, слово в слово.
    */
+  /**
+   * Промпт формулировщика из профиля — только для того агента, чей шов
+   * читает таблицу промптов (ADR 2026-09-23-0646, п. 1 и 2). День 15 зовёт
+   * ручку с `?agent=prompt-agent`; дни 13 и 14 идут без параметра, их агенты
+   * отдают умолчание реестра, и правка в дне 15 на них не действует — это и
+   * значит «читает таблицу только агент дня 15».
+   */
+  const draftPromptFor = (params, profileId) =>
+    agents
+      .get(params.get('agent') ?? LAYERED_AGENT_ID)
+      ?.profilePrompts?.resolve(profileId)
+      .get('invariant.draft') ?? null
+
+  /**
+   * Вид настроек общего столбца для того агента, чья страница их читает.
+   * У дня 15 потолок ответа хранится под своим ключом (ADR 2026-09-23-0646,
+   * п. 5), и страница видит его обычным `maxTokens`; дни 11, 13 и 14 читают
+   * столбец как прежде — ключа дня 15 они не знают и не примут.
+   */
+  const settingsView = (params, settings) => {
+    const agent = agents.get(params.get('agent') ?? LAYERED_AGENT_ID)
+    return agent?.viewSettings ? agent.viewSettings(settings) : settings
+  }
+
   const settingsWriter = (params) =>
     agents.get(params.get('agent') ?? LAYERED_AGENT_ID)?.settingsStore === 'staged'
       ? (payload) => sessions.saveStagedSettings(payload)
@@ -455,6 +481,41 @@ export function createService({
       return res.end(stageLog.csvOf(runId))
     }
 
+    // Тексты промптов запуска дня 15 (ADR 2026-09-23-0646, п. 4): по строке
+    // на круг. Проверка доступа — та же, что у `log.csv`: диалог принадлежит
+    // профилю, строки запуска — диалогу. Чужой запуск — 404, как и там.
+    const promptsMatch = path.match(/^\/v1\/runs\/([^/]+)\/prompts$/)
+    if (promptsMatch && req.method === 'GET') {
+      const runId = promptsMatch[1]
+      if (!RUN_ID.test(runId) || !sessions) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      const sessionId = url.searchParams.get('session')
+      const profileId = url.searchParams.get('profile')
+      if (!isSessionId(sessionId) || !isProfileId(profileId)) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      if (sessions.sessionProfile(sessionId) !== profileId) {
+        return send(res, 404, { ok: false, code: 'unknown_run' })
+      }
+      // Запрос ограничен диалогом в самом операторе: строки другого диалога
+      // не выбираются вовсе, и пустой ответ — это 404, а не пустой список.
+      const rows = sessions.runPromptsOf({ runId, sessionId })
+      if (rows.length === 0) return send(res, 404, { ok: false, code: 'unknown_run' })
+      return send(res, 200, {
+        ok: true,
+        runId,
+        prompts: rows.map((row) => ({
+          round: row.round,
+          system: row.system,
+          input: row.input,
+          sha8: row.sha8,
+          tokens: row.tokens,
+          createdAt: new Date(row.createdAt).toISOString(),
+        })),
+      })
+    }
+
     // Переписка сессии: читает и удаляет её только тот, кто знает
     // идентификатор из cookie (ADR 2026-09-09-1906).
     const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/)
@@ -652,7 +713,7 @@ export function createService({
       }
 
       const match = path.match(
-        /^\/v1\/profiles\/([^/]+)(\/settings|\/sessions|\/topics\/\d+|\/invariants|\/invariants\/draft|\/invariants\/\d{1,9})?$/,
+        /^\/v1\/profiles\/([^/]+)(\/settings|\/sessions|\/topics\/\d+|\/invariants|\/invariants\/draft|\/invariants\/\d{1,9}|\/prompts\/[a-z][a-z.]{1,40})?$/,
       )
       if (!match) return send(res, 404, { ok: false, code: 'not_found' })
       const [, profileId, tail] = match
@@ -663,7 +724,14 @@ export function createService({
         // профиля посторонним не должен держать чужое досье ещё месяц.
         const profile = sessions.profile(profileId)
         if (!profile) return send(res, 404, { ok: false, code: 'unknown_profile' })
-        return send(res, 200, { ok: true, profile, sessionCap: env.PROFILE_SESSION_CAP })
+        return send(res, 200, {
+          ok: true,
+          profile: {
+            ...profile,
+            stagedSettings: settingsView(url.searchParams, profile.stagedSettings),
+          },
+          sessionCap: env.PROFILE_SESSION_CAP,
+        })
       }
 
       if (!tail && req.method === 'DELETE') {
@@ -702,7 +770,12 @@ export function createService({
         if (!settingsWriter(url.searchParams)({ profileId, settings: settings.settings })) {
           return send(res, 404, { ok: false, code: 'unknown_profile' })
         }
-        return send(res, 200, { ok: true, settings: settings.settings })
+        // Ответ — в том же виде, в каком страница их и прислала: день 15
+        // правит свой потолок полем `maxTokens` и о ключе хранения не знает.
+        return send(res, 200, {
+          ok: true,
+          settings: settingsView(url.searchParams, settings.settings),
+        })
       }
 
       // Факты темы — для монитора состояния памяти (ADR, п. 8.3). Тема
@@ -743,6 +816,7 @@ export function createService({
             text: parsed.body?.text,
             env,
             fetchImpl,
+            system: draftPromptFor(url.searchParams, profileId),
           })
           if (!result.ok) {
             return send(res, result.status, {
@@ -784,6 +858,37 @@ export function createService({
           return send(res, 200, { ok: true, num })
         }
 
+        return send(res, 404, { ok: false, code: 'not_found' })
+      }
+
+      // --- Промпты профиля дня 15 (ADR 2026-09-23-0646, п. 1) ------------
+      // Правка и сброс, оба под окном записей дня. Модель отсюда не
+      // зовётся: правка промпта денег не стоит — стоит следующий запуск.
+      if (tail?.startsWith('/prompts/')) {
+        const promptId = tail.slice('/prompts/'.length)
+        // Закрытый список: строка с неизвестным `prompt_id` молча пережила
+        // бы любую опечатку и не действовала бы никогда.
+        if (!PROFILE_PROMPT_IDS.includes(promptId)) {
+          return send(res, 404, { ok: false, code: 'unknown_prompt' })
+        }
+        if (req.method === 'PUT') {
+          const parsed = await jsonBody(req, res)
+          if (!parsed.ok) return
+          const text = parsePrompt(parsed.body?.text)
+          if (!text.ok) {
+            return send(res, 400, { ok: false, code: 'bad_input', message: text.message })
+          }
+          const saved = sessions.savePrompt({ profileId, promptId, text: text.text })
+          if (!saved.ok) return send(res, 404, { ok: false, code: 'unknown_profile' })
+          return send(res, 200, { ok: true, prompt: saved.prompt })
+        }
+        if (req.method === 'DELETE') {
+          // Сброс к умолчанию — удаление строки. Повторный сброс отвечает
+          // тем же, чем первый: отсутствие строки — уже успех.
+          const dropped = sessions.deletePrompt({ profileId, promptId })
+          if (!dropped.ok) return send(res, 404, { ok: false, code: 'unknown_profile' })
+          return send(res, 200, { ok: true, promptId, removed: dropped.removed })
+        }
         return send(res, 404, { ok: false, code: 'not_found' })
       }
 

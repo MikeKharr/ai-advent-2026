@@ -457,9 +457,13 @@ export function buildFactsRequest(previous, messages, limitTokens) {
  * Запрос сводки: прежняя сводка и реплики после неё сжимаются в новую.
  * Системный промпт свой и постоянный — промпт посетителя сюда не идёт.
  */
-export function buildSummaryRequest(previous, messages, summarizeAt) {
+export function buildSummaryRequest(previous, messages, summarizeAt, override = null) {
   const { min, max } = summaryTarget(summarizeAt)
-  const system =
+  // Промпт профиля дня 15 (ADR 2026-09-23-0646, п. 2) встаёт на место
+  // константы целиком: числа объёма в нём — часть текста, который написал
+  // посетитель, и от порога больше не зависят. Без него — прежняя строка,
+  // слово в слово, и прежний `sha8`.
+  const system = override ??
     'Ты ведёшь память агента-аналитика новостей стартапов. Тебе дают прежнюю сводку ' +
     'разговора, если она есть, и реплики после неё. Напиши новую сводку, которая заменит ' +
     'и то и другое. Сохрани: что пользователь сообщил о себе и своих целях; какие темы, ' +
@@ -514,6 +518,73 @@ export function fitDialog(messages, budgetTokens) {
  * вход уже собран политикой (`context.js`): подборки статей у агента нет, и
  * собирать здесь нечего (ADR 2026-09-15-2024, п. 5.1).
  */
+/**
+ * Параметры дедлайна роутера для профиля `cloud` — копия его контракта
+ * (`router/src/config.js`, `PROFILE_DEFAULTS.cloud`; формула —
+ * `deadlineMs` в `router/src/router.js`). Числа здесь обязаны совпадать с
+ * ними, и это закреплено тестом на стороне роутера: разойдясь, они вернули
+ * бы ровно тот дефект, ради которого заведены.
+ */
+export const ROUTER_CLOUD_DEADLINE = {
+  margin: 1.25,
+  promptEvalTps: 2000,
+  genTpsFloor: 40,
+  minMs: 60_000,
+}
+
+/**
+ * Запас поверх дедлайна роутера. Роутер отсчитывает свой дедлайн от вызова
+ * провайдера, а таймаут вызывающего идёт от отправки запроса роутеру: между
+ * ними разбор тела, выбор кандидата и проверки. Без запаса вызывающий
+ * обрывал бы на эту разницу раньше — то есть первым.
+ */
+export const ROUTER_SLACK_MS = 5_000
+
+/**
+ * Таймаут вызова ответа (ADR 2026-09-23-0646, п. 5).
+ *
+ * Правило одно: **вызывающий не обрывает вызов раньше роутера**. Роутер по
+ * обрыву клиента рвёт вызов провайдера, а сгенерированное к этой секунде уже
+ * оплачено; оборвав первым, мы платим за выброшенный ответ там, где роутер
+ * ещё ждал бы.
+ *
+ * Поэтому здесь считается дедлайн роутера для профиля `cloud` — его
+ * формулой и его числами: `margin × (вход/promptEvalTps + выход/genTpsFloor)`
+ * с полом `minMs`. Слагаемое по входу и множитель 1.25 входят обязательно:
+ * без них (прежняя редакция — `60 000 + maxTokens × 25`) вызывающий обрывал
+ * первым на всём диапазоне выше 2 048 токенов, а на 32 000 — на две с лишним
+ * минуты раньше роутера (находки `reviewer` и `compliance` к PR #218).
+ * Токенов размышлений класс `layered_dialogue` не заказывает (`thinking:
+ * "none"`), поэтому выход здесь — сам потолок ответа.
+ *
+ * Вход считается той же функцией и по тем же двум полям, что у роутера
+ * (`estimateTokens(system) + estimateTokens(input)`), — число выходит то же,
+ * а не похожее.
+ *
+ * Чего формула не обещает: паритета с профилем `laptop`. У ноутбука пол
+ * генерации 6,4 ток/с, и его дедлайн на 2 048 токенах уже 444 с — там
+ * вызывающий обрывал первым и до дня 15, при прежних 240 с на всё. Ответ на
+ * 32 000 токенов у ноутбука недостижим ни при каком таймауте, и это названо
+ * в ADR, п. 5.
+ *
+ * Цена: на потолке дня 15 зависший поставщик держит замок диалога и слот
+ * лимитера до ~16,8 минуты. В ADR названо «до ~14 минут» — число оттуда
+ * посчитано по неверной формуле; уступить роутеру дешевле нельзя, и разница
+ * названа здесь, а не подогнана.
+ */
+export function answerTimeoutMs(env, { maxTokens, inputTokens = 0 }) {
+  const p = ROUTER_CLOUD_DEADLINE
+  const deadline = Math.ceil(
+    Math.max(
+      p.margin * ((inputTokens / p.promptEvalTps) * 1000 + (maxTokens / p.genTpsFloor) * 1000),
+      p.minMs,
+    ),
+  )
+  // Прежний таймаут остаётся полом: у дней 11–14 потолок ответа 2 048, их
+  // дедлайн роутера меньше 240 с, и для них не меняется ничего.
+  return Math.max(env.ROUTER_TIMEOUT_MS, deadline + ROUTER_SLACK_MS)
+}
+
 export async function askLayered(
   { system, taskClass, input, params },
   env,
@@ -530,7 +601,20 @@ export async function askLayered(
   // Несдвинутую температуру не отправляем вовсе — как в дне 6.
   if (params.temperature !== undefined && params.temperature !== 1)
     body.temperature = params.temperature
-  return postRoute(body, env, fetchImpl, signal)
+  // Единственный вызов с таймаутом по дедлайну роутера: прочие вызовы
+  // (сводка, проверка, пополнение, формулировщик) ограничены 2 400
+  // токенами своих классов и остаются на `ROUTER_TIMEOUT_MS`.
+  return postRoute(
+    body,
+    env,
+    fetchImpl,
+    signal,
+    answerTimeoutMs(env, {
+      maxTokens: params.maxTokens,
+      // Те же два поля и та же функция, что считает вход роутер.
+      inputTokens: estimateTokens(system) + estimateTokens(input),
+    }),
+  )
 }
 
 /** Потолок выхода вызова пополнения (ADR 2026-09-15-2024, п. 5.2). */
@@ -578,8 +662,11 @@ export function buildReplenishRequest({
   // приходит готовой строкой из `invariants.js` и идёт первым; системный
   // промпт от него не зависит, поэтому `sha8` промпта дня 13 не меняется.
   invariants = null,
+  // Промпт профиля дня 15 (ADR 2026-09-23-0646, п. 2). Без него — прежняя
+  // константа, и `sha8` промпта дней 11–14 не меняется.
+  system: override = null,
 }) {
-  const system =
+  const system = override ??
     'Ты ведёшь память агента о человеке по трём слоям: темы (о чём он работает), факты в ' +
     'теме и правила работы с ним. Тебе дают список тем профиля, активную тему с её фактами, ' +
     'правила, ожидающее предложение новой темы, если оно есть, и новую пару реплик. Верни ' +
@@ -800,8 +887,8 @@ export function reviewBlock(text) {
   return `Замечания проверяющего к прошлому ответу — их нужно учесть.\n<review>\n${safeTag(text, 'review')}\n</review>`
 }
 
-async function postRoute(body, env, fetchImpl, signal = null) {
-  const deadline = AbortSignal.timeout(env.ROUTER_TIMEOUT_MS)
+async function postRoute(body, env, fetchImpl, signal = null, timeoutMs = null) {
+  const deadline = AbortSignal.timeout(timeoutMs ?? env.ROUTER_TIMEOUT_MS)
   const response = await fetchImpl(`${env.ROUTER_URL}/v1/route`, {
     method: 'POST',
     headers: {

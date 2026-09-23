@@ -28,7 +28,9 @@ export function parseEnv(source = process.env) {
   const errors = []
   const env = {
     AGENT_URL: source.AGENT_URL || 'http://agents:8082',
-    AGENT_ID: source.AGENT_ID || 'invariant-agent',
+    // Агент дня 15: та же машина, что у дня 14, плюс промпты профиля,
+    // седьмой этап и потолок ответа 32 000 (ADR 2026-09-23-0646).
+    AGENT_ID: source.AGENT_ID || 'prompt-agent',
     // Публичный префикс дня: cookie не должна утекать на соседние дни того
     // же домена. Локально день работает на корне, поэтому значение задаётся.
     COOKIE_PATH: source.COOKIE_PATH || '/day15/',

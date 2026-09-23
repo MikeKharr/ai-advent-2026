@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { loadConfig, orderedCandidates } from '../src/config.js'
+import { loadConfig, orderedCandidates, PROFILE_DEFAULTS } from '../src/config.js'
 import { createStaticRegistry } from '../src/registry.js'
 import { createRouter } from '../src/router.js'
 
@@ -96,7 +96,11 @@ test('класс layered_dialogue — поля, решённые ADR 2026-09-15-
     requires: ['text_generation'],
     thinking: 'none',
     answerTokens: 1024,
-    maxAnswerTokens: 2048,
+    // Поднят до 32 000 ради агента дня 15 (ADR 2026-09-23-0646, п. 5).
+    // Дни 11–14 выше 2048 по-прежнему не ходят: их держат собственные
+    // разборщики (`LAYERED_MAX_TOKENS` в `agents/src/params.js`), и класс
+    // для них — второй рубеж, а не первый.
+    maxAnswerTokens: 32000,
     dataClass: 'public',
   })
 })
@@ -133,16 +137,50 @@ test('/v1/models по классу layered_dialogue отдаёт восемь м
 
 // Потолок ответа — граница расхода: на Kimi k3 выход по $15 за миллион, и
 // каждая лишняя тысяча токенов стоит денег. Отказ приходит до выбора провайдера.
-test('layered_dialogue отвергает ответ выше 2048 токенов, не обращаясь к провайдеру', async () => {
+test('layered_dialogue отвергает ответ выше 32 000 токенов, не обращаясь к провайдеру', async () => {
   const refused = await prodRouter().route({
     taskClass: 'layered_dialogue',
     input: 'привет',
-    answerTokens: 2049,
+    answerTokens: 32_001,
   })
   assert.equal(refused.ok, false)
   assert.equal(refused.code, 'refused')
   // Число в сообщении — из класса, а не константа роутера.
-  assert.match(refused.message, /от 1 до 2048/)
+  assert.match(refused.message, /от 1 до 32000/)
+})
+
+// Потолок дня 15 проходит до провайдера: поле страницы обещает 32 000, и
+// класс обязан это принять — иначе обещание рвалось бы отказом роутера
+// (ADR 2026-09-23-0646, п. 5).
+// Таймаут вызова ответа у сервиса агентов считается дедлайном роутера для
+// профиля `cloud` — его формулой и этими числами (`agents/src/llm.js`,
+// `ROUTER_CLOUD_DEADLINE`). Копия там нужна потому, что агент не читает
+// конфигурацию роутера; чтобы копия не разошлась с оригиналом молча, числа
+// закреплены здесь: правка профиля без правки агента вернёт ровно тот дефект,
+// ради которого таймаут переписан, — вызывающий обрывает раньше роутера, и
+// сгенерированное оплачено впустую (находки reviewer и compliance к PR #218).
+test('профиль cloud: числа дедлайна, по которым считает таймаут сервис агентов', () => {
+  assert.deepEqual(PROFILE_DEFAULTS.cloud, {
+    loadMs: 0,
+    promptEvalTps: 2000,
+    genTpsFloor: 40,
+    margin: 1.25,
+    minMs: 60_000,
+  })
+})
+
+test('layered_dialogue принимает ровно 32 000 токенов ответа', async () => {
+  const answer = await prodRouter().route({
+    taskClass: 'layered_dialogue',
+    input: 'привет',
+    answerTokens: 32_000,
+  })
+  assert.equal(answer.ok, false)
+  // `all_failed`, а не `refused`: запрос прошёл проверку потолка и дошёл до
+  // вызова провайдеров — а звать их в этом тесте нечем, `fetch` бросает.
+  // При потолке 2048 тот же запрос возвращал бы `refused` до всякого вызова,
+  // поэтому исход различает гипотезы.
+  assert.equal(answer.code, 'all_failed')
 })
 
 // Дефект, ради которого заведена эта проверка: денежный потолок работает только

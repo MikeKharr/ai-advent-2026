@@ -275,6 +275,10 @@ export async function replenish({
   // Инварианты профиля дня 14 (ADR 2026-09-22-0827, п. 4, этап 5): здесь они
   // запись и граница тому, что модель запишет правилом. Не подрезаются.
   invariantsBlock = null,
+  // Промпт пополнения из профиля дня 15 (ADR 2026-09-23-0646, п. 2): текст
+  // проходит насквозь в `buildReplenishRequest`. Без него — прежняя
+  // константа и прежний `sha8`.
+  system = null,
   // Обрыв вызова паузой дня 13. У дня 11 сигнала нет, и вызов идёт как прежде.
   signal = null,
 }) {
@@ -335,6 +339,7 @@ export async function replenish({
       pending,
       pair: fittedPair.messages,
       invariants: invariantsBlock,
+      system,
     })
   const measure = (built) => estimateTokens(built.system) + estimateTokens(built.input)
   let request = build()

@@ -354,6 +354,52 @@ export function parseProfileName(value) {
 export const LAYERED_MAX_TOKENS = 2048
 
 /**
+ * Потолок ответа агента дня 15 (ADR 2026-09-23-0646, п. 5, решение
+ * владельца). Своя константа, а не поднятый `LAYERED_MAX_TOKENS`: дни 11–14
+ * остаются на 2048, и их разборщики выше него не пропускают. Граница живёт
+ * в четырёх местах — `parseParams` входа запуска, `parseSettings` настроек,
+ * `describe().limits.maxTokens` для поля страницы и `maxAnswerTokens` класса
+ * `layered_dialogue` в роутере; разойдясь, они дали бы поле, обещающее
+ * больше, чем примет роутер.
+ *
+ * Цена названа в ADR: 32 000 токенов выхода Haiku — около $0,16 за вызов,
+ * и до трёх кругов на сообщение. Таймаут вызова ответа считается по этому же
+ * числу (`answerTimeoutMs` в `llm.js`): 240 000 мс не хватило бы.
+ */
+export const STAGED15_MAX_TOKENS = 32_000
+
+/**
+ * Ключ, под которым потолок ответа дня 15 лежит в общем столбце настроек
+ * `settings_staged` (ADR 2026-09-23-0646, п. 5; находка compliance к PR #218).
+ *
+ * Столбец один на дни 13, 14 и 15, и `saveStagedSettings` пишет его целиком.
+ * Значение выше `LAYERED_MAX_TOKENS` дни 13 и 14 принять не могут: их
+ * страницы отдают прочитанное как есть, и запуск отказывал бы на каждом
+ * сообщении, а причина посетителю не видна — отказ приходит на ответ, а не в
+ * окне настроек. Поэтому правило одно и держится кодом, а не вниманием:
+ * **в общий ключ `maxTokens` не попадает число, которого соседний день не
+ * примет**; всё выше прежнего предела уходит под свой ключ, которого соседи
+ * не читают. Наружу день 15 видит его как `maxTokens` — через
+ * `viewStagedSettings`.
+ *
+ * Обратная сторона та же, что у прочих настроек этого столбца и названа в
+ * ADR 2026-09-22-0827, п. 1: сохранение настроек в дне 13 или 14 перепишет
+ * столбец целиком, и потолок дня 15 вернётся к умолчанию реестра. Это
+ * годное значение, а не отказ, — в отличие от обратного случая.
+ */
+export const MAX_TOKENS_15_KEY = 'maxTokens15'
+
+/**
+ * Настройки общего столбца в том виде, в каком их показывает и присылает
+ * день 15: свой потолок он правит полем `maxTokens`, как все остальные дни,
+ * и о ключе хранения не знает ни страница, ни вход запуска.
+ */
+export function viewStagedSettings(settings) {
+  const { [MAX_TOKENS_15_KEY]: own, ...rest } = settings ?? {}
+  return own === undefined ? { ...rest } : { ...rest, maxTokens: own }
+}
+
+/**
  * Потолок фактов одной темы (ADR 2026-09-15-2024, п. 6.1) — временное рабочее
  * значение решения владельца 8. Одно число на хранилище, запуск и ручку
  * монитора: тремя копиями они разошлись бы молча.
@@ -372,6 +418,25 @@ export const INVARIANT_CHARS = 200
 
 /** Черновик формулировки: длиннее — 400 без вызова модели (ADR, п. 3). */
 export const INVARIANT_DRAFT_CHARS = 1000
+
+/**
+ * Промпты профиля дня 15 (ADR 2026-09-23-0646, п. 1). Пять текстов, которые
+ * посетитель правит из окна «Об агенте»: по одному на каждый этап с вызовом
+ * модели и один у формулировщика инвариантов. Этапы без вызова (`intake`,
+ * `deliver`) и `prepare`, который вызова не делает, промпта не имеют.
+ *
+ * Список закрытый и живёт здесь, а не в хранилище: строка с неизвестным
+ * `prompt_id` никому не нужна и молча пережила бы любую опечатку в ручке.
+ * Разбор самого текста — `parseSystem`: та же чистка и тот же потолок
+ * `PARAM_LIMITS.systemChars`.
+ */
+export const PROFILE_PROMPT_IDS = [
+  'stage.summary',
+  'stage.answer',
+  'stage.verify.invariants',
+  'stage.replenish',
+  'invariant.draft',
+]
 
 /**
  * Круг проверки ответа (ADR 2026-09-21-1747, п. 2): сколько раз запуск может
@@ -443,6 +508,10 @@ const SETTING_KEYS = [
  */
 export function parseSettings(source, defaults = {}, models = MODELS, options = {}) {
   const contextMax = options.contextMax ?? PARAM_LIMITS.contextTokens
+  // Потолок ответа — опция того же вида, что `contextMax` (ADR
+  // 2026-09-23-0646, п. 5): он свой только у дня 15, и дни 11–14 без неё
+  // по-прежнему не пропускают выше `LAYERED_MAX_TOKENS`.
+  const maxTokensMax = options.maxTokensMax ?? LAYERED_MAX_TOKENS
   const summarizeMax = options.summarizeMax ?? SUMMARIZE_LIMITS.max
   const review = options.review === true
   if (source === null || typeof source !== 'object' || Array.isArray(source)) {
@@ -505,11 +574,18 @@ export function parseSettings(source, defaults = {}, models = MODELS, options = 
   if (!temperature.ok) return { ok: false, message: 'Температура: число от 0 до 1 с шагом 0.1' }
   if (temperature.value !== undefined) settings.temperature = temperature.value
 
-  const maxTokens = parseBoundedInt(source.maxTokens, 1, LAYERED_MAX_TOKENS)
+  const maxTokens = parseBoundedInt(source.maxTokens, 1, maxTokensMax)
   if (!maxTokens.ok) {
-    return { ok: false, message: `Лимит токенов: целое от 1 до ${LAYERED_MAX_TOKENS}` }
+    return { ok: false, message: `Лимит токенов: целое от 1 до ${maxTokensMax}` }
   }
-  if (maxTokens.value !== undefined) settings.maxTokens = maxTokens.value
+  if (maxTokens.value !== undefined) {
+    // Единственное место, где потолок попадает в хранимый объект: число выше
+    // прежнего предела уходит под свой ключ, потому что общий столбец читают
+    // дни 13 и 14 (см. `MAX_TOKENS_15_KEY`). У дней 11–14 `maxTokensMax`
+    // равен `LAYERED_MAX_TOKENS`, и эта ветка им недостижима.
+    if (maxTokens.value > LAYERED_MAX_TOKENS) settings[MAX_TOKENS_15_KEY] = maxTokens.value
+    else settings.maxTokens = maxTokens.value
+  }
 
   const stop = parseStopSequences(source.stopSequences)
   if (!stop.ok) return stop
@@ -574,6 +650,26 @@ export function parseSystem(value) {
     return { ok: false, message: `Системный промпт длиннее ${PARAM_LIMITS.systemChars} символов` }
   }
   return { ok: true, system: cleaned.text }
+}
+
+/**
+ * Промпт профиля дня 15 (ADR 2026-09-23-0646, п. 1): та же чистка и тот же
+ * потолок, что у системного промпта, но своими словами — из пяти промптов
+ * системный только один, и «Системный промпт не может быть пустым» в ответ
+ * на пустой промпт сводки было бы неправдой.
+ *
+ * Пустой текст — отказ, а не сброс к умолчанию: сброс делает `DELETE`
+ * строки, и пустая строка стала бы записью «промпт длиной ноль».
+ */
+export function parsePrompt(value) {
+  if (typeof value !== 'string') return { ok: false, message: 'Промпт должен быть строкой' }
+  const cleaned = cleanText(value)
+  if (!cleaned.ok) return { ok: false, message: 'Промпт должен быть строкой' }
+  if (cleaned.text.length === 0) return { ok: false, message: 'Промпт не может быть пустым' }
+  if (cleaned.text.length > PARAM_LIMITS.systemChars) {
+    return { ok: false, message: `Промпт длиннее ${PARAM_LIMITS.systemChars} символов` }
+  }
+  return { ok: true, text: cleaned.text }
 }
 
 /** Управляющие символы, кроме перевода строки: он значим в prompt и stop. */
