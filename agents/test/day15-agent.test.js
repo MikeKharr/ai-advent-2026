@@ -536,6 +536,45 @@ test('ручки профиля и настроек показывают пот�
   await http.close()
 })
 
+test('запрос с именем соседнего дня ключ дня 15 не разворачивает', async () => {
+  // Ключ `maxTokens15` лежит в общем столбце, и он есть у всех трёх дней —
+  // отдельного столбца у дня 15 нет. Значит вид настроек обязан выбирать не
+  // «этот агент staged», а «этому агенту это число годно»: иначе служба по
+  // `?agent=invariant-agent` вернула бы дню 14 те самые 32 000, которых он
+  // не принимает, и защита держалась бы лишь тем, что его страница сейчас
+  // имени агента в чтении профиля не шлёт (находка compliance к PR #218).
+  const ctx = setup()
+  const neighbours = ['staged-agent', 'invariant-agent'].map((id) =>
+    setup({ agentId: id, file: ctx.file }).agent,
+  )
+  const http = await serve(ctx, neighbours)
+  const id = ctx.profile.id
+
+  const saved = await http.put(`/v1/profiles/${id}/settings?agent=prompt-agent`, {
+    maxTokens: STAGED15_MAX_TOKENS,
+  })
+  assert.equal(saved.status, 200)
+
+  const view = async (query) =>
+    (await (await http.get(`/v1/profiles/${id}${query}`)).json()).profile.stagedSettings
+
+  assert.equal((await view('?agent=prompt-agent')).maxTokens, STAGED15_MAX_TOKENS)
+  for (const agentId of ['staged-agent', 'invariant-agent']) {
+    const theirs = await view(`?agent=${agentId}`)
+    assert.equal(
+      theirs.maxTokens,
+      undefined,
+      `${agentId}: получил потолок, которого его собственный разборщик не примет`,
+    )
+    // И то, ради чего проверка написана: число, вернувшееся странице соседа,
+    // обязано проходить его же вход запуска.
+    const neighbour = neighbours.find((a) => a.id === agentId)
+    const defaults = REGISTRY.get(agentId).defaults
+    assert.equal(neighbour.parseSettings({ maxTokens: theirs.maxTokens ?? defaults.maxTokens }).ok, true)
+  }
+  await http.close()
+})
+
 test('дни 11, 13 и 14 выше 2048 не пропускают — ни входом запуска, ни настройками', () => {
   const thirteen = setup({ agentId: 'staged-agent' })
   const fourteen = setup({ agentId: 'invariant-agent' })
@@ -684,8 +723,11 @@ test('агент не обрывает вызов раньше роутера н
 
 // --- Критерий: ручки сервиса ----------------------------------------------
 
-async function serve(ctx) {
-  const agents = new Map([[ctx.agent.id, ctx.agent]])
+async function serve(ctx, extra = []) {
+  // `extra` — соседние агенты в том же реестре службы: она их различает по
+  // `?agent=`, и путь соседа проверяется на настоящей службе, а не рассказом
+  // о ней.
+  const agents = new Map([ctx.agent, ...extra].map((a) => [a.id, a]))
   const server = createServer(
     createService({
       agents,
