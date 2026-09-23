@@ -1152,10 +1152,12 @@
       <h2 id="dlg-pr-h">Промпты профиля</h2>
       <span class="dlg-note" id="dlg-pr-state" role="status"></span>
     </div>
-    <p class="gate-note">Правка живёт в профиле: она действует у всех, кто его выберет,
+    <p class="gate-note" id="dlg-pr-about">Правка живёт в профиле: она действует у всех, кто его выберет,
     и остаётся после перезагрузки. «Вернуть умолчание» снимает правку — возвращается
     текст из реестра агента. Этапы без вызова модели промпта не имеют: у них правило
     в коде, и править нечего.</p>
+    <p class="mem-empty" id="dlg-pr-none" hidden>Промпты недоступны: не удалось получить
+    состояние агента, и править нечего. Обновите страницу.</p>
     <p class="warned" id="dlg-pr-error" hidden></p>
     <div class="dlg-actions" id="dlg-pr-retry-row" hidden>
       <button class="dlg-btn" id="dlg-pr-retry" type="button">Повторить</button>
@@ -1367,6 +1369,8 @@
     { id: 'deliver', title: 'Выдача', prompt: null, rule: null },
   ];
   let stages = FALLBACK_STAGES;
+  /** Пришла ли таблица этапов от службы: от этого зависит предупреждение в окне. */
+  let stagesLoaded = false;
   /**
    * Потолки инвариантов профиля и промпт формулировщика — от сервиса
    * (ADR 2026-09-22-0827). Пока состояние не пришло, страница знает только
@@ -1811,7 +1815,10 @@
       ttlHours = d.session?.ttlHours ?? null;
       ttlDays = d.profile?.ttlDays ?? null;
       // Этапы и их промпты — из describe(): в событиях текстов нет.
-      if (Array.isArray(d.stages) && d.stages.length > 0) stages = d.stages;
+      if (Array.isArray(d.stages) && d.stages.length > 0) {
+        stages = d.stages;
+        stagesLoaded = true;
+      }
       if (d.invariants) invariantLimits = { ...invariantLimits, ...d.invariants };
       if (limits.reviewRounds) roundLimits = { ...roundLimits, ...limits.reviewRounds };
       // Потолок этапа (ADR, п. 5) — единственный токенный потолок дня 13, и он
@@ -2233,6 +2240,32 @@
   const promptIdOf = (stage) => stage?.promptId ?? STAGE_PROMPT_ID[stage?.id] ?? null;
 
   /**
+   * Таблица этапов пришла от службы — или это запасной список страницы.
+   * Решается признаком загрузки, а не содержимым: у запасного этапа
+   * `prepare` есть правило, и проверка «в списке нашлось непустое поле»
+   * скрывала предупреждение «Этапы недоступны» ровно тогда, когда состояние
+   * агента не загрузилось вовсе (находка design-review к PR #218).
+   */
+  const stagesKnown = (loaded, list) =>
+    loaded === true && Array.isArray(list) && list.length > 0;
+
+  /**
+   * Что вообще можно править при этом состоянии агента. Ноль полей — не
+   * «пока пусто», а «состояние не загрузилось»: заголовок с обещанием правки
+   * над пустым местом обещает то, чего нет.
+   */
+  const editablePrompts = (agent, list, invariants) => {
+    const out = []
+    if (agent?.systemPrompt) out.push(SYSTEM_PROMPT_ID);
+    for (const stage of list ?? []) {
+      const id = stage?.prompt ? promptIdOf(stage) : null;
+      if (id && id !== SYSTEM_PROMPT_ID && !out.includes(id)) out.push(id);
+    }
+    if (invariants?.prompt) out.push(DRAFT_PROMPT_ID);
+    return out;
+  };
+
+  /**
    * Что показать у промпта: текст профиля поверх умолчания реестра. Отсутствие
    * строки в профиле — и есть умолчание (ADR, п. 1), поэтому пустого текста
    * профиля не бывает: он не отличался бы от сброса.
@@ -2410,6 +2443,14 @@
         : `Промпт возвращён к умолчанию: ${el.title}`);
     } catch (error) {
       say(el.err, error.message);
+      // Живая область осталась бы на «Сохраняю промпт…»: для программы чтения
+      // с экрана это вечное ожидание. Ожидание снимается, а отказ службы идёт
+      // в область тревоги — как отказы формулировщика (находка design-review
+      // к PR #218).
+      announce('');
+      shout(action === 'save'
+        ? `Промпт не сохранён: ${error.message}`
+        : `Умолчание не возвращено: ${error.message}`);
     } finally {
       promptBusy(el, false);
     }
@@ -2436,7 +2477,8 @@
     promptsState = state;
     $('dlg-pr-state').textContent =
       state === 'loading' ? 'Загружаю промпты профиля…'
-        : state === 'error' ? '' : 'Правки этого профиля. Действуют у всех, кто его выберет.';
+        : state === 'ready' ? 'Правки этого профиля. Действуют у всех, кто его выберет.'
+          : '';
     say($('dlg-pr-error'), state === 'error' ? message : '');
     $('dlg-pr-retry-row').hidden = state !== 'error';
     for (const [, el] of promptEls) promptBusy(el, false);
@@ -2452,11 +2494,11 @@
       applyPrompts({ all: true });
       showParamsSummary();
     } catch {
-      // Умолчания реестра в полях остаются: их страница уже знает. Править
-      // нельзя, пока не известно, что стоит в профиле, — иначе «Сохранить»
-      // записал бы поверх чужой правки, которой окно не видело.
-      setPromptsState('error', 'Промпты профиля не загрузились: в полях — умолчания '
-        + 'реестра, править нельзя');
+      // Что стоит в полях, называет строка источника у каждого поля: в этом
+      // сообщении утверждать о них нечего — при отказе в полях может стоять и
+      // умолчание реестра, и промпт профиля, прочитанный раньше.
+      setPromptsState('error', 'Промпты профиля не загрузились: править нельзя, пока '
+        + 'неизвестно, что стоит в профиле сейчас');
       applyPrompts({ all: true });
     }
   };
@@ -2478,7 +2520,10 @@
     renderPromptEditors();
     dlg.showModal();
     dlg.focus();
-    loadPrompts();
+    // Править нечего — и грузить нечего: строка «Правки этого профиля» над
+    // пустым местом была бы обещанием впустую.
+    if (editablePrompts(agentInfo, stages, invariantLimits).length > 0) loadPrompts();
+    else setPromptsState('none');
   };
   $('dlg-close').onclick = () => dlg.close();
   dlg.addEventListener('close', () => $('about').focus());
@@ -2500,6 +2545,11 @@
     $('dlg-draft-none').hidden = Boolean(text);
     if (text) draftBox.append(promptEditor(DRAFT_PROMPT_ID, 'формулировщик инвариантов'));
     applyPrompts({ all: true });
+    // Ноль редакторов — обещание правки без полей: раздел честно говорит, что
+    // править нечего, и объяснение правки убирается вместе с полями.
+    const empty = editablePrompts(agentInfo, stages, invariantLimits).length === 0;
+    $('dlg-pr-none').hidden = !empty;
+    $('dlg-pr-about').hidden = empty;
   };
 
   /**
@@ -2510,8 +2560,7 @@
   const renderStages = () => {
     const box = $('dlg-stages');
     box.replaceChildren();
-    const known = stages.some((x) => x.prompt || x.rule);
-    $('dlg-stages-none').hidden = known;
+    $('dlg-stages-none').hidden = stagesKnown(stagesLoaded, stages);
     $('dlg-stages-h').textContent = `Этапы запуска: ${stages.length}`;
     stages.forEach((stage, i) => {
       const li = document.createElement('li');

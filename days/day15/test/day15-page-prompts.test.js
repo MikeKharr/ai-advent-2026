@@ -28,7 +28,8 @@ const rules = (() => {
   const body = page.slice(from, to)
   return new Function(`${body}
     return { PROMPT_MAX, SYSTEM_PROMPT_ID, DRAFT_PROMPT_ID, promptIdOf, promptViewOf,
-             withoutPrompt, loadProfilePrompts, savePrompt, resetPrompt };`)()
+             withoutPrompt, loadProfilePrompts, savePrompt, resetPrompt,
+             stagesKnown, editablePrompts };`)()
 })()
 
 const REGISTRY = {
@@ -221,4 +222,87 @@ test('в полосе семь этапов, «Подготовка промпт
   assert.match(prepare.rule, /уйдёт модели/)
   // Число этапов на экранах не зашито числом там, где оно может разойтись.
   assert.match(page, /\$\('dlg-stages-h'\)\.textContent = `Этапы запуска: \$\{stages\.length\}`;/)
+})
+
+// --- Находки design-review к PR #218 ----------------------------------------
+
+test('«Этапы недоступны» решается загрузкой состояния, а не содержимым списка', () => {
+  // Регрессия PR #218: у запасного этапа `prepare` есть правило, и проверка
+  // «в списке нашлось непустое поле» прятала предупреждение тогда, когда
+  // состояние агента не загрузилось вовсе — окно показывало семь этапов,
+  // шесть из них с подписью «без вызова модели», хотя четыре зовут модель.
+  const fallback = new Function(
+    `${page.match(/const FALLBACK_STAGES = \[[\s\S]*?\n {2}\];/)[0]} return FALLBACK_STAGES;`)()
+  assert.equal(
+    rules.stagesKnown(false, fallback),
+    false,
+    'запасной список — не таблица службы, чем бы он ни был заполнен',
+  )
+  assert.equal(rules.stagesKnown(true, fallback), true)
+  assert.equal(rules.stagesKnown(true, []), false, 'пустая таблица тоже не таблица')
+  assert.equal(rules.stagesKnown(undefined, fallback), false)
+  // И правило действительно зовут: верное и неприменённое правило ничего не стоит.
+  assert.match(page, /\$\('dlg-stages-none'\)\.hidden = stagesKnown\(stagesLoaded, stages\);/)
+  assert.match(page, /stagesLoaded = true;/)
+  assert.equal(
+    /const known = stages\.some/.test(page),
+    false,
+    'прежняя догадка по содержимому не должна вернуться',
+  )
+})
+
+test('нечего править — сказано почему, а не пустое место под заголовком', () => {
+  const fallback = new Function(
+    `${page.match(/const FALLBACK_STAGES = \[[\s\S]*?\n {2}\];/)[0]} return FALLBACK_STAGES;`)()
+  // Состояние агента не загрузилось: ни системного промпта, ни промптов
+  // этапов, ни промпта формулировщика — править нечего.
+  assert.deepEqual(rules.editablePrompts(null, fallback, {}), [])
+  // Состояние загрузилось: пять промптов, системный первым.
+  const live = [
+    { id: 'intake', title: 'Приём', prompt: null },
+    { id: 'assemble', title: 'Сборка контекста', prompt: 'т', promptId: 'stage.summary' },
+    { id: 'prepare', title: 'Подготовка промпта', prompt: null },
+    { id: 'answer', title: 'Вызов модели', prompt: 'т', promptId: 'stage.answer' },
+    { id: 'verify', title: 'Проверка ответа', prompt: 'т', promptId: 'stage.verify.invariants' },
+    { id: 'replenish', title: 'Пополнение памяти', prompt: 'т', promptId: 'stage.replenish' },
+    { id: 'deliver', title: 'Выдача', prompt: null },
+  ]
+  assert.deepEqual(
+    rules.editablePrompts({ systemPrompt: 'с' }, live, { prompt: 'ф' }),
+    ['stage.answer', 'stage.summary', 'stage.verify.invariants', 'stage.replenish', 'invariant.draft'],
+  )
+  // Честный текст показывается, обещание правки убирается вместе с полями.
+  assert.match(page, /id="dlg-pr-none" hidden>Промпты недоступны/)
+  assert.match(page, /const empty = editablePrompts\(agentInfo, stages, invariantLimits\)\.length === 0;/)
+  assert.match(page, /\$\('dlg-pr-none'\)\.hidden = !empty;/)
+  assert.match(page, /\$\('dlg-pr-about'\)\.hidden = empty;/)
+  // И грузить в этом состоянии нечего: «Правки этого профиля» над пустотой —
+  // обещание впустую.
+  assert.match(page, /else setPromptsState\('none'\);/)
+  assert.match(page, /state === 'ready' \? 'Правки этого профиля/)
+})
+
+test('сообщение об отказе не утверждает, что стоит в полях', () => {
+  // При отказе в полях может стоять и умолчание реестра, и промпт профиля,
+  // прочитанный раньше: строка источника у каждого поля называет это сама.
+  // Склейка строк собирается обратно: разрыв литерала посреди фразы
+  // («умолчания ' + 'реестра») скрыл бы её от поиска, и проверка осталась бы
+  // зелёной по ложной причине.
+  const branch = page.match(/setPromptsState\('error',[\s\S]*?\);/)[0]
+    .replace(/'\s*\+\s*'/g, '')
+  assert.equal(
+    /умолчани[яе] реестра/.test(branch),
+    false,
+    'сообщение противоречило строке источника «промпт профиля, N знаков»',
+  )
+  assert.match(branch, /править нельзя/)
+})
+
+test('отказ записи промпта слышен программе чтения с экрана', () => {
+  // Живая область оставалась на «Сохраняю промпт…»: вечное ожидание.
+  const branch = page.match(/\} catch \(error\) \{\s*\n\s*say\(el\.err, error\.message\);[\s\S]*?\n {4}\} finally \{/)[0]
+  assert.match(branch, /announce\(''\);/, 'ожидание «Сохраняю промпт…» обязано сняться')
+  assert.match(branch, /shout\(action === 'save'/)
+  assert.match(branch, /Промпт не сохранён: \$\{error\.message\}/)
+  assert.match(branch, /Умолчание не возвращено: \$\{error\.message\}/)
 })
