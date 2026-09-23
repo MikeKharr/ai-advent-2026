@@ -97,6 +97,8 @@
      срезает `overflow`. */
   .params-body :where(button, input, textarea, a, summary, [tabindex]):focus-visible,
   .mem-body :where(button, input, textarea, a, summary, [tabindex]):focus-visible,
+  .dlg-body :where(button, input, textarea, a, summary, [tabindex]):focus-visible,
+  .jl-body :where(button, input, textarea, a, summary, [tabindex]):focus-visible,
   .log :where(button, input, textarea, a, summary, [tabindex]):focus-visible {
     outline-offset:-2px;
   }
@@ -583,6 +585,29 @@
   .prompt:hover { border-color:var(--fg-mut); }
   .prompt[disabled] { opacity:.5; }
 
+  /* Тело окна «Об агенте»: прокрутка у содержимого, шапка стоит. */
+  .dlg-body {
+    min-height:0; overflow-y:auto; padding-right:var(--s-2);
+    display:flex; flex-direction:column; gap:var(--s-4);
+  }
+  /* Текст промпта в журнале: своя область прокрутки, чтобы сотня килобайт не
+     растягивала окно. */
+  .jl-pre {
+    margin:var(--s-2) 0 0; padding:var(--s-3); max-height:calc(6 * var(--s-6));
+    overflow:auto; font:var(--t-xs)/1.5 ui-monospace, monospace; color:var(--fg);
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-sm);
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .jl-part { margin:var(--s-3) 0 0; font-size:var(--t-xs); line-height:1.4;
+             color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+
+  /* --- редактор промпта профиля --- */
+  .pr-ed { display:flex; flex-direction:column; gap:var(--s-2); min-width:0; }
+  .pr-note { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch; }
+  .pr-src { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .pr-skel { height:calc(3 * var(--s-6)); background:var(--bg);
+             border:1px solid var(--line); border-radius:var(--r-sm); }
+
   /* Тело окна настроек прокручивается, шапка и подвал — нет. */
   .params-body { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
   .params-body .field { display:block; margin-bottom:var(--s-5); font-size:var(--t-sm); line-height:1.5; }
@@ -689,6 +714,16 @@
     color:var(--fg-mut); font-weight:600; white-space:nowrap;
     text-transform:uppercase; letter-spacing:.06em;
   }
+  /* Раскрытие текста промпта в журнале — тем же видом, что раскрытия в ленте. */
+  .jl-table .params-d > summary {
+    list-style:none; cursor:pointer; display:flex; align-items:center; gap:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  .jl-table .params-d > summary::-webkit-details-marker { display:none; }
+  .jl-table .params-d > summary::before { content:"▸"; }
+  .jl-table .params-d[open] > summary::before { content:"▾"; }
+  .jl-table .params-d > summary:hover { color:var(--fg); }
+  .jl-table .params-d > summary:active { background:var(--bg); }
   .jl-note { margin:var(--s-3) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch; }
   /* Ссылка на файл — именно ссылка: правый клик, «сохранить как», новая вкладка. */
   a.clear {
@@ -711,7 +746,7 @@
 <!-- Экран выбора профиля: показывается при каждом заходе, до всего остального. -->
 <section class="gate" id="gate" aria-labelledby="gate-h">
   <h1 id="gate-h">Агент с инвариантами профиля</h1>
-  <p class="sub">Агент ведёт ответ по шести этапам и помнит вас между диалогами: правила
+  <p class="sub">Агент ведёт ответ по семи этапам и помнит вас между диалогами: правила
   работы с вами, факты по темам и текущий разговор.</p>
 
   <p class="notice"><span class="mark" aria-hidden="true">!</span><span>Профили открыты:
@@ -774,7 +809,7 @@
          обе модели и предел кругов до отправки (раскладка, п. 7.3), и запас у
          неё меньше. Обязательное по ADR — открытость профиля и непроверенность
          ответов — живёт на экране входа и в футере, здесь его нет. -->
-    <p class="sub">Агент ведёт ответ по шести этапам; работу можно остановить и продолжить.
+    <p class="sub">Агент ведёт ответ по семи этапам; работу можно остановить и продолжить.
     <button class="about" id="about" type="button" disabled>Об агенте</button></p>
 
     <section class="chat" aria-labelledby="chat-h">
@@ -800,7 +835,7 @@
         помня правила и факты этого профиля.</li>
       </ol>
 
-      <!-- Полоса запуска: шесть этапов, пульс, счётчик, круг проверки и кнопка
+      <!-- Полоса запуска: семь этапов, пульс, счётчик, круг проверки и кнопка
            паузы. Стоит между логом и строкой значений и существует всегда. -->
       <div class="runbar" id="runbar" data-state="loading">
         <ol class="stages" id="stages" aria-label="Этапы запуска"></ol>
@@ -1039,7 +1074,8 @@
       <span class="name">Лимит ответа</span>
       <input id="p-max-tokens" class="num" type="number" min="1" max="2048" value="1024"
              inputmode="numeric">
-      <span class="hint">Сколько токенов отводится на ответ (1–2048).</span>
+      <span class="hint">Сколько токенов отводится на ответ. Верхняя граница приходит
+      от сервиса.</span>
     </label>
 
     <label class="field">
@@ -1049,12 +1085,9 @@
       <span class="hint">До 4 стоп-последовательностей, по одной на строку.</span>
     </label>
 
-    <label class="field">
-      <span class="name">Свой системный промпт</span>
-      <textarea class="prompt" id="p-system" rows="6" maxlength="4000"></textarea>
-      <span class="hint">Заменяет промпт агента для этого профиля — у всех, кто его выберет.
-      Пусто — промпт из реестра.</span>
-    </label>
+    <!-- Системного промпта здесь нет намеренно: он правится в окне «Об агенте»
+         вместе с остальными четырьмя промптами (ADR 2026-09-23-0646, п. 3).
+         Два места, правящих один текст, расходятся молча. -->
   </div>
 </dialog>
 
@@ -1105,39 +1138,54 @@
     <span class="tag" id="dlg-version" hidden></span>
     <button class="icon-btn" id="dlg-close" type="button" aria-label="Закрыть">×</button>
   </div>
-  <p class="dlg-purpose" id="dlg-purpose"></p>
-  <div class="dlg-actions" id="dlg-row" hidden>
-    <h2>Системный промпт агента</h2>
-    <span class="dlg-note" id="dlg-state"></span>
-  </div>
-  <textarea class="prompt" id="dlg-prompt" rows="6" readonly
-    aria-label="Системный промпт агента" hidden></textarea>
-  <p class="dlg-purpose" id="dlg-nopr" hidden>Системный промпт недоступен</p>
-  <p class="gate-note">Свой промпт для этого профиля задаётся в окне настроек — он заменяет
-  этот текст у всех, кто выберет профиль.</p>
 
-  <!-- Тексты промптов живут здесь, а не в событиях монитора: события остаются
-       короткими рядами, шесть промптов видны ДО запуска, и один текст стоит в
-       одном месте. -->
-  <div class="dlg-actions">
-    <h2 id="dlg-stages-h">Шесть этапов</h2>
-  </div>
-  <ol class="br-list" id="dlg-stages" aria-labelledby="dlg-stages-h"></ol>
-  <p class="mem-empty" id="dlg-stages-none" hidden>Этапы недоступны: не удалось получить
-  состояние агента.</p>
+  <!-- Тело окна прокручивается, шапка — нет: пять промптов в окно целиком не
+       помещаются ни на одном экране. -->
+  <div class="dlg-body" id="dlg-body">
+    <p class="dlg-purpose" id="dlg-purpose"></p>
 
-  <!-- Промпт формулировщика стоит рядом с промптами этапов, но отдельно: его
-       вызов идёт своим каналом, мимо запуска (ADR 2026-09-22-0827, п. 3). -->
-  <div class="dlg-actions">
-    <h2 id="dlg-draft-h">Формулировщик инвариантов</h2>
+    <!-- Промпты профиля правятся здесь, а не в окне настроек: два места,
+         правящих один текст, расходятся молча (ADR 2026-09-23-0646, п. 3).
+         Тексты живут в окне, а не в событиях монитора: события остаются
+         короткими рядами, промпты видны и правятся ДО запуска. -->
+    <div class="dlg-actions">
+      <h2 id="dlg-pr-h">Промпты профиля</h2>
+      <span class="dlg-note" id="dlg-pr-state" role="status"></span>
+    </div>
+    <p class="gate-note">Правка живёт в профиле: она действует у всех, кто его выберет,
+    и остаётся после перезагрузки. «Вернуть умолчание» снимает правку — возвращается
+    текст из реестра агента. Этапы без вызова модели промпта не имеют: у них правило
+    в коде, и править нечего.</p>
+    <p class="warned" id="dlg-pr-error" hidden></p>
+    <div class="dlg-actions" id="dlg-pr-retry-row" hidden>
+      <button class="dlg-btn" id="dlg-pr-retry" type="button">Повторить</button>
+    </div>
+
+    <div class="dlg-actions" id="dlg-row" hidden>
+      <h2 id="dlg-system-h">Системный промпт агента</h2>
+    </div>
+    <div id="dlg-system" hidden></div>
+    <p class="dlg-purpose" id="dlg-nopr" hidden>Системный промпт недоступен</p>
+
+    <div class="dlg-actions">
+      <h2 id="dlg-stages-h">Этапы запуска</h2>
+    </div>
+    <ol class="br-list" id="dlg-stages" aria-labelledby="dlg-stages-h"></ol>
+    <p class="mem-empty" id="dlg-stages-none" hidden>Этапы недоступны: не удалось получить
+    состояние агента.</p>
+
+    <!-- Промпт формулировщика стоит рядом с промптами этапов, но отдельно: его
+         вызов идёт своим каналом, мимо запуска (ADR 2026-09-22-0827, п. 3). -->
+    <div class="dlg-actions">
+      <h2 id="dlg-draft-h">Формулировщик инвариантов</h2>
+    </div>
+    <p class="gate-note" id="dlg-draft-note">Отдельный вызов Haiku 4.5 мимо этапов запуска:
+    он оценивает черновик правила и предлагает формулировки. Сохранить можно только то,
+    что он признал годным.</p>
+    <div id="dlg-draft" hidden></div>
+    <p class="mem-empty" id="dlg-draft-none" hidden>Промпт формулировщика недоступен: не
+    удалось получить состояние агента.</p>
   </div>
-  <p class="gate-note" id="dlg-draft-note">Отдельный вызов Haiku 4.5 мимо шести этапов:
-  он оценивает черновик правила и предлагает формулировки. Сохранить можно только то,
-  что он признал годным.</p>
-  <textarea class="prompt" id="dlg-draft" rows="6" readonly
-    aria-label="Промпт формулировщика инвариантов" hidden></textarea>
-  <p class="mem-empty" id="dlg-draft-none" hidden>Промпт формулировщика недоступен: не
-  удалось получить состояние агента.</p>
 </dialog>
 
 <!-- Седьмое окно: просмотр журнала этапов. Те же строки, что в CSV. -->
@@ -1164,7 +1212,9 @@
       <tbody id="jl-rows"></tbody>
     </table>
   </div>
-  <p class="jl-note" id="jl-note" hidden>В файле 23 колонки: полный состав — в CSV.</p>
+  <p class="jl-note" id="jl-note" hidden></p>
+  <p class="gate-note" id="jl-ttl">Текст промпта хранится столько же, сколько профиль,
+  и уходит по «очистить» вместе с перепиской. В CSV его нет — только размер.</p>
   <div class="dlg-actions">
     <a class="clear" id="jl-csv" href="#" download>CSV</a>
   </div>
@@ -1296,13 +1346,21 @@
   /* ---------- машина состояний запуска ---------- */
 
   /**
-   * Шесть этапов — имена дословно по ADR, п. 1. Список приходит из describe()
+   * Семь этапов — имена дословно по ADR 2026-09-23-0646, п. 4. Список приходит
+   * из describe()
    * вместе с промптами; этот — запасной, чтобы полоса существовала и тогда,
    * когда состояние агента не загрузилось: машину видно до первого запроса.
    */
   const FALLBACK_STAGES = [
     { id: 'intake', title: 'Приём', prompt: null, rule: null },
     { id: 'assemble', title: 'Сборка контекста', prompt: null, rule: null },
+    // Этап без вызова модели: промпта у него нет, есть правило в коде.
+    {
+      id: 'prepare',
+      title: 'Подготовка промпта',
+      prompt: null,
+      rule: 'складывает системный промпт и собранный контекст в тот текст, что уйдёт модели, и считает его размер',
+    },
     { id: 'answer', title: 'Вызов модели', prompt: null, rule: null },
     { id: 'verify', title: 'Проверка ответа', prompt: null, rule: null },
     { id: 'replenish', title: 'Пополнение памяти', prompt: null, rule: null },
@@ -1728,6 +1786,21 @@
       `контекста). Сжимает всегда Claude Haiku 4.5.`;
   };
 
+  /**
+   * Верхняя граница лимита ответа — потолок сервиса, число приходит с сервера.
+   * Подсказка не обещает, что ответ такой длины успеет: скорость генерации не
+   * замерена (ADR 2026-09-23-0646, п. 5), а обрыв по таймауту оплачен.
+   */
+  const applyMaxCap = (cap) => {
+    const field = $('p-max-tokens');
+    field.max = String(cap);
+    field.nextElementSibling.textContent =
+      `Сколько токенов отводится на ответ (1–${fmtInt(cap)}). Длинный ответ может ` +
+      'не успеть до таймаута вызова: скорость генерации мы не замеряли и обещать ' +
+      'её не станем. Оборванный вызов виден предупреждением «Модель не ответила», ' +
+      'и сгенерированное к тому моменту уже оплачено.';
+  };
+
   fetch('./api/state')
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
     .then((d) => {
@@ -1747,15 +1820,11 @@
       if (Number.isInteger(d.stageContextTokens)) applyStageCap(d.stageContextTokens);
       // Потолок ответа приходит с сервера: окно настроек не должно обещать
       // числа, которого сервис не примет.
-      if (Number.isInteger(limits.maxTokens)) {
-        $('p-max-tokens').max = String(limits.maxTokens);
-        $('p-max-tokens').nextElementSibling.textContent =
-          `Сколько токенов отводится на ответ (1–${limits.maxTokens}).`;
-      }
+      if (Number.isInteger(limits.maxTokens)) applyMaxCap(limits.maxTokens);
       renderModels();
       renderReviewModels();
-      renderStages();
-      renderDraftPrompt();
+      // Окно «Об агенте» строится при открытии: к этому моменту известны и
+      // таблица этапов, и промпты профиля.
       renderRunbar();
       // Сроки — с сервера: обещание на странице должно меняться вместе с
       // настройкой, а не расходиться с ней молча.
@@ -1765,6 +1834,9 @@
         $('ttl-note').textContent =
           `Правила и факты профиля хранятся ${days} с последнего действия в нём — ` +
           `чьего угодно; переписка — ${hours}`;
+        $('jl-ttl').textContent =
+          `Текст промпта хранится ${days} — столько же, сколько профиль, и уходит ` +
+          'по «очистить» вместе с перепиской. В CSV его нет — только размер.';
         $('gate-ttl').textContent =
           `Профиль и его память — правила и факты — живут ${days} с последнего действия ` +
           `в нём; переписка — ${hours}.`;
@@ -1834,7 +1906,6 @@
     set('p-temp', source.temperature ?? defaults.temperature ?? 1);
     set('p-max-tokens', source.maxTokens ?? defaults.maxTokens ?? 1024);
     $('p-stop').value = (source.stopSequences ?? []).join('\n');
-    $('p-system').value = source.system ?? '';
     renderModels();
     renderReviewModels();
     const rounds = String(
@@ -1869,8 +1940,6 @@
       out.summarizeAt = Number($('p-summarize-at').value);
     if (APPLIES[s].window) out.window = Number($('p-window').value);
     if (APPLIES[s].factsTokens) out.factsTokens = Number($('p-facts-tokens').value);
-    const system = $('p-system').value.trim();
-    if (system) out.system = system;
     return out;
   };
 
@@ -1966,9 +2035,10 @@
     if (APPLIES[s].window) parts.push(`последние ${fmtInt(Number($('p-window').value) || 0)} реплик`);
     if (APPLIES[s].factsTokens) parts.push(`факты до ${fmtInt(Number($('p-facts-tokens').value) || 0)}`);
     parts.push(`ответ до ${fmtInt(Number($('p-max-tokens').value) || 0)}`);
-    // Свой промпт — признак изменённого поведения агента, и он обязан быть
-    // виден без открытия окна.
-    if ($('p-system').value.trim()) parts.push('свой промпт');
+    // Свои промпты — признак изменённого поведения агента, и он обязан быть
+    // виден без открытия окна. Правятся они в окне «Об агенте».
+    const own = Object.keys(profile?.prompts ?? {}).length;
+    if (own > 0) parts.push(`свои промпты: ${own}`);
     $('params-sum').textContent = `Настройки: ${parts.join(' · ')}`;
   };
 
@@ -1982,7 +2052,6 @@
       showParamsSummary();
     });
   }
-  $('p-system').addEventListener('input', showParamsSummary);
   $('models').addEventListener('change', () => {
     showContextLive();
     showParamsSummary();
@@ -2008,7 +2077,6 @@
     [/Температура/i, 'p-temp'],
     [/Лимит токенов/i, 'p-max-tokens'],
     [/Стоп-последовательност/i, 'p-stop'],
-    [/[Сс]истемный промпт/i, 'p-system'],
     [/Неизвестная модель/i, 'p-max-tokens'],
     [/[Пп]роверяющая модель/i, 'review-models'],
     [/[Кк]ругов проверки/i, 'rounds'],
@@ -2142,9 +2210,259 @@
   });
   setDlg.addEventListener('close', () => $('set-btn').focus());
 
-  /* ---------- окно «Об агенте» ---------- */
+  /* ---------- окно «Об агенте»: промпты профиля ---------- */
+
+  /* --- Выделяемый блок: его извлекает и исполняет test/day15-page-prompts.test.js.
+         Всё, что решает судьбу промпта, живёт здесь и не трогает DOM. --- */
+
+  /** Предел `parseSystem` сервиса: длиннее сервис не примет. */
+  const PROMPT_MAX = 4000;
+  const SYSTEM_PROMPT_ID = 'stage.answer';
+  const DRAFT_PROMPT_ID = 'invariant.draft';
+  /**
+   * Запасное соответствие этапа промпту (ADR 2026-09-23-0646, п. 1). Первым
+   * читается `promptId` самого этапа: таблицу этапов задаёт сервис, и угадывать
+   * её страница не должна.
+   */
+  const STAGE_PROMPT_ID = {
+    assemble: 'stage.summary',
+    answer: SYSTEM_PROMPT_ID,
+    verify: 'stage.verify.invariants',
+    replenish: 'stage.replenish',
+  };
+  const promptIdOf = (stage) => stage?.promptId ?? STAGE_PROMPT_ID[stage?.id] ?? null;
+
+  /**
+   * Что показать у промпта: текст профиля поверх умолчания реестра. Отсутствие
+   * строки в профиле — и есть умолчание (ADR, п. 1), поэтому пустого текста
+   * профиля не бывает: он не отличался бы от сброса.
+   */
+  const promptViewOf = (promptId, registry, own) => {
+    const mine = own?.[promptId];
+    const base = registry?.[promptId] ?? '';
+    return typeof mine === 'string' && mine.trim()
+      ? { text: mine, source: 'profile', chars: mine.length }
+      : { text: base, source: 'registry', chars: base.length };
+  };
+
+  const withoutPrompt = (own, promptId) => {
+    const out = { ...(own ?? {}) };
+    delete out[promptId];
+    return out;
+  };
+
+  /**
+   * Промпты профиля — с сервера, а не из браузера: правка обязана пережить
+   * перезагрузку и действовать у всех, кто выберет профиль.
+   */
+  const loadProfilePrompts = async (request) => {
+    const d = await request('./api/profile');
+    return d?.profile?.prompts ?? {};
+  };
+
+  const promptPath = (promptId) => `./api/prompts/${encodeURIComponent(promptId)}`;
+
+  /** После записи карта перечитывается с сервера: достраивать её по памяти — врать. */
+  const savePrompt = async (request, promptId, text) => {
+    await request(promptPath(promptId), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    return loadProfilePrompts(request);
+  };
+
+  /**
+   * «Вернуть умолчание» — удаление строки, и оно идемпотентно: второе нажатие
+   * обязано ответить тем же, чем первое. Строки уже нет — это и есть успех,
+   * поэтому 404 здесь не отказ.
+   */
+  const resetPrompt = async (request, promptId) => {
+    try {
+      await request(promptPath(promptId), { method: 'DELETE' });
+    } catch (error) {
+      if (error?.status !== 404) throw error;
+    }
+    return loadProfilePrompts(request);
+  };
+
+  /* --- конец выделяемого блока --- */
+
+  /** Что стоит на кону у каждого промпта — одной строкой (ADR, п. 2). */
+  const PROMPT_NOTE = {
+    [SYSTEM_PROMPT_ID]:
+      'Промпт ответа: им задаётся поведение агента целиком. Отсюда он уходит '
+      + 'моделью на этапе «Вызов модели».',
+    'stage.summary':
+      'Промпт сводки несёт числа объёма: в своём тексте они перестанут следовать '
+      + 'за порогом сжатия из настроек.',
+    'stage.verify.invariants':
+      'Если ответ перестанет разбираться, вердикт станет «не разобран, считаю '
+      + 'принятым, с пометкой», а без третьей строки статус — «не проверен».',
+    'stage.replenish':
+      'Если строки перестанут разбираться, пополнение вернёт ноль записей: '
+      + 'память не пополнится, а вызов будет оплачен.',
+    [DRAFT_PROMPT_ID]:
+      'Если формулировки перестанут разбираться, ход кончится отказом при уже '
+      + 'оплаченном вызове.',
+  };
 
   const dlg = $('dlg');
+  /** `loading` | `ready` | `error` — состояние загрузки промптов профиля. */
+  let promptsState = 'loading';
+  /** Узлы редакторов по идентификатору промпта: их перерисовывает не всё окно. */
+  const promptEls = new Map();
+
+  /** Умолчания реестра: у этапов — из таблицы этапов, у двух прочих — свои поля. */
+  const registryPrompts = () => {
+    const out = {};
+    for (const stage of stages) {
+      const id = promptIdOf(stage);
+      if (id && stage.prompt) out[id] = stage.prompt;
+    }
+    if (agentInfo?.systemPrompt) out[SYSTEM_PROMPT_ID] = agentInfo.systemPrompt;
+    if (invariantLimits?.prompt) out[DRAFT_PROMPT_ID] = invariantLimits.prompt;
+    return out;
+  };
+  const ownPrompts = () => profile?.prompts ?? {};
+
+  const promptSourceLine = (view) =>
+    view.source === 'profile'
+      ? `промпт профиля, ${fmtInt(view.chars)} ${plural(view.chars, 'знак', 'знака', 'знаков')}`
+      : `умолчание реестра, ${fmtInt(view.chars)} ${plural(view.chars, 'знак', 'знака', 'знаков')}`;
+
+  const promptBusy = (el, busy) => {
+    el.area.disabled = busy || promptsState !== 'ready';
+    el.save.disabled = busy || promptsState !== 'ready';
+    el.reset.disabled = busy || promptsState !== 'ready';
+  };
+
+  /** Один редактор: поле, две кнопки, строка источника и строка отказа. */
+  const promptEditor = (promptId, title) => {
+    const box = document.createElement('div');
+    box.className = 'pr-ed';
+    box.dataset.promptId = promptId;
+
+    const area = document.createElement('textarea');
+    area.className = 'prompt';
+    area.id = `pr-${promptId.replace(/\./g, '-')}`;
+    area.rows = 6;
+    area.maxLength = PROMPT_MAX;
+    area.setAttribute('aria-label', `Промпт: ${title}`);
+
+    const note = document.createElement('p');
+    note.className = 'pr-note';
+    note.textContent = PROMPT_NOTE[promptId] ?? '';
+
+    const row = document.createElement('div');
+    row.className = 'dlg-actions';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'dlg-btn';
+    save.textContent = 'Сохранить';
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'dlg-btn is-second';
+    reset.textContent = 'Вернуть умолчание';
+    const src = document.createElement('span');
+    src.className = 'pr-src';
+    row.append(save, reset, src);
+
+    const err = document.createElement('p');
+    err.className = 'warned';
+    err.hidden = true;
+
+    box.append(area, note, row, err);
+    const el = { box, area, save, reset, src, err, promptId, title };
+    promptEls.set(promptId, el);
+
+    save.onclick = () => writePrompt(el, 'save');
+    reset.onclick = () => writePrompt(el, 'reset');
+    return box;
+  };
+
+  /** Запись промпта: и сохранение, и сброс проходят одним путём. */
+  const writePrompt = async (el, action) => {
+    const text = el.area.value;
+    if (action === 'save' && !text.trim()) {
+      // Пустой текст сервис отвергает, и это верно: «пусто» — это сброс,
+      // и у него своя кнопка.
+      say(el.err, 'Промпт не может быть пустым. Чтобы вернуть текст реестра, '
+        + 'нажмите «Вернуть умолчание».');
+      el.area.focus();
+      return;
+    }
+    say(el.err, '');
+    promptBusy(el, true);
+    announce(action === 'save' ? 'Сохраняю промпт…' : 'Возвращаю умолчание…');
+    try {
+      const prompts = action === 'save'
+        ? await savePrompt(api, el.promptId, text)
+        : await resetPrompt(api, el.promptId);
+      if (profile) profile.prompts = prompts;
+      else profile = { prompts };
+      // Текст поля перезаписывает только сброс: у сохранения в поле уже стоит
+      // то, что ушло, и переписывать его значило бы дёргать курсор.
+      applyPrompts({ retextId: action === 'reset' ? el.promptId : null });
+      showParamsSummary();
+      announce(action === 'save'
+        ? `Промпт сохранён: ${el.title}`
+        : `Промпт возвращён к умолчанию: ${el.title}`);
+    } catch (error) {
+      say(el.err, error.message);
+    } finally {
+      promptBusy(el, false);
+    }
+  };
+
+  /**
+   * Разложить промпты по редакторам. Текст поля переписывается только у того
+   * промпта, который назван в `retextId`, и при первой раскладке: иначе окно
+   * стирало бы чужую несохранённую правку.
+   */
+  const applyPrompts = ({ retextId = null, all = false } = {}) => {
+    const registry = registryPrompts();
+    const own = ownPrompts();
+    for (const [promptId, el] of promptEls) {
+      const view = promptViewOf(promptId, registry, own);
+      el.src.textContent = promptSourceLine(view);
+      if (all || promptId === retextId) el.area.value = view.text;
+      promptBusy(el, false);
+    }
+  };
+
+  /** Четыре состояния окна промптов: загрузка, готово, ошибка, пусто у промпта. */
+  const setPromptsState = (state, message = '') => {
+    promptsState = state;
+    $('dlg-pr-state').textContent =
+      state === 'loading' ? 'Загружаю промпты профиля…'
+        : state === 'error' ? '' : 'Правки этого профиля. Действуют у всех, кто его выберет.';
+    say($('dlg-pr-error'), state === 'error' ? message : '');
+    $('dlg-pr-retry-row').hidden = state !== 'error';
+    for (const [, el] of promptEls) promptBusy(el, false);
+  };
+
+  const loadPrompts = async () => {
+    setPromptsState('loading');
+    try {
+      const prompts = await loadProfilePrompts(api);
+      if (profile) profile.prompts = prompts;
+      else profile = { prompts };
+      setPromptsState('ready');
+      applyPrompts({ all: true });
+      showParamsSummary();
+    } catch {
+      // Умолчания реестра в полях остаются: их страница уже знает. Править
+      // нельзя, пока не известно, что стоит в профиле, — иначе «Сохранить»
+      // записал бы поверх чужой правки, которой окно не видело.
+      setPromptsState('error', 'Промпты профиля не загрузились: в полях — умолчания '
+        + 'реестра, править нельзя');
+      applyPrompts({ all: true });
+    }
+  };
+
+  $('dlg-pr-retry').onclick = loadPrompts;
+
   $('about').onclick = () => {
     $('dlg-name').textContent = agentInfo?.name ?? 'Агент';
     const version = $('dlg-version');
@@ -2155,29 +2473,46 @@
       : 'Описание агента недоступно: не удалось получить его состояние';
     const base = agentInfo?.systemPrompt ?? '';
     $('dlg-row').hidden = !base;
-    $('dlg-prompt').hidden = !base;
+    $('dlg-system').hidden = !base;
     $('dlg-nopr').hidden = !agentInfo || Boolean(base);
-    if (base) {
-      $('dlg-prompt').value = base;
-      $('dlg-state').textContent = `${base.length} ${plural(base.length, 'знак', 'знака', 'знаков')}`;
-    }
+    renderPromptEditors();
     dlg.showModal();
     dlg.focus();
+    loadPrompts();
   };
   $('dlg-close').onclick = () => dlg.close();
   dlg.addEventListener('close', () => $('about').focus());
 
+  /** Редакторы строятся заново на каждое открытие: таблица этапов приходит с сервера. */
+  const renderPromptEditors = () => {
+    promptEls.clear();
+    const systemBox = $('dlg-system');
+    systemBox.replaceChildren();
+    if (agentInfo?.systemPrompt) {
+      systemBox.append(promptEditor(SYSTEM_PROMPT_ID, 'системный промпт агента'));
+    }
+    renderStages();
+    const draftBox = $('dlg-draft');
+    draftBox.replaceChildren();
+    // Умолчание промпта формулировщика приходит от сервиса вместе с потолками.
+    const text = invariantLimits?.prompt ?? null;
+    draftBox.hidden = !text;
+    $('dlg-draft-none').hidden = Boolean(text);
+    if (text) draftBox.append(promptEditor(DRAFT_PROMPT_ID, 'формулировщик инвариантов'));
+    applyPrompts({ all: true });
+  };
 
   /**
-   * Шесть этапов с текстами промптов — в окне «Об агенте», а не в событиях
-   * монитора: события остаются короткими рядами, шесть промптов видны ДО
-   * запуска, и один текст стоит в одном месте.
+   * Этапы с промптами — в окне «Об агенте», а не в событиях монитора: события
+   * остаются короткими рядами, промпты видны и правятся ДО запуска, и один
+   * текст стоит в одном месте.
    */
   const renderStages = () => {
     const box = $('dlg-stages');
     box.replaceChildren();
     const known = stages.some((x) => x.prompt || x.rule);
     $('dlg-stages-none').hidden = known;
+    $('dlg-stages-h').textContent = `Этапы запуска: ${stages.length}`;
     stages.forEach((stage, i) => {
       const li = document.createElement('li');
       li.className = 'br-row';
@@ -2185,7 +2520,20 @@
       const head = document.createElement('span');
       head.textContent = `${i + 1}. ${stage.title}`;
       li.append(head);
-      if (stage.prompt) {
+      const promptId = stage.prompt ? promptIdOf(stage) : null;
+      if (promptId === SYSTEM_PROMPT_ID) {
+        // Один текст — одно место: промпт этого этапа и есть системный промпт,
+        // и правится он выше. Второе поле здесь разошлось бы с первым.
+        const same = document.createElement('span');
+        same.className = 'pr-note';
+        same.style.display = 'block';
+        same.textContent = 'промпт этапа — системный промпт агента, он правится выше';
+        li.append(same);
+      } else if (promptId) {
+        li.append(promptEditor(promptId, stage.title.toLowerCase()));
+      } else if (stage.prompt) {
+        // Промпт есть, а какой он — сервис не назвал: показываем текстом,
+        // править вслепую нельзя.
         const d = document.createElement('details');
         d.className = 'params-d';
         const summary = document.createElement('summary');
@@ -2198,7 +2546,7 @@
         li.append(d);
       } else {
         const rule = document.createElement('span');
-        rule.className = 'hint';
+        rule.className = 'pr-note';
         rule.style.display = 'block';
         rule.textContent = stage.rule
           ? `без вызова модели: ${stage.rule}`
@@ -2207,14 +2555,6 @@
       }
       box.append(li);
     });
-  };
-
-  /** Промпт формулировщика: приходит от сервиса вместе с потолками. */
-  const renderDraftPrompt = () => {
-    const text = invariantLimits?.prompt ?? null;
-    $('dlg-draft').hidden = !text;
-    $('dlg-draft-none').hidden = Boolean(text);
-    if (text) $('dlg-draft').value = text;
   };
 
   /* ---------- монитор агента ---------- */
@@ -2311,7 +2651,7 @@
           : String(data.round),
       );
     if (data.promptId && data.promptId !== 'custom')
-      row('текст', 'в окне «Об агенте», раздел «Шесть этапов»');
+      row('текст', 'в окне «Об агенте», раздел «Этапы запуска»');
     if (event.detail) row('детали', event.detail);
 
     d.append(s, dl);
@@ -3001,7 +3341,7 @@
     if (s.topicFacts !== undefined && s.topicFacts > 0)
       did.push(`${s.topicFacts} ${plural(s.topicFacts, 'факт темы', 'факта темы', 'фактов темы')}`);
     if (s.model) did.push(`спросил ${models.find((m) => m.id === s.provider)?.label ?? s.model}`);
-    if (s.systemOverridden) did.push('системный промпт профиля');
+    if (s.promptSource === 'profile') did.push('промпты профиля');
 
     const numbers = [];
     if (s.totalTokens !== undefined) numbers.push(`${fmtInt(s.totalTokens)} токенов`);
@@ -3549,8 +3889,8 @@
     row.className = 'sum';
     const parts = [];
     // `stagesPassed` считает ПРОХОДЫ этапов, а не этапы: при двух кругах их
-    // девять, а не шесть (приём, три этапа круга, три этапа второго круга,
-    // пополнение, выдача). Подпись «Этапы: 9» рядом с машиной из шести этапов
+    // больше числа этапов (приём, круг, второй круг, пополнение, выдача).
+    // Подпись «Этапы: 9» рядом с полосой из семи этапов
     // читалась бы как ошибка экрана, поэтому здесь названо то, что считается.
     if (Number.isFinite(meta.stagesPassed))
       parts.push(`Проходов этапов: ${meta.stagesPassed}`);
@@ -3681,7 +4021,12 @@
         ? null
         : `${fmtInt(meta.inputTokens)} / ${fmtInt(meta.outputTokens)} токенов`,
     );
-    row('системный промпт', meta.systemOverridden ? 'свой, из настроек профиля' : 'исходный');
+    row(
+      'промпты',
+      meta.promptSource === 'profile'
+        ? 'профиля, правятся в окне «Об агенте»'
+        : meta.promptSource === 'registry' ? 'умолчания реестра' : null,
+    );
     details.append(summary, dl);
     li.append(details);
     return li;
@@ -4479,6 +4824,122 @@
     { key: 'verdict' },
   ];
 
+  /* --- Выделяемый блок: его извлекает test/day15-page-journal-prompt.test.js --- */
+
+  /** Этап, у которого есть текст промпта (ADR 2026-09-23-0646, п. 4). */
+  const PREPARE_STAGE = 'prepare';
+  const hasPromptText = (state) => state === PREPARE_STAGE;
+  /**
+   * Запись промпта этого круга. Ключ — круг: `prepare` проходит на каждом
+   * круге и пишет свою строку (ADR, п. 4).
+   */
+  const promptOfRound = (records, round) =>
+    (records ?? []).find((x) => String(x.round) === String(round)) ?? null;
+
+  /**
+   * Текст промпта запуска: приходит из SQLite, в CSV его нет. 404 — это не
+   * поломка, а ответ «текста нет»: у старых запусков и после «очистить» его не
+   * будет, и показывать «не загрузился» с кнопкой «Повторить» значило бы врать.
+   */
+  const loadRunPrompts = async (request, runId) => {
+    try {
+      const d = await request(`./api/runs/${encodeURIComponent(runId)}/prompts`);
+      return d?.prompts ?? [];
+    } catch (error) {
+      if (error?.status === 404) return [];
+      throw error;
+    }
+  };
+
+  /* --- конец выделяемого блока --- */
+
+  /**
+   * Текст промпта грузится по раскрытию, а не вместе с журналом: он бывает в
+   * сотню килобайт, и платить за него при каждом открытии окна незачем.
+   */
+  const fillPromptText = async (box, round) => {
+    box.replaceChildren();
+    const state = document.createElement('p');
+    state.className = 'jl-part';
+    state.setAttribute('role', 'status');
+    state.textContent = 'Загружаю текст промпта…';
+    box.append(state);
+    try {
+      const record = promptOfRound(await loadRunPrompts(api, jlRunId), round);
+      box.replaceChildren();
+      if (!record) {
+        const none = document.createElement('p');
+        none.className = 'jl-part';
+        none.textContent = 'Текста промпта нет: запуск его не сохранил.';
+        box.append(none);
+        return;
+      }
+      const part = (title, text) => {
+        const head = document.createElement('p');
+        head.className = 'jl-part';
+        const chars = String(text ?? '').length;
+        head.textContent =
+          `${title} — ${fmtInt(chars)} ${plural(chars, 'знак', 'знака', 'знаков')}`;
+        const pre = document.createElement('pre');
+        pre.className = 'jl-pre';
+        pre.tabIndex = 0;
+        // Промпт — текст, а не разметка.
+        pre.textContent = String(text ?? '');
+        box.append(head, pre);
+      };
+      const sum = document.createElement('p');
+      sum.className = 'jl-part';
+      sum.textContent = [
+        record.sha8 ? `sha8 ${record.sha8}` : '',
+        Number.isFinite(Number(record.tokens)) ? `${fmtInt(Number(record.tokens))} т.` : '',
+      ].filter(Boolean).join(' · ');
+      if (sum.textContent) box.append(sum);
+      part('Системный промпт', record.system);
+      part('Вход', record.input);
+    } catch {
+      box.replaceChildren();
+      const err = document.createElement('p');
+      err.className = 'warned';
+      err.textContent = 'Текст промпта не загрузился';
+      const row = document.createElement('div');
+      row.className = 'dlg-actions';
+      const again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'dlg-btn';
+      again.textContent = 'Повторить';
+      again.onclick = () => fillPromptText(box, round);
+      row.append(again);
+      box.append(err, row);
+    }
+  };
+
+  /** Ряд под строкой `prepare`: раскрываемый итоговый текст промпта. */
+  const promptRow = (round, columns) => {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = columns;
+    const d = document.createElement('details');
+    d.className = 'params-d';
+    const summary = document.createElement('summary');
+    summary.textContent = `текст промпта · круг ${round || 1}`;
+    const box = document.createElement('div');
+    d.append(summary, box);
+    let loaded = false;
+    d.addEventListener('toggle', () => {
+      if (!d.open || loaded) return;
+      loaded = true;
+      fillPromptText(box, round);
+    });
+    td.append(d);
+    tr.append(td);
+    return tr;
+  };
+
+  /** Сколько колонок в файле — по его же заголовку: число из памяти врёт. */
+  const columnsNote = (head) =>
+    `В файле ${head.length} ${plural(head.length, 'колонка', 'колонки', 'колонок')}: ` +
+    'полный состав — в CSV.';
+
   const renderJournal = (rows) => {
     const head = rows[0] ?? [];
     const at = (name) => head.indexOf(name);
@@ -4495,6 +4956,7 @@
         tr.append(td);
       }
       tbody.append(tr);
+      if (hasPromptText(get('state'))) tbody.append(promptRow(get('round'), JL_COLUMNS.length));
     }
     const has = body.length > 0;
     $('jl-table').hidden = !has;
@@ -4505,10 +4967,9 @@
     if (has && last && at('run_status') !== -1 && last[at('run_status')] === 'cancelled') {
       const title = stages.find((x) => x.id === last[at('state')])?.title ?? last[at('state')];
       $('jl-note').textContent =
-        `Запуск отменён на этапе «${title}» — дальше строк нет. ` +
-        'В файле 23 колонки: полный состав — в CSV.';
+        `Запуск отменён на этапе «${title}» — дальше строк нет. ${columnsNote(head)}`;
     } else if (has) {
-      $('jl-note').textContent = 'В файле 23 колонки: полный состав — в CSV.';
+      $('jl-note').textContent = columnsNote(head);
     }
   };
 
@@ -4702,7 +5163,7 @@
     // активности: иначе он ушёл бы на body.
     if (document.activeElement === pauseBtn) input.focus();
     setRunView(view, {
-      // Запуск кончился — текущего этапа нет: шесть «✓» и ни одного
+      // Запуск кончился — текущего этапа нет: все «✓» и ни одного
       // aria-current, а не вечно пульсирующая «Выдача».
       index: view === 'done' ? 0 : runState.index,
       done: view === 'done' ? stages.length : runState.done,
@@ -4813,7 +5274,7 @@
     }
 
     // Режим «Инвариант» идёт своим каналом: один вызов формулировщика вместо
-    // шести этапов, и в переписку он не пишется (ADR 2026-09-22-0827, п. 3).
+    // этапов запуска, и в переписку он не пишется (ADR 2026-09-22-0827, п. 3).
     if (modeOf() === 'invariant') return submitDraft(message);
 
     const mode = strategy();
@@ -4836,8 +5297,8 @@
     if (APPLIES[mode].summarizeAt && !$('p-summarize-at').disabled)
       params.summarizeAt = Number($('p-summarize-at').value);
     if (mode === 'branches' && editing) params.parentId = editParent ?? 0;
-    const system = $('p-system').value.trim();
-    if (system) params.system = system;
+    // Системного промпта в теле запуска нет: агент дня 15 берёт его из
+    // промптов профиля и поле `system` во входе отвергает (ADR 2026-09-23-0646, п. 2).
     // Тема первого сообщения: диалога ещё нет, и он родится с ней.
     if (!sessionName && pickedTopicId !== null) params.topicId = pickedTopicId;
 
