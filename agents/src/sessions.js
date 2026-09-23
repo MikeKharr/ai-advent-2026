@@ -12,6 +12,7 @@ export { isSessionId } from './params.js'
 import {
   PARAM_LIMITS,
   PROFILE_INVARIANT_CAP,
+  PROFILE_PROMPT_IDS,
   SUMMARIZE_LIMITS,
   TOPIC_FACT_CAP,
 } from './params.js'
@@ -112,6 +113,47 @@ CREATE TABLE IF NOT EXISTS profile_invariants (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (profile_id, num)
 );
+
+-- Промпты профиля дня 15 (ADR 2026-09-23-0646, п. 1): пять текстов, которые
+-- посетитель правит из окна «Об агенте». Таблица своя, а не ключ в
+-- settings_staged, по той же причине, что у инвариантов: saveStagedSettings
+-- пишет столбец целиком заново, и сохранение настроек в дне 13 или 14 на том
+-- же профиле стёрло бы промпты дня 15.
+--
+-- Отсутствия строки достаточно, чтобы действовало умолчание реестра, поэтому
+-- сброс к умолчанию — DELETE строки, а не пустой текст: пустой промпт
+-- parseSystem отвергает, и это остаётся. Срок — с профилем.
+CREATE TABLE IF NOT EXISTS profile_prompts (
+  profile_id TEXT NOT NULL,
+  prompt_id  TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (profile_id, prompt_id)
+);
+
+-- Итоговый текст промпта, ушедшего модели (ADR 2026-09-23-0646, п. 4): этап
+-- «Подготовка промпта» пишет одну строку на круг запуска, ровно в том виде,
+-- в каком текст уходит роутеру, — два поля, system и input.
+--
+-- В SQLite, а не в CSV: CSV — один файл на все диалоги, снимается только по
+-- времени, и «очистить» его не касается, а страница обещает «30 часов без
+-- сообщений или „очистить“». Здесь «очистить» текст уносит (clear).
+-- Внешнего ключа нет, как и у messages: удаление идёт явными операторами.
+CREATE TABLE IF NOT EXISTS run_prompts (
+  run_id     TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  round      INTEGER NOT NULL,
+  system     TEXT NOT NULL,
+  input      TEXT NOT NULL,
+  sha8       TEXT NOT NULL,
+  tokens     INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (run_id, round)
+);
+CREATE INDEX IF NOT EXISTS run_prompts_by_session ON run_prompts(session_id);
+-- Уборка по сроку идёт по created_at и без индекса читала бы таблицу целиком,
+-- а строка здесь — копия рабочей памяти круга, до ~130 КБ.
+CREATE INDEX IF NOT EXISTS run_prompts_by_age ON run_prompts(created_at);
 
 -- Память фактов: темы профиля и факты в них. Тема переживает сессию и
 -- уходит только вместе с профилем (ADR, п. 6.1). Имя "facts" в базе занято
@@ -433,6 +475,38 @@ export function createSessions({
     ),
     dropInvariant: db.prepare('DELETE FROM profile_invariants WHERE profile_id = ? AND num = ?'),
 
+    // --- Промпты профиля и тексты промптов дня 15 (ADR 2026-09-23-0646) ---
+    prompts: db.prepare(
+      `SELECT prompt_id AS promptId, text, updated_at AS updatedAt
+         FROM profile_prompts WHERE profile_id = ? ORDER BY prompt_id ASC`,
+    ),
+    savePrompt: db.prepare(
+      `INSERT INTO profile_prompts (profile_id, prompt_id, text, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(profile_id, prompt_id) DO UPDATE SET
+         text = excluded.text, updated_at = excluded.updated_at`,
+    ),
+    dropPrompt: db.prepare('DELETE FROM profile_prompts WHERE profile_id = ? AND prompt_id = ?'),
+    // Запись круга перезаписывается по (run_id, round): повтор круга после
+    // обрыва не плодит вторую строку на тот же круг.
+    addRunPrompt: db.prepare(
+      `INSERT INTO run_prompts
+         (run_id, session_id, round, system, input, sha8, tokens, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(run_id, round) DO UPDATE SET
+         session_id = excluded.session_id, system = excluded.system,
+         input = excluded.input, sha8 = excluded.sha8,
+         tokens = excluded.tokens, created_at = excluded.created_at`,
+    ),
+    // Диалог в условии — не украшение: ручка чтения обязана убедиться, что
+    // запуск принадлежит тому диалогу, чей профиль назвал посетитель.
+    runPrompts: db.prepare(
+      `SELECT run_id AS runId, session_id AS sessionId, round, system, input, sha8, tokens,
+              created_at AS createdAt
+         FROM run_prompts WHERE run_id = ? AND session_id = ? ORDER BY round ASC`,
+    ),
+    dropSessionPrompts: db.prepare('DELETE FROM run_prompts WHERE session_id = ?'),
+
     sessionState: db.prepare(
       `SELECT s.profile_id AS profileId, s.topic_id AS topicId, s.pending_topic AS pendingTopic,
               t.title AS topicTitle
@@ -462,7 +536,7 @@ export function createSessions({
     ),
     sessionOwner: db.prepare('SELECT profile_id AS profileId FROM sessions WHERE id = ?'),
 
-    // --- Удаление профиля: десять таблиц одной транзакцией (критерий 2) ---
+    // --- Удаление профиля: двенадцать таблиц одной транзакцией (критерий 2) ---
     // Каждый оператор ограничен профилем и его сессиями. Сессии дней 6–10
     // несут `profile_id` NULL, а `= ?` с непустым идентификатором с NULL не
     // совпадает никогда — поэтому чужая переписка под эти операторы не
@@ -487,6 +561,14 @@ export function createSessions({
     dropProfileRules: db.prepare('DELETE FROM personalization WHERE profile_id = ?'),
     // Десятый оператор удаления профиля (ADR 2026-09-22-0827, п. 2).
     dropProfileInvariants: db.prepare('DELETE FROM profile_invariants WHERE profile_id = ?'),
+    // Одиннадцатый и двенадцатый операторы удаления профиля
+    // (ADR 2026-09-23-0646, пп. 1 и 4): промпты профиля и тексты промптов его
+    // диалогов. Второй читает sessions подзапросом, поэтому идёт до
+    // dropProfileSessions — после неё выбирать было бы уже не из чего.
+    dropProfilePrompts: db.prepare('DELETE FROM profile_prompts WHERE profile_id = ?'),
+    dropProfileRunPrompts: db.prepare(
+      'DELETE FROM run_prompts WHERE session_id IN (SELECT id FROM sessions WHERE profile_id = ?)',
+    ),
     dropProfile: db.prepare('DELETE FROM profiles WHERE id = ?'),
 
     // --- Сироты новых таблиц --------------------------------------------
@@ -497,6 +579,15 @@ export function createSessions({
     orphanInvariants: db.prepare(
       'DELETE FROM profile_invariants WHERE profile_id NOT IN (SELECT id FROM profiles)',
     ),
+    orphanPrompts: db.prepare(
+      'DELETE FROM profile_prompts WHERE profile_id NOT IN (SELECT id FROM profiles)',
+    ),
+    // Текст промпта уходит по сроку, а не по сиротству. Срок владелец выбрал
+    // «с профилем», а не «с диалогом» (ADR 2026-09-23-0646, развилка 1), и
+    // проход по сиротам сессий отменял бы этот выбор молча. На деле строка
+    // обычно уходит раньше: clear снимает её и на действие «очистить», и на
+    // уборку диалога по его сроку, — это короче обещанного, а не длиннее.
+    staleRunPrompts: db.prepare('DELETE FROM run_prompts WHERE created_at < ?'),
     orphanTopicFacts: db.prepare(
       'DELETE FROM topic_facts WHERE topic_id NOT IN (SELECT id FROM topics)',
     ),
@@ -958,6 +1049,13 @@ export function createSessions({
     clear(sessionId) {
       // Сводка и факты — выжимка из той же переписки: живут и удаляются
       // вместе с ней (ADR 2026-09-14-0447, п. 7.3, решение владельца 5).
+      //
+      // Текст промпта — тоже выжимка из этой переписки, и хранится он 30 дней
+      // с профилем (ADR 2026-09-23-0646, развилка 1). Срок сам по себе его
+      // здесь не снимал бы, а страница обещает «30 часов без сообщений или
+      // „очистить“»: оставить текст жить после нажатия значило бы сделать
+      // обещание ложным. Поэтому оператор отдельный и стоит здесь.
+      stmt.dropSessionPrompts.run(sessionId)
       stmt.dropFacts.run(sessionId)
       stmt.dropSummary.run(sessionId)
       stmt.dropCost.run(sessionId)
@@ -998,6 +1096,12 @@ export function createSessions({
       stmt.orphanCosts.run()
       stmt.orphanRules.run()
       stmt.orphanInvariants.run()
+      stmt.orphanPrompts.run()
+      // Тексты промптов старше срока профиля. Идут по своему created_at, а не
+      // по сессии: строка переживает удаление сессии в обход clear (обрыв
+      // транзакции, правка базы руками), и без этого прохода к ней не пришёл
+      // бы никто (ADR 2026-09-23-0646, п. 4).
+      stmt.staleRunPrompts.run(at - profileTtlMs)
       stmt.orphanTopics.run()
       // Факты тем — после тем: осиротевшая тема сначала должна исчезнуть.
       stmt.orphanTopicFacts.run()
@@ -1135,7 +1239,7 @@ export function createSessions({
 
     /**
      * Удаление профиля со всей связанной памятью — одной транзакцией
-     * (решение владельца 10, критерий 2). После неё ни в одной из десяти
+     * (решение владельца 10, критерий 2). После неё ни в одной из двенадцати
      * таблиц нет строки этого профиля, его сессий и его тем; чужие сессии
      * (`profile_id` NULL у дней 6–10 и идентификатор другого профиля) ни под
      * один оператор не попадают. Удалить профиль может любой посетитель —
@@ -1159,6 +1263,10 @@ export function createSessions({
           topics: Number(stmt.dropProfileTopics.run(id).changes),
           rules: Number(stmt.dropProfileRules.run(id).changes),
           invariants: Number(stmt.dropProfileInvariants.run(id).changes),
+          prompts: Number(stmt.dropProfilePrompts.run(id).changes),
+          // До dropProfileSessions: оператор выбирает диалоги профиля
+          // подзапросом, и после их удаления выбирать было бы не из чего.
+          runPrompts: Number(stmt.dropProfileRunPrompts.run(id).changes),
           sessions: Number(stmt.dropProfileSessions.run(id).changes),
           profiles: Number(stmt.dropProfile.run(id).changes),
         }
@@ -1271,6 +1379,78 @@ export function createSessions({
     deleteInvariant({ profileId, num, at = now() }) {
       if (!stmt.profile.get(profileId, at - profileTtlMs)) return false
       return Number(stmt.dropInvariant.run(profileId, num).changes) > 0
+    },
+
+    // --- Промпты профиля дня 15 (ADR 2026-09-23-0646, п. 1) --------------
+    // Хранилище держит только те пять промптов, которые посетитель переписал.
+    // Умолчания реестра сюда не копируются: копия разошлась бы с реестром при
+    // первой же правке умолчания, а отличить «переписан» от «совпал с
+    // умолчанием» стало бы нечем.
+
+    /**
+     * Промпты профиля картой promptId → text. Пустая карта — все пять
+     * промптов берутся из умолчаний реестра. Карта, а не объект: её читает
+     * шов запуска (опция prompts), и ключи с точками в нём не путаются с
+     * полями.
+     */
+    promptsOf(profileId) {
+      return new Map(stmt.prompts.all(profileId).map((row) => [row.promptId, row.text]))
+    },
+
+    /**
+     * Переписать промпт профиля. Годность текста здесь не судится — это дело
+     * parseSystem в ручке; хранилище отвечает за живой профиль и за то, что
+     * promptId — один из пяти известных. Правка промпта — действие в профиле
+     * и срок его продлевает, как сохранение настроек.
+     */
+    savePrompt({ profileId, promptId, text, at = now() }) {
+      if (!PROFILE_PROMPT_IDS.includes(promptId)) return { ok: false, code: 'unknown_prompt' }
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return { ok: false, code: 'no_profile' }
+      stmt.savePrompt.run(profileId, promptId, text, at)
+      stmt.touchProfile.run(at, profileId)
+      return { ok: true, prompt: { promptId, text, updatedAt: at } }
+    },
+
+    /**
+     * Вернуть промпт к умолчанию — удалением строки, а не пустым текстом:
+     * пустой промпт parseSystem отвергает, и пустая строка стала бы записью
+     * «промпт профиля длиной ноль». Отсутствие строки — уже успех, поэтому
+     * removed: false — это не отказ: повторное «Вернуть умолчание» обязано
+     * отвечать тем же, чем первое.
+     */
+    deletePrompt({ profileId, promptId, at = now() }) {
+      if (!PROFILE_PROMPT_IDS.includes(promptId)) return { ok: false, code: 'unknown_prompt' }
+      if (!stmt.profile.get(profileId, at - profileTtlMs)) return { ok: false, code: 'no_profile' }
+      const removed = Number(stmt.dropPrompt.run(profileId, promptId).changes) > 0
+      stmt.touchProfile.run(at, profileId)
+      return { ok: true, removed }
+    },
+
+    // --- Текст промпта, ушедшего модели (ADR 2026-09-23-0646, п. 4) ------
+
+    /**
+     * Запись этапа «Подготовка промпта»: одна строка на круг запуска.
+     * Диалога нет — писать некуда: очищенная переписка не должна оживать
+     * текстом круга, доехавшего после нажатия «очистить».
+     */
+    addRunPrompt({ runId, sessionId, round, system, input, sha8, tokens, at = now() }) {
+      if (!stmt.hasSession.get(sessionId)) return false
+      stmt.addRunPrompt.run(
+        runId,
+        sessionId,
+        round,
+        system,
+        input,
+        sha8,
+        Math.max(0, Math.round(tokens)),
+        at,
+      )
+      return true
+    },
+
+    /** Тексты промптов запуска по кругам. Чужой диалог не отдаёт: см. runPrompts. */
+    runPromptsOf({ runId, sessionId }) {
+      return stmt.runPrompts.all(runId, sessionId)
     },
 
     /** Темы профиля с числом фактов, от свежих к старым. */
