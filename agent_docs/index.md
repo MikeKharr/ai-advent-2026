@@ -30,6 +30,7 @@
 - `agent_docs/guides/dod.md` — критерии завершенности (DoD).
 - `agent_docs/guides/new-day.md` — как добавить новый день челленджа; читать перед началом задания.
 - `agent_docs/guides/environment-setup.md` — настройка окружения; применять при инициализации проекта.
+- `agent_docs/guides/verification.md` — методика проверки: стенды, улики, красные ветви тестов, чтение красного прогона, что переносить при переезде.
 - `agent_docs/guides/logging.md` — логирование скриптов/интеграций.
 - `agent_docs/guides/atomic-documents.md` — правила атомарных событийных документов.
 - `agent_docs/guides/archiving-and-temp.md` — архивация и временные файлы.
