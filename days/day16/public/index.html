@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day16 -> /day16/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Консоль MCP — AI Advent 2026, день 16</title>
+<style>
+  /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
+     Значения вне этих шкал — дефект, а не нюанс.
+     Жёлтого токена --attn здесь НЕТ и заводить его нельзя: именное исключение
+     корпуса накрывает дни 13–15, день 16 в список не входит, и раскладка
+     2026-09-23-1242 (п. 0) жёлтого не запрашивала.
+     --overlay не заведён: модальных окон на экране нет ни одного. */
+  :root {
+    color-scheme: light dark;
+    --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+    --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+    --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-lg:1.125rem; --t-xl:1.5rem;
+    --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+    --line:#e6e6e3; --line-ctl:#8f8f8a;
+    --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+    --r-sm:6px; --r-md:10px; --r-full:999px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+      --line:#2a2a30; --line-ctl:#6a6a73;
+      --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font-size:var(--t-md); line-height:1.6;
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Одна колонка и обычная прокрутка страницы: второго потока на экране нет,
+     делить вертикальный бюджет не с чем (раскладка, п. 2). */
+  .page { max-width:64rem; margin:0 auto; padding:var(--s-6) var(--s-4); }
+
+  h1 { font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; margin:0 0 var(--s-2); }
+  h2 {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); margin:0 0 var(--s-2);
+  }
+  /* Проза — 68ch, вторичный текст — 52ch. К <pre> с JSON это не относится:
+     тело ответа не проза (раскладка, п. 2). */
+  .sub { margin:0 0 var(--s-4); max-width:68ch; }
+  .hint { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); margin:0 0 var(--s-2); max-width:52ch; }
+
+  /* Условие работы продукта, а не отказ: поверхность и линия, не --danger. */
+  .notice {
+    margin:0 0 var(--s-3); padding:var(--s-3) var(--s-4);
+    background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-md);
+    font-size:var(--t-sm); line-height:1.5; max-width:68ch;
+  }
+
+  .wire {
+    display:flex; flex-wrap:wrap; gap:var(--s-2);
+    margin:0 0 var(--s-5); font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  .wire span { white-space:nowrap; }
+  .wire b { font-weight:400; font-family:var(--mono); }
+
+  .palette { margin:0 0 var(--s-5); }
+  .palette .row2 { margin-top:var(--s-4); }
+  .chips { list-style:none; display:flex; flex-wrap:wrap; gap:var(--s-2); margin:0; padding:0; }
+  .chip {
+    font:inherit; font-size:var(--t-xs); line-height:1.4; font-family:var(--mono);
+    text-align:left; white-space:normal; overflow-wrap:anywhere;
+    padding:var(--s-2) var(--s-3); border-radius:var(--r-full);
+    background:var(--surface); color:var(--fg); border:1px solid var(--line-ctl);
+    cursor:pointer; transition:background 120ms;
+  }
+  .chip:hover { background:var(--bg); }
+  .chip:active { transform:translateY(1px); }
+
+  /* Поле обязано быть на экране всегда: без него после прокрутки ленты
+     следующую команду не отправить, не вернувшись наверх (раскладка, п. 2.1).
+     Палитра липкой НЕ делается: на 375 px она съела бы пятую часть экрана. */
+  .composer {
+    position:sticky; top:0; z-index:1;
+    background:var(--bg); border-bottom:1px solid var(--line);
+    padding:var(--s-3) 0; margin:0 0 var(--s-5);
+  }
+  .field { display:block; font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+           letter-spacing:.06em; color:var(--fg-mut); margin:0 0 var(--s-1); }
+  .cmd-row { display:grid; grid-template-columns:1fr; gap:var(--s-2); min-width:0; }
+  @media (min-width:48rem) { .cmd-row { grid-template-columns:minmax(0,1fr) auto; gap:var(--s-3); } }
+  #cmd {
+    min-width:0; font-family:var(--mono); font-size:var(--t-md); line-height:1.5;
+    padding:var(--s-2) var(--s-3); border-radius:var(--r-sm);
+    border:1px solid var(--line-ctl); background:var(--surface); color:var(--fg);
+  }
+  /* Единственный акцентный элемент экрана. Второго акцента нет нигде. */
+  .send {
+    font:inherit; font-size:var(--t-md); line-height:1.5;
+    padding:var(--s-2) var(--s-5); border-radius:var(--r-sm);
+    background:var(--acc); color:var(--acc-fg); border:1px solid var(--acc);
+    cursor:pointer; transition:opacity 120ms;
+  }
+  .send:hover { opacity:.9; }
+  .send:active { transform:translateY(1px); }
+  /* Строка состояния есть всегда: появление сообщения не должно двигать ленту. */
+  .cmd-status {
+    margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); font-variant-numeric:tabular-nums; min-height:1.4em;
+  }
+  .cmd-status.is-bad { color:var(--danger); }
+
+  .feed-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-4); }
+  .indent { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); cursor:pointer;
+            display:inline-flex; align-items:center; gap:var(--s-2); margin:0 0 var(--s-2); }
+  /* Без этих двух строк флажок остаётся на умолчаниях браузера: шестой размер
+     шрифта на экране (13.3333px — замер в живом Chrome) и синяя галочка мимо
+     палитры корпуса. accent-color красит саму галочку, а не элемент: вторым
+     акцентным элементом в кадре флажок от этого не становится — призыва к
+     действию он не несёт и рядом с «Отправить» не соревнуется. */
+  .indent input { font-size:var(--t-xs); margin:0; accent-color:var(--acc); }
+  .empty, .trimmed { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:68ch; }
+  .feed { list-style:none; margin:0; padding:0; }
+  .entry {
+    border:1px solid var(--line); border-radius:var(--r-md); background:var(--surface);
+    padding:var(--s-3); margin:0 0 var(--s-4); min-width:0;
+  }
+  .entry[data-kind="fail"] { border-color:var(--line-ctl); }
+  .entry-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-3); margin:0 0 var(--s-2); }
+  .entry-cmd { font-family:var(--mono); font-size:var(--t-sm); color:var(--fg); overflow-wrap:anywhere; min-width:0; }
+  .entry-meta { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .entry-again {
+    font:inherit; font-size:var(--t-xs); line-height:1.4; margin-left:auto;
+    padding:var(--s-1) var(--s-3); border-radius:var(--r-sm);
+    background:transparent; color:var(--fg); border:1px solid var(--line-ctl);
+    cursor:pointer; transition:background 120ms;
+  }
+  .entry-again:hover { background:var(--bg); }
+  .entry-again:active { transform:translateY(1px); }
+  .entry-note { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); margin:0 0 var(--s-3); }
+  /* Единственное место экрана с --danger: ответа не было вовсе. Слово в
+     пояснении несёт тот же смысл, что цвет (корпус). */
+  .entry[data-kind="fail"] .entry-note { color:var(--danger); }
+  .entry-label { font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+                 letter-spacing:.06em; color:var(--fg-mut); margin:0 0 var(--s-1); }
+
+  /* Тело — предмет показа. Подсветки синтаксиса нет и быть не должно:
+     раскраска ключей — второй акцент в кадре и слой истолкования поверх
+     предмета (раскладка, пп. 5.5, 13.1). Внутри .rpc нет ни одного вложенного
+     элемента — только текст. */
+  .rpc {
+    margin:0 0 var(--s-3); padding:var(--s-3);
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.5; color:var(--fg);
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-sm);
+    white-space:pre-wrap; overflow-wrap:anywhere;
+    overflow:auto; max-height:calc(8 * var(--s-6));
+  }
+  .rpc.is-req { max-height:calc(4 * var(--s-6)); }
+  /* Кольцо внутрь: overflow срезает наружное. */
+  .rpc:focus-visible { outline-offset:-2px; }
+  /* Не скелетон: показывать фальшивые прямоугольники там, где предмет
+     показа — настоящие байты, значит врать о них (раскладка, п. 7.1). */
+  .rpc.is-waiting { color:var(--fg-mut); min-height:calc(4 * var(--s-6)); }
+
+  footer {
+    margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch;
+  }
+  footer a { color:inherit; }
+
+  :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  [disabled] { opacity:.5; cursor:default; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Консоль MCP</h1>
+  <p class="sub">Сервер MCP отвечает по протоколу JSON-RPC. Здесь видно сам протокол: слева —
+    команда, которую вы отправили, ниже — тело запроса и ответ сервера ровно в том
+    виде, в каком он пришёл. Модели на этой странице нет.</p>
+
+  <p class="notice">! Эндпоинт закрыт ключом. Ключ живёт на сервере дня 16 и подставляется там:
+    страница его не знает, не получает и не показывает. Проба «без ключа» показывает, что
+    ответит эндпоинт, если ключ не прислать.</p>
+
+  <p class="wire">
+    <span><b>POST /mcp</b></span><span>·</span>
+    <span>MCP-Protocol-Version <b>2025-11-25</b></span><span>·</span>
+    <span>Accept: <b>application/json, text/event-stream</b></span>
+  </p>
+
+  <noscript>
+    <p class="notice">Консоль собирает запрос и показывает ответ в браузере, поэтому без
+      JavaScript она не работает. Включите JavaScript.</p>
+  </noscript>
+
+  <section class="palette">
+    <h2 id="cmds-title">Готовые команды</h2>
+    <ul class="chips" aria-labelledby="cmds-title">
+      <li><button class="chip" type="button">initialize</button></li>
+      <li><button class="chip" type="button">tools/list</button></li>
+      <li><button class="chip" type="button">tools/call clock.now {}</button></li>
+      <li><button class="chip" type="button">tools/call weather.current {"city":"Сингапур"}</button></li>
+      <li><button class="chip" type="button">tools/call wiki.summary {"title":"JSON-RPC"}</button></li>
+    </ul>
+
+    <h2 id="probes-title" class="row2">Пробы протокола</h2>
+    <p class="hint">Эти две команды сделаны, чтобы отказ было видно: они заведомо не проходят,
+      и ответ на них — такой же результат, как удачный вызов.</p>
+    <ul class="chips" aria-labelledby="probes-title">
+      <li><button class="chip" type="button">GET</button></li>
+      <li><button class="chip" type="button">initialize --no-key</button></li>
+    </ul>
+  </section>
+
+  <form class="composer" id="cmd-form">
+    <label class="field" for="cmd">Команда</label>
+    <div class="cmd-row">
+      <input id="cmd" type="text" maxlength="600" autocomplete="off" spellcheck="false"
+             autocapitalize="off" autocorrect="off" aria-describedby="cmd-status">
+      <button class="send" id="send" type="submit">Отправить</button>
+    </div>
+    <p class="cmd-status" id="cmd-status" role="status" aria-live="polite">&nbsp;</p>
+  </form>
+
+  <section>
+    <div class="feed-head">
+      <h2 id="feed-title">Лента команд</h2>
+      <label class="indent"><input type="checkbox" id="indent"> Показать с отступами</label>
+    </div>
+    <p class="hint">Меняются только переносы строк и пробелы. Поля, порядок и значения — как пришли.</p>
+    <p class="empty" id="empty">Команд ещё не было. Нажмите готовую команду выше — она встанет в
+      поле, и её можно отправить или поправить. История живёт до перезагрузки страницы.</p>
+    <ol class="feed" id="feed" aria-labelledby="feed-title"></ol>
+    <p class="trimmed" id="trimmed" hidden>Показаны последние 20 команд. Более ранние убраны
+      страницей, чтобы она не тяжелела.</p>
+  </section>
+
+  <footer>
+    Консоль говорит с сервером MCP этого проекта; ключ эндпоинта живёт на сервере дня 16
+    и на страницу не попадает. Команды и ответы нигде не сохраняются: история живёт до
+    перезагрузки страницы. Инструмент weather.current берёт данные у Open-Meteo,
+    wiki.summary — у Википедии; их ответы не проверяются и не являются редакцией проекта.
+    Вопросы: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>
+  </footer>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
