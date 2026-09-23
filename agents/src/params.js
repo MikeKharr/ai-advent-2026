@@ -369,6 +369,37 @@ export const LAYERED_MAX_TOKENS = 2048
 export const STAGED15_MAX_TOKENS = 32_000
 
 /**
+ * Ключ, под которым потолок ответа дня 15 лежит в общем столбце настроек
+ * `settings_staged` (ADR 2026-09-23-0646, п. 5; находка compliance к PR #218).
+ *
+ * Столбец один на дни 13, 14 и 15, и `saveStagedSettings` пишет его целиком.
+ * Значение выше `LAYERED_MAX_TOKENS` дни 13 и 14 принять не могут: их
+ * страницы отдают прочитанное как есть, и запуск отказывал бы на каждом
+ * сообщении, а причина посетителю не видна — отказ приходит на ответ, а не в
+ * окне настроек. Поэтому правило одно и держится кодом, а не вниманием:
+ * **в общий ключ `maxTokens` не попадает число, которого соседний день не
+ * примет**; всё выше прежнего предела уходит под свой ключ, которого соседи
+ * не читают. Наружу день 15 видит его как `maxTokens` — через
+ * `viewStagedSettings`.
+ *
+ * Обратная сторона та же, что у прочих настроек этого столбца и названа в
+ * ADR 2026-09-22-0827, п. 1: сохранение настроек в дне 13 или 14 перепишет
+ * столбец целиком, и потолок дня 15 вернётся к умолчанию реестра. Это
+ * годное значение, а не отказ, — в отличие от обратного случая.
+ */
+export const MAX_TOKENS_15_KEY = 'maxTokens15'
+
+/**
+ * Настройки общего столбца в том виде, в каком их показывает и присылает
+ * день 15: свой потолок он правит полем `maxTokens`, как все остальные дни,
+ * и о ключе хранения не знает ни страница, ни вход запуска.
+ */
+export function viewStagedSettings(settings) {
+  const { [MAX_TOKENS_15_KEY]: own, ...rest } = settings ?? {}
+  return own === undefined ? { ...rest } : { ...rest, maxTokens: own }
+}
+
+/**
  * Потолок фактов одной темы (ADR 2026-09-15-2024, п. 6.1) — временное рабочее
  * значение решения владельца 8. Одно число на хранилище, запуск и ручку
  * монитора: тремя копиями они разошлись бы молча.
@@ -547,7 +578,14 @@ export function parseSettings(source, defaults = {}, models = MODELS, options = 
   if (!maxTokens.ok) {
     return { ok: false, message: `Лимит токенов: целое от 1 до ${maxTokensMax}` }
   }
-  if (maxTokens.value !== undefined) settings.maxTokens = maxTokens.value
+  if (maxTokens.value !== undefined) {
+    // Единственное место, где потолок попадает в хранимый объект: число выше
+    // прежнего предела уходит под свой ключ, потому что общий столбец читают
+    // дни 13 и 14 (см. `MAX_TOKENS_15_KEY`). У дней 11–14 `maxTokensMax`
+    // равен `LAYERED_MAX_TOKENS`, и эта ветка им недостижима.
+    if (maxTokens.value > LAYERED_MAX_TOKENS) settings[MAX_TOKENS_15_KEY] = maxTokens.value
+    else settings.maxTokens = maxTokens.value
+  }
 
   const stop = parseStopSequences(source.stopSequences)
   if (!stop.ok) return stop

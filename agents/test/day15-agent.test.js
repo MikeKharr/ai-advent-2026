@@ -10,21 +10,21 @@
 
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createInvariants } from '../src/invariants.js'
 import { createLayeredAgent } from '../src/layered.js'
-import { answerTimeoutMs, promptSha8 } from '../src/llm.js'
+import { answerTimeoutMs, estimateTokens, promptSha8 } from '../src/llm.js'
 import { LAYERED_MAX_TOKENS, STAGED15_MAX_TOKENS } from '../src/params.js'
 import { createProfilePrompts } from '../src/prompts.js'
 import { loadRegistry } from '../src/registry.js'
 import { createRuns } from '../src/runs.js'
 import { createService } from '../src/service.js'
 import { createSessions } from '../src/sessions.js'
-import { createStageLog } from '../src/stage-log.js'
+import { createStageLog, STAGE_LOG_COLUMNS } from '../src/stage-log.js'
 import { createStagedAgent, PREPARE_STAGES, STAGES } from '../src/staged.js'
 import { ENV, fakeArchive } from './fixtures.js'
 
@@ -399,6 +399,34 @@ test('событие подготовки называет токены и от�
   assert.equal(JSON.stringify(snapshot.events).includes('СЕКРЕТНЫЙ ПРОМПТ'), false)
 })
 
+test('порядок колонок журнала закреплён буквально, и prompt_chars дописана в конец', () => {
+  // Заголовок — литералом, а не `STAGE_LOG_COLUMNS.join(',')`: сверка
+  // константы с самой собой истинна при любом порядке, и вставка колонки в
+  // середину прошла бы молча (находка reviewer к PR #218).
+  assert.equal(
+    STAGE_LOG_COLUMNS.join(','),
+    'run_id,session_id,agent,model,state,state_index,attempt,entered_at,left_at,duration_ms,' +
+      'outcome,pauses,llm_called,prompt_id,prompt_sha8,prompt_tokens,context_tokens,' +
+      'input_tokens,output_tokens,round,verdict,run_status,error_code,prompt_chars',
+  )
+
+  // И то, ради чего порядок закреплён: файл на томе переживает выкатку.
+  // Строка, записанная ПРЕЖНИМ набором колонок (без `prompt_chars`), обязана
+  // читаться без сдвига — вставка в середину сдвинула бы все прежние строки.
+  const file = tmp('legacy.csv')
+  const legacy = STAGE_LOG_COLUMNS.filter((c) => c !== 'prompt_chars')
+  const row = Object.fromEntries(legacy.map((c) => [c, `${c}-значение`]))
+  row.run_id = 'старый-запуск'
+  writeFileSync(file, `${legacy.join(',')}\n${legacy.map((c) => row[c]).join(',')}\n`, 'utf8')
+
+  const read = createStageLog({ file, log: () => {} }).rowsOf('старый-запуск')
+  assert.equal(read.length, 1)
+  for (const column of legacy) {
+    assert.equal(read[0][column], row[column], `колонка ${column} съехала`)
+  }
+  assert.equal(read[0].prompt_chars, '', 'у прежней строки новой колонки просто нет')
+})
+
 test('журнал этапов получает длину промпта у строки prepare и только у неё', async () => {
   const { ask, stageLog } = setup()
   const { run } = await ask()
@@ -437,6 +465,77 @@ test('32 001 — отказ у дня 15: и во входе запуска, и 
   assert.equal(agent.parseSettings({ maxTokens: 32_000 }).ok, true)
 })
 
+test('сохранение настроек в дне 15 не ломает запуск в дне 14 на том же профиле', async () => {
+  // Столбец настроек общий на дни 13, 14 и 15, и день 14 отдаёт прочитанное
+  // во вход запуска как есть. Значит число, которого он не принимает, в
+  // общем ключе не должно оказываться ни при каком сохранении в дне 15
+  // (находка compliance к PR #218).
+  const fifteen = setup()
+  const parsed = fifteen.agent.parseSettings({ maxTokens: STAGED15_MAX_TOKENS })
+  assert.equal(parsed.ok, true, parsed.message)
+  assert.equal(
+    fifteen.sessions.saveStagedSettings({
+      profileId: fifteen.profile.id,
+      settings: parsed.settings,
+    }),
+    true,
+  )
+
+  const stored = fifteen.sessions.profile(fifteen.profile.id).stagedSettings
+  const defaults = REGISTRY.get('invariant-agent').defaults
+  // Ровно то, что делает страница дня 14: берёт настройки профиля и шлёт
+  // потолок во вход запуска.
+  const fourteen = setup({ agentId: 'invariant-agent', file: fifteen.file })
+  const sid = fourteen.sessions.createSession({ profileId: fifteen.profile.id }).id
+  const run = fourteen.agent.parseInput({
+    profileId: fifteen.profile.id,
+    sessionId: sid,
+    prompt: 'что нового',
+    reviewRounds: 2,
+    maxTokens: stored.maxTokens ?? defaults.maxTokens,
+  })
+  assert.equal(run.ok, true, `день 14 не принял потолок из общего столбца: ${run.message}`)
+  // И его же окно настроек: посетитель дня 14 должен мочь их сохранить.
+  assert.equal(
+    fourteen.agent.parseSettings({ maxTokens: stored.maxTokens ?? defaults.maxTokens }).ok,
+    true,
+  )
+
+  // При этом день 15 свой потолок не потерял: наружу он тот же `maxTokens`.
+  assert.equal(fifteen.agent.viewSettings(stored).maxTokens, STAGED15_MAX_TOKENS)
+  assert.equal(
+    fifteen.agent.parseInput({
+      profileId: fifteen.profile.id,
+      sessionId: fifteen.sid,
+      prompt: 'что нового',
+      reviewRounds: 2,
+      maxTokens: fifteen.agent.viewSettings(stored).maxTokens,
+    }).ok,
+    true,
+  )
+})
+
+test('ручки профиля и настроек показывают потолок дня 15 его странице и не показывают чужим', async () => {
+  const ctx = setup()
+  const http = await serve(ctx)
+  const id = ctx.profile.id
+
+  const saved = await http.put(`/v1/profiles/${id}/settings?agent=prompt-agent`, {
+    maxTokens: STAGED15_MAX_TOKENS,
+  })
+  assert.equal(saved.status, 200)
+  assert.equal((await saved.json()).settings.maxTokens, STAGED15_MAX_TOKENS)
+
+  const mine = await (await http.get(`/v1/profiles/${id}?agent=prompt-agent`)).json()
+  assert.equal(mine.profile.stagedSettings.maxTokens, STAGED15_MAX_TOKENS)
+
+  // Тот же профиль без имени агента — путь дней 13 и 14: числа, которого они
+  // не принимают, в их ключе нет.
+  const theirs = await (await http.get(`/v1/profiles/${id}`)).json()
+  assert.equal(theirs.profile.stagedSettings.maxTokens, undefined)
+  await http.close()
+})
+
 test('дни 11, 13 и 14 выше 2048 не пропускают — ни входом запуска, ни настройками', () => {
   const thirteen = setup({ agentId: 'staged-agent' })
   const fourteen = setup({ agentId: 'invariant-agent' })
@@ -473,14 +572,114 @@ test('дни 11, 13 и 14 выше 2048 не пропускают — ни вх�
   assert.match(denied.message, /2048/)
 })
 
-test('таймаут вызова ответа растёт с потолком выхода и не бывает короче прежнего', () => {
-  // 240 000 мс не хватило бы: 32 000 токенов по полу роутера — около 16,7
-  // минуты, и обрыв на четвёртой оплатил бы сгенерированное впустую.
-  assert.equal(answerTimeoutMs(ENV, 32_000), 60_000 + 32_000 * 25)
-  assert.ok(answerTimeoutMs(ENV, 32_000) > ENV.ROUTER_TIMEOUT_MS)
-  // Дни 11–14 остаются на прежних 240 с: формула их не касается.
-  assert.equal(answerTimeoutMs(ENV, LAYERED_MAX_TOKENS), ENV.ROUTER_TIMEOUT_MS)
-  assert.equal(answerTimeoutMs(ENV, 1), ENV.ROUTER_TIMEOUT_MS)
+/**
+ * Наблюдение за таймаутом: `postRoute` заводит дедлайн вызова через
+ * `AbortSignal.timeout(ms)` и сразу зовёт `fetch`, поэтому последнее заданное
+ * число принадлежит текущему запросу. Ждать эти минуты нечем и незачем —
+ * проверяется не срабатывание таймера, а то, **с каким таймаутом уходит
+ * каждый вид вызова**: именно этого не закрывала прежняя проверка арифметики
+ * (находка reviewer к PR #218).
+ *
+ * Подменяется только счётчик времени; сам предмет — код вызова — не
+ * трогается. Возвращается сигнал, который не сработает никогда: прогон не
+ * должен держать таймеров на четверть часа.
+ */
+async function withTimeouts(fn) {
+  const real = AbortSignal.timeout
+  const seen = []
+  AbortSignal.timeout = (ms) => {
+    seen.push(ms)
+    return new AbortController().signal
+  }
+  try {
+    return await fn((impl) => {
+      // Обёртка вокруг поддельного роутера: пара «тело запроса → таймаут, с
+      // которым он ушёл». `/v1/models` идёт своим путём, мимо `postRoute`, и
+      // в пары не попадает — иначе счёт сдвинулся бы на него.
+      const timed = async (url, options = {}) => {
+        if (!String(url).includes('/v1/models')) {
+          timed.timed.push({ body: JSON.parse(options.body), timeoutMs: seen.at(-1) })
+        }
+        return impl(url, options)
+      }
+      timed.timed = []
+      return timed
+    })
+  } finally {
+    AbortSignal.timeout = real
+  }
+}
+
+test('вызов ответа уходит с дедлайном роутера, а сводка, проверка и пополнение — с прежними 240 с', async () => {
+  const calls = await withTimeouts(async (wrap) => {
+    const fetchImpl = wrap(router())
+    const ctx = setup({ fetchImpl })
+    await ctx.ask({ maxTokens: STAGED15_MAX_TOKENS })
+    return fetchImpl.timed
+  })
+  assert.ok(calls.length >= 3, 'ответ, проверка и пополнение в прогоне были')
+
+  const answer = calls.find((c) => c.body.answerTokens === STAGED15_MAX_TOKENS)
+  assert.ok(answer, 'вызов ответа с потолком 32 000 был')
+  assert.equal(
+    answer.timeoutMs,
+    answerTimeoutMs(ENV, {
+      maxTokens: STAGED15_MAX_TOKENS,
+      inputTokens: estimateTokens(answer.body.system) + estimateTokens(answer.body.input),
+    }),
+    'таймаут посчитан по тому же запросу, что ушёл',
+  )
+  assert.ok(answer.timeoutMs > ENV.ROUTER_TIMEOUT_MS, 'прежних 240 с тут не хватило бы')
+
+  // Прочие вызовы — на прежнем таймауте: их классы ограничены 2 400 токенами
+  // выхода, и растить им дедлайн не за что.
+  const others = calls.filter((c) => c !== answer)
+  assert.ok(others.length >= 2, 'проверка и пополнение в прогоне были')
+  for (const call of others) {
+    assert.equal(
+      call.timeoutMs,
+      ENV.ROUTER_TIMEOUT_MS,
+      `${call.body.taskClass}/${call.body.provider}: таймаут не прежний`,
+    )
+  }
+})
+
+test('вызов ответа дня 14 уходит с прежними 240 с: потолок 2 048 дедлайна не двигает', async () => {
+  const calls = await withTimeouts(async (wrap) => {
+    const fetchImpl = wrap(router())
+    const ctx = setup({ fetchImpl, agentId: 'invariant-agent' })
+    await ctx.ask({ maxTokens: LAYERED_MAX_TOKENS })
+    return fetchImpl.timed
+  })
+  assert.ok(calls.length >= 3)
+  for (const call of calls) assert.equal(call.timeoutMs, ENV.ROUTER_TIMEOUT_MS)
+})
+
+test('агент не обрывает вызов раньше роутера ни на одном значении потолка', () => {
+  // Дедлайны роутера для профиля `cloud` при входе в 3 000 токенов —
+  // 1.25 × (вход/2000 + выход/40) секунд, пол 60 с (router/src/config.js,
+  // PROFILE_DEFAULTS.cloud; router/src/router.js, deadlineMs). Числа
+  // измерены гейтами на PR #218 и стоят здесь литералами: посчитать их той
+  // же формулой, что проверяется, значило бы сверить формулу с собой.
+  const inputTokens = 3000
+  const routerDeadline = { 2048: 65_875, 9600: 301_875, 32_000: 1_001_875 }
+  for (const [maxTokens, deadline] of Object.entries(routerDeadline)) {
+    const mine = answerTimeoutMs(ENV, { maxTokens: Number(maxTokens), inputTokens })
+    assert.ok(
+      mine >= deadline,
+      `потолок ${maxTokens}: агент рвёт на ${deadline - mine} мс раньше роутера`,
+    )
+  }
+  // Пол прежнего таймаута цел: дни 11–14 остаются на 240 с.
+  assert.equal(answerTimeoutMs(ENV, { maxTokens: LAYERED_MAX_TOKENS, inputTokens }), 240_000)
+  assert.equal(answerTimeoutMs(ENV, { maxTokens: 1, inputTokens: 0 }), 240_000)
+  // Слагаемое по входу и множитель запаса на месте: без любого из них число
+  // ниже дедлайна роутера (ровно это и было дефектом).
+  assert.ok(
+    answerTimeoutMs(ENV, { maxTokens: 32_000, inputTokens: 100_000 }) >
+      answerTimeoutMs(ENV, { maxTokens: 32_000, inputTokens: 0 }),
+    'вход влияет на таймаут',
+  )
 })
 
 // --- Критерий: ручки сервиса ----------------------------------------------

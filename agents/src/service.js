@@ -223,6 +223,17 @@ export function createService({
       ?.profilePrompts?.resolve(profileId)
       .get('invariant.draft') ?? null
 
+  /**
+   * Вид настроек общего столбца для того агента, чья страница их читает.
+   * У дня 15 потолок ответа хранится под своим ключом (ADR 2026-09-23-0646,
+   * п. 5), и страница видит его обычным `maxTokens`; дни 11, 13 и 14 читают
+   * столбец как прежде — ключа дня 15 они не знают и не примут.
+   */
+  const settingsView = (params, settings) => {
+    const agent = agents.get(params.get('agent') ?? LAYERED_AGENT_ID)
+    return agent?.viewSettings ? agent.viewSettings(settings) : settings
+  }
+
   const settingsWriter = (params) =>
     agents.get(params.get('agent') ?? LAYERED_AGENT_ID)?.settingsStore === 'staged'
       ? (payload) => sessions.saveStagedSettings(payload)
@@ -713,7 +724,14 @@ export function createService({
         // профиля посторонним не должен держать чужое досье ещё месяц.
         const profile = sessions.profile(profileId)
         if (!profile) return send(res, 404, { ok: false, code: 'unknown_profile' })
-        return send(res, 200, { ok: true, profile, sessionCap: env.PROFILE_SESSION_CAP })
+        return send(res, 200, {
+          ok: true,
+          profile: {
+            ...profile,
+            stagedSettings: settingsView(url.searchParams, profile.stagedSettings),
+          },
+          sessionCap: env.PROFILE_SESSION_CAP,
+        })
       }
 
       if (!tail && req.method === 'DELETE') {
@@ -752,7 +770,12 @@ export function createService({
         if (!settingsWriter(url.searchParams)({ profileId, settings: settings.settings })) {
           return send(res, 404, { ok: false, code: 'unknown_profile' })
         }
-        return send(res, 200, { ok: true, settings: settings.settings })
+        // Ответ — в том же виде, в каком страница их и прислала: день 15
+        // правит свой потолок полем `maxTokens` и о ключе хранения не знает.
+        return send(res, 200, {
+          ok: true,
+          settings: settingsView(url.searchParams, settings.settings),
+        })
       }
 
       // Факты темы — для монитора состояния памяти (ADR, п. 8.3). Тема

@@ -49,6 +49,7 @@ import {
   parseStrategy,
   parseSummarizeAt,
   parseSystem,
+  viewStagedSettings,
   parseWindow,
   REVIEW_ROUNDS,
   TOPIC_FACT_CAP,
@@ -241,6 +242,15 @@ export function createStagedAgent({
      * взять там же, где его берёт машина (ADR 2026-09-23-0646, п. 2).
      */
     profilePrompts: prompts,
+
+    /**
+     * Настройки общего столбца в том виде, в каком их показывает страница
+     * этого агента. У дня 15 свой потолок ответа лежит под своим ключом —
+     * иначе дни 13 и 14 прочли бы из общего столбца число, которого не
+     * принимают (ADR 2026-09-23-0646, п. 5; находка compliance к PR #218).
+     * У дней 13 и 14 ключа нет, и вид тот же, что хранится.
+     */
+    viewSettings: viewStagedSettings,
 
     /** Настройки профиля для дня 13: свои потолки и две настройки круга. */
     parseSettings(body) {

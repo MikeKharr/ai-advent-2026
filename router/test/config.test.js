@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { loadConfig, orderedCandidates } from '../src/config.js'
+import { loadConfig, orderedCandidates, PROFILE_DEFAULTS } from '../src/config.js'
 import { createStaticRegistry } from '../src/registry.js'
 import { createRouter } from '../src/router.js'
 
@@ -152,6 +152,23 @@ test('layered_dialogue отвергает ответ выше 32 000 токен�
 // Потолок дня 15 проходит до провайдера: поле страницы обещает 32 000, и
 // класс обязан это принять — иначе обещание рвалось бы отказом роутера
 // (ADR 2026-09-23-0646, п. 5).
+// Таймаут вызова ответа у сервиса агентов считается дедлайном роутера для
+// профиля `cloud` — его формулой и этими числами (`agents/src/llm.js`,
+// `ROUTER_CLOUD_DEADLINE`). Копия там нужна потому, что агент не читает
+// конфигурацию роутера; чтобы копия не разошлась с оригиналом молча, числа
+// закреплены здесь: правка профиля без правки агента вернёт ровно тот дефект,
+// ради которого таймаут переписан, — вызывающий обрывает раньше роутера, и
+// сгенерированное оплачено впустую (находки reviewer и compliance к PR #218).
+test('профиль cloud: числа дедлайна, по которым считает таймаут сервис агентов', () => {
+  assert.deepEqual(PROFILE_DEFAULTS.cloud, {
+    loadMs: 0,
+    promptEvalTps: 2000,
+    genTpsFloor: 40,
+    margin: 1.25,
+    minMs: 60_000,
+  })
+})
+
 test('layered_dialogue принимает ровно 32 000 токенов ответа', async () => {
   const answer = await prodRouter().route({
     taskClass: 'layered_dialogue',

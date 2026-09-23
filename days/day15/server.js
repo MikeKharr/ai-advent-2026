@@ -361,7 +361,12 @@ async function handleProfileState(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}`)
+    // Имя агента: свой потолок ответа день 15 хранит под своим ключом, и
+    // страница обязана увидеть его обычным `maxTokens` (ADR 2026-09-23-0646,
+    // п. 5). Без параметра служба отдала бы общий столбец как есть.
+    const { response, json } = await callAgent(
+      `/v1/profiles/${profileId}?agent=${encodeURIComponent(env.AGENT_ID)}`,
+    )
     if (response.status === 404) {
       return send(
         res,
