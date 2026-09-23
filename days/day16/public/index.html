@@ -65,7 +65,14 @@
     margin:0 0 var(--s-5); font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
     font-variant-numeric:tabular-nums;
   }
-  .wire span { white-space:nowrap; }
+  /* Разделитель — НЕ отдельный кусок раскладки, а хвост предыдущего, склеенный
+     с ним неразрывным пробелом: отдельным элементом он при 320 px вставал
+     один на свою строку. Последний кусок переносится внутри себя — при 320 px
+     значение Accept длиннее полосы содержимого (288 px), и с nowrap оно
+     вылезало за боковой отступ страницы. */
+  .wire span { white-space:nowrap; min-width:0; }
+  .wire span:not(:last-child)::after { content:"\00a0·"; }
+  .wire span:last-child { white-space:normal; overflow-wrap:anywhere; }
   .wire b { font-weight:400; font-family:var(--mono); }
 
   .palette { margin:0 0 var(--s-5); }
@@ -97,7 +104,15 @@
     min-width:0; font-family:var(--mono); font-size:var(--t-md); line-height:1.5;
     padding:var(--s-2) var(--s-3); border-radius:var(--r-sm);
     border:1px solid var(--line-ctl); background:var(--surface); color:var(--fg);
+    transition:border-color 120ms;
   }
+  /* Пять состояний у поля, как у всех прочих контролов (корпус; раскладка,
+     п. 9). Образец — день 15: рамка на ступень темнее при наведении и
+     возврат к покою у запертого поля, иначе во время ожидания ответа поле
+     отвечает на мышь, хотя действия не примет. */
+  #cmd:hover { border-color:var(--fg-mut); }
+  #cmd:active { border-color:var(--fg); }
+  #cmd[disabled]:hover, #cmd[disabled]:active { border-color:var(--line-ctl); }
   /* Единственный акцентный элемент экрана. Второго акцента нет нигде. */
   .send {
     font:inherit; font-size:var(--t-md); line-height:1.5;
@@ -123,6 +138,14 @@
      акцентным элементом в кадре флажок от этого не становится — призыва к
      действию он не несёт и рядом с «Отправить» не соревнуется. */
   .indent input { font-size:var(--t-xs); margin:0; accent-color:var(--acc); }
+  /* Наведение у флажка живёт на подписи, а НЕ на самом квадрате, и это не
+     удобство, а замер: нативный флажок Chrome фона не рисует — снимки
+     флажка с `background:#ff0000` и без него совпали до байта, тогда как
+     `accent-color` и `transform` различались. Правило с фоном было бы
+     механизмом, который ничего не держит. Подпись — часть того же контрола:
+     она его переключает, и наведение на квадрат поднимает :hover на ней. */
+  .indent:hover { color:var(--fg); }
+  .indent input:active { transform:translateY(1px); }
   .empty, .trimmed { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:68ch; }
   .feed { list-style:none; margin:0; padding:0; }
   .entry {
@@ -170,7 +193,15 @@
     margin-top:var(--s-6); padding-top:var(--s-4); border-top:1px solid var(--line);
     font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:68ch;
   }
-  footer a { color:inherit; }
+  footer a {
+    color:inherit; text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em; transition:text-decoration-color 120ms;
+  }
+  /* Цветом от текста ссылка не отличается намеренно: её опознаёт
+     подчёркивание. Состояния ей всё равно положены — корпус исключений не
+     делает. Образец — подвал дня 15. */
+  footer a:hover { text-decoration-color:var(--fg); }
+  footer a:active { opacity:.7; }
 
   :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
   [disabled] { opacity:.5; cursor:default; }
@@ -189,8 +220,8 @@
     ответит эндпоинт, если ключ не прислать.</p>
 
   <p class="wire">
-    <span><b>POST /mcp</b></span><span>·</span>
-    <span>MCP-Protocol-Version <b>2025-11-25</b></span><span>·</span>
+    <span><b>POST /mcp</b></span>
+    <span>MCP-Protocol-Version <b>2025-11-25</b></span>
     <span>Accept: <b>application/json, text/event-stream</b></span>
   </p>
 

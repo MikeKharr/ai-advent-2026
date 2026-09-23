@@ -224,3 +224,72 @@ test('готовая команда вставляет текст в поле и
   assert.match(code, /input\.focus\(\)/, 'фокус переходит в поле')
   assert.match(code, /setSelectionRange\(input\.value\.length, input\.value\.length\)/, 'курсор в конце')
 })
+
+/** Правила таблицы стилей как пары «селектор → объявления». */
+const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }))
+
+/**
+ * Все интерактивные элементы экрана и селектор, на котором живут их состояния.
+ * Список закрытый: следующая проверка не даёт завести контрол мимо него.
+ */
+const CONTROLS = [
+  { имя: 'кнопка готовой команды', база: '.chip', вРазметке: ['.chip'] },
+  { имя: 'кнопка «Отправить»', база: '.send', вРазметке: ['.send'] },
+  { имя: 'кнопка «Повторить»', база: '.entry-again', вРазметке: ['.entry-again'] },
+  { имя: 'поле команды', база: '#cmd', вРазметке: ['#cmd'] },
+  // Наведение — на подписи (нативный флажок фона не рисует, замер в Chrome),
+  // нажатие — на самом квадрате; оба селектора начинаются с `.indent`.
+  { имя: 'флажок отступов', база: '.indent', вРазметке: ['#indent'] },
+  { имя: 'ссылка подвала', база: 'footer a', вРазметке: ['a'] },
+]
+
+test('у каждого интерактивного элемента есть наведение и нажатие (корпус, п. 9)', () => {
+  for (const { имя, база } of CONTROLS) {
+    const свои = rules.filter((r) => r.sel.startsWith(база))
+    const hover = свои.filter((r) => r.sel.includes(':hover') && !r.sel.includes('[disabled]'))
+    const active = свои.filter((r) => r.sel.includes(':active') && !r.sel.includes('[disabled]'))
+    assert.ok(hover.length > 0, `${имя} (${база}): нет наведения`)
+    assert.ok(active.length > 0, `${имя} (${база}): нет нажатия`)
+    // Правило без объявлений состоянием не является.
+    for (const r of [...hover, ...active]) assert.match(r.body, /[a-z-]+\s*:/, `${имя}: пустое правило ${r.sel}`)
+  }
+})
+
+test('запертое поле на мышь не отвечает: у него свой возврат к покою', () => {
+  const выкл = rules.filter((r) => r.sel.includes('#cmd[disabled]') && /:hover|:active/.test(r.sel))
+  assert.ok(выкл.length > 0, 'без этого поле во время ожидания ответа реагирует на мышь, хотя действия не примет')
+  for (const r of выкл) assert.match(r.body, /border-color:var\(--line-ctl\)/)
+})
+
+test('список контролов закрыт: новый элемент мимо него не заведётся', () => {
+  // Разметка: всё, что нажимают, набирают или открывают.
+  const классы = new Set()
+  for (const m of page.matchAll(/<(button|input|a|select|textarea)\b([^>]*)>/g)) {
+    const attrs = m[2]
+    const cls = attrs.match(/class="([^"]+)"/)?.[1]
+    const id = attrs.match(/id="([^"]+)"/)?.[1]
+    классы.add(cls ? '.' + cls.split(' ')[0] : id ? '#' + id : m[1])
+  }
+  // Кнопка «Повторить» рождается в app.js, а не в разметке.
+  классы.add('.entry-again')
+  const покрыты = new Set(CONTROLS.flatMap((c) => c.вРазметке))
+  for (const k of классы)
+    assert.ok(покрыты.has(k), `контрол ${k} не назван в CONTROLS — состояния ему никто не проверит`)
+  const вApp = [...app.matchAll(/node\('(button|input|a|select|textarea)', '([^']+)'/g)].map((m) => '.' + m[2].split(' ')[0])
+  assert.deepEqual(вApp, ['.entry-again'], 'app.js заводит ровно один контрол, и он назван в CONTROLS')
+  for (const k of вApp) assert.ok(покрыты.has(k), `контрол ${k} из app.js не назван в CONTROLS`)
+})
+
+test('разделитель строки соединения — хвост куска, а не отдельный ряд', () => {
+  assert.equal(/<span>·<\/span>/.test(page), false, 'отдельным элементом разделитель при 320 px встаёт один на строку')
+  const after = rules.find((r) => r.sel.includes('.wire span:not(:last-child)') && r.sel.includes('::after'))
+  assert.ok(after, 'разделитель обязан быть хвостом предыдущего куска')
+  assert.match(after.body, /content:"\\00a0·"/, 'склейка неразрывным пробелом — иначе разделитель оторвётся')
+  const последний = rules.find((r) => r.sel === '.wire span:last-child')
+  assert.ok(последний, 'у длинного куска нет своего правила')
+  assert.match(последний.body, /white-space:normal/, 'при 320 px значение Accept длиннее полосы и обязано переноситься')
+  assert.match(последний.body, /overflow-wrap:anywhere/)
+  // Куски в строке — ровно три, и разделителей между ними два.
+  const wire = page.match(/<p class="wire">[\s\S]*?<\/p>/)[0]
+  assert.equal((wire.match(/<span>/g) ?? []).length, 3)
+})
