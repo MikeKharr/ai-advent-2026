@@ -38,7 +38,9 @@ const mcp = http.createServer(async (req, res) => {
   })
   if (mode === 'destroy') return res.destroy()
   if (mode === 'hang') return // ответа не будет вовсе
-  res.writeHead(reply.status, { 'content-type': reply.type })
+  // `type: null` — служба не прислала типа вовсе. Без этой ветки стенд всегда
+  // присылал бы тип, и проверку «мы не дописываем свой» нечем было бы провалить.
+  res.writeHead(reply.status, reply.type === null ? {} : { 'content-type': reply.type })
   res.end(reply.body)
 })
 
@@ -102,7 +104,7 @@ test('тело ответа службы доходит до страницы б
 })
 
 test('код отказа службы доходит как её код, а не как 200 с признаком в теле', async () => {
-  for (const status of [401, 405, 406, 415, 400, 500]) {
+  for (const status of [404, 405, 406, 415, 400, 500]) {
     mode = 'reply'
     reply = { status, type: 'application/json', body: `{"code":${status}}` }
     const r = await rpc({ rpc: CALL }, `10.0.1.${status % 200}`)
@@ -114,15 +116,38 @@ test('код отказа службы доходит как её код, а н�
 
 test('признак «не подставлять ключ» снимает Authorization и больше ничего', async () => {
   mode = 'reply'
-  reply = { status: 401, type: 'application/json', body: '{"error":"unauthorized"}' }
+  // Так теперь отвечает служба без годного ключа: 404 и ни одного байта
+  // (решение владельца 2026-09-24 — эндпоинт не признаётся, что существует).
+  reply = { status: 404, type: null, body: '' }
   const r = await rpc({ rpc: CALL, noKey: true }, '10.0.0.3')
   const sent = seen.at(-1)
-  assert.equal(sent.headers.authorization, undefined, 'ключ не ушёл — это и есть проба на 401')
+  assert.equal(sent.headers.authorization, undefined, 'ключ не ушёл — это и есть проба ключа')
   assert.equal(sent.method, 'POST')
   assert.equal(sent.headers.accept, 'application/json, text/event-stream')
   assert.equal(sent.headers['mcp-protocol-version'], '2025-11-25')
   assert.equal(sent.body, JSON.stringify(CALL))
-  assert.equal(r.status, 401)
+  assert.equal(r.status, 404)
+})
+
+test('пустой ответ доходит пустым: ноль байт и ни одного выдуманного заголовка', async () => {
+  // Предмет — что сервер дня НИЧЕГО не дописывает в пустоту: ни тела, ни
+  // обещания типа. Обещание application/json на пустом теле — та же ложь,
+  // что переупаковка непустого.
+  mode = 'reply'
+  reply = { status: 404, type: null, body: '' }
+  const r = await rpc({ rpc: CALL, noKey: true }, '10.0.0.13')
+  assert.equal(r.status, 404)
+  assert.equal(r.headers.get('x-rpc-outcome'), 'upstream', 'служба ОТВЕТИЛА — это не «ответа нет»')
+  assert.equal(await r.text(), '', 'в пустое тело не дописано ничего')
+  assert.equal(r.headers.get('x-rpc-bytes'), '0')
+  assert.equal(r.headers.get('content-type'), null, 'типа служба не прислала — не присылаем и мы')
+})
+
+test('тип содержимого копируется, когда он есть', async () => {
+  mode = 'reply'
+  reply = { status: 200, type: 'application/json', body: '{"ok":true}' }
+  const r = await rpc({ rpc: CALL }, '10.0.0.14')
+  assert.match(r.headers.get('content-type'), /application\/json/)
 })
 
 test('признак «послать GET» меняет метод и не шлёт тела; ключ при этом на месте', async () => {
