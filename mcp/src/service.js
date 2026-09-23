@@ -1,13 +1,15 @@
 // HTTP-контракт службы MCP (ADR 2026-09-23-1227, пп. 3–4).
 //
 // Порядок в `handler` читается сверху вниз и таков намеренно:
-//   1) /healthz — открыт, его проверяет compose;
-//   2) ключ — до чтения тела: тело неавторизованного запроса не читается;
-//   3) GET и DELETE — 405: без сессий поднимать поток нечему;
-//   4) тело с потолком;
-//   5) лимитер — ДО передачи `tools/call` транспорту, а не после (I-4 по духу:
+//   1) /healthz — открыт, его проверяет выкатка; подробности за ключом;
+//   2) потолок отказов по адресу — до сверки ключа, иначе перебор не упирался
+//      бы ни во что;
+//   3) ключ — до чтения тела: тело неавторизованного запроса не читается;
+//   4) GET и DELETE — 405: без сессий поднимать поток нечему;
+//   5) тело с потолком;
+//   6) лимитер — ДО передачи `tools/call` транспорту, а не после (I-4 по духу:
 //      проверка предшествует исполнению);
-//   6) и только теперь транспорт SDK — свой на этот запрос (`src/mcp.js`).
+//   7) и только теперь транспорт SDK — свой на этот запрос (`src/mcp.js`).
 
 import { timingSafeEqual } from 'node:crypto'
 
@@ -23,6 +25,25 @@ function send(res, status, payload, headers = {}) {
     ...headers,
   })
   res.end(JSON.stringify(payload))
+}
+
+/**
+ * «Здесь ничего нет»: код 404, пустое тело, ни `content-type`, ни строчки
+ * содержания. Решение владельца 2026-09-24 после того, как он открыл адрес
+ * в браузере и получил форму протокола с кодом ошибки — то есть подсказку,
+ * что здесь что-то есть и что именно.
+ *
+ * Одна функция на обе причины — «нет такого пути» и «нет годного ключа» —
+ * именно для того, чтобы ответы совпадали побайтно: два разных ответа
+ * снова отличали бы эндпоинт от пустого места. Тест сверяет их целиком.
+ *
+ * Довод против владельцу назван: адрес опубликован в репозитории и на
+ * лендинге, скрытность даёт немного, а отладка чужого клиента слепнет.
+ * Решение принято с этим знанием.
+ */
+function nothingHere(res) {
+  res.writeHead(404, { 'content-length': '0', 'cache-control': 'no-store' })
+  res.end()
 }
 
 /** Ошибка протокола: наружу уходит JSON-RPC, а не наша самодеятельность. */
@@ -106,15 +127,35 @@ export function createService({ env, limiter, createSession, tools = [], log = (
 
     if (url.pathname === '/healthz') {
       if (req.method !== 'GET') return send(res, 405, { ok: false, code: 'method_not_allowed' })
+      // Публично — только признак живости. Выкатке и healthcheck контейнера
+      // больше ничего не нужно: оба смотрят на код ответа и ни на что в теле
+      // (`.github/workflows/deploy.yml`, шаги «ожидание healthy» и «Проверка
+      // живого сайта»; `mcp/Dockerfile`, HEALTHCHECK). Имена инструментов,
+      // пороги лимитера и число отслеживаемых адресов — за ключом: последнее
+      // ещё и говорит прохожему, пользуется ли службой кто-то прямо сейчас.
+      if (!safeEqual(bearer(req), env.MCP_KEY)) return send(res, 200, { ok: true })
       return send(res, 200, { ok: true, tools, limits: limiter.stats() })
     }
 
-    if (url.pathname !== MCP_PATH) return send(res, 404, { ok: false, code: 'not_found' })
+    if (url.pathname !== MCP_PATH) return nothingHere(res)
 
-    // Ключ — первое, что происходит на эндпоинте. Тело здесь ещё не прочитано.
+    const ip = clientIp(req)
+
+    // Потолок отказов — ДО сверки ключа: исчерпанное окно обязано
+    // останавливать перебор, а не считать его задним числом. Цена решения
+    // названа: пока окно исчерпано, годный ключ с того же адреса тоже
+    // получает 404 — иначе потолок не был бы потолком.
+    if (limiter.refusalsExhausted(ip)) {
+      log({ event: 'refuse', path: url.pathname, code: 'refusals_exhausted' })
+      return nothingHere(res)
+    }
+
+    // Ключ — первое, что происходит с запросом после потолка. Тело здесь
+    // ещё не прочитано, и в ответе нет ничего, кроме кода 404.
     if (!safeEqual(bearer(req), env.MCP_KEY)) {
+      limiter.noteRefusal(ip)
       log({ event: 'refuse', path: url.pathname, code: 'unauthorized' })
-      return rpcError(res, 401, null, -32001, 'unauthorized')
+      return nothingHere(res)
     }
 
     // Только POST. GET открывал бы поток от сервера, DELETE закрывал бы
@@ -133,7 +174,7 @@ export function createService({ env, limiter, createSession, tools = [], log = (
     // Лимитер ДО исполнения: транспорт вызывается ниже этой строки.
     const calls = toolCalls(body)
     if (calls > 0) {
-      const gate = limiter.reserve(clientIp(req), calls)
+      const gate = limiter.reserve(ip, calls)
       if (!gate.ok) {
         log({ event: 'refuse', path: url.pathname, code: 'rate_limited', reason: gate.reason })
         return rpcError(res, 429, firstId(body), -32002, gate.message)

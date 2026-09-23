@@ -4,29 +4,50 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import test from 'node:test'
-import { KEY, rpc, RPC_HEADERS, startService, toolPayload } from './helpers.js'
+import { KEY, rpc, RPC_HEADERS, shape, startService, toolPayload } from './helpers.js'
 
 const LIST = { jsonrpc: '2.0', id: 1, method: 'tools/list' }
 
-test('запрос без ключа получает 401 и не исполняется', async (t) => {
+test('запрос без ключа — 404 с пустым телом и без признаков протокола', async (t) => {
   const service = await startService()
   t.after(() => service.close())
 
   const res = await rpc(service.base, LIST, { key: null })
-  assert.equal(res.status, 401)
-  const body = res.json()
-  assert.equal(body.error.message, 'unauthorized')
+  assert.equal(res.status, 404)
+  // Три утверждения, а не одно: прежний JSON-RPC прошёл бы проверку «404».
+  assert.equal(res.text(), '')
+  assert.equal(res.headers['content-length'], '0')
+  assert.equal(res.headers['content-type'], undefined)
+  // Причина отказа остаётся у службы, а не уходит прохожему.
+  assert.deepEqual(
+    service.logs.map((entry) => entry.code),
+    ['unauthorized'],
+  )
 })
 
-test('чужой ключ той же длины получает 401', async (t) => {
+test('чужой ключ той же длины — тот же 404 с пустым телом', async (t) => {
   const service = await startService()
   t.after(() => service.close())
 
   const res = await rpc(service.base, LIST, { key: 'x'.repeat(KEY.length) })
-  assert.equal(res.status, 401)
+  assert.equal(res.status, 404)
+  assert.equal(res.text(), '')
+  assert.equal(res.headers['content-type'], undefined)
 })
 
-test('401 приходит ДО чтения тела: тело не отправлено, ответ есть', async (t) => {
+test('эндпоинт без ключа неотличим от несуществующего пути', async (t) => {
+  const service = await startService()
+  t.after(() => service.close())
+
+  const secret = await rpc(service.base, LIST, { key: null })
+  const nowhere = await rpc(service.base, LIST, { key: null, path: '/no-such-path' })
+  // Сверяются целиком: код, тело и все заголовки, кроме меняющихся от
+  // запроса к запросу. Любая лишняя строка в одном из ответов — снова
+  // подсказка, что по одному из адресов что-то есть.
+  assert.deepEqual(shape(secret), shape(nowhere))
+})
+
+test('404 приходит ДО чтения тела: тело не отправлено, ответ есть', async (t) => {
   const service = await startService()
   t.after(() => service.close())
 
@@ -52,7 +73,78 @@ test('401 приходит ДО чтения тела: тело не отпра�
     req.write('{"jsonrpc":') // начало тела, конца не будет
     setTimeout(() => reject(new Error('ответа нет: тело читается до проверки ключа')), 2000)
   })
-  assert.equal(status, 401)
+  assert.equal(status, 404)
+})
+
+test('годный ключ работает как прежде: список инструментов приходит', async (t) => {
+  const service = await startService()
+  t.after(() => service.close())
+
+  const res = await rpc(service.base, LIST)
+  assert.equal(res.status, 200)
+  assert.deepEqual(
+    res.json().result.tools.map((tool) => tool.name),
+    ['clock.now', 'weather.current', 'wiki.summary'],
+  )
+})
+
+test('потолок отказов: после исчерпания окна не сверяется даже годный ключ', async (t) => {
+  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '3' } })
+  t.after(() => service.close())
+
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal((await rpc(service.base, LIST, { key: 'wrong-key' })).status, 404)
+  }
+  assert.deepEqual(
+    service.logs.map((entry) => entry.code),
+    ['unauthorized', 'unauthorized', 'unauthorized'],
+  )
+
+  // Четвёртая попытка упирается в потолок. Снаружи она неотличима от
+  // предыдущих — различает их журнал: причина другая, сверки не было.
+  const blocked = await rpc(service.base, LIST, { key: 'wrong-key' })
+  assert.equal(blocked.status, 404)
+  assert.equal(service.logs.at(-1).code, 'refusals_exhausted')
+
+  // Цена решения, названная в коде: пока окно исчерпано, годный ключ с того
+  // же адреса тоже получает 404. Иначе потолок не был бы потолком.
+  const good = await rpc(service.base, LIST)
+  assert.equal(good.status, 404)
+  assert.equal(service.logs.at(-1).code, 'refusals_exhausted')
+})
+
+test('исчерпанное окно не продлевает себя: отметки ставятся только за сверку', async (t) => {
+  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '2' } })
+  t.after(() => service.close())
+
+  for (let i = 0; i < 5; i += 1) await rpc(service.base, LIST, { key: 'wrong-key' })
+  // Пять попыток, но отметок ровно две: три последние упёрлись в потолок и
+  // в окно не записались — иначе перебор держал бы блокировку вечно.
+  assert.equal(service.logs.filter((entry) => entry.code === 'unauthorized').length, 2)
+})
+
+test('окно отказов — на адрес: сосед по службе не блокируется', async (t) => {
+  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '2' } })
+  t.after(() => service.close())
+
+  for (let i = 0; i < 3; i += 1)
+    await rpc(service.base, LIST, { key: 'wrong-key', ip: '203.0.113.7' })
+  assert.equal(service.logs.at(-1).code, 'refusals_exhausted')
+
+  // Другой адрес продолжает работать: окно исчерпано у перебирающего, а не
+  // у службы целиком.
+  const other = await rpc(service.base, LIST, { ip: '198.51.100.9' })
+  assert.equal(other.status, 200)
+})
+
+test('потолок отказов не трогает работу с годным ключом', async (t) => {
+  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '2' } })
+  t.after(() => service.close())
+
+  for (let i = 0; i < 5; i += 1) {
+    assert.equal((await rpc(service.base, { ...LIST, id: i })).status, 200)
+  }
+  assert.equal(service.logs.length, 0)
 })
 
 test('GET на эндпоинт — 405', async (t) => {
@@ -165,23 +257,49 @@ test('пачка из трёх вызовов берёт три слота ра�
   assert.equal(res.status, 429)
 })
 
-test('/healthz открыт без ключа и называет инструменты', async (t) => {
+test('публичный /healthz — только признак живости', async (t) => {
   const service = await startService()
   t.after(() => service.close())
 
   const res = await fetch(`${service.base}/healthz`)
   assert.equal(res.status, 200)
   const body = await res.json()
-  assert.equal(body.ok, true)
-  assert.deepEqual(body.tools, ['clock.now', 'weather.current', 'wiki.summary'])
+  // Выкатке и healthcheck контейнера нужен только код 200: оба смотрят на
+  // `%{http_code}` и на `r.ok`, в тело не заглядывает ни один.
+  assert.deepEqual(body, { ok: true })
+  // Отдельно — то, чего в ответе быть не должно, по существу, а не по форме:
+  // ни имени инструмента, ни числа лимитера, ни признака, пользуется ли
+  // службой кто-то сейчас.
+  const text = JSON.stringify(body)
+  for (const leak of ['clock.now', 'weather.current', 'wiki.summary', 'trackedIps', 'perMinute', 'perHour'])
+    assert.ok(!text.includes(leak), `публичный /healthz не должен называть ${leak}`)
 })
 
-test('чужой путь — 404, а не эндпоинт MCP', async (t) => {
+test('/healthz с годным ключом отдаёт прежний полный ответ', async (t) => {
+  const service = await startService()
+  t.after(() => service.close())
+
+  const res = await fetch(`${service.base}/healthz`, {
+    headers: { authorization: `Bearer ${KEY}` },
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  assert.deepEqual(body.tools, ['clock.now', 'weather.current', 'wiki.summary'])
+  assert.equal(body.limits.perMinute, 10)
+  assert.equal(body.limits.perHour, 100)
+  assert.equal(body.limits.refusalsPerHour, 60)
+  assert.equal(typeof body.limits.trackedIps, 'number')
+})
+
+test('чужой путь — 404 с пустым телом даже с годным ключом', async (t) => {
   const service = await startService()
   t.after(() => service.close())
 
   const res = await fetch(`${service.base}/`, { headers: { authorization: `Bearer ${KEY}` } })
   assert.equal(res.status, 404)
+  assert.equal(await res.text(), '')
+  assert.equal(res.headers.get('content-type'), null)
 })
 
 test('битый JSON — ошибка разбора, а не падение процесса', async (t) => {
