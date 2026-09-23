@@ -88,57 +88,69 @@ test('годный ключ работает как прежде: список �
   )
 })
 
-test('потолок отказов: после исчерпания окна не сверяется даже годный ключ', async (t) => {
-  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '3' } })
+test('исчерпанное окно отказов НЕ закрывает службу для годного ключа', async (t) => {
+  const service = await startService({ envSource: { REFUSAL_SIGNAL_PER_HOUR: '3' } })
   t.after(() => service.close())
 
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < 5; i += 1) {
     assert.equal((await rpc(service.base, LIST, { key: 'wrong-key' })).status, 404)
   }
+
+  // Порог перейдён, окно давно «исчерпано» — и это ничего не запрещает:
+  // ключ сверяется всегда. Обратное (404 не глядя) било бы ровно по тем, у
+  // кого ключ есть: у перебирающего годного ключа нет по определению.
+  const good = await rpc(service.base, LIST)
+  assert.equal(good.status, 200)
   assert.deepEqual(
-    service.logs.map((entry) => entry.code),
-    ['unauthorized', 'unauthorized', 'unauthorized'],
+    good.json().result.tools.map((tool) => tool.name),
+    ['clock.now', 'weather.current', 'wiki.summary'],
   )
 
-  // Четвёртая попытка упирается в потолок. Снаружи она неотличима от
-  // предыдущих — различает их журнал: причина другая, сверки не было.
-  const blocked = await rpc(service.base, LIST, { key: 'wrong-key' })
-  assert.equal(blocked.status, 404)
-  assert.equal(service.logs.at(-1).code, 'refusals_exhausted')
-
-  // Цена решения, названная в коде: пока окно исчерпано, годный ключ с того
-  // же адреса тоже получает 404. Иначе потолок не был бы потолком.
-  const good = await rpc(service.base, LIST)
-  assert.equal(good.status, 404)
-  assert.equal(service.logs.at(-1).code, 'refusals_exhausted')
+  // А негодный по-прежнему получает 404 с пустым телом.
+  const bad = await rpc(service.base, LIST, { key: 'wrong-key' })
+  assert.equal(bad.status, 404)
+  assert.equal(bad.text(), '')
 })
 
-test('исчерпанное окно не продлевает себя: отметки ставятся только за сверку', async (t) => {
-  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '2' } })
+test('сигнал о переборе пишется один раз за окно, а не на каждый отказ', async (t) => {
+  const service = await startService({ envSource: { REFUSAL_SIGNAL_PER_HOUR: '3' } })
   t.after(() => service.close())
 
-  for (let i = 0; i < 5; i += 1) await rpc(service.base, LIST, { key: 'wrong-key' })
-  // Пять попыток, но отметок ровно две: три последние упёрлись в потолок и
-  // в окно не записались — иначе перебор держал бы блокировку вечно.
-  assert.equal(service.logs.filter((entry) => entry.code === 'unauthorized').length, 2)
+  for (let i = 0; i < 7; i += 1) await rpc(service.base, LIST, { key: 'wrong-key' })
+
+  const bursts = service.logs.filter((entry) => entry.event === 'refusal_burst')
+  assert.equal(bursts.length, 1, 'сигнал, повторяющийся на каждом запросе, — уже не сигнал')
+  assert.equal(bursts[0].count, 3)
+  // Сами отказы при этом записаны все семь: сигнал их не заменяет.
+  assert.equal(service.logs.filter((entry) => entry.code === 'unauthorized').length, 7)
 })
 
-test('окно отказов — на адрес: сосед по службе не блокируется', async (t) => {
-  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '2' } })
+test('счётчик отказов — на адрес, а не общий на всех', async (t) => {
+  const service = await startService({ envSource: { REFUSAL_SIGNAL_PER_HOUR: '2' } })
   t.after(() => service.close())
 
-  for (let i = 0; i < 3; i += 1)
+  const bursts = () => service.logs.filter((entry) => entry.event === 'refusal_burst')
+
+  for (let i = 0; i < 2; i += 1)
     await rpc(service.base, LIST, { key: 'wrong-key', ip: '203.0.113.7' })
-  assert.equal(service.logs.at(-1).code, 'refusals_exhausted')
+  assert.equal(bursts().length, 1)
 
-  // Другой адрес продолжает работать: окно исчерпано у перебирающего, а не
-  // у службы целиком.
-  const other = await rpc(service.base, LIST, { ip: '198.51.100.9' })
-  assert.equal(other.status, 200)
+  // Сосед перебирает сам и переходит СВОЙ порог: при общем счётчике его
+  // отказы были бы третьим и четвёртым и сигнала не дали бы вовсе.
+  for (let i = 0; i < 2; i += 1)
+    await rpc(service.base, LIST, { key: 'wrong-key', ip: '198.51.100.9' })
+  assert.equal(bursts().length, 2)
+  assert.deepEqual(
+    bursts().map((entry) => entry.count),
+    [2, 2],
+  )
+
+  // И работа с годным ключом с любого адреса не затронута.
+  assert.equal((await rpc(service.base, LIST, { ip: '203.0.113.7' })).status, 200)
 })
 
-test('потолок отказов не трогает работу с годным ключом', async (t) => {
-  const service = await startService({ envSource: { REFUSALS_PER_HOUR: '2' } })
+test('счётчик отказов не трогает работу с годным ключом', async (t) => {
+  const service = await startService({ envSource: { REFUSAL_SIGNAL_PER_HOUR: '2' } })
   t.after(() => service.close())
 
   for (let i = 0; i < 5; i += 1) {
@@ -288,7 +300,7 @@ test('/healthz с годным ключом отдаёт прежний полн
   assert.deepEqual(body.tools, ['clock.now', 'weather.current', 'wiki.summary'])
   assert.equal(body.limits.perMinute, 10)
   assert.equal(body.limits.perHour, 100)
-  assert.equal(body.limits.refusalsPerHour, 60)
+  assert.equal(body.limits.refusalSignalPerHour, 60)
   assert.equal(typeof body.limits.trackedIps, 'number')
 })
 
