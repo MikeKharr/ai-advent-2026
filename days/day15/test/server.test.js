@@ -43,7 +43,7 @@ const settingsCalls = []
 
 /** Настройки дня 11 на том же профиле: страница дня 15 их видеть не должна. */
 const DAY11_SETTINGS = { strategy: 'window', contextTokens: 3000, model: 'groq-llama' }
-/** Настройки дней 13 и 14: свой потолок в 32 000 и свои поля проверки. */
+/** Настройки дней 13 и 15: свой потолок в 32 000 и свои поля проверки. */
 const STAGED_SETTINGS = { strategy: 'summary', contextTokens: 32000, reviewModel: 'kimi-k2.6', reviewRounds: 3 }
 /**
  * Предел кругов профиля — ЕДИНСТВЕННЫЙ источник числа (решение владельца).
