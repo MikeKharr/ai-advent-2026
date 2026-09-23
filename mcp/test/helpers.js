@@ -25,7 +25,10 @@ export async function startService({ envSource = {}, fetchImpl } = {}) {
   // «405 пришёл из транспорта SDK». Коды ответа у обоих одинаковы, и без
   // этого счётчика тест на 405 не различал бы гипотезы.
   const built = { sessions: 0 }
+  /** Журнал службы: по нему видно причину отказа, которой нет в ответе. */
+  const logs = []
   const handler = createService({
+    log: (entry) => logs.push(entry),
     env,
     limiter,
     createSession: () => {
@@ -41,6 +44,7 @@ export async function startService({ envSource = {}, fetchImpl } = {}) {
   return {
     base: `http://127.0.0.1:${port}`,
     built,
+    logs,
     async close() {
       server.closeAllConnections()
       await new Promise((resolve) => server.close(resolve))
@@ -53,11 +57,14 @@ export async function startService({ envSource = {}, fetchImpl } = {}) {
  * соединение к уже закрытому стенду давало бы пустой ответ и «красный» тест
  * по причине, к предмету проверки не относящейся.
  */
-export function rpc(base, body, { key = KEY, method = 'POST' } = {}) {
-  const url = new URL(`${base}/mcp`)
+export function rpc(base, body, { key = KEY, method = 'POST', path = '/mcp', ip = null } = {}) {
+  const url = new URL(`${base}${path}`)
   const payload = method === 'POST' ? JSON.stringify(body) : null
   const headers = { ...RPC_HEADERS }
   if (key) headers.authorization = `Bearer ${key}`
+  // Вход (Caddy) ЗАМЕНЯЕТ X-Forwarded-For адресом соединения, так что на
+  // стенде это законный способ представиться другим адресом.
+  if (ip) headers['x-forwarded-for'] = ip
   if (payload) headers['content-length'] = String(Buffer.byteLength(payload))
 
   return new Promise((resolve, reject) => {
@@ -81,6 +88,18 @@ export function rpc(base, body, { key = KEY, method = 'POST' } = {}) {
     if (payload) req.write(payload)
     req.end()
   })
+}
+
+/**
+ * Ответ целиком, пригодный для сверки двух ответов между собой: код, тело и
+ * заголовки без тех, что меняются от запроса к запросу.
+ */
+export function shape(res) {
+  const headers = { ...res.headers }
+  delete headers.date
+  delete headers.connection
+  delete headers['keep-alive']
+  return { status: res.status, headers, body: res.text() }
 }
 
 /** Ответ инструмента: наш JSON лежит текстом в первом блоке содержимого. */

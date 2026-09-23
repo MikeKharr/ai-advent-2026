@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import {
   BODY_LIMIT,
+  EMPTY_BODY,
   clipBody,
   describe as verdict,
   formatBytes,
@@ -130,14 +131,72 @@ test('ошибка JSON-RPC называет свой код и остаётся
   assert.match(got.note, /-32601/)
 })
 
-test('401 и 405 — НЕ красные: это результат, сервер ответил', () => {
-  for (const status of [401, 405, 406, 415, 400, 500, 503]) {
+test('404 и 405 — НЕ красные: это результат, сервер ответил', () => {
+  for (const status of [404, 405, 406, 415, 400, 500, 503]) {
     const got = verdict({ outcome: 'upstream', status, bodyText: '{"error":"x"}' })
     assert.equal(got.kind, 'proto', `${status} обязан быть нейтральным`)
     assert.ok(got.note.startsWith(String(status)), `пояснение ${status} называет код словом: ${got.note}`)
   }
-  assert.match(verdict({ outcome: 'upstream', status: 401, bodyText: '' }).note, /без ключа/)
   assert.match(verdict({ outcome: 'upstream', status: 405, bodyText: '' }).note, /только POST/)
+})
+
+test('проба ключа объясняет ПРИЁМ, а не отказ в доступе', () => {
+  // Служба без годного ключа отвечает так, будто её нет (решение владельца
+  // 2026-09-23, ADR 2026-09-23-1844). Пояснение, обещающее «нет доступа», разошлось бы с
+  // механизмом: доступ ничем не отказан, эндпоинт просто не признаётся.
+  const got = verdict({ outcome: 'upstream', status: 404, bodyText: '' })
+  assert.equal(got.kind, 'proto', 'спрятанный эндпоинт — не сбой соединения')
+  assert.ok(got.note.startsWith('404'), got.note)
+  assert.match(got.note, /будто его здесь нет/)
+  assert.match(got.note, /защита, а не поломка/)
+  for (const слово of ['нет доступа', 'не авторизован', 'unauthorized', 'запрещ'])
+    assert.equal(new RegExp(слово, 'i').test(got.note), false, `пояснение выдаёт приём за отказ в доступе: ${слово}`)
+})
+
+test('пояснение к 404 не приписывает ему причин, которых у него нет', () => {
+  const note = verdict({ outcome: 'upstream', status: 404, bodyText: '' }).note
+  assert.match(note, /без годного ключа/, 'достижимый со страницы случай назван')
+  assert.match(note, /причины он не называет/, 'единственным этот случай не объявлен')
+  assert.equal(
+    /ключ не подошёл|неверный ключ|ключ не подходит/i.test(note),
+    false,
+    `пояснение утверждает причину как установленную: ${note}`,
+  )
+  // Потолок отказов, гасивший консоль всем, снят в mcp aa8b6b0. Замер:
+  // 60 проб «без ключа», затем рабочая команда — было 404, стало 200.
+  // Слово об этой причине описывало бы механизм, которого больше нет.
+  for (const слово of ['слишком много', 'перебор', 'слишком часто'])
+    assert.equal(
+      new RegExp(слово, 'i').test(note),
+      false,
+      `пояснение называет причину, снятую в службе: «${слово}»`,
+    )
+})
+
+test('про 401 страница больше ничего не утверждает', () => {
+  // Отдельного пояснения у 401 нет: эндпоинт его не возвращает, и строка про
+  // «проверяет ключ до чтения тела» описывала бы несуществующий механизм.
+  // Прийти 401 может только откуда-то ещё — и тогда говорится лишь то, что видно.
+  const got = verdict({ outcome: 'upstream', status: 401, bodyText: '{"error":"x"}' })
+  assert.equal(got.kind, 'proto')
+  assert.equal(got.note, '401 — сервер ответил отказом. Причина в теле ответа.')
+  assert.equal(/ключ/i.test(got.note), false, 'про ключ на 401 больше не утверждается ничего')
+})
+
+test('пустое тело — не ошибка и не пустота без объяснения', () => {
+  // Третий случай рядом с «ответ получен» и «ответа нет вовсе»: ответ есть,
+  // байтов нет. Красным он не красится, и размер называет правду.
+  assert.equal(verdict({ outcome: 'upstream', status: 404, bodyText: '' }).kind, 'proto')
+  assert.equal(formatBytes(0), '0 Б', 'ноль байт называется нулём, а не прочерком')
+  assert.equal(
+    statusLine({ outcome: 'upstream', status: 404, ms: 4, bytes: 0 }),
+    'Ответ 404 · 4 мс · 0 Б',
+  )
+  assert.equal(typeof EMPTY_BODY, 'string')
+  assert.ok(EMPTY_BODY.length > 0)
+  assert.match(EMPTY_BODY, /ни одного байта/)
+  // Рамка говорит об отсутствии тела, а не пересказывает несуществующее.
+  assert.equal(/ошибка|сбой|не удалось/i.test(EMPTY_BODY), false)
 })
 
 test('единственный красный исход — ответа нет вовсе, и причина названа', () => {

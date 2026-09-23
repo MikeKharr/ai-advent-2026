@@ -6,6 +6,25 @@
 // «проверить» и «посчитать» пропускали бы залп параллельных запросов мимо
 // предела. Вызывать ДО исполнения `tools/call`, а не после.
 //
+// Третий счётчик — отказы по ключу. Он ничего не запрещает: ключ сверяется
+// всегда, годный обслуживается всегда. Счётчик нужен ради наблюдаемости —
+// перейдя порог, он один раз за окно пишет в журнал, что порог перейдён.
+// Блокировать по нему нельзя: у перебирающего годного ключа нет, и
+// блокировка достаётся только тем, у кого он есть (снято 2026-09-23,
+// см. комментарий в `src/env.js`).
+//
+// В журнал уходит число, но НЕ адрес — намеренно: журнал контейнера
+// (`json-file`, 10 МБ × 3) переживает часовое окно, и адрес в нём хранился
+// бы дольше окна, против I-10. Сигнал отвечает на вопрос «перебирают ли»,
+// а не «кто»; связка «кто» живёт только в памяти процесса и не дольше часа.
+//
+// Дальше порога отметки НЕ копятся (вето `compliance` по PR #220): вопрос
+// «набралось ли столько за час» отвечается и без них, а хранить их значило
+// цену одного отказа, линейную по накопленному, то есть квадратичный поток
+// на публичном бесключевом пути. Один адрес приводил бы службу в негодность
+// для держателей годного ключа — тот же исход, что у снятого потолка,
+// только истощением вместо запрета.
+//
 // Состояние в памяти процесса: контейнер один, при перезапуске обнуляется.
 // Окно — оно же граница хранения адреса: дольше часа адрес не живёт (I-10).
 
@@ -15,12 +34,45 @@ const HOUR = 60 * 60_000
 export function createLimiter(env, { now = () => Date.now() } = {}) {
   /** @type {Map<string, number[]>} адрес → отметки вызовов инструментов */
   const hits = new Map()
+  /** @type {Map<string, number[]>} адрес → отметки отказов по ключу */
+  const refusals = new Map()
 
-  function sweep(t) {
-    for (const [ip, times] of hits) {
-      const kept = times.filter((x) => t - x < HOUR)
-      if (kept.length === 0) hits.delete(ip)
-      else hits.set(ip, kept)
+  /** Когда последний раз обходили карты целиком. */
+  let sweptAt = -Infinity
+
+  /**
+   * Уборка одного адреса. Отметки лежат по возрастанию времени, поэтому
+   * достаточно отрезать голову — обхода всей карты на каждый запрос здесь
+   * нет и быть не должно.
+   */
+  function sweepIp(map, ip, t) {
+    const times = map.get(ip)
+    if (!times) return []
+    let stale = 0
+    while (stale < times.length && t - times[stale] >= HOUR) stale += 1
+    if (stale > 0) times.splice(0, stale)
+    if (times.length === 0) {
+      map.delete(ip)
+      return []
+    }
+    return times
+  }
+
+  /**
+   * Полный обход обеих карт — он и удаляет замолчавшие адреса. Цена линейна
+   * по числу адресов, поэтому не чаще раза в минуту: на публичном пути
+   * работа, растущая с числом гостей, — ровно то, из-за чего был дефект.
+   *
+   * Цена выбора названа: отметки замолчавшего адреса живут не час, а до часа
+   * плюс минута. Их за это время никто не читает (адрес, который вернулся,
+   * убирается точно, `sweepIp` выше), но для I-10 это минута сверх окна, и
+   * это осознанный размен на постоянную цену запроса.
+   */
+  function sweepAll(t) {
+    if (t - sweptAt < MINUTE) return
+    sweptAt = t
+    for (const map of [hits, refusals]) {
+      for (const ip of [...map.keys()]) sweepIp(map, ip, t)
     }
   }
 
@@ -33,9 +85,8 @@ export function createLimiter(env, { now = () => Date.now() } = {}) {
     reserve(ip, count = 1) {
       const need = Number.isInteger(count) && count > 0 ? count : 1
       const t = now()
-      sweep(t)
-
-      const times = hits.get(ip) ?? []
+      sweepAll(t)
+      const times = sweepIp(hits, ip, t)
       if (times.filter((x) => t - x < MINUTE).length + need > env.RATE_LIMIT_PER_MIN) {
         return { ok: false, reason: 'minute', message: 'Слишком часто. Подождите минуту.' }
       }
@@ -47,8 +98,45 @@ export function createLimiter(env, { now = () => Date.now() } = {}) {
       return { ok: true, reserved: need }
     },
 
+    /**
+     * Отметить отказ по ключу. Звать ПОСЛЕ неудачной сверки — до неё звать
+     * нечего: отказа ещё не было. На ответ запросу это не влияет, влияет
+     * только на журнал.
+     *
+     * `signal` истинен ровно на том запросе, который перешёл порог, а не на
+     * каждом следующем: иначе «сигнал о переборе» сам стал бы перебором
+     * строк в журнале и перестал быть сигналом.
+     */
+    noteRefusal(ip) {
+      const t = now()
+      sweepAll(t)
+      const times = sweepIp(refusals, ip, t)
+
+      // Набрав порог, отметки больше не заводим: ответ на «набралось ли
+      // столько за час» уже дан, а каждая лишняя отметка — это память и
+      // работа, которых поток отказов может попросить сколько угодно.
+      if (times.length >= env.REFUSAL_SIGNAL_PER_HOUR) {
+        return { count: times.length, signal: false }
+      }
+
+      // Массив меняется на месте: копия на каждый отказ и была квадратичной
+      // ценой потока.
+      times.push(t)
+      refusals.set(ip, times)
+      return { count: times.length, signal: times.length === env.REFUSAL_SIGNAL_PER_HOUR }
+    },
+
     stats() {
-      return { trackedIps: hits.size, perMinute: env.RATE_LIMIT_PER_MIN, perHour: env.RATE_LIMIT_PER_HOUR }
+      return {
+        trackedIps: hits.size,
+        refusedIps: refusals.size,
+        // Сколько отметок отказов вообще хранится. Число памяти, а не
+        // статистики: по нему видно, что рост ограничен порогом.
+        refusalMarks: [...refusals.values()].reduce((sum, times) => sum + times.length, 0),
+        perMinute: env.RATE_LIMIT_PER_MIN,
+        perHour: env.RATE_LIMIT_PER_HOUR,
+        refusalSignalPerHour: env.REFUSAL_SIGNAL_PER_HOUR,
+      }
     },
   }
 }

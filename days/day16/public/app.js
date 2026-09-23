@@ -8,6 +8,7 @@
 //   подсветка синтаксиса — в .rpc кладётся textContent, и только он.
 
 import {
+  EMPTY_BODY,
   FEED_LIMIT,
   clipBody,
   describe,
@@ -58,7 +59,10 @@ function shown(raw) {
 function pre(id, label, raw, extraClass) {
   const caption = node('p', 'entry-label', label)
   caption.id = id
-  const box = node('pre', extraClass ? `rpc ${extraClass}` : 'rpc', shown(raw))
+  // `is-empty` — не тело, а сообщение о его отсутствии: флажок отступов на
+  // него не действует, иначе он «обрабатывал» бы нашу собственную строку.
+  const body = extraClass === 'is-empty' ? raw : shown(raw)
+  const box = node('pre', extraClass ? `rpc ${extraClass}` : 'rpc', body)
   box.tabIndex = 0
   box.setAttribute('role', 'region')
   box.setAttribute('aria-labelledby', id)
@@ -91,6 +95,12 @@ function fill(rec) {
     box.setAttribute('role', 'region')
     box.setAttribute('aria-labelledby', caption.id)
     parts.push(caption, box)
+  } else if (rec.resRaw === '') {
+    // Ответ ЕСТЬ, а байтов в нём нет. Это третий случай рядом с «ответ
+    // получен» и «ответа нет вовсе», и он не сбой: так отвечает эндпоинт,
+    // который прячется. Рамка стоит на месте тела и говорит, что тела нет, —
+    // пустая рамка читалась бы как поломка страницы.
+    parts.push(...pre(`res-${rec.id}`, 'Ответ', EMPTY_BODY, 'is-empty'))
   } else if (rec.resRaw !== null) {
     parts.push(...pre(`res-${rec.id}`, 'Ответ', rec.resRaw))
   }
@@ -174,7 +184,10 @@ async function submit(text) {
   } else {
     const clipped = clipBody(raw)
     if (clipped.truncated) rec.partial.push(partialNotes.clipped(clipped.total))
-    if (!reindent(raw).ok) rec.partial.push(partialNotes.notJson)
+    // Пустое тело — не «тело, которое не разобралось»: разбирать нечего, и
+    // строка «показано как текст» соврала бы — текста тоже нет. О пустоте
+    // говорит рамка ответа, и этого довольно.
+    if (raw !== '' && !reindent(raw).ok) rec.partial.push(partialNotes.notJson)
     rec.resRaw = clipped.text
     rec.metaText = metaLine({ time, status: answer.status, ms, bytes: clipped.total })
   }
