@@ -117,7 +117,8 @@ test('код отказа службы доходит как её код, а н�
 test('признак «не подставлять ключ» снимает Authorization и больше ничего', async () => {
   mode = 'reply'
   // Так теперь отвечает служба без годного ключа: 404 и ни одного байта
-  // (решение владельца 2026-09-24 — эндпоинт не признаётся, что существует).
+  // (решение владельца 2026-09-23, ADR 2026-09-23-1844 — эндпоинт не
+  // признаётся, что существует).
   reply = { status: 404, type: null, body: '' }
   const r = await rpc({ rpc: CALL, noKey: true }, '10.0.0.3')
   const sent = seen.at(-1)
@@ -143,11 +144,27 @@ test('пустой ответ доходит пустым: ноль байт и 
   assert.equal(r.headers.get('content-type'), null, 'типа служба не прислала — не присылаем и мы')
 })
 
-test('тип содержимого копируется, когда он есть', async () => {
+test('тип содержимого копируется, когда он есть и знакомой формы', async () => {
   mode = 'reply'
   reply = { status: 200, type: 'application/json', body: '{"ok":true}' }
   const r = await rpc({ rpc: CALL }, '10.0.0.14')
   assert.match(r.headers.get('content-type'), /application\/json/)
+  mode = 'reply'
+  reply = { status: 200, type: 'application/json; charset=utf-8', body: '{"ok":true}' }
+  assert.match((await rpc({ rpc: CALL }, '10.0.0.15')).headers.get('content-type'), /charset=utf-8/)
+})
+
+test('тип незнакомой формы не переписывается и своим не подменяется', async () => {
+  // Второй случай без умолчания, кроме пустого тела: тип пришёл, но не той
+  // формы, что мы готовы повторить. Прежнее умолчание подставляло бы сюда
+  // `application/json` — обещание JSON поверх чего угодно.
+  for (const type of ['multipart/form-data; boundary=zzz', 'text/plain; charset=utf-8; x=1', 'json']) {
+    mode = 'reply'
+    reply = { status: 200, type, body: 'не json' }
+    const r = await rpc({ rpc: CALL }, '10.0.2.1')
+    assert.equal(r.headers.get('content-type'), null, `тип ${type} не должен ни повторяться, ни подменяться`)
+    assert.equal(await r.text(), 'не json', 'тело при этом доходит как есть')
+  }
 })
 
 test('признак «послать GET» меняет метод и не шлёт тела; ключ при этом на месте', async () => {

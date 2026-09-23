@@ -61,8 +61,8 @@ function pre(id, label, raw, extraClass) {
   caption.id = id
   // `is-empty` — не тело, а сообщение о его отсутствии: флажок отступов на
   // него не действует, иначе он «обрабатывал» бы нашу собственную строку.
-  const текст = extraClass === 'is-empty' ? raw : shown(raw)
-  const box = node('pre', extraClass ? `rpc ${extraClass}` : 'rpc', текст)
+  const body = extraClass === 'is-empty' ? raw : shown(raw)
+  const box = node('pre', extraClass ? `rpc ${extraClass}` : 'rpc', body)
   box.tabIndex = 0
   box.setAttribute('role', 'region')
   box.setAttribute('aria-labelledby', id)
