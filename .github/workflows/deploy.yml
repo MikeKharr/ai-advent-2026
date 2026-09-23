@@ -3,11 +3,11 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths: ['days/**', 'router/**', 'agents/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/deploy.yml', '.github/scripts/atlas-tool.sh']
+    paths: ['days/**', 'router/**', 'agents/**', 'mcp/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/deploy.yml', '.github/scripts/atlas-tool.sh']
   workflow_dispatch:
     inputs:
       day:
-        description: 'Одна единица для передеплоя: day1 …, router, agents или atlas. Пусто — все изменённые.'
+        description: 'Одна единица для передеплоя: day1 …, router, agents, atlas или mcp. Пусто — все изменённые.'
         required: false
         type: string
 
@@ -98,7 +98,7 @@ jobs:
       - name: Сборка и публикация
         uses: docker/build-push-action@v6
         with:
-          context: ${{ contains(fromJSON('["router","agents","atlas"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
+          context: ${{ contains(fromJSON('["router","agents","atlas","mcp"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
           push: true
           # Владелец в GHCR должен быть в нижнем регистре.
           tags: |
@@ -229,8 +229,11 @@ jobs:
           fi
 
           # У роутера и сервиса агентов нет публичного адреса — их здоровье
-          # проверяется здесь, по healthcheck контейнера.
-          for svc in router agents; do
+          # проверяется здесь, по healthcheck контейнера. Служба MCP публичный
+          # адрес имеет, но здесь она тоже: так отказ самой службы отличается
+          # от неприменённого маршрута входа — иначе оба выглядели бы как
+          # красная «Проверка живого сайта».
+          for svc in router agents mcp; do
             printf '%s' "$DAYS" | grep -q "$svc" || continue
             echo "==> ожидание $svc: healthy"
             for i in $(seq 1 20); do
@@ -258,6 +261,9 @@ jobs:
           [ "$ok" -eq 0 ] || { echo "::error::лендинг не отвечает 200"; exit 1; }
           echo "лендинг ok"
 
+          # Исключены только единицы без публичного адреса. Для mcp адрес
+          # есть — /mcp/healthz открыт без ключа именно ради этой проверки
+          # (ADR 2026-09-23-1227, п. 1), и общая строка ниже его и дёргает.
           for day in $(printf '%s' "$DAYS" | tr -d '[]"' | tr ',' ' '); do
             [ -z "$day" ] || [ "$day" = router ] || [ "$day" = agents ] && continue
             ok=1
