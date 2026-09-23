@@ -14,6 +14,24 @@ import { COMPOSE, parseServices, problems } from '../.github/scripts/compose-net
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const TEXT = readFileSync(join(ROOT, COMPOSE), 'utf8')
 
+/**
+ * Правка внутри блока одной службы. Без привязки к имени приманка попала бы в
+ * первую попавшуюся службу с тем же куском текста — у day16 и mcp блоки
+ * networks одинаковые, и приманка «испортили mcp» молча портила бы day16.
+ */
+function inService(text, name, from, to) {
+  const marker = `\n  ${name}:\n`
+  const start = text.indexOf(marker)
+  assert.notEqual(start, -1, `службы ${name} нет в ${COMPOSE}`)
+  const rest = text.slice(start + marker.length)
+  const next = rest.search(/^ {2}[A-Za-z0-9_.-]+:\s*$/m)
+  const end = next === -1 ? text.length : start + marker.length + next
+  const block = text.slice(start, end)
+  const patched = block.replace(from, to)
+  assert.notEqual(patched, block, `приманка не подставилась в блок ${name}`)
+  return text.slice(0, start) + patched + text.slice(end)
+}
+
 test('настоящий compose.yml: нарушений нет', () => {
   assert.deepEqual(problems(TEXT), [])
 })
@@ -22,21 +40,26 @@ test('разбор видит сети там, где они есть, и их �
   const services = parseServices(TEXT)
   assert.deepEqual(services.get('mcp'), ['mcp'])
   assert.deepEqual(services.get('caddy'), ['default', 'mcp', 'edge'])
+  // День 16 ходит только в службу MCP: в сети по умолчанию ему делать нечего.
+  assert.deepEqual(services.get('day16'), ['mcp'])
   // Ключа networks нет — значит сеть по умолчанию, вместе с secrets.env.
   assert.equal(services.get('router'), null)
   assert.equal(services.get('agents'), null)
 })
 
 test('приманка: у mcp убрали ключ networks — он оказался в сети по умолчанию', () => {
-  const decoy = TEXT.replace(/ {4}networks:\n {6}- mcp\n/, '')
-  assert.notEqual(decoy, TEXT, 'приманка не подставилась — проверьте форму блока networks у mcp')
+  const decoy = inService(TEXT, 'mcp', / {4}networks:\n {6}- mcp\n/, '')
   assert.match(problems(decoy).join('\n'), /нет ключа networks/)
 })
 
 test('приманка: mcp добавили в сеть по умолчанию вдобавок к своей', () => {
-  const decoy = TEXT.replace(/( {4}networks:\n {6}- mcp\n)/, '$1      - default\n')
-  assert.notEqual(decoy, TEXT)
+  const decoy = inService(TEXT, 'mcp', / {4}networks:\n {6}- mcp\n/, '    networks:\n      - mcp\n      - default\n')
   assert.match(problems(decoy).join('\n'), /только в сети mcp/)
+})
+
+test('приманка: день 16 добавили в сеть по умолчанию — рядом с secrets.env', () => {
+  const decoy = inService(TEXT, 'day16', / {4}networks:\n {6}- mcp\n/, '    networks:\n      - mcp\n      - default\n')
+  assert.deepEqual(parseServices(decoy).get('day16'), ['mcp', 'default'])
 })
 
 test('приманка: router пустили в сеть mcp', () => {

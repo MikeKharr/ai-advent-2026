@@ -42,6 +42,7 @@ services:
       - day13
       - day14
       - day15
+      - day16
       - mcp
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
     # без ротации — на том же одном VPS, где переполнение диска
@@ -313,6 +314,34 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # День 16 — консоль MCP (ADR 2026-09-23-1227, п. 7). Ключей к моделям,
+  # ключа роутера и ключа сервиса агентов у дня нет: он ходит ТОЛЬКО в службу
+  # MCP по http://mcp:8083/mcp и предъявляет ей её же ключ MCP_KEY.
+  #
+  # Сеть — только mcp, как у самой службы. В default дню делать нечего: ни к
+  # роутеру, ни к агентам он не обращается, и держать его рядом с secrets.env
+  # значило бы отдать сети то, что не нужно для работы.
+  day16:
+    image: ghcr.io/mikekharr/advent-day16:${DAY16_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # MCP_KEY — копия значения из mcp.env (ADR 2026-09-11-1743, норма копии
+      # между env-файлами). Без файла день поднимается, страница отдаётся, но
+      # /healthz отвечает 503 — проверять настройку по нему, не по «up».
+      - path: ./day16.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    networks:
+      - mcp
+    depends_on:
+      - mcp
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Сервис агентов (ADR 2026-09-09-0854). Публичного адреса нет: к нему
   # ходят контейнеры дней по сети compose, http://agents:8082. Сам он ходит
   # в роутер по ключу приложения `agents`.
@@ -409,6 +438,6 @@ volumes:
 networks:
   edge:
     external: true
-  # Сеть службы MCP: в ней только caddy, mcp и (следующим PR) day16.
+  # Сеть службы MCP: в ней только caddy, mcp и day16 — его консоль.
   # Отдельная, а не default, — ADR 2026-09-23-1227, п. 5.
   mcp:

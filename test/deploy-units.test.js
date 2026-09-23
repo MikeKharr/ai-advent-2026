@@ -41,7 +41,7 @@ function units(dir, day, base, head = 'HEAD') {
 }
 
 function baseTree(dir) {
-  for (const unit of ['router', 'agents', 'atlas', 'mcp', 'days/day1']) {
+  for (const unit of ['router', 'agents', 'atlas', 'mcp', 'days/day1', 'days/day16']) {
     write(dir, `${unit}/Dockerfile`, 'FROM node:22-alpine\n')
     write(dir, `${unit}/server.js`, '// служба\n')
   }
@@ -53,7 +53,7 @@ test('единица mcp есть в дереве — она попадает в
   r.commit('первый')
   const run = units(r.dir, '', '')
   assert.equal(run.status, 0, run.output)
-  assert.deepEqual(JSON.parse(run.stdout), ['agents', 'atlas', 'day1', 'mcp', 'router'])
+  assert.deepEqual(JSON.parse(run.stdout), ['agents', 'atlas', 'day1', 'day16', 'mcp', 'router'])
   rmSync(r.dir, { recursive: true, force: true })
 })
 
@@ -76,6 +76,31 @@ test('правка в другой единице mcp не поднимает', 
   const run = units(r.dir, '', base)
   assert.equal(run.status, 0, run.output)
   assert.deepEqual(JSON.parse(run.stdout), ['router'])
+  rmSync(r.dir, { recursive: true, force: true })
+})
+
+test('правка только в days/day16/ поднимает ровно единицу day16', () => {
+  const r = repo(baseTree)
+  const base = r.commit('первый')
+  write(r.dir, 'days/day16/public/app.js', '// консоль\n')
+  r.commit('второй')
+  const run = units(r.dir, '', base)
+  assert.equal(run.status, 0, run.output)
+  assert.deepEqual(JSON.parse(run.stdout), ['day16'])
+  rmSync(r.dir, { recursive: true, force: true })
+})
+
+// День 16 и служба — разные единицы: правка в одной не пересобирает другую,
+// но едут они одним PR, и тогда в выкатке должны быть обе.
+test('правка в days/day16/ и в mcp/ поднимает обе единицы', () => {
+  const r = repo(baseTree)
+  const base = r.commit('первый')
+  write(r.dir, 'days/day16/server.js', '// день\n')
+  write(r.dir, 'mcp/src/tools.js', '// инструмент\n')
+  r.commit('второй')
+  const run = units(r.dir, '', base)
+  assert.equal(run.status, 0, run.output)
+  assert.deepEqual(JSON.parse(run.stdout), ['day16', 'mcp'])
   rmSync(r.dir, { recursive: true, force: true })
 })
 
