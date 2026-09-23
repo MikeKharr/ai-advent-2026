@@ -24,7 +24,7 @@ name='^[a-z0-9]+$'
 # валится на белом списке. pipefail — только внутри подстановки, где нет grep:
 # сбой git не пропадает.
 tree=$(set -o pipefail; git ls-tree -r -z --name-only "$head" | tr '\n\0' '?\n')
-all=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | sort -u)
+all=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcp)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | sort -u)
 
 if [ -n "$day" ]; then
   if ! [[ $day =~ $name ]] || ! printf '%s\n' "$all" | grep -qFx -- "$day"; then
@@ -55,4 +55,4 @@ changed=$(set -o pipefail; git diff -z --name-only "$base" "$head" | tr '\n\0' '
 # Входы графа атласа — явный список в atlas/atlas.config.json; то же правило,
 # что в ci.yml. Версия инструмента — atlas-tool.sh: её смена пересобирает атлас.
 atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
-printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -Fx -f <(printf '%s\n' "$all" | grep -v '^$') | jq -R . | jq -sc .
+printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcp)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -Fx -f <(printf '%s\n' "$all" | grep -v '^$') | jq -R . | jq -sc .

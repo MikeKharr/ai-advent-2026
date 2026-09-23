@@ -19,6 +19,10 @@ services:
     networks:
       # default — сеть проекта: по ней Caddy ходит в контейнеры дней.
       default:
+      # mcp — отдельная сеть службы MCP (ADR 2026-09-23-1227, п. 5). Caddy в
+      # ней потому, что публикует /mcp; router, agents и всё, что читает
+      # secrets.env, в неё не входят — оттуда имя mcp не разрешается.
+      mcp:
       # edge — общая с проектом zpq: под алиасом advent сюда приходит вход.
       edge:
         aliases:
@@ -38,6 +42,7 @@ services:
       - day13
       - day14
       - day15
+      - mcp
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
     # без ротации — на том же одном VPS, где переполнение диска
     # останавливает учёт расхода (router/src/ledger.js).
@@ -352,6 +357,31 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Служба MCP (ADR 2026-09-23-1227). Публичный адрес — /mcp на входе адвента,
+  # вход по Bearer MCP_KEY; /mcp/healthz открыт для выкатки.
+  #
+  # Сеть — только mcp, и это защита устройством, а не обещанием: ключей к
+  # моделям и ключа роутера у службы нет, а единственная единица проекта с
+  # деревом npm не должна иметь возможности дотянуться до router и agents.
+  # В сети default её нет — оттуда не разрешается даже имя.
+  mcp:
+    image: ghcr.io/mikekharr/advent-mcp:${MCP_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8083"
+    env_file:
+      # MCP_KEY — единственный секрет службы. Без файла служба падает на
+      # старте (нет секрета); дни и остальные службы поднимаются.
+      - path: ./mcp.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    networks:
+      - mcp
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Атлас проекта (ADR 2026-09-10-0550): статика схемы проекта, маршрут
   # /atlas/ в Caddyfile. Секретов у него нет, поэтому нет и env_file.
   atlas:
@@ -379,3 +409,6 @@ volumes:
 networks:
   edge:
     external: true
+  # Сеть службы MCP: в ней только caddy, mcp и (следующим PR) day16.
+  # Отдельная, а не default, — ADR 2026-09-23-1227, п. 5.
+  mcp:

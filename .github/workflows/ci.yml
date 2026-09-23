@@ -28,12 +28,52 @@ jobs:
           # без совпадений ниже не валит шаг.
           tree=$(set -o pipefail; git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n') || { echo "::error::git ls-tree упал — имена единиц не проверены"; exit 1; }
           # Управляющие символы имени не уходят в команду workflow.
-          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
+          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcp)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
           if [ -n "$bad" ]; then
             echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
             exit 1
           fi
           echo "имена единиц ok"
+      # Граница исключения из «Node 22 без runtime-зависимостей»
+      # (ADR 2026-09-07-1525) — ADR 2026-09-23-1227, п. 2: зависимости
+      # разрешены только в единице mcp/ и только для пакетов протокола.
+      # Проза границ не держит, поэтому держит этот шаг. Он читает КАЖДЫЙ
+      # package.json дерева, а не список известных единиц: новая единица со
+      # своими зависимостями появилась бы молча.
+      - name: Граница runtime-зависимостей
+        run: |
+          allowed='@modelcontextprotocol/sdk zod'
+          fail=0
+          # node_modules исключён: это установленные пакеты, а не наши манифесты.
+          files=$(find . -name package.json -not -path '*/node_modules/*' -not -path './.git/*' | sort)
+          if [ -z "$files" ]; then
+            echo "::error::в дереве нет ни одного package.json — страж не проверил ничего"
+            exit 1
+          fi
+          while IFS= read -r f; do
+            unit=${f#./}
+            names=$(jq -r '.dependencies // {} | keys[]' "$f") || { echo "::error file=${unit}::package.json не разобран"; fail=1; continue; }
+            for name in $names; do
+              if [ "$unit" != mcp/package.json ]; then
+                echo "::error file=${unit}::runtime-зависимость ${name}: правило «Node 22 без runtime-зависимостей» (ADR 2026-09-07-1525); исключение — только единица mcp/"
+                fail=1
+                continue
+              fi
+              case " $allowed " in
+                *" $name "*) ;;
+                *) echo "::error file=${unit}::runtime-зависимость ${name} вне списка исключения (${allowed}) — ADR 2026-09-23-1227, п. 2"; fail=1; continue ;;
+              esac
+              # Версия точная, без ^ и ~: поднятие версии SDK — отдельный PR
+              # класса A с гейтом compliance, а не тихий разброс диапазона.
+              version=$(jq -r --arg n "$name" '.dependencies[$n]' "$f")
+              case "$version" in
+                [0-9]*.[0-9]*.[0-9]*) echo "ok: ${unit} — ${name}@${version}" ;;
+                *) echo "::error file=${unit}::версия ${name} не точная: ${version} (ADR 2026-09-23-1227, п. 2)"; fail=1 ;;
+              esac
+            done
+          done <<< "$files"
+          [ "$fail" -eq 0 ] || exit 1
+          echo "граница зависимостей ok"
       - id: set
         name: Какие дни затронуты
         run: |
@@ -68,7 +108,7 @@ jobs:
           # `agents` здесь готовое, из пути ничего не выводится.
           # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
           # идёт только [a-z0-9]+ с каталогом единицы в дереве.
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day1[345]/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcp)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day1[345]/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas|mcp) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -105,8 +145,22 @@ jobs:
             router) echo "dir=router" >> "$GITHUB_OUTPUT"; echo "port=8081" >> "$GITHUB_OUTPUT" ;;
             agents) echo "dir=agents" >> "$GITHUB_OUTPUT"; echo "port=8082" >> "$GITHUB_OUTPUT" ;;
             atlas) echo "dir=atlas" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
+            mcp) echo "dir=mcp" >> "$GITHUB_OUTPUT"; echo "port=8083" >> "$GITHUB_OUTPUT" ;;
             *) echo "dir=days/$DAY" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
           esac
+
+      # Единственная единица с деревом npm (ADR 2026-09-23-1227, п. 2).
+      # Без установки не запустятся её тесты: SDK нужен им на месте.
+      # audit — блокирующий, но только когда трогают саму единицу: в матрице
+      # mcp появляется лишь при правке mcp/. Красный шаг здесь может значить
+      # «реестр недоступен» или «вышло advisory», а не «версия неверна» —
+      # читать по agent_docs/guides/verification.md, «Как читать красный прогон».
+      - name: Зависимости единицы mcp
+        if: matrix.day == 'mcp'
+        working-directory: mcp
+        run: |
+          npm ci --ignore-scripts
+          npm audit --omit=dev
 
       - name: Синтаксис
         working-directory: ${{ steps.unit.outputs.dir }}
@@ -148,6 +202,7 @@ jobs:
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
             -e APP_KEY_DAY5=ci-dummy -e APP_KEY_AGENTS=ci-dummy \
             -e ROUTER_APP_KEY=ci-dummy -e AGENT_KEY=ci-dummy \
+            -e MCP_KEY=ci-dummy \
             -p "$PORT:$PORT" "ci-check:$DAY"
           for i in $(seq 1 20); do
             if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
@@ -169,10 +224,22 @@ jobs:
       - name: Проверка Caddyfile
         run: docker run --rm -v "$PWD/deploy:/w" -w /w caddy:2-alpine caddy validate --config Caddyfile
 
+  # Изоляция службы MCP в отдельной сети compose — условие вето compliance
+  # (ADR 2026-09-23-1227, п. 5). Проверяет структуру deploy/compose.yml, а не
+  # намерение: mcp только в сети mcp, в сети mcp — только caddy, mcp и день 16.
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Изоляция сети mcp
+        run: node .github/scripts/compose-networks.mjs
+
   # Единая обязательная проверка для защиты ветки: имя check run — id job.
   # skipped (test при пустой матрице) — успех; failure или cancelled — провал.
   ci-ok:
-    needs: [detect, test, caddyfile]
+    needs: [detect, test, caddyfile, compose]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -180,7 +247,7 @@ jobs:
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          echo "detect/test/caddyfile: $RESULTS"
+          echo "detect/test/caddyfile/compose: $RESULTS"
           case " $RESULTS " in
             *" failure "*|*" cancelled "*) echo "::error::есть failure или cancelled"; exit 1 ;;
           esac

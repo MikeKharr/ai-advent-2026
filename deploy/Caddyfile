@@ -175,6 +175,34 @@ http://challenge.zpq.ai {
 
 	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
 
+	# --- служба MCP ---
+	# ADR 2026-09-23-1227. Здесь намеренно НЕТ `redir /mcp /mcp/ permanent`,
+	# как у дней: на 301 клиент повторяет запрос методом GET и теряет тело —
+	# POST с JSON-RPC молча превратился бы в GET, а сервер ответил бы 405.
+	# Поэтому адрес эндпоинта — ровно /mcp, без завершающего слэша, и путь
+	# уходит в службу как есть: тот же /mcp, что день 16 зовёт по
+	# http://mcp:8083/mcp.
+	#
+	# Здоровье — отдельным маршрутом: /mcp/healthz открыт без ключа, его
+	# дёргает шаг «Проверка живого сайта» в deploy.yml. Префикс срезается,
+	# служба отвечает на /healthz — как router и agents.
+	handle /mcp/healthz {
+		uri strip_prefix /mcp
+		reverse_proxy mcp:8083 {
+			health_uri /healthz
+			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
+	handle /mcp {
+		reverse_proxy mcp:8083 {
+			health_uri /healthz
+			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
 	# --- атлас проекта ---
 	# Статика в своём контейнере (ADR 2026-09-10-0550). noindex — из блока
 	# header выше: он накрывает и /atlas/.
