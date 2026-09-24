@@ -174,14 +174,23 @@ jobs:
           npm ci --ignore-scripts
           npm audit --omit=dev
 
+      # -print0 и while-read, а не `for f in $(find …)`: имя файла с пробелом
+      # или переносом строки разлетелось бы на несколько аргументов (SC2044).
+      # Код запоминается, а не обрывает цикл: печатаются все битые файлы, а не
+      # первый.
       - name: Синтаксис
         working-directory: ${{ steps.unit.outputs.dir }}
-        run: for f in $(find . -name '*.js' -not -path './node_modules/*'); do node --check "$f"; done
+        run: |
+          fail=0
+          while IFS= read -r -d '' f; do
+            node --check "$f" || fail=1
+          done < <(find . -name '*.js' -not -path './node_modules/*' -print0)
+          exit $fail
 
       - name: Тесты
         working-directory: ${{ steps.unit.outputs.dir }}
         run: |
-          if ls test/*.test.js >/dev/null 2>&1 || ls *.test.js >/dev/null 2>&1; then
+          if ls test/*.test.js >/dev/null 2>&1 || ls ./*.test.js >/dev/null 2>&1; then
             node --test
           else
             echo "тестов нет — пропуск"
@@ -216,7 +225,7 @@ jobs:
             -e ROUTER_APP_KEY=ci-dummy -e AGENT_KEY=ci-dummy \
             -e MCP_KEY=ci-dummy \
             -p "$PORT:$PORT" "ci-check:$DAY"
-          for i in $(seq 1 20); do
+          for _ in $(seq 1 20); do
             if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
               echo "healthz ok"; docker rm -f ci-day; exit 0
             fi
@@ -248,10 +257,28 @@ jobs:
       - name: Изоляция сети mcp
         run: node .github/scripts/compose-networks.mjs
 
+  # actionlint по всем workflow: синтаксис, выражения ${{ }}, имена событий,
+  # и shellcheck по телам `run:` (ADR 2026-09-24-1230, A10).
+  #
+  # ЧТО ЭТОТ ШАГ НЕ ЛОВИТ: `curl … || echo 000` и прочие «подстраховки», из-за
+  # которых упавшая команда даёт зелёный результат, — для shellcheck это
+  # корректный код, и он молчит. Дефекты этого класса ловит только мутация,
+  # прогнанная автором («Красная ветвь» в описании PR). У шага не должно быть
+  # репутации проверки семантики: он проверяет форму.
+  #
+  # Версия образа закреплена: новый релиз линтера не должен краснить CI сам по
+  # себе — обновление отдельным PR, как у любого другого пина.
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Линт workflow (actionlint + shellcheck по run:)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+
   # Единая обязательная проверка для защиты ветки: имя check run — id job.
   # skipped (test при пустой матрице) — успех; failure или cancelled — провал.
   ci-ok:
-    needs: [detect, test, caddyfile, compose]
+    needs: [detect, test, caddyfile, compose, actionlint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -259,7 +286,7 @@ jobs:
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          echo "detect/test/caddyfile/compose: $RESULTS"
+          echo "detect/test/caddyfile/compose/actionlint: $RESULTS"
           case " $RESULTS " in
             *" failure "*|*" cancelled "*) echo "::error::есть failure или cancelled"; exit 1 ;;
           esac
