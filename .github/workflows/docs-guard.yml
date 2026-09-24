@@ -147,6 +147,11 @@ jobs:
             printf '%s\n' "$PR_BODY" | awk -v target="## $h" '
               { line=$0; sub(/\r$/, "", line); sub(/[ \t]+$/, "", line) }
               incomment { if (line ~ /-->/) incomment=0; next }
+              # Заголовок внутри блока кода — цитата формы, а не раздел:
+              # иначе процитированный «## Красная ветвь» давал зелёный шаг при
+              # отсутствующем разделе (находка reviewer к PR #225).
+              line ~ /^[ \t]*```/ { infence = !infence; if (inside) body=1; next }
+              infence { if (inside) body=1; next }
               line ~ /^## / { inside = (line == target); if (inside) found=1; next }
               !inside { next }
               line ~ /^[ \t]*<!--/ && line !~ /-->/ { incomment=1; next }

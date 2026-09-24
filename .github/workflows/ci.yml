@@ -182,9 +182,15 @@ jobs:
         working-directory: ${{ steps.unit.outputs.dir }}
         run: |
           fail=0
+          seen=0
           while IFS= read -r -d '' f; do
+            seen=$((seen + 1))
             node --check "$f" || fail=1
           done < <(find . -name '*.js' -not -path './node_modules/*' -print0)
+          # Пустая выборка — не успех: страж, не проверивший ни одного файла,
+          # зелёным быть не должен (находка reviewer к PR #225; тот же образец
+          # стоит у шага про package.json выше).
+          [ "$seen" -gt 0 ] || { echo "::error::в ${PWD} нет ни одного .js — шаг не проверил ничего"; exit 1; }
           exit $fail
 
       - name: Тесты
@@ -271,9 +277,14 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
+      # persist-credentials: false и монтаж :ro — в job исполняется внешний
+      # образ, токену на диске делать нечего, и писать в дерево ему незачем.
+      # Правило то же, что у соседнего docs-guard (находка reviewer к PR #225).
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Линт workflow (actionlint + shellcheck по run:)
-        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12 -color
 
   # Единая обязательная проверка для защиты ветки: имя check run — id job.
   # skipped (test при пустой матрице) — успех; failure или cancelled — провал.
