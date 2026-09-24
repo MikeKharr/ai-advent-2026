@@ -24,7 +24,7 @@ function fromSettings(text) {
   const allow = JSON.parse(text).permissions?.allow
   assert.ok(Array.isArray(allow), `${SETTINGS}: нет permissions.allow`)
   const out = allow
-    .filter((e) => e.startsWith('Bash(ssh '))
+    .filter((e) => /^Bash\(ssh[ :)]/.test(e))
     .map((e) => {
       assert.ok(e.endsWith(')'), `${SETTINGS}: запись «${e}» не закрыта скобкой`)
       return e.slice('Bash('.length, -1)

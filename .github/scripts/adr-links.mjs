@@ -47,14 +47,53 @@ export function status(text) {
   return (to === -1 ? rest : rest.slice(0, to)).trim()
 }
 
+// Замену объявляет либо сам снятый ADR («Заменено на …»), либо его преемник
+// («Заменяет …»). На 2026-09-24 первую форму несут 3 ADR из 62, вторую — 12,
+// то есть проверка по одному лишь собственному статусу видела бы почти ничего
+// (находка `compliance` к PR #227, п. 4). Отсюда обратный индекс: преемник
+// называет предшественника, и этого достаточно, чтобы считать того снятым.
+const SUPERSEDES = /^\s*[*_]{0,2}Заменяет[^`]*`?(?:agent_docs\/adr\/)?(\d{4}-\d{2}-\d{2}-\d{4})/u
+
+/** Множество id, снятых чужим статусом «Заменяет …». */
+export function supersededIds(dir, list = readdirSync, read = (f) => readFileSync(f, 'utf8')) {
+  const out = new Map()
+  for (const f of list(dir)) {
+    if (!f.endsWith('.md')) continue
+    const s = status(read(join(dir, f)))
+    if (s === null) continue
+    const ls = s.split('\n')
+    for (let i = 0; i < ls.length; i += 1) {
+      const m = SUPERSEDES.exec(ls[i])
+      if (!m) continue
+      // Замена бывает ЧАСТИЧНОЙ: «Заменяет `…` в части X» — предшественник
+      // остаётся в силе во всём остальном, и краснить ссылку на него нельзя.
+      // Оборот переносится на следующую строку, поэтому смотрим предложение,
+      // а не строку (проверено на 2026-09-11-1230 и -1743).
+      // Резать по первой точке нельзя: в строке стоит имя файла с точками
+      // (`…-0426-framework-v2-model-routing.md`), и оборот «в части» остаётся
+      // за срезом — так первая редакция этой проверки покрасила живые ссылки.
+      // Берём абзац: от совпадения до пустой строки.
+      const para = []
+      for (let j = i; j < ls.length && ls[j].trim() !== ''; j += 1) para.push(ls[j])
+      // Без `\b`: граница слова в JS определена для латиницы, между пробелом
+      // и кириллическим «в» её нет, и условие не срабатывало никогда.
+      if (/(^|\s)в\s+част/u.test(para.join(' '))) continue
+      out.set(m[1], f)
+    }
+  }
+  return out
+}
+
 /** Находка или null: ссылки нет в каталоге ADR либо её ADR снят с действия. */
-export function check(id, dir, list = readdirSync, read = (f) => readFileSync(f, 'utf8')) {
+export function check(id, dir, list = readdirSync, read = (f) => readFileSync(f, 'utf8'), superseded) {
   const file = list(dir).find((f) => f.startsWith(`${id}-`) && f.endsWith('.md'))
   if (!file) return `ADR ${id} не найден в ${ADR_DIR}/`
   const s = status(read(join(dir, file)))
   if (s === null) return `${ADR_DIR}/${file}: нет раздела «## Статус» — действие ADR не определено`
   const line = s.split('\n').find((l) => RETIRED.test(l))
   if (line) return `${ADR_DIR}/${file} снят с действия («${line.trim()}») — ${DOC} ссылается на него`
+  const by = (superseded ?? supersededIds(dir, list, read)).get(id)
+  if (by) return `${ADR_DIR}/${file} заменён документом ${by} (его статус: «Заменяет …») — ${DOC} ссылается на снятый`
   return null
 }
 
@@ -63,8 +102,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const dir = join(root, ADR_DIR)
   let bad = 0
   const seen = refs(readFileSync(join(root, DOC), 'utf8'))
+  const superseded = supersededIds(dir)
   for (const { id, line } of seen) {
-    const problem = check(id, dir)
+    const problem = check(id, dir, readdirSync, (f) => readFileSync(f, 'utf8'), superseded)
     if (!problem) continue
     bad += 1
     console.log(`::error file=${DOC},line=${line}::${problem}`)
