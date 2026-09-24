@@ -1,0 +1,9 @@
+# Маркер<TAB>файл-владелец. Строка правила живёт в одном файле; маркер,
+# найденный в другом *.md, краснит шаг «Одна копия» в docs-guard.yml
+# (ADR 2026-09-24-1230, A6). Владелец с косой чертой на конце — каталог.
+# Журналы (agent_docs/adr/, agent_docs/development-history/) не копии, а
+# история, и из проверки исключены — так же, как в карте повторов записи
+# 2026-09-24-1231-sdlc-failure-analysis.md, раздел 3.
+claude-opus-5[1m]	.claude/agents/
+claude-fable-5-1	.claude/agents/
+--match-head-commit	agent_docs/guides/agent-roles.md

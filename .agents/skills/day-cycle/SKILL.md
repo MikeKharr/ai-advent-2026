@@ -35,23 +35,22 @@ description: /day-cycle — оркестрация полного цикла д�
    опыт посетителя, с оценкой больше 40 минут идёт только по решению
    владельца (`AGENTS.md`, «Объём»). При нетривиальном объёме —
    `product-analyst`.
-2. **Проектирование** — `architect` (`claude-fable-5-1`, high), при значимом решении —
+2. **Проектирование** — `architect`, при значимом решении —
    ADR со статусом «Предложено».
    *Выход:* **ГЕЙТ владельца — принятие ADR.** Без значимого решения фаза
    схлопывается в план с проверками.
-3. **Раскладка** — `design` (`claude-opus-5[1m]`, medium), только для нового экрана или
+3. **Раскладка** — `design`, только для нового экрана или
    смены раскладки. *Выход:* спецификация в `agent_docs/design/` с
    чек-листом ревью.
-4. **Реализация** — `backend` / `frontend` / `data` / `platform`
-   (`claude-opus-5[1m]`, medium), тесты рядом с кодом.
+4. **Реализация** — `backend` / `frontend` / `data` / `platform`, тесты
+   рядом с кодом.
    *Выход:* тесты и линты зелёные локально, живая проверка на локальной
    связке пройдена.
-5. **Тесты от критериев** — `qa` (`claude-opus-5[1m]`, medium), тесты выводятся из
+5. **Тесты от критериев** — `qa`, тесты выводятся из
    критериев приёмки, не из кода. Фаза обязательна, когда критерии сложнее
    уже написанных unit-тестов.
 6. **Ревью по классу** — параллельно, каждый гейт отдельным экземпляром:
-   `reviewer` (`claude-opus-5[1m]`, high), `compliance` (`claude-opus-5[1m]`, high),
-   `design-review` (`claude-opus-5[1m]`, high) при UI.
+   `reviewer`, `compliance`, `design-review` при UI.
    **PR открывается до этой фазы** — гейтам нужны описание и номер;
    фаза 8 остаётся только про зелёный CI.
    **Круг 0, только класс A:** гейт начинает с разделов доказательств
@@ -78,11 +77,23 @@ description: /day-cycle — оркестрация полного цикла д�
    закрытый список ниже. Новый маршрут применяет сама
    выкатка — `caddy validate` и `caddy reload` в `deploy.yml`; ручного
    `restart caddy` для этого не нужно. Канонические серверные команды — точные
-   строки без хвостов, allowlist требует буквального совпадения:
-   `ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai
-   'cd ai-advent-2026/deploy && docker compose ps'`, та же форма с
-   `docker compose restart caddy` и те же две формы в `cd zpq-ai/deploy`
-   (проект compose `zpq`: вход, сайт и почта, ADR `2026-09-22-1824`).
+   строки без хвостов: allowlist `.claude/settings.json` требует буквального
+   совпадения, и блок ниже — те же шесть строк дословно
+   (`cd zpq-ai/deploy` — проект compose `zpq`: вход, сайт и почта, ADR
+   `2026-09-22-1824`). Совпадение блока и allowlist в обе стороны держит
+   `test/closed-list.test.js`; строку правят в обоих файлах сразу.
+
+   <!-- closed-list:begin -->
+   ```text
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose ps'
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose restart caddy'
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose exec -T router node admin.js spend'
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose exec -T router node admin.js metrics'
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd zpq-ai/deploy && docker compose ps'
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd zpq-ai/deploy && docker compose restart caddy'
+   ```
+   <!-- closed-list:end -->
+
    Окна подтверждения на ssh нет (ADR
    `2026-09-11-1230`); закрытый список того, что агент выполняет на
    сервере сам, в `cd ai-advent-2026/deploy`:
@@ -141,15 +152,15 @@ description: /day-cycle — оркестрация полного цикла д�
    В уведомлении о
    выкатке — перечень серверных команд, если они были. Живая проверка в
    проде на значениях по умолчанию.
-10. **Запись** — `docs` (`claude-opus-5[1m]`, low): dev-history, snapshot, backlog;
+10. **Запись** — `docs`: dev-history, snapshot, backlog;
     закрытые пункты — в `backlog-closed.md`. Сверка с
     `agent_docs/guides/dod.md`.
 
 ## Правила оркестрации
 
-- За человеком: принятие ADR (фаза 2), новые секреты на сервере, откат
-  прода. Мерж и выкатка, включая PR с защищёнными путями, — автономно при
-  консенсусе гейтов (ADR `2026-09-11-0513`, `2026-09-11-1743`).
+- Что остаётся за человеком и норма мержа по консенсусу —
+  `agent_docs/guides/agent-roles.md`, «Мерж по консенсусу»; здесь не
+  повторяются.
 - Ревью фазы 6 запускаются одним сообщением, параллельно.
 - Автор никогда не ревьюит своё: экземпляры ролей в фазах 3, 4 и 6 не
   пересекаются.
