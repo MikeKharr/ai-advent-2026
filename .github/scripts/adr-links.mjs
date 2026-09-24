@@ -52,17 +52,25 @@ export function status(text) {
 // то есть проверка по одному лишь собственному статусу видела бы почти ничего
 // (находка `compliance` к PR #227, п. 4). Отсюда обратный индекс: преемник
 // называет предшественника, и этого достаточно, чтобы считать того снятым.
-const SUPERSEDES = /^\s*[*_]{0,2}Заменяет[^`]*`?(?:agent_docs\/adr\/)?(\d{4}-\d{2}-\d{2}-\d{4})/u
+// Слово ищется ГДЕ УГОДНО в статусе, не только с начала строки: живой случай
+// — «Принято. **Заменяет `2026-09-18-1839`: …**» (находка `reviewer` к PR #227).
+// Перед словом требуется начало, пробел или разметка, а кавычка «…» исключена:
+// в 2026-09-23-0726 слово обсуждается прозой («Почему „Дополняет“, а не
+// „Заменяет“») и снятием не является.
+const SUPERSEDES = /(?:^|[\s*_>])Заменяет[^`«\n]*`?(?:agent_docs\/adr\/)?(\d{4}-\d{2}-\d{2}-\d{4})/gu
+/** Имя файла ADR: README и прочее в индекс замен не идут. */
+const ADR_FILE = /^\d{4}-\d{2}-\d{2}-\d{4}-.+\.md$/u
 
 /** Множество id, снятых чужим статусом «Заменяет …». */
 export function supersededIds(dir, list = readdirSync, read = (f) => readFileSync(f, 'utf8')) {
   const out = new Map()
   for (const f of list(dir)) {
-    if (!f.endsWith('.md')) continue
+    if (!ADR_FILE.test(f)) continue
     const s = status(read(join(dir, f)))
     if (s === null) continue
     const ls = s.split('\n')
     for (let i = 0; i < ls.length; i += 1) {
+      SUPERSEDES.lastIndex = 0
       const m = SUPERSEDES.exec(ls[i])
       if (!m) continue
       // Замена бывает ЧАСТИЧНОЙ: «Заменяет `…` в части X» — предшественник
