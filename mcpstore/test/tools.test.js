@@ -64,8 +64,9 @@ test('ровно 64 КБ сохраняется, 64 КБ + 1 байт — нет
 
   const edge = 'a'.repeat(64 * 1024)
   assert.equal((await save(service.base, 'edge.txt', edge)).json().result.isError, undefined)
-  // Красная ветвь: заменить `>` на `>=` в проверке потолка (`src/tools.js`) —
-  // краснеет первое утверждение; убрать проверку вовсе — второе.
+  // Потолок держит одна строка — проверка байтов в `save()` (`src/store.js`).
+  // Красная ветвь: заменить `>` на `>=` в ней — краснеет первое утверждение;
+  // убрать её вовсе — второе (проверено прогоном на каждой мутации).
   assert.equal((await save(service.base, 'over.txt', `${edge}a`)).json().result.isError, true)
 })
 

@@ -17,11 +17,16 @@ function name(value) {
   return value.trim()
 }
 
+/**
+ * Здесь — только тип. Потолок в 64 КБ держит ОДНА строка — проверка байтов
+ * в `save()` (`store.js`), у самой записи. Вторая копия стояла здесь и снята
+ * по той же причине, что копия `validName` выше: при двух копиях мутация
+ * «убрать проверку» оставляла прогон зелёным (проверено прогоном по каждой
+ * копии отдельно, 21/21), то есть у потолка не было держателя — ровно то,
+ * что запрещает I-14.
+ */
 function content(value) {
   if (typeof value !== 'string') throw new ArgError('content: ожидалась строка')
-  if (Buffer.byteLength(value, 'utf8') > MAX_FILE_BYTES) {
-    throw new ArgError(`content: больше ${MAX_FILE_BYTES} байт`)
-  }
   return value
 }
 
