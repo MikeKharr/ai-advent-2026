@@ -43,6 +43,9 @@ services:
       - day14
       - day15
       - day16
+      - day18
+      - day19
+      - day20
       - mcp
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
     # без ротации — на том же одном VPS, где переполнение диска
@@ -338,6 +341,62 @@ services:
       - mcp
     depends_on:
       - mcp
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Дни 18–20 (ADR 2026-09-28-0736, пп. 6, 8, 9). Тот же ключ сервиса агентов,
+  # что у дней 6–15, и больше ничего: ключей к моделям и ключа роутера у них
+  # нет, всю работу и весь расход ведёт agents. Своих данных на диске нет —
+  # томов нет: сводки дня 18 живут в jobs.db на томе agents_data, файлы дня 19
+  # — на томе mcpstore_data.
+  day18:
+    image: ghcr.io/mikekharr/advent-day18:${DAY18_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day18.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  day19:
+    image: ghcr.io/mikekharr/advent-day19:${DAY19_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day19.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # У дня 20 порядок вызовов выбирает модель, поэтому он единственный из трёх
+  # тратит на посетителя: MAX_DAILY_CALLS 50 — его собственный потолок
+  # (days/day20/env.js), поверх суточного потолка приложения в роутере.
+  day20:
+    image: ghcr.io/mikekharr/advent-day20:${DAY20_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day20.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
