@@ -11,7 +11,7 @@
 // секунды, а запуск идёт минуты.
 
 import { randomUUID } from 'node:crypto'
-import { nextRunAt, parseSchedule, slotsPerDay } from './schedule.js'
+import { lastDueAt, nextRunAt, parseSchedule, slotsPerDay } from './schedule.js'
 
 const ID = /^[a-z][a-z0-9-]{1,30}$/
 
@@ -100,14 +100,17 @@ export function createJobs({
     const busy = running(job)
     if (busy) return { status: 409, body: { ok: false, code: 'busy', runId: busy } }
 
-    // Часовой слот выше суточного потолка (ADR 2026-09-28-0736, п. 6):
-    // «шестью стартами в сутки и одним стартом в час». Без него зациклившийся
-    // тик или любой держатель `AGENT_KEY` выбирает суточный потолок за
-    // секунды, и экран дня 18 с 00:05 показывает «6 из 6» до конца суток —
-    // суточная сумма при этом не меняется, а ограничение скорости исчезает
-    // (находка гейта, PR #234). Это чтение — для ответа; держит слот
-    // ограничение `UNIQUE(job, slot)`, и оно же решает гонку ниже.
-    const taken = store.slotTaken(job.id, now())
+    // Слот выше суточного потолка (ADR 2026-09-28-1323, п. 2): «один старт на
+    // срок». Ключ слота — ПОСЛЕДНИЙ НАСТУПИВШИЙ СРОК расписания работы, а не
+    // час UTC: тогда правило держится при любой каденции и без второй
+    // настройки рядом с `scheduleUtc`. Без слота зациклившийся тик или любой
+    // держатель `AGENT_KEY` выбирает суточный потолок за секунды, и экран дня
+    // 18 показывает «96 из 96» до конца суток — суточная сумма при этом не
+    // меняется, а ограничение скорости исчезает (находка гейта, PR #234). Это
+    // чтение — для ответа; держит слот ограничение `UNIQUE(job, slot)`, и оно
+    // же решает гонку ниже.
+    const slot = lastDueAt(job.schedule, now())
+    const taken = store.slotTaken(job.id, slot)
     if (taken) return { status: 409, body: { ok: false, code: 'slot_taken', runId: taken } }
 
     const startsToday = store.startsToday(job.id, now())
@@ -123,7 +126,7 @@ export function createJobs({
     // чем будет потрачен первый токен, и пережить обрыв процесса. Слот
     // занимается здесь же: между чтением выше и этой строкой мог вклиниться
     // второй тик, и различает их только ограничение базы.
-    const claimed = store.start({ id: runId, job: job.id, at: now() })
+    const claimed = store.start({ id: runId, job: job.id, slot, at: now() })
     if (!claimed.ok)
       return { status: 409, body: { ok: false, code: 'slot_taken', runId: claimed.runId } }
     log({ event: 'job_started', job: job.id, runId, startsToday: startsToday + 1 })

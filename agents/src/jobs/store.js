@@ -22,12 +22,6 @@ export const KEEP_RUNS = 50
  */
 export const STARTS_KEEP_DAYS = 7
 
-/** Ключ часа UTC: `2026-09-28T07`. Один старт работы на такой ключ (ADR, п. 6). */
-export function utcSlot(at) {
-  const d = new Date(at)
-  return `${utcDay(at)}T${String(d.getUTCHours()).padStart(2, '0')}`
-}
-
 /** Ключ суток UTC: `2026-09-28`. */
 export function utcDay(at) {
   const d = new Date(at)
@@ -74,10 +68,12 @@ export function createJobStore({ file, now = Date.now }) {
     `INSERT INTO job_runs (id, job, utc_day, planned_at, started_at, status)
      VALUES (?, ?, ?, ?, ?, 'running')`,
   )
-  // Часовой слот: `UNIQUE` здесь и есть держатель правила «один старт в час»
-  // (ADR 2026-09-28-0736, п. 6). Проверка чтением перед записью держала бы
+  // Слот: `UNIQUE` здесь и есть держатель правила «один старт на срок»
+  // (ADR 2026-09-28-1323, п. 2). Проверка чтением перед записью держала бы
   // его только до второго одновременного тика; ограничение базы не зависит
-  // от порядка выполнения вовсе.
+  // от порядка выполнения вовсе. Чем ключ слота является — знает вызывающий
+  // (`agents/src/jobs/index.js`: последний наступивший срок расписания);
+  // здесь он строка и только строка, второй копии каденции тут нет.
   db.exec(`
     CREATE TABLE IF NOT EXISTS job_slots (
       job TEXT NOT NULL,
@@ -129,9 +125,9 @@ export function createJobStore({ file, now = Date.now }) {
       return Number(changes ?? 0)
     },
 
-    /** Занят ли час этой работы. Чтение — для ответа; держит слот `UNIQUE`. */
-    slotTaken(job, at = now()) {
-      return takenSlot.get(job, utcSlot(at))?.run_id ?? null
+    /** Занят ли этот слот работы. Чтение — для ответа; держит слот `UNIQUE`. */
+    slotTaken(job, slot) {
+      return takenSlot.get(job, slot)?.run_id ?? null
     },
 
     /** Стартов этой работы за сутки UTC. Читается ДО решения о запуске. */
@@ -146,15 +142,17 @@ export function createJobStore({ file, now = Date.now }) {
 
     /** Строка старта. Пишется ДО работы: иначе обрыв стёр бы след старта. */
     /**
-     * Старт: занимает часовой слот, растит суточный счётчик и кладёт строку
-     * ленты. Занятый слот — `{ok: false, code: 'slot_taken'}`, а не бросок:
-     * это штатный отказ ручки, а не поломка. Слот занимается ПЕРВЫМ: между
+     * Старт: занимает слот, растит суточный счётчик и кладёт строку ленты.
+     * Занятый слот — `{ok: false, code: 'slot_taken'}`, а не бросок: это
+     * штатный отказ ручки, а не поломка. Слот занимается ПЕРВЫМ: между
      * чтением и записью может вклиниться второй тик, и тогда единственное,
      * что различает их, — ограничение базы.
+     *
+     * `slot` приходит от вызывающего: ключ — последний наступивший срок
+     * расписания, а расписание живёт в `jobs.json`, не здесь.
      */
-    start({ id, job, plannedAt = null, at = now() }) {
+    start({ id, job, slot, plannedAt = null, at = now() }) {
       const day = utcDay(at)
-      const slot = utcSlot(at)
       try {
         claimSlot.run(job, slot, id)
       } catch (error) {
@@ -166,6 +164,12 @@ export function createJobStore({ file, now = Date.now }) {
       bumpStarts.run(job, day)
       const cutoff = utcDay(at - STARTS_KEEP_DAYS * 24 * 3600_000)
       pruneStarts.run(cutoff)
+      // Слот — ISO-строка срока (`2026-09-28T06:15:00.000Z`), срез — сутки
+      // (`2026-09-21`). Сравнение лексикографическое, и оно верно именно
+      // потому, что ISO начинается с тех же десяти знаков: слот суток среза
+      // не короче ключа и потому НЕ меньше его — сутки среза остаются целиком,
+      // уходят только более ранние. Проверено исполнением: тест «уборка слотов
+      // режет по суткам, а не по строке» в `agents/test/jobs.test.js`.
       pruneSlots.run(cutoff)
       insert.run(id, job, day, plannedAt, at)
       return { ok: true, runId: id }
