@@ -89,6 +89,17 @@ const profilePrompts = sessions ? createProfilePrompts({ sessions }) : registryP
 const agents = new Map()
 for (const entry of registry.values()) {
   let agent
+  // Агент без модели (день 19) исполнителя здесь пока не имеет: цепочка
+  // подключается отдельно. Развилка `else` ниже отдала бы его исполнителю
+  // дня 6, и тот пошёл бы в роутер с `taskClass: null` и без системного
+  // промпта — то есть запись в реестре без исполнителя становится не
+  // «ничем», а чужим агентом, доходящим до платного вызова (находка гейта,
+  // PR #233). Поэтому такой агент не регистрируется вовсе и в выдаче
+  // `/v1/agents` не появляется, а строка в журнале называет причину.
+  if (entry.modelless) {
+    log({ event: 'agent_skipped', agent: entry.id, reason: 'исполнителя для агента без модели нет' })
+    continue
+  }
   if (entry.id === LAYERED_AGENT_ID) agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
   else if (entry.id === STAGED_AGENT_ID)
     agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })
