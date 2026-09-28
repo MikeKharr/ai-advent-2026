@@ -32,6 +32,8 @@ const NUMBERS = {
 
 export function parseEnv(source = process.env) {
   const errors = []
+  /** Замечания, которые не валят старт, но обязаны попасть в журнал. */
+  const notes = []
   const env = {
     ROUTER_URL: source.ROUTER_URL || 'http://router:8081',
     STORE_FILE: source.STORE_FILE || '/data/store.json',
@@ -56,6 +58,32 @@ export function parseEnv(source = process.env) {
     env[name] = value
   }
 
+  // Ключ планировщика, СОВПАВШИЙ с ключом приложения `agents`, — не ключ
+  // планировщика, а его копия: роутер узнал бы по нему приложение `agents`,
+  // ночная работа тратила бы $10 бюджета дней 6–16 и в журнале была бы от них
+  // неотличима. Отдельный потолок $0,5 при этом исчезает МОЛЧА — ничего не
+  // ломается, и заметить нечем.
+  //
+  // Строки `deploy/.env.example` владелец переносит в `agents.env` руками
+  // (правило A8 ADR 2026-09-24-1230: секрет вводится, а не коммитится), и
+  // перенос не той строки — ровно один промах мыши. Здесь он становится
+  // громким: ключ считается НЕЗАДАННЫМ, планировщик падает на второй уровень
+  // выключения (ручка отвечает 503, модель не вызывается), а `/healthz`
+  // говорит «нет».
+  //
+  // Почему не `errors`: опечатка в ключе ПЛАНИРОВЩИКА не должна ронять
+  // сервис, в котором живут дни 6–16. Отказывает то, что настроено неверно,
+  // и только оно (находка `compliance` Б4, PR #237).
+  if (env.ROUTER_APP_KEY_SCHEDULER && env.ROUTER_APP_KEY_SCHEDULER === env.ROUTER_APP_KEY) {
+    env.ROUTER_APP_KEY_SCHEDULER = null
+    notes.push({
+      event: 'scheduler_key_same_as_app',
+      message:
+        'ROUTER_APP_KEY_SCHEDULER совпадает с ROUTER_APP_KEY: это копия ключа приложения agents, ' +
+        'а не ключ приложения scheduler. Планировщик выключен — отдельного потолка расхода у него не было бы.',
+    })
+  }
+
   for (const [name, fallback] of Object.entries(NUMBERS)) {
     const raw = source[name]
     if (raw === undefined || raw === '') {
@@ -71,5 +99,5 @@ export function parseEnv(source = process.env) {
     env[name] = value
   }
 
-  return { env, errors }
+  return { env, errors, notes }
 }

@@ -32,13 +32,15 @@ import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-const { env, errors } = parseEnv()
+const { env, errors, notes } = parseEnv()
 if (errors.length > 0) {
   for (const message of errors) console.error(`конфигурация: ${message}`)
   process.exit(1)
 }
 
 const log = (entry) => console.log(typeof entry === 'string' ? entry : JSON.stringify(entry))
+// Замечания конфигурации, которые старт не валят: молча их не бывает.
+for (const note of notes) log(note)
 const registry = loadRegistry(JSON.parse(readFileSync(join(here, 'config', 'agents.json'), 'utf8')))
 const archive = createArchiveTool({ env, log })
 const runs = createRuns({ ttlMs: env.RUN_TTL_MINUTES * 60_000 })

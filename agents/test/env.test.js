@@ -69,3 +69,34 @@ test('журнал этапов и срок паузы задаются окру
   assert.equal(env.STAGE_LOG_FILE, '/data/other.csv')
   assert.equal(env.PAUSE_TTL_MINUTES, 15)
 })
+
+test('ключ планировщика, совпавший с ключом приложения agents, считается незаданным', () => {
+  // Держатель развёрточной половины разделения бюджетов (находка `compliance`
+  // Б4, PR #237). Строки `deploy/.env.example` владелец переносит руками, и
+  // перенос не той строки сводил бы приложение `scheduler` к приложению
+  // `agents` МОЛЧА: оба теста о том, из какой переменной взят ключ, остаются
+  // зелёными — они сравнивают ключ с переменной, а не переменные между собой.
+  const { env, errors, notes } = parseEnv({
+    AGENT_KEY: 'k',
+    ROUTER_APP_KEY: 'одна-и-та-же-строка',
+    ROUTER_APP_KEY_SCHEDULER: 'одна-и-та-же-строка',
+  })
+  assert.equal(env.ROUTER_APP_KEY_SCHEDULER, null)
+  // Сервис при этом поднимается: опечатка в ключе планировщика не должна
+  // ронять дни 6–16 вместе с ним.
+  assert.deepEqual(errors, [])
+  // И молча это не проходит.
+  assert.equal(notes.length, 1)
+  assert.equal(notes[0].event, 'scheduler_key_same_as_app')
+})
+
+test('разные ключи приложений остаются разными и оба доходят до кода', () => {
+  const { env, notes } = parseEnv({
+    AGENT_KEY: 'k',
+    ROUTER_APP_KEY: 'ключ-agents',
+    ROUTER_APP_KEY_SCHEDULER: 'ключ-scheduler',
+  })
+  assert.equal(env.ROUTER_APP_KEY, 'ключ-agents')
+  assert.equal(env.ROUTER_APP_KEY_SCHEDULER, 'ключ-scheduler')
+  assert.deepEqual(notes, [])
+})
