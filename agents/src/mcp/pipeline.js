@@ -12,14 +12,40 @@
 
 import { createHash } from 'node:crypto'
 import { McpError } from './client.js'
+import { apiToolName } from './tool-names.js'
 
 /** Шаги цепочки: имя инструмента и как из прошлых итогов собрать аргументы. */
 export const STEPS = [
   { tool: 'news.search', args: ({ input }) => ({ query: input.query, days: input.days, limit: input.limit }) },
-  { tool: 'news.summarize', args: ({ search }) => ({ items: search.structured?.items ?? [] }) },
+  { tool: 'news.summarize', args: ({ items }) => ({ items }) },
   { tool: 'file.save', args: ({ fileName, summary }) => ({ name: fileName, content: summary }) },
   { tool: 'file.read', args: ({ fileName }) => ({ name: fileName }) },
 ]
+
+/**
+ * Полезная часть ответа инструмента, тремя ступенями. `structuredContent` по
+ * спецификации MCP необязателен, и наши серверы его не кладут: они кладут
+ * JSON строкой в текстовый блок (`mcpstore/src/rpc.js:94`). Служба дня 16
+ * написана до этого контракта и меняться не будет, поэтому требовать поле
+ * нельзя ни от кого.
+ *
+ * Ступени: поле есть — берём его; нет — разбираем текст как JSON; не JSON —
+ * считаем текст просто текстом. Последняя ступень не падает никогда: ответ
+ * инструмента — недоверенные данные.
+ */
+export function payloadOf(out) {
+  if (out?.structured && typeof out.structured === 'object' && !Array.isArray(out.structured))
+    return out.structured
+  const raw = typeof out?.text === 'string' ? out.text : ''
+  if (raw === '') return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+  } catch {
+    // Не JSON — ниже он и будет просто текстом.
+  }
+  return { text: raw }
+}
 
 export function sha256(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex')
@@ -47,7 +73,9 @@ export async function listAllTools({ servers, emit = () => {} }) {
     try {
       const { tools: own, trace } = await server.client.listTools()
       emit(rpcEvent(trace, `Получен список инструментов «${server.name}»`))
-      tools.push(...own)
+      // Имя для модели считается здесь, чтобы непроходное имя всплыло на
+      // списке инструментов, а не на 400 от роутера посреди запуска.
+      tools.push(...own.map((tool) => ({ ...tool, apiName: apiToolName(server.name, tool.name) })))
     } catch (error) {
       if (error.trace) emit(rpcEvent(error.trace, `Сервер «${server.name}» не отдал список`, 'warn'))
       unreachable.push({ server: server.name, reason: error.reason ?? 'unknown' })
@@ -127,24 +155,51 @@ export async function runPipeline({ input, servers, emit = () => {}, now = Date.
 
     calls.push({ tool: step.tool, server: serverName, ms: out.trace.ms })
 
-    if (step.tool === 'news.search') state.search = out
+    const payload = payloadOf(out)
+
+    if (step.tool === 'news.search') {
+      state.items = Array.isArray(payload.items) ? payload.items : []
+      if (state.items.length === 0)
+        throw new PipelineError('Шаг news.search не нашёл ни одной новости.', {
+          step: 'news.search',
+          reason: 'empty',
+        })
+    }
     if (step.tool === 'news.summarize') {
-      state.summary = out.structured?.summary ?? out.text
-      // Объявленный сервером отпечаток. Он не заменяет сверку: считает его
-      // тот же сервер, который отдал текст, и совпадение с самим собой
-      // ничего бы не доказывало.
-      state.declaredSha = out.structured?.sha256 ?? null
-      if (typeof state.summary !== 'string' || state.summary === '')
+      // Именно `text`: так называет выжимку `mcpnews` (его `newsSummarize`).
+      // Сверяется дальше этот текст, а не обёртка ответа — иначе оба
+      // отпечатка считались бы от одного и того же JSON и совпадали бы
+      // всегда, что бы ни лежало в хранилище.
+      state.summary = typeof payload.text === 'string' ? payload.text : ''
+      // Объявленный сервером отпечаток. Сверку он не заменяет: считает его
+      // тот же сервер, который отдал текст.
+      state.declaredSha = typeof payload.sha256 === 'string' ? payload.sha256 : null
+      if (state.summary === '')
         throw new PipelineError('Шаг news.summarize вернул пустую выжимку.', {
           step: 'news.summarize',
           reason: 'empty',
         })
     }
-    if (step.tool === 'file.read') state.readBack = out.structured?.content ?? out.text
+    if (step.tool === 'file.save') state.savedSha = typeof payload.sha256 === 'string' ? payload.sha256 : null
+    if (step.tool === 'file.read') {
+      // «Нет файла» хранилище отказом не считает (`found: false` без
+      // `isError`). Для цепочки это отказ: сверять нечего.
+      if (payload.found === false)
+        throw new PipelineError(`Шаг file.read: файла ${fileName} в хранилище нет.`, {
+          step: 'file.read',
+          reason: 'not_found',
+        })
+      state.readBack = typeof payload.content === 'string' ? payload.content : null
+      if (state.readBack === null)
+        throw new PipelineError('Шаг file.read вернул ответ без содержимого файла.', {
+          step: 'file.read',
+          reason: 'malformed',
+        })
+    }
   }
 
   const sentSha = sha256(state.summary)
-  const readSha = sha256(state.readBack ?? '')
+  const readSha = sha256(state.readBack)
   const match = sentSha === readSha
 
   const result = {
@@ -155,6 +210,7 @@ export async function runPipeline({ input, servers, emit = () => {}, now = Date.
     sentSha256: sentSha,
     readSha256: readSha,
     declaredSha256: state.declaredSha,
+    savedSha256: state.savedSha ?? null,
     match,
     calls,
     ms: now() - started,
