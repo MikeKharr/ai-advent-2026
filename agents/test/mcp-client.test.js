@@ -241,3 +241,46 @@ test('битая запись реестра валит загрузку', () =>
   assert.throws(() => loadServers({ servers: [{ name: 'Плохое', title: 'т', urlEnv: 'X' }] }), /name/)
   assert.throws(() => loadServers({ servers: [{ name: 'ok', title: 'т' }] }), /urlEnv/)
 })
+
+test('ключ из окружения достаётся только серверу, который его объявил', () => {
+  // Держатель границы I-1: до находки гейта (PR #233) единственный тест про
+  // ключ строил клиентов напрямую, и мутация «ключ каждому серверу реестра»
+  // оставалась зелёной. Здесь ключ в окружении ЕСТЬ, и проверяется, что
+  // серверу без `keyEnv` он не достался.
+  const made = []
+  loadServers(
+    {
+      servers: [
+        { name: 'mcpnews', title: 'Новости', urlEnv: 'MCP_NEWS_URL' },
+        { name: 'mcpstore', title: 'Файлы', urlEnv: 'MCP_STORE_URL' },
+        { name: 'day16', title: 'День 16', urlEnv: 'MCP_DAY16_URL', keyEnv: 'MCP_KEY' },
+      ],
+    },
+    {
+      MCP_NEWS_URL: 'http://mcpnews:8084/mcp',
+      MCP_STORE_URL: 'http://mcpstore:8085/mcp',
+      MCP_DAY16_URL: 'http://challenge.zpq.ai/mcp',
+      MCP_KEY: 'ключ-дня-16',
+    },
+    { make: (args) => (made.push(args), { name: args.name }) },
+  )
+
+  assert.deepEqual(
+    made.map((a) => [a.name, a.key]),
+    [
+      ['mcpnews', null],
+      ['mcpstore', null],
+      ['day16', 'ключ-дня-16'],
+    ],
+  )
+})
+
+test('объявленный ключ, которого нет в окружении, не становится чужим значением', () => {
+  const made = []
+  loadServers(
+    { servers: [{ name: 'day16', title: 'День 16', urlEnv: 'U', keyEnv: 'MCP_KEY' }] },
+    { U: 'http://challenge.zpq.ai/mcp' },
+    { make: (args) => (made.push(args), { name: args.name }) },
+  )
+  assert.equal(made[0].key, null)
+})

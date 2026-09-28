@@ -16,10 +16,10 @@ import { apiToolName } from './tool-names.js'
 
 /** Шаги цепочки: имя инструмента и как из прошлых итогов собрать аргументы. */
 export const STEPS = [
-  { tool: 'news.search', args: ({ input }) => ({ query: input.query, days: input.days, limit: input.limit }) },
-  { tool: 'news.summarize', args: ({ items }) => ({ items }) },
-  { tool: 'file.save', args: ({ fileName, summary }) => ({ name: fileName, content: summary }) },
-  { tool: 'file.read', args: ({ fileName }) => ({ name: fileName }) },
+  { server: 'mcpnews', tool: 'news.search', args: ({ input }) => ({ query: input.query, days: input.days, limit: input.limit }) },
+  { server: 'mcpnews', tool: 'news.summarize', args: ({ items }) => ({ items }) },
+  { server: 'mcpstore', tool: 'file.save', args: ({ fileName, summary }) => ({ name: fileName, content: summary }) },
+  { server: 'mcpstore', tool: 'file.read', args: ({ fileName }) => ({ name: fileName }) },
 ]
 
 /**
@@ -114,9 +114,13 @@ export async function runPipeline({ input, servers, emit = () => {}, now = Date.
   if (query === '') throw new PipelineError('Запрос пуст.', { step: null, reason: 'bad_input' })
 
   const { tools } = await listAllTools({ servers, emit })
-  // Имя сервера хранится рядом с инструментом: шаг зовёт инструмент по имени,
-  // а куда идти — говорит реестр, не этот файл.
-  const where = new Map(tools.map((tool) => [tool.name, tool.server]))
+  // Ключ — пара «сервер и инструмент», а не голое имя. По голому имени
+  // одноимённые инструменты разных серверов сталкивались бы, и побеждал бы
+  // последний опрошенный: шаг `file.save` ушёл бы на чужой сервер, если бы
+  // тот объявил такое же имя. Порядок цепочки дня 19 задан ADR (п. 8) — там
+  // назван и сервер каждого шага, поэтому он назван и здесь (находка гейта,
+  // PR #233).
+  const have = new Set(tools.map((tool) => `${tool.server}/${tool.name}`))
 
   const started = now()
   const fileName = `pipeline-${started}.txt`
@@ -127,9 +131,9 @@ export async function runPipeline({ input, servers, emit = () => {}, now = Date.
   const calls = []
 
   for (const step of STEPS) {
-    const serverName = where.get(step.tool)
-    if (!serverName)
-      throw new PipelineError(`Инструмент ${step.tool} не нашёлся ни на одном сервере.`, {
+    const serverName = step.server
+    if (!have.has(`${serverName}/${step.tool}`))
+      throw new PipelineError(`Инструмент ${step.tool} не нашёлся на сервере «${serverName}».`, {
         step: step.tool,
         reason: 'no_tool',
       })
