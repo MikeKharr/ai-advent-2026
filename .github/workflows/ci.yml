@@ -301,7 +301,11 @@ jobs:
       # Образ берётся строкой из deploy/compose.yml, а не повторяется здесь:
       # иначе шаг проверял бы один образ, а прод поднимал другой, и обновление
       # пина оставляло бы шаг зелёным.
+      # timeout-minutes — страховка на всё остальное в шаге (docker pull,
+      # apk add): ограничение снаружи shell, которое не зависит ни от одной
+      # гипотезы о поведении процессов внутри контейнера.
       - name: Образ cron умеет crond и wget --post-data
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           image=$(grep -oE 'alpine:[0-9.]+@sha256:[0-9a-f]{64}' deploy/compose.yml)
@@ -328,16 +332,79 @@ jobs:
             echo "::error::локальное время образа $offset, а не UTC: сутки расписания разойдутся с сутками суточного потолка стартов"; exit 1; }
           echo "смещение времени в образе: $offset"
 
-          # Настоящий entrypoint с настоящим расписанием. crond не завершается,
-          # поэтому его обрывает timeout: предмет проверки — что до строки
-          # «расписание /cron/crontabs» дошло, а не что процесс закончился.
-          # Ключ здесь заведомо не настоящий: шаг никуда не стучится.
-          log=$(docker run --rm -e AGENT_KEY=ci-not-a-real-key \
-                  -v "$PWD/deploy/cron:/cron:ro" --entrypoint /usr/bin/timeout \
-                  "$image" 10 /bin/sh /cron/entrypoint.sh 2>&1 || true)
-          printf '%s\n' "$log"
-          printf '%s\n' "$log" | grep -q 'расписание /cron/crontabs' || {
-            echo "::error::deploy/cron/entrypoint.sh не дошёл до crond на этом образе"; exit 1; }
+          # ── Предел сверху для запусков entrypoint.sh ────────────────────
+          # entrypoint.sh в норме заканчивается `exec crond -f`, который сам
+          # не завершается, поэтому у каждого его запуска обязан быть предел.
+          # Раньше предел стоял ВНУТРИ контейнера (`--entrypoint
+          # /usr/bin/timeout … 10`), и шаг всё равно встал на 16 минут
+          # (прогон 36401908047, job 108861506729): контейнер был жив спустя
+          # 16 минут после предела в 10 секунд. Причина установлена прогоном
+          # (36404323513, три запуска, отличавшиеся только тем, кто PID 1):
+          # busybox timeout не форкает ребёнка, а ставит сторожа и exec'ает
+          # команду в своём же процессе. С `--entrypoint /usr/bin/timeout`
+          # этот процесс — PID 1, значит PID 1 становится crond, а ядро не
+          # доставляет PID 1 сигнал без своего обработчика. crond обработчика
+          # TERM не ставит — сторож стрелял в пустоту.
+          #   A: timeout как entrypoint, цель = PID 1 → не умер, 124 по
+          #      пределу раннера;
+          #   B: та же команда, но PID 1 = /bin/sh → 143 за 3 с;
+          #   C: timeout как entrypoint, но PID 1 = docker-init → 143 за 3 с.
+          #
+          # Отсюда правка: предел вынесен НАРУЖУ контейнера, где PID 1
+          # контейнера роли не играет. Контейнер поднимается фоном, ждёт его
+          # сам шаг своим счётчиком (docker logs и docker inspect
+          # возвращаются сразу), а снимает `docker rm -f` — это KILL, а KILL
+          # не игнорирует даже PID 1. Не снимать как лишнее: без внешнего
+          # предела любой незавершающийся процесс в образе снова вешает job
+          # до лимита GitHub в 6 часов.
+          #
+          # «Не уложился в предел» — отдельный красный со своим текстом, а не
+          # тихий `|| true`: иначе зависание маскировалось бы под невыполненную
+          # проверку, а ждать, чем кончится, было бы нечем.
+          wait_s=20
+
+          # Первый запуск: настоящий entrypoint на настоящем образе должен
+          # дойти до строки «расписание /cron/crontabs». Предмет проверки —
+          # что до неё дошло, а не что процесс закончился: после неё crond
+          # работает вечно, и ждать его выхода бессмысленно. Ключ здесь
+          # заведомо не настоящий: шаг никуда не стучится.
+          docker rm -f ci-cron-start >/dev/null 2>&1 || true
+          docker run -d --name ci-cron-start -e AGENT_KEY=ci-not-a-real-key \
+            -v "$PWD/deploy/cron:/cron:ro" --entrypoint /bin/sh \
+            "$image" /cron/entrypoint.sh >/dev/null
+
+          # Три исхода ожидания различимы, и каждый разбирается отдельно:
+          # строка появилась; контейнер завершился, не напечатав её; предел
+          # вышел, а контейнер всё ещё жив.
+          started=no
+          exited=no
+          i=0
+          while [ "$i" -lt "$wait_s" ]; do
+            if docker logs ci-cron-start 2>&1 | grep -q 'расписание /cron/crontabs'; then
+              started=yes
+              break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' ci-cron-start)" != 'true' ]; then
+              exited=yes
+              break
+            fi
+            i=$((i + 1))
+            sleep 1
+          done
+          rc=$(docker inspect -f '{{.State.ExitCode}}' ci-cron-start)
+          echo "--- журнал первого запуска ---"
+          docker logs ci-cron-start 2>&1 || true
+          echo "--- конец журнала первого запуска ---"
+          docker rm -f ci-cron-start >/dev/null
+          if [ "$started" != 'yes' ] && [ "$exited" = 'yes' ]; then
+            echo "::error::deploy/cron/entrypoint.sh завершился кодом $rc, не дойдя до crond на этом образе — журнал выше"
+            exit 1
+          fi
+          if [ "$started" != 'yes' ]; then
+            echo "::error::за ${wait_s} с контейнер не напечатал «расписание /cron/crontabs» и остался жив: шаг не дождался, проверка старта не выполнена — журнал выше"
+            exit 1
+          fi
+          echo "первый запуск: entrypoint дошёл до crond"
 
           # Отказ по поясу — устройство, и проверяется он подменой пояса, а не
           # чтением комментария. Коды различают гипотезы: без них «не удалось
@@ -347,18 +414,40 @@ jobs:
           #   90 — tzdata не встала: мутация не состоялась, судить не о чем;
           #   91 — пояс не сменился: мутация не состоялась;
           #   78 — entrypoint отказал по поясу, как и задумано.
-          set +e
-          docker run --rm -e AGENT_KEY=ci-not-a-real-key -e TZ=Asia/Singapore \
+          # Здесь ждут именно завершения: отказ обязан быть выходом. Но если
+          # отказа нет, контейнер уходит в crond и не кончается никогда —
+          # отсюда тот же внешний предел, что и у первого запуска, и свой
+          # красный на «не дождались».
+          docker rm -f ci-cron-tz >/dev/null 2>&1 || true
+          docker run -d --name ci-cron-tz -e AGENT_KEY=ci-not-a-real-key -e TZ=Asia/Singapore \
             -v "$PWD/deploy/cron:/cron:ro" --entrypoint /bin/sh "$image" -c \
-            'apk add --no-cache tzdata >/dev/null 2>&1 || exit 90; [ "$(date +%z)" = "+0800" ] || exit 91; exec /bin/sh /cron/entrypoint.sh'
-          rc=$?
-          set -e
+            'apk add --no-cache tzdata >/dev/null 2>&1 || exit 90; [ "$(date +%z)" = "+0800" ] || exit 91; exec /bin/sh /cron/entrypoint.sh' >/dev/null
+          exited=no
+          i=0
+          while [ "$i" -lt "$wait_s" ]; do
+            if [ "$(docker inspect -f '{{.State.Running}}' ci-cron-tz)" != 'true' ]; then
+              exited=yes
+              break
+            fi
+            i=$((i + 1))
+            sleep 1
+          done
+          rc=$(docker inspect -f '{{.State.ExitCode}}' ci-cron-tz)
+          echo "--- журнал запуска с поясом Asia/Singapore ---"
+          docker logs ci-cron-tz 2>&1 || true
+          echo "--- конец журнала запуска с поясом ---"
+          docker rm -f ci-cron-tz >/dev/null
+          if [ "$exited" != 'yes' ]; then
+            echo "::error::за ${wait_s} с контейнер с поясом +0800 не завершился: шаг не дождался, отказ по поясу не проверен — журнал выше"
+            exit 1
+          fi
           case "$rc" in
             78) echo "пояс Asia/Singapore: старт отменён кодом 78, как и задумано" ;;
             90) echo "::error::tzdata не поставилась — подмена пояса не состоялась, отказ по поясу не проверен"; exit 1 ;;
             91) echo "::error::пояс не сменился — подмена пояса не состоялась, отказ по поясу не проверен"; exit 1 ;;
             *) echo "::error::при поясе +0800 entrypoint вернул $rc, а не 78: отказ по поясу не держит"; exit 1 ;;
           esac
+
 
   # actionlint по всем workflow: синтаксис, выражения ${{ }}, имена событий,
   # и shellcheck по телам `run:` (ADR 2026-09-24-1230, A10).
