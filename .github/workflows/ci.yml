@@ -296,7 +296,14 @@ jobs:
       #      развёл бы сутки расписания и сутки суточного потолка стартов, не
       #      сломав при этом ничего на вид: контейнер жив, запуски идут;
       #   3) настоящий deploy/cron/entrypoint.sh с этим образом доходит до
-      #      crond — берётся файл из репозитория, а не его пересказ.
+      #      crond — берётся файл из репозитория, а не его пересказ;
+      #   4) таблица, которую busybox awk собрал из agents/config/jobs.json,
+      #      совпадает со строками, посчитанными из того же файла node через
+      #      JSON.parse. Это и есть держатель единственного источника
+      #      каденции: строчный разбор в alpine и разбор JSON в сервисе
+      #      агентов обязаны понимать одну строку одинаково. Сверка идёт по
+      #      журналу поднятого контейнера, а не по выводу скрипта на раннере:
+      #      предмет — что до alpine доехало именно это.
       #
       # Образ берётся строкой из deploy/compose.yml, а не повторяется здесь:
       # иначе шаг проверял бы один образ, а прод поднимал другой, и обновление
@@ -364,13 +371,14 @@ jobs:
           wait_s=20
 
           # Первый запуск: настоящий entrypoint на настоящем образе должен
-          # дойти до строки «расписание /cron/crontabs». Предмет проверки —
+          # дойти до строки «расписание принято, запуск crond». Предмет проверки —
           # что до неё дошло, а не что процесс закончился: после неё crond
           # работает вечно, и ждать его выхода бессмысленно. Ключ здесь
           # заведомо не настоящий: шаг никуда не стучится.
           docker rm -f ci-cron-start >/dev/null 2>&1 || true
           docker run -d --name ci-cron-start -e AGENT_KEY=ci-not-a-real-key \
-            -v "$PWD/deploy/cron:/cron:ro" --entrypoint /bin/sh \
+            -v "$PWD/deploy/cron:/cron:ro" \
+            -v "$PWD/agents/config/jobs.json:/jobs.json:ro" --entrypoint /bin/sh \
             "$image" /cron/entrypoint.sh >/dev/null
 
           # Три исхода ожидания различимы, и каждый разбирается отдельно:
@@ -380,7 +388,7 @@ jobs:
           exited=no
           i=0
           while [ "$i" -lt "$wait_s" ]; do
-            if docker logs ci-cron-start 2>&1 | grep -q 'расписание /cron/crontabs'; then
+            if docker logs ci-cron-start 2>&1 | grep -q 'расписание принято, запуск crond'; then
               started=yes
               break
             fi
@@ -393,7 +401,8 @@ jobs:
           done
           rc=$(docker inspect -f '{{.State.ExitCode}}' ci-cron-start)
           echo "--- журнал первого запуска ---"
-          docker logs ci-cron-start 2>&1 || true
+          docker logs ci-cron-start > /tmp/cron-start.log 2>&1 || true
+          cat /tmp/cron-start.log
           echo "--- конец журнала первого запуска ---"
           docker rm -f ci-cron-start >/dev/null
           if [ "$started" != 'yes' ] && [ "$exited" = 'yes' ]; then
@@ -401,10 +410,35 @@ jobs:
             exit 1
           fi
           if [ "$started" != 'yes' ]; then
-            echo "::error::за ${wait_s} с контейнер не напечатал «расписание /cron/crontabs» и остался жив: шаг не дождался, проверка старта не выполнена — журнал выше"
+            echo "::error::за ${wait_s} с контейнер не напечатал «расписание принято, запуск crond» и остался жив: шаг не дождался, проверка старта не выполнена — журнал выше"
             exit 1
           fi
           echo "первый запуск: entrypoint дошёл до crond"
+
+          # ── Таблица в контейнере = каденция из jobs.json ────────────────
+          # Ожидаемые строки считает node из того же файла разбором JSON —
+          # тем самым, которым его читает сервис агентов. Сверка не с
+          # выводом deploy/cron/crontab.sh на раннере, а со строками
+          # «cron:   …» из журнала контейнера: именно они доказывают, что
+          # busybox awk в alpine понял файл так же.
+          # shellcheck disable=SC2016 # ${…} здесь — шаблон JS, а не подстановка shell
+          node -e '
+            const jobs = JSON.parse(require("fs").readFileSync("agents/config/jobs.json", "utf8")).jobs
+            if (!Array.isArray(jobs) || jobs.length === 0) { console.error("::error::в jobs.json нет работ"); process.exit(1) }
+            process.stdout.write(jobs.map((j) => `${j.scheduleUtc} /cron/tick.sh ${j.id}`).join("\n") + "\n")
+          ' > /tmp/expected-crontab
+          echo "--- ожидаемая таблица по jobs.json ---"
+          cat /tmp/expected-crontab
+
+          # Строки таблицы — из журнала, снятого выше: контейнер уже снят,
+          # а отметка о приёме печатается ПОСЛЕ таблицы, поэтому в журнале
+          # она полная.
+          sed -n 's/^cron:   //p' /tmp/cron-start.log > /tmp/actual-crontab
+          if ! diff -u /tmp/expected-crontab /tmp/actual-crontab; then
+            echo "::error::таблица crond в контейнере разошлась с каденцией из agents/config/jobs.json — слева ожидаемое по JSON.parse, справа напечатанное контейнером"
+            exit 1
+          fi
+          echo "таблица crond в контейнере совпала с jobs.json"
 
           # Отказ по поясу — устройство, и проверяется он подменой пояса, а не
           # чтением комментария. Коды различают гипотезы: без них «не удалось
@@ -420,7 +454,8 @@ jobs:
           # красный на «не дождались».
           docker rm -f ci-cron-tz >/dev/null 2>&1 || true
           docker run -d --name ci-cron-tz -e AGENT_KEY=ci-not-a-real-key -e TZ=Asia/Singapore \
-            -v "$PWD/deploy/cron:/cron:ro" --entrypoint /bin/sh "$image" -c \
+            -v "$PWD/deploy/cron:/cron:ro" \
+            -v "$PWD/agents/config/jobs.json:/jobs.json:ro" --entrypoint /bin/sh "$image" -c \
             'apk add --no-cache tzdata >/dev/null 2>&1 || exit 90; [ "$(date +%z)" = "+0800" ] || exit 91; exec /bin/sh /cron/entrypoint.sh' >/dev/null
           exited=no
           i=0
