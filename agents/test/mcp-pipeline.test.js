@@ -221,6 +221,17 @@ test('агент с моделью по-прежнему обязан назва
     () => loadRegistry({ agents: [{ ...entry, taskClass: 'x', systemPrompt: [] }] }),
     /systemPrompt/,
   )
+  // Класс задачи у агента без модели — ошибка, а не безвредное лишнее поле:
+  // он означал бы вызов модели, которого не будет.
+  assert.throws(
+    () =>
+      loadRegistry({
+        agents: [
+          { id: 'no-model', name: 'n', version: '1', purpose: 'п', tools: [], taskClass: 'x', defaults: {} },
+        ],
+      }),
+    /taskClass: у агента без модели не бывает/,
+  )
   // Параметры модели у агента без модели — ошибка, а не молчаливое умолчание.
   assert.throws(
     () => loadRegistry({ agents: [{ id: 'no-model', name: 'n', version: '1', purpose: 'п', tools: [], defaults: { maxTokens: 10 } }] }),
