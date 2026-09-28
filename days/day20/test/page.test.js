@@ -143,3 +143,28 @@ test('пояснение с ценой запуска стоит выше фор
   assert.notEqual(form, -1, 'формы запуска на странице нет')
   assert.ok(about < form, 'блок пояснения стоит ниже кнопки «Запустить»')
 })
+
+// Слова модели — проза, а не тело протокола (ADR 2026-09-28-1852, заход 1).
+// style.css править нельзя (style-copy.test.js держит его побайтово), поэтому
+// полосу чтения корпуса ставит <style> самой страницы. Проверка идёт ОТ МЕСТА,
+// куда кладётся текст модели, а не от имени класса в CSS: переименуют класс —
+// покраснеет, а не позеленеет молча.
+test('текст модели ограничен полосой чтения корпуса и сохраняет переносы строк', () => {
+  const m = code.match(/node\('p', `(\w+)\$\{[^`]*`, wordsText\(/)
+  assert.ok(m, 'текст модели кладётся не тем узлом, что ожидает проверка')
+  const style = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+  assert.match(style, new RegExp(`\\.${m[1]}\\s*\\{[^}]*max-width:68ch`), `у .${m[1]} нет полосы чтения`)
+  assert.match(style, new RegExp(`\\.${m[1]}\\s*\\{[^}]*white-space:pre-wrap`), `у .${m[1]} съедаются переносы строк`)
+})
+
+// Запись со словами уходит в ленту БЕЗ условия на непустой текст: круг, на
+// котором модель промолчала, виден так же, как круг со словами. Условие тут
+// было бы прямым нарушением требования ADR, и проверка стоит на его месте.
+test('событие со словами модели не фильтруется по непустому тексту', () => {
+  const branch = code.slice(code.indexOf("stage === 'llm_text'"), code.indexOf('if (event?.stage !== ', code.indexOf("stage === 'llm_text'")))
+  assert.ok(branch.includes('parseWords(event.data)'), 'ветка разбора слов не найдена')
+  assert.doesNotMatch(branch, /\.text/, `в ветке появилось условие на текст: ${branch}`)
+  const push = branch.indexOf('items.push')
+  const quit = branch.indexOf('return')
+  assert.ok(push !== -1 && (quit === -1 || push < quit), 'ветка выходит раньше, чем кладёт запись')
+})
