@@ -25,19 +25,25 @@
      моноширинного текста в две колонки не помещаются. */
   .hashes { display:grid; grid-template-columns:1fr; gap:var(--s-3); margin:0 0 var(--s-4); }
   @media (min-width:48rem) { .hashes { grid-template-columns:1fr 1fr; } }
+
+  /* Блок пояснения. Своих значений не заводит — только токены копии.
+     Отдельное правило нужно потому, что .sub даёт между блоками --s-4,
+     а корпус требует между смысловыми блоками --s-5 и больше. */
+  .about { margin:0 0 var(--s-5); }
+  .about p { margin:0 0 var(--s-3); max-width:68ch; }
+  .about p:last-child { margin:0; }
+  /* Имена инструментов — тем же моноширинным стеком, что имена в .wire:
+     браузерный шрифт по умолчанию в токены корпуса не входит. */
+  .about code { font-family:var(--mono); font-size:var(--t-sm); overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
 <div class="page">
   <h1>Цепочка MCP</h1>
   <p class="sub">Четыре вызова к двум серверам MCP подряд: найти новости, сделать выжимку,
-    сохранить её файлом, прочитать файл обратно. Порядок задаёт код, а не модель, и данные
-    между шагами переносит тоже код — расход модели здесь нулевой. Ниже видно каждый вызов:
-    имя сервера, метод и сырые тела JSON-RPC, как они прошли по проводу.</p>
+    сохранить её файлом, прочитать файл обратно.</p>
 
-  <p class="notice">! Смысл последнего шага — сверка. Сервер выжимки возвращает её sha256,
-    сервер хранилища возвращает sha256 прочитанного. Оба хеша показаны рядом: если они
-    совпали, значит по цепочке дошли те же байты, а не похожие.</p>
+  <p class="notice">! Главное в прогоне — совпадут ли две sha256 ниже.</p>
 
   <p class="wire">
     <span>серверы <b>mcpnews</b>, <b>mcpstore</b></span>
@@ -50,6 +56,21 @@
       поэтому без JavaScript она не работает. Включите JavaScript.</p>
   </noscript>
 
+  <section class="about" aria-labelledby="about-title">
+    <h2 id="about-title">Что здесь показано</h2>
+    <p>Предмет дня — <b>цепочка</b>: выход одного инструмента подаётся на вход следующему.
+      <code>news.search</code> находит новости — его ответ уходит аргументом в
+      <code>news.summarize</code>; текст выжимки уходит в <code>file.save</code>; имя
+      сохранённого файла уходит в <code>file.read</code>. Четыре вызова, два сервера MCP,
+      и переносит данные между шагами код.</p>
+    <p>В конце сверяются два отпечатка: <code>sha256</code>, который вернул сервер выжимки,
+      и <code>sha256</code>, который вернул сервер хранилища для прочитанного файла. Оба
+      показаны рядом: совпали — значит по цепочке дошли те же байты, а не похожие.</p>
+    <p><b>Модель в этой цепочке не участвует</b>: порядок шагов задан кодом заранее, решать
+      нечего, токенов не тратится — прогон бесплатный. В консоли ниже видно каждый вызов:
+      имя сервера, метод и сырые тела JSON-RPC, как они прошли по проводу.</p>
+  </section>
+
   <h2 id="steps-title">Шаги цепочки</h2>
   <ol class="steps" id="steps" aria-labelledby="steps-title">
     <li class="step" data-tool="news.search">1 · news.search</li>
@@ -59,9 +80,9 @@
   </ol>
 
   <form class="composer" id="run-form">
-    <label class="field" for="task">Сфера или запрос</label>
+    <label class="field" for="cmd">Сфера или запрос</label>
     <div class="cmd-row">
-      <input id="task" type="text" maxlength="600" autocomplete="off" spellcheck="false"
+      <input id="cmd" type="text" maxlength="600" autocomplete="off" spellcheck="false"
              placeholder="fintech" aria-describedby="run-status">
       <button class="send" id="send" type="submit">Запустить</button>
     </div>

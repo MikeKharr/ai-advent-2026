@@ -79,3 +79,27 @@ export function nextRunAt(schedule, from) {
 export function slotsPerDay(schedule) {
   return schedule.hours.length * schedule.minutes.length
 }
+
+/**
+ * Последний наступивший срок — зеркало `nextRunAt`: тот же ряд сроков, только
+ * назад и включая текущую минуту. Это КЛЮЧ СЛОТА `409 slot_taken`
+ * (ADR 2026-09-28-1323, п. 2): «один старт на срок» читается так при любой
+ * каденции, и второй настройки рядом с `scheduleUtc` не заводится.
+ *
+ * Зеркальность обязана быть настоящей: слот и обещанный экрану срок берутся
+ * из одного ряда, и разойдись они — слот занимал бы не тот срок, а покраснеть
+ * было бы нечему. Поэтому обе функции считают по UTC и ищут поминутно одним и
+ * тем же условием; держит равенство рядов тест
+ * «lastDueAt и nextRunAt дают один и тот же ряд сроков» в `agents/test/jobs.test.js`.
+ */
+export function lastDueAt(schedule, at) {
+  const { minutes, hours } = schedule
+  // Минута срока начинается на нулевой секунде: текущая минута уже наступила.
+  const start = Math.floor(at / 60_000) * 60_000
+  for (let step = 0; step <= 2 * 24 * 60; step += 1) {
+    const d = new Date(start - step * 60_000)
+    if (hours.includes(d.getUTCHours()) && minutes.includes(d.getUTCMinutes())) return d.toISOString()
+  }
+  // Недостижимо при разобранном расписании — см. `nextRunAt`.
+  return null
+}

@@ -457,7 +457,14 @@ export function createJobRunner({
     // а «роутера в этом запуске не было».
     if (entry.modelless) {
       try {
-        const result = await runPipeline({ input: { query: job.prompt }, servers, emit, now })
+        // Постоянное имя файла — условие ADR 2026-09-28-1323, п. 5: работа
+        // идёт 96 раз в сутки и хранилище на 200 файлов не её одно.
+        const result = await runPipeline({
+          input: { query: job.prompt, fileName: `pipeline-${job.id}.txt` },
+          servers,
+          emit,
+          now,
+        })
         runs.finish(run.id, {
           status: 'succeeded',
           result,

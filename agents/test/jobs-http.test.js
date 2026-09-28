@@ -94,11 +94,14 @@ test('сводки отдаются в именах экрана дня 18', asy
   assert.equal(response.status, 200)
   const body = await response.json()
 
+  // Сверка целиком, а не по полям: она держит и то, что запрос доехал до HTTP,
+  // и то, что рядом с ним в публичный ответ не уехало ничего лишнего (I-1).
   assert.deepEqual(body.job, {
     enabled: true,
     agent: 'mcp-agent',
     schedule: '0 */6 * * *',
     maxRunsPerDay: 6,
+    prompt: 'Собери короткую сводку.',
   })
   assert.equal(body.nextRunAt, '2026-09-28T12:00:00.000Z')
   assert.equal(body.startsToday, 1)

@@ -5,8 +5,8 @@
       "name": "Прогон цепочки инструментов MCP по расписанию",
       "enabled": true,
       "agentId": "pipeline-agent",
-      "maxRunsPerDay": 6,
-      "scheduleUtc": "0 */6 * * *",
+      "maxRunsPerDay": 96,
+      "scheduleUtc": "*/15 * * * *",
       "prompt": [
         "MCP protocol developer tools"
       ]
