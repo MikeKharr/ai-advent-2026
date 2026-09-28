@@ -36,7 +36,11 @@ test('имя сервера стоит у каждого вызова — это
 test('имени сервера нет — на его месте слово, а не пустота и не выдуманное имя', () => {
   const call = parseCall(event({ server: undefined }))
   assert.equal(call.server, null)
-  assert.ok(callTitle(call).startsWith(`${NO_SERVER} · `))
+  const title = callTitle(call)
+  // Сравнение с самой константой гипотез не различает: при NO_SERVER = ''
+  // оно зелёное, а в заголовке на месте имени пустота. Пустоту ловит эта строка.
+  assert.match(title, /^\S/, `на месте имени сервера пустота: ${JSON.stringify(title)}`)
+  assert.ok(title.startsWith(`${NO_SERVER} · `))
 })
 
 test('пустая строка именем сервера не считается', () => {

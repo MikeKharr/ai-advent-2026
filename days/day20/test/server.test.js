@@ -51,7 +51,10 @@ process.env.AGENT_KEY = KEY
 process.env.AGENT_URL = `http://127.0.0.1:${agents.address().port}`
 process.env.RATE_LIMIT_PER_MIN = '3'
 process.env.RATE_LIMIT_PER_HOUR = '6'
-process.env.MAX_DAILY_CALLS = '5'
+// Потолок заведомо недостижим в этом файле: будь он близко, отказ приходил
+// бы от него, и минутное окно осталось бы без держателя. Сам потолок держит
+// test/limits.test.js.
+process.env.MAX_DAILY_CALLS = '50'
 
 const { env, server } = await import('../server.js')
 let base = ''
@@ -107,10 +110,31 @@ test('пустое и слишком длинное задание до серв
 
 test('слот берётся ДО обращения к сервису: четвёртый запрос за минуту не доходит', async () => {
   seen.length = 0
-  const codes = []
-  for (let i = 0; i < 4; i += 1) codes.push((await post('fintech', '10.0.0.9')).status)
-  assert.deepEqual(codes, [202, 202, 202, 429])
+  const answers = []
+  for (let i = 0; i < 4; i += 1) answers.push(await post('fintech', '10.0.0.9'))
+  assert.deepEqual(
+    answers.map((r) => r.status),
+    [202, 202, 202, 429],
+  )
   assert.equal(seen.filter((s) => s.url === '/v1/runs').length, 3, 'отказ лимитера всё-таки дошёл до сервиса')
+  // Отказ обязан прийти ИМЕННО от минутного окна. Один только код 429 гипотез
+  // не различает: суточный потолок отвечает тем же кодом, и при снятом
+  // минутном окне тест остался бы зелёным.
+  const denied = await answers[3].json()
+  assert.equal(denied.error, 'Предел запросов страницы: слишком часто.')
+  assert.ok(Number.isInteger(denied.retryAfterSec) && denied.retryAfterSec > 0, `секунды: ${denied.retryAfterSec}`)
+})
+
+test('адрес берётся из ХВОСТА X-Forwarded-For: подделка головы окно не обходит', async () => {
+  const ip = '10.0.0.11'
+  for (let i = 0; i < 3; i += 1) await post('fintech', ip)
+  // Caddy ДОПИСЫВАЕТ реальный адрес в конец: голову подделывает сам клиент.
+  const res = await fetch(`${base}/api/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': `9.9.9.9, ${ip}` },
+    body: JSON.stringify({ task: 'fintech' }),
+  })
+  assert.equal(res.status, 429, 'подделанная голова X-Forwarded-For дала новое окно')
 })
 
 test('поток событий уходит насквозь: те же байты, включая сырые тела JSON-RPC', async () => {

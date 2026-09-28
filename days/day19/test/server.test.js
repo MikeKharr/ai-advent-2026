@@ -51,7 +51,6 @@ process.env.AGENT_KEY = KEY
 process.env.AGENT_URL = `http://127.0.0.1:${agents.address().port}`
 process.env.RATE_LIMIT_PER_MIN = '3'
 process.env.RATE_LIMIT_PER_HOUR = '6'
-process.env.MAX_DAILY_CALLS = '5'
 
 const { env, server } = await import('../server.js')
 let base = ''
@@ -111,6 +110,18 @@ test('слот берётся ДО обращения к сервису: чет�
   for (let i = 0; i < 4; i += 1) codes.push((await post('fintech', '10.0.0.9')).status)
   assert.deepEqual(codes, [202, 202, 202, 429])
   assert.equal(seen.filter((s) => s.url === '/v1/runs').length, 3, 'отказ лимитера всё-таки дошёл до сервиса')
+})
+
+test('адрес берётся из ХВОСТА X-Forwarded-For: подделка головы окно не обходит', async () => {
+  const ip = '10.0.0.11'
+  for (let i = 0; i < 3; i += 1) await post('fintech', ip)
+  // Caddy ДОПИСЫВАЕТ реальный адрес в конец: голову подделывает сам клиент.
+  const res = await fetch(`${base}/api/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': `9.9.9.9, ${ip}` },
+    body: JSON.stringify({ task: 'fintech' }),
+  })
+  assert.equal(res.status, 429, 'подделанная голова X-Forwarded-For дала новое окно')
 })
 
 test('поток событий уходит насквозь: те же байты, включая сырые тела JSON-RPC', async () => {

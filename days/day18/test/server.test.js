@@ -9,6 +9,7 @@
 //   4. поток событий идёт насквозь.
 
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import http from 'node:http'
 import { after, before, test } from 'node:test'
 
@@ -84,15 +85,33 @@ test('сервис ответил отказом — день не выдумы�
 })
 
 test('ручки запуска у дня нет ни под каким методом', async () => {
+  // Держатель по измерению ПУТИ. Перебор литеральных путей держал бы только
+  // те три, что в нём написаны: живой `POST /api/run` прошёл бы мимо. Поэтому
+  // утверждение о ПОЛНОМ наборе маршрутов диспетчера, вычитанном из исходника:
+  // новый маршрут — это новое сравнение пути, новая проверка метода или чтение
+  // `req.url` мимо `url.pathname`, и любое из трёх ломает утверждение.
+  const source = await readFile(new URL('../server.js', import.meta.url), 'utf8')
+  const routes = [...source.matchAll(/url\.pathname(?:\s*===\s*'([^']*)'|\.match\((\/[^\n]*?\/)\))/g)].map(
+    (m) => m[1] ?? m[2],
+  )
+  assert.deepEqual(
+    routes.sort(),
+    ['/', '/api/digest', '/healthz', '/^\\/api\\/runs\\/([^/]+)\\/events$/'].sort(),
+    'набор маршрутов дня изменился — новый путь заводится сознательно, а не попутно',
+  )
+  const methods = [...source.matchAll(/req\.method\s*[!=]==\s*'([A-Z]+)'/g)].map((m) => m[1])
+  assert.deepEqual(methods, ['GET', 'GET'], 'маршрут отвечает не только на GET')
+  // Без этого утверждения набор выше обходится разбором `req.url` напрямую.
+  assert.equal(source.match(/req\.url/g).length, 1, 'путь берётся мимо url.pathname')
+
+  // То же исполнением: по каждому сегодняшнему маршруту все неидемпотентные
+  // методы — ни 202, ни единого обращения к сервису агентов.
   seen.length = 0
-  for (const [path, method] of [
-    ['/api/runs', 'POST'],
-    ['/v1/jobs/digest/trigger', 'POST'],
-    ['/api/digest', 'POST'],
-  ]) {
-    const res = await fetch(`${base}${path}`, { method })
-    assert.notEqual(res.status, 202, `${method} ${path} что-то запустил`)
-  }
+  for (const path of ['/', '/healthz', '/api/digest', '/api/runs/run-1/events'])
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      const res = await fetch(`${base}${path}`, { method })
+      assert.notEqual(res.status, 202, `${method} ${path} что-то запустил`)
+    }
   assert.equal(seen.length, 0, 'попытка запуска всё-таки дошла до сервиса агентов')
 })
 
@@ -102,6 +121,14 @@ test('слот берётся до обращения к сервису: чет�
   for (let i = 0; i < 4; i += 1) codes.push((await get('/api/digest', '10.0.0.9')).status)
   assert.deepEqual(codes, [200, 200, 200, 429])
   assert.equal(seen.filter((s) => s.url === '/v1/jobs/digest').length, 3)
+})
+
+test('адрес берётся из ХВОСТА X-Forwarded-For: подделка головы окно не обходит', async () => {
+  const ip = '10.0.0.11'
+  for (let i = 0; i < 3; i += 1) await get('/api/digest', ip)
+  // Caddy ДОПИСЫВАЕТ реальный адрес в конец: голову подделывает сам клиент.
+  const res = await fetch(`${base}/api/digest`, { headers: { 'x-forwarded-for': `9.9.9.9, ${ip}` } })
+  assert.equal(res.status, 429, 'подделанная голова X-Forwarded-For дала новое окно')
 })
 
 test('поток событий уходит насквозь: те же байты, включая сырые тела JSON-RPC', async () => {
