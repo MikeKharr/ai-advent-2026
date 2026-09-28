@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createJobs, loadJobs } from '../src/jobs/index.js'
 import { nextRunAt, parseSchedule, slotsPerDay } from '../src/jobs/schedule.js'
-import { createJobStore, utcDay } from '../src/jobs/store.js'
+import { createJobStore, KEEP_RUNS, utcDay } from '../src/jobs/store.js'
 
 /** Работа в форме настоящего `agents/config/jobs.json` (ветка feat/scheduler-cron). */
 const RAW = {
@@ -96,7 +96,12 @@ test('седьмой старт за сутки не происходит: ис�
   assert.equal(seventh.status, 429)
   assert.equal(seventh.body.code, 'daily_cap')
   assert.equal(seventh.body.startsToday, 6)
-  assert.equal(calls, 6, 'исполнитель не зовётся седьмой раз')
+  // Без этой строки утверждение ниже проверяло бы только код ответа:
+  // исполнитель зовётся микрозадачей, и синхронный подсчёт его не видит.
+  // Отказ, за которым работа всё-таки стартовала, проходил бы зелёным
+  // (находка гейта, PR #234).
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls, 6, 'за отказом по потолку не стартовало ничего')
 
   // Новые сутки UTC — счётчик начинается заново.
   clock = at('2026-09-29T00:00:00Z')
@@ -321,4 +326,72 @@ test('день суток считается только по UTC: местно
   const local = source.match(/\.get(FullYear|Month|Date|Hours|Minutes|Day)\(/g) ?? []
   assert.deepEqual(local, [], `местное время в src/jobs/store.js: ${local.join(', ')}`)
   assert.match(source, /getUTCFullYear/)
+})
+
+test('уборка ленты сводок не трогает суточный счётчик стартов', () => {
+  // Пока счётчик считал строки ленты, потолок выше KEEP_RUNS был неисполним:
+  // уборка снимала строки, по которым он считался (находка гейта, PR #234).
+  const clock = at('2026-09-28T06:00:00Z')
+  const { store, clean } = tempStore(() => clock)
+  const total = KEEP_RUNS + 10
+  for (let i = 0; i < total; i += 1) {
+    store.start({ id: `run-${i}`, job: 'digest' })
+    store.finish({ id: `run-${i}`, status: 'succeeded' })
+  }
+
+  assert.equal(store.startsToday('digest', clock), total)
+  // Лента при этом подрезана — это её политика хранения, а не счётчик.
+  assert.equal(store.recent('digest').length, KEEP_RUNS)
+  clean()
+})
+
+test('работы не занижают счётчики друг друга', () => {
+  const clock = at('2026-09-28T06:00:00Z')
+  const { store, clean } = tempStore(() => clock)
+  for (let i = 0; i < KEEP_RUNS; i += 1) {
+    store.start({ id: `other-${i}`, job: 'другая-работа' })
+    store.finish({ id: `other-${i}`, status: 'succeeded' })
+  }
+  store.start({ id: 'digest-1', job: 'digest' })
+
+  assert.equal(store.startsToday('digest', clock), 1)
+  assert.equal(store.startsToday('другая-работа', clock), KEEP_RUNS)
+  clean()
+})
+
+test('счётчик прошлых суток не держится вечно, а нынешние сутки уборка не трогает', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jobs-'))
+  const file = join(dir, 'jobs.db')
+  let clock = at('2026-09-01T06:00:00Z')
+  const store = createJobStore({ file, now: () => clock })
+  store.start({ id: 'старый', job: 'digest' })
+
+  clock = at('2026-09-20T06:00:00Z')
+  store.start({ id: 'новый', job: 'digest' })
+  assert.equal(store.startsToday('digest', at('2026-09-01T06:00:00Z')), 0, 'давние сутки убраны')
+  assert.equal(store.startsToday('digest', clock), 1, 'нынешние сутки целы')
+
+  store.close()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('срок в теле сводок меняется вместе с часами и с расписанием работы', () => {
+  // Держатель ПРОВОДКИ, а не самой `nextRunAt`: подмена вызова на литерал
+  // проходила незамеченной, потому что оба теста тела читали один и тот же
+  // час и одно и то же расписание (находка гейта, PR #234).
+  const make = (scheduleUtc, nowIso) =>
+    createJobs({
+      jobs: loadJobs({ jobs: [{ ...RAW.jobs[0], scheduleUtc, maxRunsPerDay: 30 }] }),
+      schedulerKey: 'к',
+      now: () => at(nowIso),
+    }).view('digest')
+
+  // Одно расписание, разные часы — разные сроки.
+  assert.equal(make('0 */6 * * *', '2026-09-28T07:30:00Z').nextRunAt, '2026-09-28T12:00:00.000Z')
+  assert.equal(make('0 */6 * * *', '2026-09-28T13:05:00Z').nextRunAt, '2026-09-28T18:00:00.000Z')
+  // Один час, разные расписания — разные сроки.
+  assert.equal(make('0 */2 * * *', '2026-09-28T07:30:00Z').nextRunAt, '2026-09-28T08:00:00.000Z')
+  assert.equal(make('30 9 * * *', '2026-09-28T07:30:00Z').nextRunAt, '2026-09-28T09:30:00.000Z')
+  // И срок работы — это её собственное расписание, а не чужое.
+  assert.equal(make('30 9 * * *', '2026-09-28T07:30:00Z').job.schedule, '30 9 * * *')
 })

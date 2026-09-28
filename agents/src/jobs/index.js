@@ -152,6 +152,7 @@ export function createJobs({
     const job = jobs.get(jobId)
     if (!job) return null
     const spent = spend?.() ?? {}
+    const runningId = store ? store.running(job.id) : null
     return {
       job: {
         enabled: job.enabled,
@@ -164,7 +165,7 @@ export function createJobs({
       startsToday: store ? store.startsToday(job.id, now()) : null,
       budgetLeftUsd: typeof spent.budgetLeftUsd === 'number' ? spent.budgetLeftUsd : null,
       dailyCostUsd: typeof spent.dailyCostUsd === 'number' ? spent.dailyCostUsd : null,
-      running: store && store.running(job.id) ? { runId: store.running(job.id) } : null,
+      running: runningId === null ? null : { runId: runningId },
       runs: store ? store.recent(job.id) : [],
     }
   }
