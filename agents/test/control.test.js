@@ -19,7 +19,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createControlLog } from '../src/control/log.js'
 import { CONTROL_PROMPT_IDS, CONTROL_UNEDITABLE_PROMPT_ID, OP_NAMES, OPS } from '../src/control/ops.js'
-import { createControlService } from '../src/control/service.js'
+import { createControlService, startControlListener } from '../src/control/service.js'
 import { createInvariants } from '../src/invariants.js'
 import { PROFILE_PROMPT_IDS, STAGED15_MAX_TOKENS } from '../src/params.js'
 import { createProfilePrompts } from '../src/prompts.js'
@@ -651,6 +651,125 @@ test('message.send доводит запуск до конца и отдаёт �
     assert.equal(history.json.messages[0].text, 'что нового в финтехе')
   } finally {
     ctx.close()
+  }
+})
+
+test('клиентская ошибка платной операции слот НЕ занимает — поверхность не выключается чужой опечаткой', async () => {
+  const ctx = await setup({ dailyCap: 2 })
+  try {
+    // Годный по форме, но ЧУЖОЙ диалог: разбор аргументов это пропускает,
+    // видно только по хранилищу. Раньше такая опечатка съедала слот, и
+    // десяти хватало, чтобы выключить платные операции до конца суток UTC.
+    const foreign = ctx.sessions.createSession({
+      profileId: ctx.sessions.createProfile({ name: 'Чужой' }).profile.id,
+    }).id
+    const before = ctx.fetchImpl.calls.length
+    for (let i = 0; i < 5; i += 1) {
+      const out = await ctx.call('/control/message.send', {
+        method: 'POST',
+        body: { profileId: ctx.profile.id, sessionId: foreign, text: 'что нового' },
+      })
+      assert.equal(out.status, 400, `попытка ${i}`)
+    }
+    // Ни разу не позвана модель И ни разу не занят слот — две разные вещи,
+    // и проверяются обе.
+    assert.equal(ctx.fetchImpl.calls.length, before)
+    assert.equal(ctx.controlLog.paidToday(), 0)
+
+    // То же у формулировщика: черновик длиннее предела — клиентская ошибка.
+    const long = await ctx.call('/control/invariant.draft', {
+      method: 'POST',
+      body: { profileId: ctx.profile.id, text: 'я'.repeat(5000) },
+    })
+    assert.equal(long.status, 400)
+    assert.equal(ctx.controlLog.paidToday(), 0)
+
+    // Положительный контроль: настоящая платная работа слот занимает —
+    // иначе ноль выше удовлетворила бы и гипотеза «счётчик сломан».
+    await ctx.call('/control/message.send', {
+      method: 'POST',
+      body: { profileId: ctx.profile.id, sessionId: ctx.sid, text: 'что нового' },
+    })
+    assert.equal(ctx.controlLog.paidToday(), 1)
+  } finally {
+    ctx.close()
+  }
+})
+
+test('I-4: слот занят ДО того, как модель позвана, а не после ответа', async () => {
+  // Разводя доменную проверку и слот, легко переставить слот ПОСЛЕ работы и
+  // не заметить: суточный счётчик всё равно растёт. Здесь порядок меряется
+  // изнутри вызова модели — роутер спрашивает счётчик в тот момент, когда
+  // его уже позвали. Слот после работы дал бы здесь 0.
+  let seenAtCall = null
+  const ctx = await setup({ dailyCap: 5 })
+  const base = ctx.fetchImpl
+  const probing = async (url, options) => {
+    if (!String(url).includes('/v1/models') && seenAtCall === null) {
+      seenAtCall = ctx.controlLog.paidToday()
+    }
+    return base(url, options)
+  }
+  probing.calls = base.calls
+  try {
+    const handler = createControlService({
+      sessions: ctx.sessions,
+      invariants: ctx.invariants,
+      agents: new Map([[PROMPT_AGENT_ID, ctx.agent]]),
+      runs: ctx.runs,
+      controlLog: ctx.controlLog,
+      env: ctx.env,
+      log: () => {},
+      fetchImpl: probing,
+    })
+    const server = createServer(handler)
+    ctx.extra = server
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/control/invariant.draft`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ profileId: ctx.profile.id, text: 'отвечай по-русски' }),
+    })
+    await res.json()
+    assert.notEqual(seenAtCall, null, 'модель была позвана — иначе порядок не про что мерить')
+    assert.equal(seenAtCall, 1, 'на момент вызова модели слот уже занят')
+  } finally {
+    ctx.extra?.close()
+    ctx.close()
+  }
+})
+
+test('у слушателя поверхности есть подписка на error: отказ порта не валит процесс', async () => {
+  // Что здесь проверяется ЧЕСТНО: что на сервере зарегистрирован слушатель
+  // события `error`. Именно регистрация и превращает падение процесса в
+  // строку журнала — у EventEmitter событие `error` БЕЗ слушателя бросает.
+  // Поэтому `emit('error')` ниже — не имитация занятого порта, а прямая
+  // проверка того единственного свойства, которого не хватало: без строки
+  // `.on('error', …)` этот вызов бросит, и тест покраснеет.
+  //
+  // Настоящий EADDRINUSE здесь НЕ воспроизводится: два слушателя одного
+  // процесса на один порт ведут себя по-разному на разных системах, и тест,
+  // зелёный на одной из них по случайности, держал бы меньше этого.
+  //
+  // Зачем вообще: занятый CONTROL_PORT — например, по опечатке равный PORT —
+  // ронял ВЕСЬ процесс agents, а с ним дни 6–20. Это прямо расходится с
+  // принципом, записанным в env.js: отказывает то, что настроено неверно, и
+  // только оно (находка reviewer, PR #254).
+  const lines = []
+  const server = startControlListener({
+    handler: () => {},
+    port: 0,
+    log: (entry) => lines.push(entry),
+  })
+  try {
+    assert.equal(server.listenerCount('error') > 0, true, 'подписка на error есть')
+    server.emit('error', new Error('listen EADDRINUSE: address already in use :::8086'))
+    const note = lines.find((l) => l.event === 'control_listen_failed')
+    assert.notEqual(note, undefined, 'причина названа в журнале')
+    assert.equal(note.port, 0)
+    assert.match(note.reason, /EADDRINUSE/)
+  } finally {
+    server.close()
   }
 })
 

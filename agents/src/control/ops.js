@@ -276,7 +276,17 @@ export const OPS = [
       }
       return { ok: true, profileId: body.profileId }
     },
-    async run({ sessions, agents, runs, log }, { body }) {
+    /**
+     * Всё, что видно ДО денег: живой профиль, настройки, принадлежность
+     * диалога, занятость, потолки входа. Диспетчер зовёт это ПЕРЕД тем, как
+     * занять слот суточного потолка, — иначе десять клиентских опечаток
+     * выбирали бы потолок при нулевом расходе и выключали поверхность до
+     * конца суток (находка reviewer, PR #254).
+     *
+     * I-4 при этом цел: здесь нет ни `runs.create`, ни `agent.execute` —
+     * только разбор. Деньги начинаются в `run`, ниже слота.
+     */
+    precheck({ sessions, agents }, { body }) {
       const agent = promptAgent(agents)
       if (!agent) return notFound('no_agent')
       const profile = liveProfile(sessions, body.profileId)
@@ -301,9 +311,14 @@ export const OPS = [
         ...(body.parentId === undefined ? {} : { parentId: body.parentId }),
       })
       if (!parsed.ok) return { ok: false, status: 400, code: 'bad_input', message: parsed.message }
+      return { ok: true, input: parsed.input }
+    },
 
-      const run = runs.create({ agent, input: parsed.input })
-      agent.hold(parsed.input.sessionId)
+    async run({ agents, runs, log }, { precheck }) {
+      const agent = promptAgent(agents)
+      // Слот суточного потолка уже занят диспетчером: всё ниже — деньги.
+      const run = runs.create({ agent, input: precheck.input })
+      agent.hold(precheck.input.sessionId)
       const ended = new Promise((resolve) => {
         const off = runs.subscribe(run.id, (message) => {
           if (message.type !== 'end') return
@@ -418,8 +433,22 @@ export const OPS = [
       }
       return { ok: true, profileId: body.profileId }
     },
-    async run({ invariants, env, fetchImpl }, { body }) {
+    /**
+     * Те же проверки, что делает сам формулировщик перед вызовом модели, —
+     * и это буквально его функция, а не копия: `preflightDraft` вынесен из
+     * `draft` и им же зовётся первой строкой. Разойтись им нечем.
+     */
+    precheck({ invariants }, { body }) {
       if (!invariants) return notFound('no_invariants')
+      const pre = invariants.preflightDraft({ profileId: body.profileId, text: body.text })
+      if (!pre.ok) {
+        return { ok: false, status: pre.status, code: pre.code, message: pre.message }
+      }
+      return { ok: true }
+    },
+
+    async run({ invariants, env, fetchImpl }, { body }) {
+      // Слот суточного потолка уже занят диспетчером: ниже начинаются деньги.
       const result = await invariants.draft({
         profileId: body.profileId,
         text: body.text,

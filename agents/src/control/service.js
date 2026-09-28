@@ -16,6 +16,7 @@
 // процесса, а не ручки `/v1` по HTTP: иначе `CONTROL_KEY` пришлось бы
 // дополнять `AGENT_KEY`.
 
+import http from 'node:http'
 import { createControlKey } from './key.js'
 import { OPS } from './ops.js'
 
@@ -174,7 +175,40 @@ export function createControlService({
         }
       }
 
-      // 4. Суточный потолок платных операций — ДО работы, и слот занимается
+      // 4. Доменная проверка платной операции — ДО слота. Разбор аргументов
+      //    выше ловит опечатки формы; здесь ловится то, что видно только по
+      //    хранилищу: чужой диалог, мёртвый профиль, занятость, полный список
+      //    инвариантов. Без этого шага десять клиентских ошибок выбирали бы
+      //    суточный потолок при НУЛЕВОМ расходе и выключали поверхность до
+      //    конца суток UTC (находка reviewer, PR #254).
+      //
+      //    I-4 НЕ ослаблен: `precheck` — это разбор и чтение, в нём нет ни
+      //    `runs.create`, ни `agent.execute`, ни вызова формулировщика.
+      //    Деньги начинаются строкой 5, и слот занимается выше неё.
+      let precheck = { ok: true }
+      if (op.paid && op.precheck) {
+        precheck = await op.precheck(deps, { params, body, parsed })
+        if (precheck.ok === false) {
+          record({
+            op: op.name,
+            outcome: precheck.code ?? 'bad_input',
+            started,
+            // `paid: false` — и это не украшение отчёта: слот НЕ занят, и
+            // строка журнала обязана говорить именно это.
+            paid: false,
+            remote,
+            profileId: parsed.profileId ?? null,
+            texts: op.texts ? op.texts(body) : null,
+          })
+          return send(res, precheck.status, {
+            ok: false,
+            code: precheck.code,
+            ...(precheck.message ? { message: precheck.message } : {}),
+          })
+        }
+      }
+
+      // 5. Суточный потолок платных операций. Слот занимается ДО работы и
       //    ДО вызова модели, а не после (I-4). Слот не возвращается при
       //    отказе поставщика: ход мог быть оплачен, и «не получилось» не
       //    делает его бесплатным.
@@ -209,8 +243,8 @@ export function createControlService({
         controlLog.takePaidSlot()
       }
 
-      // 5. Работа. Ниже этой строки платного вызова без занятого слота нет.
-      const result = await op.run(deps, { params, body, parsed })
+      // 6. Работа. Ниже этой строки платного вызова без занятого слота нет.
+      const result = await op.run(deps, { params, body, parsed, precheck })
       const outcome = result.ok === false ? (result.code ?? 'error') : 'ok'
       record({
         op: op.name,
@@ -253,4 +287,26 @@ export function controlHealth(env, notes = []) {
     return `выключена: ${note ? note.message : 'CONTROL_KEY не задан'}`
   }
   return { port: env.CONTROL_PORT, ops: OPS.length, failsPerMin: env.CONTROL_FAILS_PER_MIN }
+}
+
+/**
+ * Поднять слушатель поверхности. Функция существует ради ОДНОЙ строки —
+ * подписки на `'error'`.
+ *
+ * Без неё занятый порт (например, `CONTROL_PORT`, по опечатке равный `PORT`)
+ * роняет ВЕСЬ процесс `agents`, а с ним дни 6–20. Это прямо расходится с
+ * принципом, записанным рядом в `env.js`: неверно настроенная поверхность не
+ * должна ронять сервис, в котором живут дни. Разбор окружения принцип держал,
+ * слушатель — нет (находка reviewer, PR #254).
+ *
+ * Отказывает то, что настроено неверно, и только оно: поверхности не будет,
+ * причина названа в журнале, дни 6–20 работают.
+ */
+export function startControlListener({ handler, port, log, onReady = () => {} }) {
+  const server = http.createServer(handler)
+  server.on('error', (error) => {
+    log({ event: 'control_listen_failed', port, reason: error.message })
+  })
+  server.listen(port, onReady)
+  return server
 }

@@ -7,7 +7,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createNewsAnalyst } from './src/agent.js'
 import { createControlLog } from './src/control/log.js'
-import { controlHealth, createControlService } from './src/control/service.js'
+import {
+  controlHealth,
+  createControlService,
+  startControlListener,
+} from './src/control/service.js'
 import { parseEnv } from './src/env.js'
 import { createInvariants } from './src/invariants.js'
 import { createJobs, loadJobs } from './src/jobs/index.js'
@@ -227,21 +231,21 @@ const handler = createService({
   log,
   controlState: () => controlHealth(env, notes),
 })
-http
-  .createServer(
-    createControlService({
-      sessions,
-      invariants,
-      agents,
-      runs,
-      controlLog,
-      env,
-      log,
-    }),
-  )
-  .listen(env.CONTROL_PORT, () => {
-    log({ event: 'control_start', port: env.CONTROL_PORT, control: controlHealth(env, notes) })
-  })
+startControlListener({
+  handler: createControlService({
+    sessions,
+    invariants,
+    agents,
+    runs,
+    controlLog,
+    env,
+    log,
+  }),
+  port: env.CONTROL_PORT,
+  log,
+  onReady: () =>
+    log({ event: 'control_start', port: env.CONTROL_PORT, control: controlHealth(env, notes) }),
+})
 
 // Уборка журнала обращений: 30 суток (решение владельца при приёмке ADR).
 // Держатель срока — эта строка и тест уборки: тексты посетителей не остаются
