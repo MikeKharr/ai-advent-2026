@@ -44,7 +44,8 @@ export function loadJobs(raw) {
     const schedule = parseSchedule(entry.scheduleUtc)
     // Потолок ниже числа сроков означал бы, что ровная каденция сама
     // упирается в денежный потолок, и «всё идёт как задумано» неотличимо от
-    // «упёрлись». То же требует `test/cron-schedule.test.js` от конфигурации.
+    // «упёрлись». То же требует `test/cron-schedule.test.js` от настоящего
+    // `agents/config/jobs.json` — тем же `slotsPerDay`, а не своим счётом.
     if (entry.maxRunsPerDay < slotsPerDay(schedule))
       fail(id, `maxRunsPerDay ${entry.maxRunsPerDay} ниже числа сроков в сутки ${slotsPerDay(schedule)}`)
 
