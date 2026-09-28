@@ -209,6 +209,39 @@ export async function runToolLoop({
       data: { round: rounds, stopReason: reply.stopReason, provider: reply.provider },
     })
 
+    // Слова модели этого круга (ADR 2026-09-28-1852, заход 1). Второго
+    // обращения к модели здесь нет: текстовые блоки уже пришли в этом самом
+    // ответе и до сих пор просто выбрасывались на кругах с `tool_use`.
+    //
+    // Событие уходит ВСЕГДА, в том числе с пустым `text`: «выбрала без слов» —
+    // факт круга, а не отсутствие данных. Подставлять на это место заглушку
+    // или прятать событие нельзя — страница обязана сказать это словом.
+    //
+    // `chosen` — что модель назвала, а не что исполнено: при `stopReason`
+    // `length` блок `tool_use` обрезан и не исполняется (ветка ниже), поэтому
+    // причина остановки идёт в событии рядом со списком и страница показывает
+    // её вместе с ним.
+    const chosen = reply.content
+      .filter((block) => block?.type === 'tool_use')
+      .map((block) => {
+        const at = index.resolve(block.name)
+        return at ? { server: at.server, tool: at.tool } : { server: null, tool: String(block.name) }
+      })
+    emit({
+      stage: 'llm_text',
+      title: `Слова модели, круг ${rounds}`,
+      detail: chosen.map((pick) => (pick.server ? `${pick.server} · ${pick.tool}` : pick.tool)).join(', '),
+      data: {
+        round: rounds,
+        text: reply.content
+          .filter((block) => block?.type === 'text' && typeof block.text === 'string' && block.text !== '')
+          .map((block) => block.text)
+          .join('\n\n'),
+        chosen,
+        stopReason: reply.stopReason ?? null,
+      },
+    })
+
     // ЕДИНСТВЕННОЕ условие исполнения инструментов. Обрыв по длине роутер
     // называет `length`, и блок `tool_use` в таком ответе обрезан — исполнять
     // его нельзя (ADR, п. 1). Поэтому здесь проверяется равенство `tool_use`,
