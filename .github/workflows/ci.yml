@@ -263,15 +263,95 @@ jobs:
 
   # Изоляция службы MCP в отдельной сети compose — условие вето compliance
   # (ADR 2026-09-23-1227, п. 5). Проверяет структуру deploy/compose.yml, а не
-  # намерение: mcp только в сети mcp, в сети mcp — только caddy, mcp и день 16.
+  # намерение: mcp только в сети mcp, в сети mcp — только caddy, mcp и день 16;
+  # cron только в сети cron, в сети cron — только agents и cron
+  # (ADR 2026-09-28-0736, п. 6).
   compose:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
-      - name: Изоляция сети mcp
+      - name: Изоляция сетей mcp и cron
         run: node .github/scripts/compose-networks.mjs
+
+      # Контейнер времени — стоковый образ без Dockerfile, поэтому ни матрица
+      # сборки, ни «Проверка живого сайта» его не видят: до первого срока в
+      # проде о нём никто ничего не узнает. Этот шаг — единственное место, где
+      # образ поднимается до выкатки.
+      #
+      # Проверяется не «образ существует», а три допущения, на которых стоит
+      # п. 6 ADR и которые до сборки были взяты из конфигурации busybox, а не
+      # из прогона:
+      #   1) в образе есть crond и wget с длинными опциями (--post-data,
+      #      --header) — иначе тик не уйдёт вовсе;
+      #   2) локальное время образа — UTC, то есть в нём нет tzdata. Сдвиг
+      #      развёл бы сутки расписания и сутки суточного потолка стартов, не
+      #      сломав при этом ничего на вид: контейнер жив, запуски идут;
+      #   3) настоящий deploy/cron/entrypoint.sh с этим образом доходит до
+      #      crond — берётся файл из репозитория, а не его пересказ.
+      #
+      # Образ берётся строкой из deploy/compose.yml, а не повторяется здесь:
+      # иначе шаг проверял бы один образ, а прод поднимал другой, и обновление
+      # пина оставляло бы шаг зелёным.
+      - name: Образ cron умеет crond и wget --post-data
+        run: |
+          set -euo pipefail
+          image=$(grep -oE 'alpine:[0-9.]+@sha256:[0-9a-f]{64}' deploy/compose.yml)
+          [ -n "$image" ] || { echo "::error::в deploy/compose.yml не найден образ cron, закреплённый по digest"; exit 1; }
+          echo "образ из compose.yml: $image"
+          docker pull -q "$image"
+
+          # Наличие crond — по `command -v`, а не по тексту справки: у
+          # отсутствующей команды вывод «sh: crond: not found» тоже содержит
+          # слово crond, и проверка по тексту зеленела бы на любой гипотезе.
+          docker run --rm --entrypoint /bin/sh "$image" -c 'command -v crond >/dev/null' || {
+            echo "::error::в образе нет crond"; exit 1; }
+
+          # А вот длинные опции wget видны только в справке: busybox собирают и
+          # без CONFIG_FEATURE_WGET_LONG_OPTIONS, и тогда wget есть, а
+          # --post-data нет. Справка идёт в stderr с ненулевым кодом — отсюда
+          # `|| true` и разбор текста.
+          help=$(docker run --rm --entrypoint /bin/sh "$image" -c 'wget --help 2>&1' || true)
+          printf '%s\n' "$help" | grep -q 'post-data' || {
+            echo "::error::в образе нет wget --post-data: тик планировщика не уйдёт"; exit 1; }
+
+          offset=$(docker run --rm --entrypoint /bin/sh "$image" -c 'date +%z')
+          [ "$offset" = '+0000' ] || {
+            echo "::error::локальное время образа $offset, а не UTC: сутки расписания разойдутся с сутками суточного потолка стартов"; exit 1; }
+          echo "смещение времени в образе: $offset"
+
+          # Настоящий entrypoint с настоящим расписанием. crond не завершается,
+          # поэтому его обрывает timeout: предмет проверки — что до строки
+          # «расписание /cron/crontabs» дошло, а не что процесс закончился.
+          # Ключ здесь заведомо не настоящий: шаг никуда не стучится.
+          log=$(docker run --rm -e AGENT_KEY=ci-not-a-real-key \
+                  -v "$PWD/deploy/cron:/cron:ro" --entrypoint /usr/bin/timeout \
+                  "$image" 10 /bin/sh /cron/entrypoint.sh 2>&1 || true)
+          printf '%s\n' "$log"
+          printf '%s\n' "$log" | grep -q 'расписание /cron/crontabs' || {
+            echo "::error::deploy/cron/entrypoint.sh не дошёл до crond на этом образе"; exit 1; }
+
+          # Отказ по поясу — устройство, и проверяется он подменой пояса, а не
+          # чтением комментария. Коды различают гипотезы: без них «не удалось
+          # поставить tzdata» и «пояс сменился, а entrypoint всё равно
+          # поднялся» дали бы один и тот же ненулевой код, и шаг зеленел бы
+          # при любом исходе (agent_docs/guides/verification.md).
+          #   90 — tzdata не встала: мутация не состоялась, судить не о чем;
+          #   91 — пояс не сменился: мутация не состоялась;
+          #   78 — entrypoint отказал по поясу, как и задумано.
+          set +e
+          docker run --rm -e AGENT_KEY=ci-not-a-real-key -e TZ=Asia/Singapore \
+            -v "$PWD/deploy/cron:/cron:ro" --entrypoint /bin/sh "$image" -c \
+            'apk add --no-cache tzdata >/dev/null 2>&1 || exit 90; [ "$(date +%z)" = "+0800" ] || exit 91; exec /bin/sh /cron/entrypoint.sh'
+          rc=$?
+          set -e
+          case "$rc" in
+            78) echo "пояс Asia/Singapore: старт отменён кодом 78, как и задумано" ;;
+            90) echo "::error::tzdata не поставилась — подмена пояса не состоялась, отказ по поясу не проверен"; exit 1 ;;
+            91) echo "::error::пояс не сменился — подмена пояса не состоялась, отказ по поясу не проверен"; exit 1 ;;
+            *) echo "::error::при поясе +0800 entrypoint вернул $rc, а не 78: отказ по поясу не держит"; exit 1 ;;
+          esac
 
   # actionlint по всем workflow: синтаксис, выражения ${{ }}, имена событий,
   # и shellcheck по телам `run:` (ADR 2026-09-24-1230, A10).

@@ -1,8 +1,14 @@
-// Изоляция службы MCP в отдельной сети compose — ADR 2026-09-23-1227, п. 5,
-// условие вето compliance. Правило: контейнер `mcp` живёт ТОЛЬКО в сети `mcp`,
-// а в сети `mcp` — только `caddy`, сам `mcp` и день 16. В сети по умолчанию,
-// где `router`, `agents` и всё, что читает `secrets.env`, его нет: оттуда не
-// разрешается даже имя.
+// Изоляция служб в отдельных сетях compose. Два правила, оба — условие вето
+// compliance:
+//   - `mcp` (ADR 2026-09-23-1227, п. 5): контейнер `mcp` живёт ТОЛЬКО в сети
+//     `mcp`, а в сети `mcp` — только `caddy`, сам `mcp` и день 16. В сети по
+//     умолчанию, где `router`, `agents` и всё, что читает `secrets.env`, его
+//     нет: оттуда не разрешается даже имя.
+//   - `cron` (ADR 2026-09-28-0736, п. 6): контейнер времени живёт ТОЛЬКО в
+//     сети `cron`, а в сети `cron` — только он и `agents`. Он держит копию
+//     `AGENT_KEY`, и единственное, до чего он вправе дотянуться, — ручка
+//     запуска работы. Ни `router`, ни дни, ни `mcp` из этой сети не
+//     разрешаются.
 //
 // Проверяется структура файла, а не намерение в комментарии. Служба без
 // ключа `networks:` попадает в сеть по умолчанию — это и есть случай, ради
@@ -16,18 +22,24 @@ import { pathToFileURL } from 'node:url'
 
 export const COMPOSE = 'deploy/compose.yml'
 
-/** Служба, которую изолируем, и её сеть. */
-export const ISOLATED = 'mcp'
-/** Кто ещё вправе быть в сети `mcp`: вход и день, ради которого она заведена. */
-export const ALLOWED_IN_NETWORK = ['caddy', 'mcp', 'day16']
 /**
- * Жильцы сети: им положена РОВНО ОДНА сеть — своя. `caddy` в этот список не
- * входит намеренно: он вход, обе сети ему положены по работе. Без этого
- * различения список выше разрешал бы дню 16 быть в `mcp` и в сети по
- * умолчанию одновременно — мостик из изолированной сети туда, где `router`,
- * `agents` и `secrets.env` (находка `compliance` к PR дня 16).
+ * Правила изоляции.
+ *
+ * `network` — сеть; `allowed` — кто вправе в ней быть; `only` — кому положена
+ * РОВНО ОДНА сеть, своя. `caddy` в `only` не входит намеренно: он вход, обе
+ * сети ему положены по работе. Без этого различения `allowed` разрешал бы дню
+ * 16 быть в `mcp` и в сети по умолчанию одновременно — мостик из изолированной
+ * сети туда, где `router`, `agents` и `secrets.env` (находка `compliance` к PR
+ * дня 16).
+ *
+ * `agents` в правиле `cron` стоит в `allowed`, но не в `only`: ему сеть по
+ * умолчанию положена по работе — по ней к нему приходят дни 6–15. Изолирован
+ * здесь контейнер времени, а не сервис агентов.
  */
-export const ONLY_IN_NETWORK = ['mcp', 'day16']
+export const RULES = [
+  { network: 'mcp', allowed: ['caddy', 'mcp', 'day16'], only: ['mcp', 'day16'] },
+  { network: 'cron', allowed: ['agents', 'cron'], only: ['cron'] },
+]
 
 const COMMENT = /^\s*#/
 
@@ -83,26 +95,30 @@ export function problems(text) {
   const services = parseServices(text)
   const found = []
 
-  if (!services.has(ISOLATED)) {
-    found.push(`службы ${ISOLATED} нет в ${COMPOSE}`)
-    return found
-  }
-
-  for (const name of ONLY_IN_NETWORK) {
-    // Уехавшая служба — не дыра: дыра была бы, останься она с двумя сетями.
-    if (!services.has(name)) continue
-    const networks = services.get(name)
-    if (networks === null) {
-      found.push(`у службы ${name} нет ключа networks: — она в сети по умолчанию, вместе с router, agents и secrets.env`)
-    } else if (networks.length !== 1 || networks[0] !== ISOLATED) {
-      found.push(`служба ${name} должна быть только в сети ${ISOLATED}, а объявлена в: ${networks.join(', ') || '(пусто)'}`)
+  for (const rule of RULES) {
+    // Сама изолируемая служба обязана быть в файле: её пропажа — не «ok», а
+    // повод посмотреть, куда она делась.
+    if (!services.has(rule.network)) {
+      found.push(`службы ${rule.network} нет в ${COMPOSE}`)
+      continue
     }
-  }
 
-  for (const [name, networks] of services) {
-    if (networks === null || !networks.includes(ISOLATED)) continue
-    if (!ALLOWED_IN_NETWORK.includes(name)) {
-      found.push(`служба ${name} в сети ${ISOLATED}: там разрешены только ${ALLOWED_IN_NETWORK.join(', ')}`)
+    for (const name of rule.only) {
+      // Уехавшая служба — не дыра: дыра была бы, останься она с двумя сетями.
+      if (!services.has(name)) continue
+      const networks = services.get(name)
+      if (networks === null) {
+        found.push(`у службы ${name} нет ключа networks: — она в сети по умолчанию, вместе с router, agents и secrets.env`)
+      } else if (networks.length !== 1 || networks[0] !== rule.network) {
+        found.push(`служба ${name} должна быть только в сети ${rule.network}, а объявлена в: ${networks.join(', ') || '(пусто)'}`)
+      }
+    }
+
+    for (const [name, networks] of services) {
+      if (networks === null || !networks.includes(rule.network)) continue
+      if (!rule.allowed.includes(name)) {
+        found.push(`служба ${name} в сети ${rule.network}: там разрешены только ${rule.allowed.join(', ')}`)
+      }
     }
   }
   return found
@@ -112,8 +128,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const found = problems(readFileSync(join(process.cwd(), COMPOSE), 'utf8'))
   for (const problem of found) console.log(`::error file=${COMPOSE}::${problem}`)
   if (found.length) {
-    console.log(`::error::изоляция сети ${ISOLATED} нарушена — ADR 2026-09-23-1227, п. 5`)
+    console.log('::error::изоляция сетей нарушена — ADR 2026-09-23-1227, п. 5 и 2026-09-28-0736, п. 6')
     process.exit(1)
   }
-  console.log(`ok: ${ONLY_IN_NETWORK.join(' и ')} — каждая только в сети ${ISOLATED}; в сети ${ISOLATED} — только ${ALLOWED_IN_NETWORK.join(', ')}`)
+  for (const rule of RULES) {
+    console.log(
+      `ok: ${rule.only.join(' и ')} — каждая только в сети ${rule.network}; в сети ${rule.network} — только ${rule.allowed.join(', ')}`,
+    )
+  }
 }
