@@ -24,6 +24,18 @@ const UNREACHABLE = new Set([
   'ENETUNREACH',
 ])
 
+/**
+ * Текст, по которому меряется вход запроса. Вызывающий передаёт либо строку
+ * `input` (дни 6–16), либо диалог `messages` с блоками и определения
+ * инструментов `tools` (цикл `tool_use`). Мера у лимита, кэша и выбора
+ * провайдера должна быть одна: если брать только `input`, запрос с
+ * `messages` оценивается в ноль токенов и проходит мимо суточного потолка.
+ */
+export function inputTextOf(req) {
+  if (req.messages) return JSON.stringify(req.messages) + JSON.stringify(req.tools ?? [])
+  return String(req.input ?? '')
+}
+
 export function createRouter({
   config,
   registry,
@@ -93,8 +105,14 @@ export function createRouter({
       )
 
     const schema = req.schema ?? null
-    // Явная схема в запросе — это требование возможности json_schema.
-    const extraRequires = [...(req.requires ?? []), ...(schema ? ['json_schema'] : [])]
+    // Явная схема в запросе — это требование возможности json_schema, а
+    // определения инструментов — возможности tools: провайдер без неё молча
+    // ответил бы текстом вместо вызова инструмента.
+    const extraRequires = [
+      ...(req.requires ?? []),
+      ...(schema ? ['json_schema'] : []),
+      ...(req.tools?.length ? ['tools'] : []),
+    ]
     const requires = [...(cls.requires ?? []), ...extraRequires]
     const strict = schema !== null || requires.includes('json_schema')
     // Класс со схемой без схемы — граница, а не тихий свободный текст.
@@ -112,7 +130,7 @@ export function createRouter({
       requestedAnswerTokens = req.answerTokens
     }
 
-    const inputTokens = estimateTokens(req.input) + estimateTokens(req.system ?? '')
+    const inputTokens = estimateTokens(inputTextOf(req)) + estimateTokens(req.system ?? '')
     const providers = registry.list()
     // Явный выбор вызывающего (день 5: пользователь выбирает модель до
     // запуска). Политика тогда не решает — но возможность, класс данных и
@@ -260,6 +278,10 @@ export function createRouter({
         return {
           ok: true,
           text: attempt.text,
+          // Блоки ответа провайдера — как пришли: вызывающий видит `tool_use`
+          // отдельным блоком, а не склейкой в `text`.
+          content: attempt.content,
+          stopReason: attempt.stopReason,
           json: attempt.json,
           provider: {
             id: p.id,
@@ -280,7 +302,7 @@ export function createRouter({
             p,
             thinking,
             promptVersion: req.promptVersion,
-            input: req.input,
+            input: inputTextOf(req),
           }),
         }
       }
@@ -361,10 +383,12 @@ export function createRouter({
           provider: p,
           model: p.model,
           prompt: req.input,
+          messages: req.messages ?? null,
           system: req.system,
           schema,
           stop: req.stop ?? [],
           tools: requires.filter((r) => r === 'web_search'),
+          toolDefs: req.tools ?? [],
           thinking: { level: thinking, value: p.thinking[thinking] },
           answerTokens,
           maxOutputTokens,
@@ -375,7 +399,11 @@ export function createRouter({
       )
       health.noteQuota(p, result.quota)
       const text = (result.text ?? '').trim()
-      if (text.length === 0) {
+      const content = result.content ?? null
+      // Ответ из одних блоков `tool_use` текста не несёт и пустым не
+      // считается: это ход цикла инструментов, а не молчание провайдера.
+      const hasToolUse = (content ?? []).some((block) => block.type === 'tool_use')
+      if (text.length === 0 && !hasToolUse) {
         health.failure(p)
         return done('empty', 'пустой ответ при 200', { usage: result.usage })
       }
@@ -400,6 +428,8 @@ export function createRouter({
       health.success(p)
       return done('ok', null, {
         text,
+        content,
+        stopReason: result.stopReason,
         json,
         truncated,
         usage: result.usage,
@@ -467,14 +497,18 @@ export function createRouter({
   function estimateRequest(req) {
     const cls = config.classes[resolveClass(req.taskClass)]
     const level = resolveThinking(cls, req.thinking).level ?? cls.thinking
-    const inputTokens = estimateTokens(req.input) + estimateTokens(req.system ?? '')
+    const inputTokens = estimateTokens(inputTextOf(req)) + estimateTokens(req.system ?? '')
     const answerTokens = Math.min(
       req.answerTokens ?? cls.answerTokens,
       cls.maxAnswerTokens ?? cls.answerTokens,
     )
     const outputTokens = answerTokens + THINKING_TOKENS[level]
     const dataClass = req.dataClass ?? cls.dataClass
-    const extraRequires = [...(req.requires ?? []), ...(req.schema ? ['json_schema'] : [])]
+    const extraRequires = [
+      ...(req.requires ?? []),
+      ...(req.schema ? ['json_schema'] : []),
+      ...(req.tools?.length ? ['tools'] : []),
+    ]
     // При явном выборе способный кандидат ровно один — по нему и считаем,
     // иначе запрос к дешёвой модели резервируется по ставке дорогой.
     const pool = req.provider
