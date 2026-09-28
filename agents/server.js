@@ -11,6 +11,9 @@ import { createInvariants } from './src/invariants.js'
 import { createJobs, loadJobs } from './src/jobs/index.js'
 import { createJobStore } from './src/jobs/store.js'
 import { createLayeredAgent, LAYERED_AGENT_ID } from './src/layered.js'
+import { createJobRunner, createMcpAgent, MCP_AGENT_ID } from './src/mcp/agent.js'
+import { createPipelineAgent, PIPELINE_AGENT_ID } from './src/mcp/pipeline-agent.js'
+import { loadServers } from './src/mcp/servers.js'
 import { STAGED15_MAX_TOKENS } from './src/params.js'
 import { createProfilePrompts, registryPrompts } from './src/prompts.js'
 import { loadRegistry } from './src/registry.js'
@@ -29,13 +32,15 @@ import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-const { env, errors } = parseEnv()
+const { env, errors, notes } = parseEnv()
 if (errors.length > 0) {
   for (const message of errors) console.error(`конфигурация: ${message}`)
   process.exit(1)
 }
 
 const log = (entry) => console.log(typeof entry === 'string' ? entry : JSON.stringify(entry))
+// Замечания конфигурации, которые старт не валят: молча их не бывает.
+for (const note of notes) log(note)
 const registry = loadRegistry(JSON.parse(readFileSync(join(here, 'config', 'agents.json'), 'utf8')))
 const archive = createArchiveTool({ env, log })
 const runs = createRuns({ ttlMs: env.RUN_TTL_MINUTES * 60_000 })
@@ -84,9 +89,18 @@ const invariants = sessions ? createInvariants({ sessions }) : null
 // но и падать на чтении промптов ему незачем.
 const profilePrompts = sessions ? createProfilePrompts({ sessions }) : registryPrompts
 
+// Реестр серверов MCP (ADR 2026-09-28-0736, п. 1). Сервер без адреса в
+// окружении в реестр не попадает — и это называется в журнале, иначе день 20
+// молча остался бы без половины инструментов.
+const { servers: mcpServers, skipped: mcpSkipped } = loadServers(
+  JSON.parse(readFileSync(join(here, 'config', 'mcp-servers.json'), 'utf8')),
+)
+for (const miss of mcpSkipped) log({ event: 'mcp_server_skipped', server: miss.name, reason: miss.reason })
+
 /**
  * Реестр агентов → исполнители: аналитик новостей, слои памяти, машина
- * состояний и она же с инвариантами профиля.
+ * состояний, она же с инвариантами профиля, цикл с инструментами MCP и
+ * цепочка без модели.
  */
 const agents = new Map()
 for (const entry of registry.values()) {
@@ -98,11 +112,14 @@ for (const entry of registry.values()) {
   // «ничем», а чужим агентом, доходящим до платного вызова (находка гейта,
   // PR #233). Поэтому такой агент не регистрируется вовсе и в выдаче
   // `/v1/agents` не появляется, а строка в журнале называет причину.
-  if (entry.modelless) {
+  if (entry.id === PIPELINE_AGENT_ID)
+    agent = createPipelineAgent({ agent: entry, servers: mcpServers, runs, log })
+  else if (entry.modelless) {
     log({ event: 'agent_skipped', agent: entry.id, reason: 'исполнителя для агента без модели нет' })
     continue
-  }
-  if (entry.id === LAYERED_AGENT_ID) agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
+  } else if (entry.id === MCP_AGENT_ID)
+    agent = createMcpAgent({ agent: entry, servers: mcpServers, runs, env, log })
+  else if (entry.id === LAYERED_AGENT_ID) agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
   else if (entry.id === STAGED_AGENT_ID)
     agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })
   else if (entry.id === INVARIANT_AGENT_ID)
@@ -148,6 +165,9 @@ if (existsSync(jobsFile)) {
       jobs: loadJobs(JSON.parse(readFileSync(jobsFile, 'utf8'))),
       store: jobStore,
       schedulerKey: env.ROUTER_APP_KEY_SCHEDULER,
+      // Исполнитель запуска. Ключ приложения он выбирает сам — `scheduler`,
+      // а не `agents` (`src/mcp/agent.js`, `createJobRunner`).
+      runJob: createJobRunner({ registry, servers: mcpServers, runs, env, log }),
       log,
     })
   } catch (error) {

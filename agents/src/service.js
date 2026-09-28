@@ -410,7 +410,7 @@ export function createService({
     }
 
     // Ручки планировщика дня 18. Ответ на запуск — РЕШЕНИЕ, а не конец
-    // работы: тик ждёт 20 секунд (`deploy/cron/tick.sh`), работа идёт минуты.
+    // работы: тик ждёт секунды, работа идёт минуты.
     const triggerMatch = /^\/v1\/jobs\/([a-z0-9-]{2,31})\/trigger$/.exec(path)
     if (triggerMatch && req.method === 'POST') {
       if (!jobs) return send(res, 404, { ok: false, code: 'no_jobs' })

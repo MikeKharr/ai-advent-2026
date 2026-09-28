@@ -55,7 +55,9 @@ export function parseSchedule(text) {
 /**
  * Ближайший срок строго после `from`, в UTC. Часы и минуты берутся по UTC, а
  * не по поясу процесса: сутки счётчика стартов и сутки расписания обязаны
- * быть одними и теми же (см. комментарий в `deploy/cron/crontab.sh`).
+ * быть одними и теми же: таблицу сроков контейнер времени собирает из этого
+ * же `agents/config/jobs.json` сборщиком `deploy/cron/crontab.sh`, второй
+ * копии каденции нет.
  */
 export function nextRunAt(schedule, from) {
   const { minutes, hours } = schedule
