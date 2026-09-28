@@ -50,17 +50,6 @@
       поэтому без JavaScript она не работает. Включите JavaScript.</p>
   </noscript>
 
-  <form class="composer" id="run-form">
-    <label class="field" for="cmd">Задание модели</label>
-    <div class="cmd-row">
-      <input id="cmd" type="text" maxlength="600" autocomplete="off" spellcheck="false"
-             placeholder="свежие новости о fintech — сохрани выжимку и прочитай её обратно"
-             aria-describedby="run-status">
-      <button class="send" id="send" type="submit">Запустить</button>
-    </div>
-    <p class="cmd-status" id="run-status" role="status" aria-live="polite">&nbsp;</p>
-  </form>
-
   <section class="about" aria-labelledby="about-title">
     <h2 id="about-title">Что здесь показано</h2>
     <p>Предмет дня — <b>оркестрация</b>: инструменты собраны с нескольких независимых
@@ -74,6 +63,17 @@
       дня 19, где порядок задан кодом и расход модели нулевой. Поэтому у дня есть суточный
       предел запусков и потолок кругов на запуск.</p>
   </section>
+
+  <form class="composer" id="run-form">
+    <label class="field" for="cmd">Задание модели</label>
+    <div class="cmd-row">
+      <input id="cmd" type="text" maxlength="600" autocomplete="off" spellcheck="false"
+             placeholder="свежие новости о fintech — сохрани выжимку и прочитай её обратно"
+             aria-describedby="run-status">
+      <button class="send" id="send" type="submit">Запустить</button>
+    </div>
+    <p class="cmd-status" id="run-status" role="status" aria-live="polite">&nbsp;</p>
+  </form>
 
   <section>
     <h2 id="servers-title">Серверы в этом запуске</h2>
