@@ -182,6 +182,33 @@ http://challenge.zpq.ai {
 		}
 	}
 
+	redir /day18 /day18/ permanent
+	handle_path /day18/* {
+		reverse_proxy day18:8080 {
+			health_uri /healthz
+			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
+	redir /day19 /day19/ permanent
+	handle_path /day19/* {
+		reverse_proxy day19:8080 {
+			health_uri /healthz
+			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
+	redir /day20 /day20/ permanent
+	handle_path /day20/* {
+		reverse_proxy day20:8080 {
+			health_uri /healthz
+			health_interval 30s
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
 	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
 
 	# --- служба MCP ---

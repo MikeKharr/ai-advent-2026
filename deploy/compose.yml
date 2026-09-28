@@ -43,6 +43,9 @@ services:
       - day14
       - day15
       - day16
+      - day18
+      - day19
+      - day20
       - mcp
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
     # без ротации — на том же одном VPS, где переполнение диска
@@ -342,6 +345,62 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Дни 18–20 (ADR 2026-09-28-0736, пп. 6, 8, 9). Тот же ключ сервиса агентов,
+  # что у дней 6–15, и больше ничего: ключей к моделям и ключа роутера у них
+  # нет, всю работу и весь расход ведёт agents. Своих данных на диске нет —
+  # томов нет: сводки дня 18 живут в jobs.db на томе agents_data, файлы дня 19
+  # — на томе mcpstore_data.
+  day18:
+    image: ghcr.io/mikekharr/advent-day18:${DAY18_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day18.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  day19:
+    image: ghcr.io/mikekharr/advent-day19:${DAY19_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day19.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # У дня 20 порядок вызовов выбирает модель, поэтому он единственный из трёх
+  # тратит на посетителя: MAX_DAILY_CALLS 50 — его собственный потолок
+  # (days/day20/env.js), поверх суточного потолка приложения в роутере.
+  day20:
+    image: ghcr.io/mikekharr/advent-day20:${DAY20_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day20.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Сервис агентов (ADR 2026-09-09-0854). Публичного адреса нет: к нему
   # ходят контейнеры дней по сети compose, http://agents:8082. Сам он ходит
   # в роутер по ключу приложения `agents`.
@@ -359,8 +418,74 @@ services:
       - NODE_ENV=production
     volumes:
       - agents_data:/data   # архив статей агента, переживает пересоздание контейнера
+    networks:
+      # default — как и раньше: по ней приходят дни 6–15 и уходит запрос в
+      # роутер. Ключ networks: появился только из-за cron: без него служба
+      # оказалась бы ТОЛЬКО в сети cron, и дни потеряли бы её молча.
+      default:
+      # cron — сеть на двоих с контейнером времени (ADR 2026-09-28-0736,
+      # п. 6). Она нужна не для связности: связность дал бы и default. Она
+      # нужна, чтобы у cron не было пути ни к router, ни к дням, ни к mcp —
+      # из неё не разрешается даже их имя. Держит
+      # .github/scripts/compose-networks.mjs.
+      cron:
+      # tools — сеть серверов MCP дней 19–20 (ADR 2026-09-28-0736, п. 3).
+      # Отдельная по той же причине: хост ходит к ним, они не ходят никуда.
+      # caddy в неё не входит — маршрута в Caddyfile у этих серверов нет и
+      # публичного адреса тоже.
+      tools:
     depends_on:
       - router
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Время планировщика дня 18 (ADR 2026-09-28-0736, п. 6). Контейнер решает
+  # ТОЛЬКО «когда»: по расписанию из git он дёргает ручку запуска работы в
+  # сервисе агентов. Решение «запускать ли сейчас» — включена ли работа, не
+  # идёт ли предыдущий запуск, не занят ли этот час, не исчерпан ли суточный
+  # потолок стартов, есть ли ключ приложения scheduler — принимает сервис
+  # агентов; состояние (jobs.db) и трейс тоже у него.
+  #
+  # Почему контейнер, а не crontab хоста: хостовой crontab лежит вне
+  # репозитория, не едет выкаткой, правится только по ssh и не виден с
+  # экрана. Расписание здесь — deploy/cron/crontabs/root в git.
+  #
+  # Образ стоковый и закреплён тегом И digest (образец — caddy в zpq-ai):
+  # alpine:3.24.2 — движущаяся цель, и смена busybox под тем же тегом меняла
+  # бы поведение crond и wget без единой строки диффа. Обновление — отдельным
+  # PR, как у любого пина. Digest сверен с registry-1.docker.io 2026-09-28.
+  #
+  # Dockerfile у службы нет, и это осознанно: без каталога с Dockerfile она
+  # не единица выкатки (deploy-units.sh, ci.yml), поэтому её не знают ни
+  # матрица сборки, ни ожидание healthy, ни «Проверка живого сайта», которой
+  # нечего дёргать у контейнера без публичного адреса. Поднимает её тот же
+  # `docker compose up -d`, что и caddy, живущий так с первого дня.
+  cron:
+    image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+    restart: unless-stopped
+    env_file:
+      # AGENT_KEY — копия значения из agents.env (норма копии между
+      # env-файлами, ADR 2026-09-11-1743). Без файла контейнер не
+      # поднимается: entrypoint отказывает на старте. Иначе вышел бы
+      # контейнер, который раз в 6 часов получает 401 и при этом выглядит
+      # работающим планировщиком.
+      - path: ./cron.env
+        required: false
+    volumes:
+      # Весь каталог расписания — на чтение. crond перечитывает его по mtime,
+      # поэтому правка расписания доезжает `git reset` при выкатке и
+      # подхватывается без пересоздания контейнера.
+      - ./cron:/cron:ro
+    tmpfs:
+      # /run/agent.key пишет entrypoint: ключ существует только в памяти
+      # контейнера и не попадает в его записываемый слой на диске.
+      - /run:mode=0755
+    command: ["/bin/sh", "/cron/entrypoint.sh"]
+    networks:
+      - cron
+    depends_on:
+      - agents
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -427,6 +552,40 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Серверы MCP дней 19–20 (ADR 2026-09-28-0736, п. 3). Публичного адреса нет,
+  # маршрута в Caddyfile нет, ключей нет вовсе: к ним ходит только хост в
+  # agents по сети tools, а платный API они не вызывают. Каждый несёт свою
+  # копию модуля JSON-RPC — пакетов ноль, граница ADR 2026-09-23-1227 цела.
+  mcpnews:
+    image: ghcr.io/mikekharr/advent-mcpnews:${MCPNEWS_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8084"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - tools
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  mcpstore:
+    image: ghcr.io/mikekharr/advent-mcpstore:${MCPSTORE_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8085"
+    environment:
+      - NODE_ENV=production
+    volumes:
+      # Файлы дня 19 живут 30 часов и переживают пересоздание контейнера;
+      # выкатка именованных томов не трогает.
+      - mcpstore_data:/data
+    networks:
+      - tools
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Атлас проекта (ADR 2026-09-10-0550): статика схемы проекта, маршрут
   # /atlas/ в Caddyfile. Секретов у него нет, поэтому нет и env_file.
   atlas:
@@ -448,6 +607,7 @@ volumes:
   router_data:
   agents_data:
   day5_data:
+  mcpstore_data:
 
 # Общая сеть входа. Создаётся один раз руками: `docker network create edge`.
 # Внешняя с обеих сторон, поэтому ни один из двух проектов её не удаляет.
@@ -457,3 +617,11 @@ networks:
   # Сеть службы MCP: в ней только caddy, mcp и day16 — его консоль.
   # Отдельная, а не default, — ADR 2026-09-23-1227, п. 5.
   mcp:
+  # Сеть планировщика: в ней только agents и cron (ADR 2026-09-28-0736, п. 6).
+  # Отдельная по той же причине, что mcp: контейнеру времени нечего мочь,
+  # кроме одного стука в одну ручку.
+  cron:
+  # Сеть серверов MCP дней 19–20: в ней только agents, mcpnews и mcpstore
+  # (ADR 2026-09-28-0736, п. 3). caddy в неё не входит: публикация этих
+  # серверов наружу не предусмотрена, и сеть — то, чем это держится.
+  tools:
