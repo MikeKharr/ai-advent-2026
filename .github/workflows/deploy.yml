@@ -3,11 +3,11 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths: ['days/**', 'router/**', 'agents/**', 'mcp/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/deploy.yml', '.github/scripts/atlas-tool.sh']
+    paths: ['days/**', 'router/**', 'agents/**', 'mcp/**', 'mcpnews/**', 'mcpstore/**', 'site/**', 'deploy/**', 'atlas/**', 'agent_docs/**', '.claude/agents/**', '.agents/skills/*/SKILL.md', 'AGENTS.md', 'skills-lock.json', '.github/workflows/deploy.yml', '.github/scripts/atlas-tool.sh']
   workflow_dispatch:
     inputs:
       day:
-        description: 'Одна единица для передеплоя: day1 …, router, agents, atlas или mcp. Пусто — все изменённые.'
+        description: 'Одна единица для передеплоя: day1 …, router, agents, atlas, mcp, mcpnews или mcpstore. Пусто — все изменённые.'
         required: false
         type: string
 
@@ -98,7 +98,7 @@ jobs:
       - name: Сборка и публикация
         uses: docker/build-push-action@v6
         with:
-          context: ${{ contains(fromJSON('["router","agents","atlas","mcp"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
+          context: ${{ contains(fromJSON('["router","agents","atlas","mcp","mcpnews","mcpstore"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
           push: true
           # Владелец в GHCR должен быть в нижнем регистре.
           tags: |
@@ -228,13 +228,19 @@ jobs:
             echo "==> конфигурация входа совпадает с применённой, вход не трогаем"
           fi
 
-          # У роутера и сервиса агентов нет публичного адреса — их здоровье
-          # проверяется здесь, по healthcheck контейнера. Служба MCP публичный
-          # адрес имеет, но здесь она тоже: так отказ самой службы отличается
-          # от неприменённого маршрута входа — иначе оба выглядели бы как
-          # красная «Проверка живого сайта».
-          for svc in router agents mcp; do
-            printf '%s' "$DAYS" | grep -q "$svc" || continue
+          # У роутера, сервиса агентов и серверов MCP дней 19–20 нет публичного
+          # адреса — их здоровье проверяется здесь, по healthcheck контейнера.
+          # Служба MCP публичный адрес имеет, но здесь она тоже: так отказ самой
+          # службы отличается от неприменённого маршрута входа — иначе оба
+          # выглядели бы как красная «Проверка живого сайта».
+          #
+          # Совпадение — по имени в кавычках, а не по подстроке: `grep -q mcp`
+          # находил бы себя в "mcpnews" и "mcpstore", и выкатка одного только
+          # mcpnews молча ждала бы здоровья чужого контейнера mcp, который в
+          # этой выкатке не менялся. Зелёный результат при этом ничего не
+          # значил бы.
+          for svc in router agents mcp mcpnews mcpstore; do
+            printf '%s' "$DAYS" | grep -q "\"$svc\"" || continue
             echo "==> ожидание $svc: healthy"
             for i in $(seq 1 20); do
               state=$(docker inspect --format '{{.State.Health.Status}}' "advent-$svc-1" 2>/dev/null || echo none)
@@ -261,11 +267,24 @@ jobs:
           [ "$ok" -eq 0 ] || { echo "::error::лендинг не отвечает 200"; exit 1; }
           echo "лендинг ok"
 
-          # Исключены только единицы без публичного адреса. Для mcp адрес
-          # есть — /mcp/healthz открыт без ключа именно ради этой проверки
-          # (ADR 2026-09-23-1227, п. 1), и общая строка ниже его и дёргает.
+          # Исключены только единицы без публичного адреса: роутер, сервис
+          # агентов и серверы MCP дней 19–20 (ADR 2026-09-28-0736, п. 3 —
+          # маршрута в Caddyfile у них нет и не будет, их /healthz проверен выше
+          # по healthcheck контейнера). Для mcp адрес есть — /mcp/healthz открыт
+          # без ключа именно ради этой проверки (ADR 2026-09-23-1227, п. 1), и
+          # общая строка ниже его и дёргает.
+          #
+          # Контейнер времени cron сюда не попадает по устройству, а не по
+          # списку: у него нет Dockerfile, поэтому он не единица выкатки и в
+          # $DAYS не появляется вовсе (ADR 2026-09-28-0736, п. 6).
+          #
+          # case, а не цепочка `[ … ] || [ … ] && continue`: цепочка из четырёх
+          # имён читается неоднозначно, и добавить в неё пятое имя мимо `&&` —
+          # ровно та правка, после которой шаг зеленеет молча.
           for day in $(printf '%s' "$DAYS" | tr -d '[]"' | tr ',' ' '); do
-            [ -z "$day" ] || [ "$day" = router ] || [ "$day" = agents ] && continue
+            case "$day" in
+              ''|router|agents|mcpnews|mcpstore) continue ;;
+            esac
             ok=1
             for i in $(seq 1 12); do
               code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "https://challenge.zpq.ai/${day}/healthz" || echo 000)

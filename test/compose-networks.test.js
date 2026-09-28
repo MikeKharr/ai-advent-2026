@@ -46,10 +46,13 @@ test('разбор видит сети там, где они есть, и их �
   assert.deepEqual(services.get('day16'), ['mcp'])
   // Ключа networks нет — значит сеть по умолчанию, вместе с secrets.env.
   assert.equal(services.get('router'), null)
-  // Контейнер времени — только в своей сети; agents в двух: по default к нему
-  // приходят дни 6–15, по cron — тик расписания.
+  // Контейнер времени и серверы MCP — каждый только в своей сети; agents в
+  // трёх: по default к нему приходят дни 6–15, по cron — тик расписания, по
+  // tools он сам ходит в серверы инструментов.
   assert.deepEqual(services.get('cron'), ['cron'])
-  assert.deepEqual(services.get('agents'), ['default', 'cron'])
+  assert.deepEqual(services.get('mcpnews'), ['tools'])
+  assert.deepEqual(services.get('mcpstore'), ['tools'])
+  assert.deepEqual(services.get('agents'), ['default', 'cron', 'tools'])
 })
 
 test('приманка: у mcp убрали ключ networks — он оказался в сети по умолчанию', () => {
@@ -124,7 +127,7 @@ test('приманка: router пустили в сеть cron', () => {
 
 test('приманка: у agents убрали сеть cron — тик перестал доходить, но молча', () => {
   const decoy = inService(TEXT, 'agents', / {6}cron:\n/, '')
-  assert.deepEqual(parseServices(decoy).get('agents'), ['default'], 'приманка не собралась')
+  assert.deepEqual(parseServices(decoy).get('agents'), ['default', 'tools'], 'приманка не собралась')
   // Нарушения изоляции тут нет — и это честный предел стража: он держит, куда
   // cron НЕ может, а не то, что тик доходит. Второе держит первый тик в проде
   // («Стенд ≠ прод» в описании PR), и притворяться, что это проверено здесь,
@@ -136,4 +139,26 @@ test('службы cron нет вовсе — это тоже нарушение
   const decoy = TEXT.replace(/\n {2}cron:\n(?: {4}.*\n| {6,}.*\n|\n)*/, '\n')
   assert.notEqual(decoy, TEXT)
   assert.match(problems(decoy).join('\n'), /службы cron нет/)
+})
+
+// --- Сеть tools (ADR 2026-09-28-0736, п. 3) ------------------------------------
+// Серверы дней 19–20 не публикуются наружу. Держит это не отсутствие строки в
+// Caddyfile, а то, что caddy в их сеть не входит: маршрут, дописанный по
+// невнимательности, никуда не дошёл бы.
+
+test('приманка: caddy пустили в сеть tools — сервер стало можно опубликовать', () => {
+  const decoy = inService(TEXT, 'caddy', / {6}edge:\n/, '      tools:\n      edge:\n')
+  assert.ok(parseServices(decoy).get('caddy').includes('tools'), 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба caddy в сети tools/)
+})
+
+test('приманка: mcpstore добавили в сеть по умолчанию — мостик к secrets.env', () => {
+  const decoy = inService(TEXT, 'mcpstore', / {4}networks:\n {6}- tools\n/, '    networks:\n      - tools\n      - default\n')
+  assert.match(problems(decoy).join('\n'), /служба mcpstore должна быть только в сети tools/)
+})
+
+test('службы mcpnews нет вовсе — это тоже нарушение, а не «ok»', () => {
+  const decoy = TEXT.replace(/\n {2}mcpnews:\n(?: {4}.*\n| {6,}.*\n|\n)*/, '\n')
+  assert.notEqual(decoy, TEXT)
+  assert.match(problems(decoy).join('\n'), /службы mcpnews нет/)
 })

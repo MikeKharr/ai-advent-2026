@@ -28,7 +28,7 @@ jobs:
           # без совпадений ниже не валит шаг.
           tree=$(set -o pipefail; git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n') || { echo "::error::git ls-tree упал — имена единиц не проверены"; exit 1; }
           # Управляющие символы имени не уходят в команду workflow.
-          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcp)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
+          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcpnews|mcpstore|mcp)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
           if [ -n "$bad" ]; then
             echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
             exit 1
@@ -120,7 +120,7 @@ jobs:
           # `agents` здесь готовое, из пути ничего не выводится.
           # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
           # идёт только [a-z0-9]+ с каталогом единицы в дереве.
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcp)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day1[345]/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas|mcp) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcpnews|mcpstore|mcp)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day1[345]/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas|mcpnews|mcpstore|mcp) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -141,12 +141,17 @@ jobs:
       # делать нечего.
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-      # Сервису агентов нужен Node 24: там встроенный SQLite без флага.
+      # Node 24 — тем единицам, что держат состояние во встроенном node:sqlite
+      # без флага: сервису агентов и серверу файлов дня 19. Список — здесь, а
+      # не в самих единицах: их тесты на Node 22 падают не «не тем», а
+      # отсутствием модуля, и читать такой отказ как дефект кода легко.
       - id: node
         name: Версия Node для единицы
         run: |
-          if [ "$DAY" = agents ]; then echo "version=24" >> "$GITHUB_OUTPUT"
-          else echo "version=22" >> "$GITHUB_OUTPUT"; fi
+          case "$DAY" in
+            agents|mcpstore) echo "version=24" >> "$GITHUB_OUTPUT" ;;
+            *) echo "version=22" >> "$GITHUB_OUTPUT" ;;
+          esac
       - uses: actions/setup-node@v4
         with: { node-version: '${{ steps.node.outputs.version }}' }
 
@@ -158,6 +163,8 @@ jobs:
             agents) echo "dir=agents" >> "$GITHUB_OUTPUT"; echo "port=8082" >> "$GITHUB_OUTPUT" ;;
             atlas) echo "dir=atlas" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
             mcp) echo "dir=mcp" >> "$GITHUB_OUTPUT"; echo "port=8083" >> "$GITHUB_OUTPUT" ;;
+            mcpnews) echo "dir=mcpnews" >> "$GITHUB_OUTPUT"; echo "port=8084" >> "$GITHUB_OUTPUT" ;;
+            mcpstore) echo "dir=mcpstore" >> "$GITHUB_OUTPUT"; echo "port=8085" >> "$GITHUB_OUTPUT" ;;
             *) echo "dir=days/$DAY" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
           esac
 

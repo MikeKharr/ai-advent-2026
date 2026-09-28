@@ -9,6 +9,11 @@
 //     `AGENT_KEY`, и единственное, до чего он вправе дотянуться, — ручка
 //     запуска работы. Ни `router`, ни дни, ни `mcp` из этой сети не
 //     разрешаются.
+//   - `tools` (ADR 2026-09-28-0736, п. 3): серверы `mcpnews` и `mcpstore`
+//     живут ТОЛЬКО в сети `tools`, а в ней — только они и `agents`. `caddy`
+//     в список не входит намеренно: маршрута к этим серверам в `Caddyfile`
+//     нет, публичного адреса у них нет, и сеть — то, чем это держится, а не
+//     отсутствие строки в конфигурации входа.
 //
 // Проверяется структура файла, а не намерение в комментарии. Служба без
 // ключа `networks:` попадает в сеть по умолчанию — это и есть случай, ради
@@ -32,13 +37,25 @@ export const COMPOSE = 'deploy/compose.yml'
  * сети туда, где `router`, `agents` и `secrets.env` (находка `compliance` к PR
  * дня 16).
  *
- * `agents` в правиле `cron` стоит в `allowed`, но не в `only`: ему сеть по
- * умолчанию положена по работе — по ней к нему приходят дни 6–15. Изолирован
- * здесь контейнер времени, а не сервис агентов.
+ * `agents` в правилах `cron` и `tools` стоит в `allowed`, но не в `only`: ему
+ * сеть по умолчанию положена по работе — по ней к нему приходят дни 6–15.
+ * Изолированы там контейнер времени и серверы MCP, а не сервис агентов.
+ *
+ * `required` — службы, пропажа которых сама по себе нарушение. Она названа
+ * отдельно от `only` потому, что `only` пропажу прощает осознанно (уехавшая
+ * служба — не дыра, дыра была бы, останься она с двумя сетями), а вот
+ * исчезновение изолируемой службы — повод покраснеть, а не повод сказать «ok».
+ * Имя сети при этом именем службы быть не обязано: сеть `tools` держит две.
  */
 export const RULES = [
-  { network: 'mcp', allowed: ['caddy', 'mcp', 'day16'], only: ['mcp', 'day16'] },
-  { network: 'cron', allowed: ['agents', 'cron'], only: ['cron'] },
+  { network: 'mcp', required: ['mcp'], allowed: ['caddy', 'mcp', 'day16'], only: ['mcp', 'day16'] },
+  { network: 'cron', required: ['cron'], allowed: ['agents', 'cron'], only: ['cron'] },
+  {
+    network: 'tools',
+    required: ['mcpnews', 'mcpstore'],
+    allowed: ['agents', 'mcpnews', 'mcpstore'],
+    only: ['mcpnews', 'mcpstore'],
+  },
 ]
 
 const COMMENT = /^\s*#/
@@ -96,12 +113,11 @@ export function problems(text) {
   const found = []
 
   for (const rule of RULES) {
-    // Сама изолируемая служба обязана быть в файле: её пропажа — не «ok», а
-    // повод посмотреть, куда она делась.
-    if (!services.has(rule.network)) {
-      found.push(`службы ${rule.network} нет в ${COMPOSE}`)
-      continue
-    }
+    // Изолируемые службы обязаны быть в файле: их пропажа — не «ok», а повод
+    // посмотреть, куда они делись.
+    const missing = rule.required.filter((name) => !services.has(name))
+    for (const name of missing) found.push(`службы ${name} нет в ${COMPOSE}`)
+    if (missing.length === rule.required.length) continue
 
     for (const name of rule.only) {
       // Уехавшая служба — не дыра: дыра была бы, останься она с двумя сетями.
