@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day20 -> /day20/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Оркестрация инструментов — AI Advent 2026, день 20</title>
+<!-- Раскладка НЕ новая: style.css — дословный срез <style> дня 16
+     (days/day16/public/index.html). Совпадение держит тест
+     test/style-copy.test.js. Своих токенов и своих шкал у дня нет. -->
+<link rel="stylesheet" href="style.css">
+<style>
+  /* Единственная добавка к копии: список серверов, попавших в этот запуск.
+     Не кнопки — нажать на них нельзя, поэтому своё правило, а не .chip. */
+  .servers { list-style:none; display:flex; flex-wrap:wrap; gap:var(--s-2); margin:0 0 var(--s-5); padding:0; }
+  .server {
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    padding:var(--s-2) var(--s-3); border-radius:var(--r-full);
+    background:var(--surface); color:var(--fg); border:1px solid var(--line-ctl);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Оркестрация инструментов</h1>
+  <p class="sub">Инструменты приходят с трёх разных серверов MCP. Порядок вызовов здесь не
+    задан кодом: модель сама решает, что позвать следующим и что перенести из ответа одного
+    инструмента в аргументы другого. Ниже видно каждый вызов — с какого сервера он ушёл,
+    каким методом и с какими сырыми телами JSON-RPC.</p>
+
+  <p class="notice">! Имя сервера стоит у каждого вызова. Это и есть предмет дня: одна цепочка
+    собирается из инструментов трёх независимых служб, и последовательность в ленте —
+    выбор модели, а не наш сценарий.</p>
+
+  <p class="wire">
+    <span>MCP-Protocol-Version <b>2025-11-25</b></span>
+    <span>кругов на запуск: не больше <b>8</b></span>
+  </p>
+
+  <noscript>
+    <p class="notice">Страница получает вызовы потоком событий и рисует их в браузере,
+      поэтому без JavaScript она не работает. Включите JavaScript.</p>
+  </noscript>
+
+  <form class="composer" id="run-form">
+    <label class="field" for="task">Задание модели</label>
+    <div class="cmd-row">
+      <input id="task" type="text" maxlength="600" autocomplete="off" spellcheck="false"
+             placeholder="свежие новости о fintech — сохрани выжимку и прочитай её обратно"
+             aria-describedby="run-status">
+      <button class="send" id="send" type="submit">Запустить</button>
+    </div>
+    <p class="cmd-status" id="run-status" role="status" aria-live="polite">&nbsp;</p>
+  </form>
+
+  <section>
+    <h2 id="servers-title">Серверы в этом запуске</h2>
+    <p class="hint" id="servers-note">Запуска ещё не было: называть серверы нечем.</p>
+    <ul class="servers" id="servers" aria-labelledby="servers-title"></ul>
+  </section>
+
+  <section>
+    <div class="feed-head">
+      <h2 id="feed-title">Вызовы в том порядке, в каком их выбрала модель</h2>
+      <label class="indent"><input type="checkbox" id="indent"> Показать с отступами</label>
+    </div>
+    <p class="hint">Меняются только переносы строк и пробелы. Поля, порядок и значения — как пришли.</p>
+    <p class="empty" id="empty">Вызовов ещё не было. Введите задание и нажмите «Запустить»:
+      вызовы появятся здесь по мере того, как модель их выбирает.</p>
+    <ol class="feed" id="feed" aria-labelledby="feed-title"></ol>
+  </section>
+
+  <footer>
+    Запуск идёт через сервис агентов этого проекта; ключ сервиса живёт на сервере дня 20
+    и на страницу не попадает. Запуск зовёт платную модель, поэтому у дня есть суточный
+    предел запусков. Новости берутся у Hacker News, их содержание не проверяется и не
+    является редакцией проекта. Адрес посетителя нигде не сохраняется.
+    Вопросы: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>
+  </footer>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
