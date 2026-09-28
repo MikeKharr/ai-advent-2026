@@ -95,10 +95,42 @@ export const clipNotes = {
 }
 
 /**
- * sha256 из тела ответа `tools/call`. Берётся ровно из двух мест, и оба
- * названы: `result.sha256` и `result.structuredContent.sha256`. Ничего не
- * ищется рекурсивным обходом: найденная где угодно строка из 64 знаков —
- * не доказательство того, что сервер прислал именно хеш.
+ * Полезная часть ответа `tools/call`, тремя ступенями. Та же форма, что у
+ * хоста цепочки (`payloadOf` в `agents/src/mcp/pipeline.js`) — и это не
+ * сходство, а один контракт: `structuredContent` по спецификации MCP
+ * необязателен, и наши серверы его не кладут, они кладут JSON строкой в
+ * текстовый блок (`mcpstore/src/rpc.js:94`, у `mcpnews` так же). Страница
+ * знала только про поле и показывала «хеша ещё нет» на верной цепочке.
+ *
+ * Ступени: поле есть — берём его; нет — разбираем текст как JSON; не JSON —
+ * считаем текст просто текстом. Последняя ступень не падает никогда: ответ
+ * сервера — недоверенные данные.
+ */
+function resultPayload(result) {
+  if (isObject(result.structuredContent)) return result.structuredContent
+  // Текстовые блоки склеиваются ровно так же, как их склеивает клиент хоста
+  // (`agents/src/mcp/client.js`, `callTool`): иначе «один контракт» разошёлся
+  // бы на первом же ответе из двух блоков.
+  const raw = (Array.isArray(result.content) ? result.content : [])
+    .filter((block) => isObject(block) && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+  if (raw === '') return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (isObject(parsed)) return parsed
+  } catch {
+    // Не JSON — ниже он и будет просто текстом.
+  }
+  return { text: raw }
+}
+
+/**
+ * sha256 из тела ответа `tools/call`. Берётся ровно из одного места —
+ * поля `sha256` полезной части (`resultPayload` выше). Ничего не ищется
+ * рекурсивным обходом: найденная где угодно строка из 64 знаков — не
+ * доказательство того, что сервер прислал именно хеш. Поэтому же голый
+ * текстовый блок из 64 знаков хешем не становится: у него нет имени.
  *
  * @returns {string|null}
  */
@@ -112,10 +144,8 @@ export function sha256Of(responseText) {
   }
   const result = isObject(json) ? json.result : null
   if (!isObject(result)) return null
-  const direct = result.sha256
-  if (typeof direct === 'string' && /^[0-9a-f]{64}$/.test(direct)) return direct
-  const structured = isObject(result.structuredContent) ? result.structuredContent.sha256 : null
-  if (typeof structured === 'string' && /^[0-9a-f]{64}$/.test(structured)) return structured
+  const hash = resultPayload(result).sha256
+  if (typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)) return hash
   return null
 }
 
