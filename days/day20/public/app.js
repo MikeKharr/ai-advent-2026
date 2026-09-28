@@ -14,7 +14,7 @@ import { NO_SERVER, parseCall, renderCall } from './trace.js'
 
 const byId = (id) => document.getElementById(id)
 const form = byId('run-form')
-const input = byId('task')
+const input = byId('cmd')
 const send = byId('send')
 const status = byId('run-status')
 const feed = byId('feed')
