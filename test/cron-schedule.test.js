@@ -23,6 +23,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+// Настоящие разборщики сервиса агентов, а не их пересказ. Переписанная от
+// руки копия правил здесь была бы третьим разборщиком одного файла — ровно
+// тем, из-за чего каденция с диапазоном проходила все проверки зелёной
+// (находка compliance к PR #236). Оба модуля без побочных действий на
+// загрузке: `node:crypto` и соседний файл.
+import { loadJobs } from '../agents/src/jobs/index.js'
+import { parseSchedule, slotsPerDay } from '../agents/src/jobs/schedule.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const JOBS = 'agents/config/jobs.json'
@@ -47,6 +54,36 @@ function fixture(value) {
 }
 
 const expected = (list) => list.map((j) => `${j.scheduleUtc} /cron/tick.sh ${j.id}`).join('\n') + '\n'
+
+// Главное, чего не хватало: настоящий `agents/config/jobs.json` не проходил
+// через настоящий разборщик ни в одном тесте — ни здесь (свой наивный разбор),
+// ни в `agents/test/jobs.test.js` (переписанная от руки копия). В эту щель
+// пролез диапазон `9-17`: сборщик таблицы его принимал, `loadJobs` отвергал,
+// реестр работ не грузился целиком, каждый тик получал 404 no_jobs — и все
+// проверки оставались зелёными. Этот тест ловит класс, а не случай: любое
+// поле, которое сервис агентов не примет, краснеет здесь.
+test('настоящий jobs.json проходит настоящий loadJobs сервиса агентов', () => {
+  const loaded = loadJobs(JSON.parse(readFileSync(join(ROOT, JOBS), 'utf8')))
+  assert.notEqual(loaded.size, 0, `${JOBS}: loadJobs не вернул ни одной работы`)
+  for (const job of jobs) assert.ok(loaded.has(job.id), `${JOBS}: работа «${job.id}» не загрузилась`)
+})
+
+// Обратная сторона той же щели: сборщик таблицы обязан ОТКАЗАТЬ ровно там,
+// где откажет сервис агентов. Диапазон — первое, что пролезло; проверяется он,
+// а не «какой-нибудь мусор», потому что диапазон выглядит законной правкой
+// настройки и пишется руками чаще прочего.
+test('каденцию, которую отвергнет сервис агентов, отвергает и сборщик таблицы', () => {
+  for (const scheduleUtc of ['0 9-17 * * *', '0 0-23 * * *', '0 8-20/2 * * *']) {
+    assert.throws(
+      () => parseSchedule(scheduleUtc),
+      `${scheduleUtc}: сервис агентов расписание принял — образец для проверки негоден`,
+    )
+    const { code, out, err } = build(fixture({ jobs: [{ id: 'alpha', scheduleUtc }] }))
+    assert.notEqual(code, 0, `сборщик принял «${scheduleUtc}», которое не примет сервис агентов`)
+    assert.equal(out, '')
+    assert.match(err, /знак вне \[0-9\*\/,]/)
+  }
+})
 
 test('таблица crond собирается из jobs.json ровно по scheduleUtc и id', () => {
   assert.notEqual(jobs.length, 0, `${JOBS}: работ нет`)
@@ -89,7 +126,7 @@ test('расписание или имя работы со знаком вне �
   // Полей ровно пять в обоих случаях: иначе отказ давала бы проверка числа
   // полей, и белый список знаков можно было бы снять, не покраснев.
   for (const [what, job, why] of [
-    ['расписание', { id: 'alpha', scheduleUtc: '0 */6 * * *;touch' }, /знак вне \[0-9\*\/,-]/],
+    ['расписание', { id: 'alpha', scheduleUtc: '0 */6 * * *;touch' }, /знак вне \[0-9\*\/,]/],
     ['имя работы', { id: 'al;pha', scheduleUtc: '0 */6 * * *' }, /знак вне \[a-z0-9-]/],
   ]) {
     const { code, out, err } = build(fixture({ jobs: [job] }))
@@ -122,25 +159,13 @@ test('compose монтирует jobs.json контейнеру времени',
   )
 })
 
-/** Число сроков в сутки по полям минут и часов. */
-function slots(scheduleUtc) {
-  const [minute, hour] = scheduleUtc.split(' ')
-  const count = (spec, range) => {
-    if (spec === '*') return range
-    const step = /^\*\/(\d+)$/.exec(spec)
-    if (step) return Math.ceil(range / Number(step[1]))
-    return spec.split(',').length
-  }
-  return count(minute, 60) * count(hour, 24)
-}
-
 // Потолок стартов должен оставаться запасом СВЕРХУ, а не тем, во что упирается
 // нормальная работа: иначе ровная каденция сама выбирает суточный лимит, и
 // отличить «всё идёт как задумано» от «упёрлись» на странице нельзя.
 // То же требует `agents/src/jobs/index.js` от конфигурации на загрузке.
 test('суточный потолок стартов не ниже числа сроков в сутки', () => {
   for (const job of jobs) {
-    const perDay = slots(job.scheduleUtc)
+    const perDay = slotsPerDay(parseSchedule(job.scheduleUtc))
     assert.ok(
       job.maxRunsPerDay >= perDay,
       `работа «${job.id}»: сроков в сутки ${perDay}, а maxRunsPerDay ${job.maxRunsPerDay}`,
