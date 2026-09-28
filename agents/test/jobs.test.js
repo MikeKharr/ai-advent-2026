@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createJobs, loadJobs } from '../src/jobs/index.js'
+import { loadRegistry } from '../src/registry.js'
 import { nextRunAt, parseSchedule, slotsPerDay } from '../src/jobs/schedule.js'
 import { createJobStore, KEEP_RUNS, utcDay } from '../src/jobs/store.js'
 
@@ -503,4 +504,40 @@ test('час занят и потолок выбран — отказ назыв
   assert.equal(capped.status, 429)
   assert.equal(capped.body.code, 'daily_cap')
   clean()
+})
+
+test('запрос работы к агенту без модели — латиницей (настоящие jobs.json и agents.json)', () => {
+  // Настоящие конфиги через настоящие разборщики, без сети — тем же приёмом,
+  // что и `test/cron-schedule.test.js`.
+  //
+  // Из какого отказа. Плановая работа дня 18 несла запрос по-русски, и первый
+  // же прогон цепочки дня 19 в проде остановился на news.search с reason
+  // `empty`: источник (Hacker News через Algolia) англоязычен. Код был верен —
+  // неверно было содержимое запроса.
+  //
+  // ПРЕДЕЛ этой проверки, названный честно: она кодирует «источник
+  // английский» как замену настоящему правилу «язык запроса = язык
+  // источника». При неанглоязычном источнике она станет неверной, и
+  // находимости запроса («вернёт ли поиск хоть что-нибудь») не доказывает
+  // вовсе — такой тест означал бы живой поход к чужому API. Это защита от
+  // возврата бага, а не доказательство свойства; возврат правдоподобен —
+  // каждая другая строка в `jobs.json` по-русски.
+  //
+  // Только работы к агенту БЕЗ модели: их запрос уходит в инструмент как
+  // есть. У работы с моделью язык запроса ничем не ограничен — модель сама
+  // решает, что искать, и связывать ей руки здесь нечем и незачем.
+  const read = (name) => JSON.parse(readFileSync(new URL(`../config/${name}`, import.meta.url), 'utf8'))
+  const jobs = loadJobs(read('jobs.json'))
+  const agents = loadRegistry(read('agents.json'))
+
+  const modelless = [...jobs.values()].filter((job) => agents.get(job.agentId)?.modelless)
+  assert.ok(
+    modelless.length > 0,
+    'ни одна работа не адресована агенту без модели — проверка не держит ничего, и это находка, а не успех',
+  )
+  for (const job of modelless)
+    assert.ok(
+      !/\p{Script=Cyrillic}/u.test(job.prompt),
+      `работа ${job.id}: запрос уходит в инструмент как есть, кириллица в нём ничего не найдёт — ${job.prompt}`,
+    )
 })
