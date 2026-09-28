@@ -154,3 +154,22 @@ test('пустой список пунктов — отказ инструмен
   const body = (await call(service.base, 'news.summarize', { items: [] })).json()
   assert.equal(body.result.isError, true)
 })
+
+test('слова запроса не дописывают параметров поставщику: hitsPerPage задаём мы', async (t) => {
+  const { urls, fetchImpl } = recorder([HITS])
+  const service = await startService({ fetchImpl })
+  t.after(() => service.close())
+
+  // `plainString` отвергает `: / \ ? # @`, но `&` и `=` — законные знаки
+  // названия, и такой запрос до адреса доходит. Держит его URL-кодировка.
+  const query = 'ai&hitsPerPage=1000&numericFilters='
+  await call(service.base, 'news.search', { query, days: 7, limit: 5 })
+
+  const url = new URL(urls[0])
+  // Красная ветвь: снять `encodeURIComponent` вокруг `query` в `src/tools.js` —
+  // аргумент дописывает свои параметры, `hitsPerPage` приходит дважды (первым
+  // 1000), `numericFilters` пустеет, и фильтр свежести с `limit` обойдены.
+  assert.deepEqual(url.searchParams.getAll('hitsPerPage'), ['5'], 'число историй задаём мы, а не аргумент')
+  assert.deepEqual(url.searchParams.getAll('numericFilters'), [`created_at_i>${Math.floor(NOW_MS / 1000) - 7 * 24 * 60 * 60}`])
+  assert.equal(url.searchParams.get('query'), query, 'слова запроса уходят целиком одним значением')
+})
