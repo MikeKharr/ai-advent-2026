@@ -109,3 +109,39 @@ test('кнопки «запустить» на экране нет: «когда
   assert.deepEqual(buttons, [], `на экране есть кнопки: ${buttons.join(', ')}`)
   assert.ok(!code.includes("method: 'POST'"), 'страница куда-то шлёт POST')
 })
+
+// Справка о работе — предмет текстовый, и проверка ему под стать: нужно, чтобы
+// экран называл, ЧЕМ работа делается, а не «агент собирает новости». Проверка
+// именами шагов, а не длиной абзаца: абзац можно налить водой.
+test('справка называет цепочку, её шаги, сверку и источник', () => {
+  const start = page.indexOf('<section class="about"')
+  assert.notEqual(start, -1, 'блока справки на странице нет')
+  const about = page.slice(start, page.indexOf('</section>', start))
+  for (const word of ['pipeline-agent', 'news.search', 'news.summarize', 'file.save', 'file.read', 'sha256', 'Hacker News'])
+    assert.ok(about.includes(word), `справка не называет ${word}`)
+  // И почему бывает пусто — иначе пустой экран читается как поломка.
+  assert.ok(about.includes('пуст'), 'справка не объясняет пустой экран')
+})
+
+// Запрос обязан быть НА СТРАНИЦЕ, а не только в ответе ручки: владелец просил
+// видеть его на экране. Предмет текстовый — место под текст и объяснение рядом.
+test('на экране есть место под текст запроса и сказано, откуда он берётся', () => {
+  const start = page.indexOf('<section class="about"')
+  const about = page.slice(start, page.indexOf('</section>', start))
+  assert.ok(about.includes('id="f-prompt"'), 'места под текст запроса на экране нет')
+  assert.ok(about.includes('файле настроек'), 'не сказано, откуда запрос берётся')
+  // И это место заполняется тем, что назвало неизвестное словом, а не сырым полем.
+  assert.ok(code.includes("byId('f-prompt').textContent = promptLine("), 'запрос кладётся мимо promptLine')
+})
+
+// Полоса чтения. В .entry-note кладётся текст сводки — проза, а не одна строка,
+// как было в дне 16, и правило копии ширину ей не задаёт: на 1024 px строка
+// уходила за 100 знаков при корпусном пороге 68. style.css править нельзя
+// (style-copy.test.js держит его побайтово), границу ставит <style> страницы.
+// Проверка идёт ОТ МЕСТА, куда кладётся сводка, а не от имени класса в CSS.
+test('текст сводки ограничен полосой чтения корпуса', () => {
+  const m = code.match(/node\('p', '([^']+)', run\.summary/)
+  assert.ok(m, 'сводка кладётся не тем узлом, что ожидает проверка')
+  const style = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+  assert.match(style, new RegExp(`\\.${m[1]}\\s*\\{[^}]*max-width:68ch`), `у .${m[1]} нет полосы чтения`)
+})

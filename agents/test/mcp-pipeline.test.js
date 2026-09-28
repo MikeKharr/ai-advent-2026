@@ -50,7 +50,7 @@ const packed = (payload) => ({ content: [{ type: 'text', text: JSON.stringify(pa
 /** Что позвали у сервера-двойника: пусто — значит шаги ушли по адресу. */
 const twinCalls = []
 
-async function pair({ summary = 'выжимка', corrupt = null, missing = false } = {}) {
+async function pair({ summary = 'выжимка', corrupt = null, missing = false, emptySearch = false } = {}) {
   const files = new Map()
   const news = await fakeMcp({
     tools: ['news.search', 'news.summarize'],
@@ -61,8 +61,10 @@ async function pair({ summary = 'выжимка', corrupt = null, missing = fals
         return packed({
           query: args.query,
           days: args.days ?? 7,
-          found: 1,
-          items: [{ title: `о ${args.query}`, url: null, points: 10 }],
+          found: emptySearch ? 0 : 1,
+          // Пустой поиск сервер отказом НЕ считает: это обычный ответ с
+          // пустым списком (`mcpnews/src/tools.js`, newsSearch).
+          items: emptySearch ? [] : [{ title: `о ${args.query}`, url: null, points: 10 }],
         })
       return packed({ text: summary, sha256: sha256(summary), count: 1, clipped: false })
     },
@@ -183,6 +185,29 @@ test('каждый вызов даёт событие стадии rpc с име
   assert.equal(JSON.parse(call.data.response).jsonrpc, '2.0')
   assert.equal(typeof call.data.ms, 'number')
   assert.deepEqual([...new Set(events.map((e) => e.data.server))], ['mcpnews', 'mcpstore', 'day16'])
+  await kit.close()
+})
+
+test('пустой поиск валит цепочку именно пустотой, а не отказом следующего шага', async () => {
+  // Держатель стража `state.items.length === 0` в `src/mcp/pipeline.js`.
+  // Поддельный сервер новостей объявляет ОБА инструмента, поэтому «пусто» и
+  // «инструмента нет» здесь — разные исходы, и утверждается пара
+  // step + reason, а не один лишь факт отказа.
+  //
+  // Что ломается без стража: пустой список уезжает в news.summarize, разбор
+  // которого его отвергает, и запуск падает с `tool_error` на ЧУЖОМ шаге —
+  // лента дня 18 показывает отказ сведения вместо «поиск ничего не нашёл».
+  // Именно по этой диагностике и нашёлся баг в проде (русский запрос
+  // плановой работы, 2026-09-28).
+  const kit = await pair({ emptySearch: true })
+
+  const error = await runPipeline({ input: { query: 'ничего такого' }, servers: kit.servers }).then(
+    () => null,
+    (e) => e,
+  )
+  assert.ok(error instanceof PipelineError, 'пустой поиск обязан валить запуск, а не идти дальше по цепочке')
+  assert.equal(error.step, 'news.search')
+  assert.equal(error.reason, 'empty')
   await kit.close()
 })
 

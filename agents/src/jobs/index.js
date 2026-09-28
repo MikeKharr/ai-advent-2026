@@ -183,6 +183,10 @@ export function createJobs({
         agent: job.agentId,
         schedule: job.scheduleUtc,
         maxRunsPerDay: job.maxRunsPerDay,
+        // Текст запроса — не секрет и он же объясняет, что работа делает. Поле
+        // перечислено поимённо, как и остальные: запись целиком (`...job`)
+        // утащила бы в публичный ответ всё, что когда-либо появится в реестре.
+        prompt: job.prompt,
       },
       // Срок считается из расписания работы, не из отдельной константы.
       nextRunAt: job.enabled ? nextRunAt(job.schedule, now()) : null,
