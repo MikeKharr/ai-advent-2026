@@ -87,9 +87,10 @@ test('седьмой старт за сутки не происходит: ис�
     const decision = jobs.trigger('digest')
     assert.equal(decision.status, 202, `старт ${i + 1}`)
     // Работа идёт: следующий старт до её конца отвергается как занятость,
-    // поэтому каждый запуск здесь дожидается конца.
+    // поэтому каждый запуск здесь дожидается конца. Час тоже сдвигается:
+    // в одном часе стартов больше одного не бывает (ADR, п. 6).
     await new Promise((r) => setImmediate(r))
-    clock += 60_000
+    clock += 3600_000
   }
 
   const seventh = jobs.trigger('digest')
@@ -103,7 +104,7 @@ test('седьмой старт за сутки не происходит: ис�
   await new Promise((r) => setImmediate(r))
   assert.equal(calls, 6, 'за отказом по потолку не стартовало ничего')
 
-  // Новые сутки UTC — счётчик начинается заново.
+  // Новые сутки UTC — счётчик начинается заново (и час там свой).
   clock = at('2026-09-29T00:00:00Z')
   assert.equal(jobs.trigger('digest').status, 202)
   clean()
@@ -329,33 +330,28 @@ test('день суток считается только по UTC: местно
 })
 
 test('уборка ленты сводок не трогает суточный счётчик стартов', () => {
-  // Пока счётчик считал строки ленты, потолок выше KEEP_RUNS был неисполним:
-  // уборка снимала строки, по которым он считался (находка гейта, PR #234).
-  const clock = at('2026-09-28T06:00:00Z')
+  // Пока счётчик считал строки ленты, `pruneOld` (50 последних строк ПО ВСЕМ
+  // работам) занижал счётчик каждой работы чужими стартами (находка гейта,
+  // PR #234). Одной работой это теперь недостижимо — часовой слот держит её
+  // в пределах 24 стартов в сутки, — но несколько работ ADR допускает, и
+  // именно так дефект и воспроизводится.
+  let clock = at('2026-09-28T00:00:00Z')
   const { store, clean } = tempStore(() => clock)
-  const total = KEEP_RUNS + 10
-  for (let i = 0; i < total; i += 1) {
-    store.start({ id: `run-${i}`, job: 'digest' })
-    store.finish({ id: `run-${i}`, status: 'succeeded' })
+  const jobs = ['digest', 'вторая', 'третья', 'четвёртая', 'пятая']
+  let n = 0
+  for (let hour = 0; hour < 12; hour += 1) {
+    clock = at('2026-09-28T00:00:00Z') + hour * 3600_000
+    for (const job of jobs) {
+      n += 1
+      store.start({ id: `run-${n}`, job })
+      store.finish({ id: `run-${n}`, status: 'succeeded' })
+    }
   }
 
-  assert.equal(store.startsToday('digest', clock), total)
-  // Лента при этом подрезана — это её политика хранения, а не счётчик.
-  assert.equal(store.recent('digest').length, KEEP_RUNS)
-  clean()
-})
-
-test('работы не занижают счётчики друг друга', () => {
-  const clock = at('2026-09-28T06:00:00Z')
-  const { store, clean } = tempStore(() => clock)
-  for (let i = 0; i < KEEP_RUNS; i += 1) {
-    store.start({ id: `other-${i}`, job: 'другая-работа' })
-    store.finish({ id: `other-${i}`, status: 'succeeded' })
-  }
-  store.start({ id: 'digest-1', job: 'digest' })
-
-  assert.equal(store.startsToday('digest', clock), 1)
-  assert.equal(store.startsToday('другая-работа', clock), KEEP_RUNS)
+  // Строк в ленте 60, уборка оставила 50 — и это её дело, а не счётчика.
+  assert.equal(store.recent('digest').length + store.recent('вторая').length <= KEEP_RUNS, true)
+  // Счётчик каждой работы цел и чужими стартами не занижен.
+  for (const job of jobs) assert.equal(store.startsToday(job, clock), 12, job)
   clean()
 })
 
@@ -394,4 +390,117 @@ test('срок в теле сводок меняется вместе с час�
   assert.equal(make('30 9 * * *', '2026-09-28T07:30:00Z').nextRunAt, '2026-09-28T09:30:00.000Z')
   // И срок работы — это её собственное расписание, а не чужое.
   assert.equal(make('30 9 * * *', '2026-09-28T07:30:00Z').job.schedule, '30 9 * * *')
+})
+
+test('второй старт в том же часе UTC отвергается слотом, а не потолком', async () => {
+  let clock = at('2026-09-28T06:00:00Z')
+  const { store, clean } = tempStore(() => clock)
+  let calls = 0
+  const jobs = createJobs({
+    jobs: loadJobs(RAW),
+    store,
+    schedulerKey: 'к',
+    now: () => clock,
+    runJob: async () => {
+      calls += 1
+      return { status: 'succeeded' }
+    },
+  })
+
+  assert.equal(jobs.trigger('digest').status, 202)
+  await new Promise((r) => setImmediate(r))
+
+  // Тот же час, работа уже закончилась: это не занятость.
+  clock = at('2026-09-28T06:59:59Z')
+  const second = jobs.trigger('digest')
+  assert.equal(second.status, 409)
+  assert.equal(second.body.code, 'slot_taken')
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls, 1, 'за отказом по слоту не стартовало ничего')
+  // Суточный потолок при этом не тронут: отказ именно часовой.
+  assert.equal(jobs.view('digest').startsToday, 1)
+
+  // Следующий час — можно.
+  clock = at('2026-09-28T07:00:00Z')
+  assert.equal(jobs.trigger('digest').status, 202)
+  clean()
+})
+
+test('слот держит ограничение базы, а не проверка чтением', () => {
+  const clock = at('2026-09-28T06:30:00Z')
+  const { store, clean } = tempStore(() => clock)
+  assert.deepEqual(store.start({ id: 'a', job: 'digest' }), { ok: true, runId: 'a' })
+  // Прямой вызов минуя чтение — так выглядит второй тик, вклинившийся между
+  // проверкой и записью.
+  const second = store.start({ id: 'b', job: 'digest' })
+  assert.deepEqual(second, { ok: false, code: 'slot_taken', runId: 'a' })
+  // Отвергнутый старт не сосчитан и строки ленты не оставил.
+  assert.equal(store.startsToday('digest', clock), 1)
+  assert.equal(store.recent('digest').length, 1)
+  clean()
+})
+
+test('час у каждой работы свой', () => {
+  const clock = at('2026-09-28T06:30:00Z')
+  const { store, clean } = tempStore(() => clock)
+  assert.equal(store.start({ id: 'a', job: 'digest' }).ok, true)
+  assert.equal(store.start({ id: 'b', job: 'other' }).ok, true)
+  assert.equal(store.slotTaken('digest', clock), 'a')
+  assert.equal(store.slotTaken('other', clock), 'b')
+  clean()
+})
+
+test('исполнитель без статуса — отказ, а не молчаливый успех', async () => {
+  const clock = at('2026-09-28T06:00:00Z')
+  const { store, clean } = tempStore(() => clock)
+  const jobs = createJobs({
+    jobs: loadJobs(RAW),
+    store,
+    schedulerKey: 'к',
+    now: () => clock,
+    // Исполнитель вернул сводку, но статуса не назвал.
+    runJob: async () => ({ summary: 'что-то получилось', tokens: 10 }),
+  })
+  jobs.trigger('digest')
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+
+  const [run] = jobs.view('digest').runs
+  assert.equal(run.status, 'failed')
+  assert.equal(run.summary, 'исполнитель не назвал статус запуска')
+  clean()
+})
+
+test('час занят и потолок выбран — отказ называет слот, а не потолок', async () => {
+  // Порядок проверок наблюдаем именно здесь: обе причины истинны сразу, и
+  // ручка обязана назвать более узкую — часовую (ADR 2026-09-28-0736, п. 6).
+  // Без чтения слота выше потолка ответ говорил бы `daily_cap`, то есть
+  // «на сегодня всё», тогда как на деле ждать надо до следующего часа.
+  let clock = at('2026-09-28T00:00:00Z')
+  const { store, clean } = tempStore(() => clock)
+  const jobs = createJobs({
+    jobs: loadJobs(RAW),
+    store,
+    schedulerKey: 'к',
+    now: () => clock,
+    runJob: async () => ({ status: 'succeeded' }),
+  })
+
+  for (let hour = 0; hour < 6; hour += 1) {
+    clock = at('2026-09-28T00:00:00Z') + hour * 3600_000
+    assert.equal(jobs.trigger('digest').status, 202, `час ${hour}`)
+    await new Promise((r) => setImmediate(r))
+  }
+
+  // Шестой час уже использован, и суточный потолок 6 тоже выбран.
+  const both = jobs.trigger('digest')
+  assert.equal(both.status, 409)
+  assert.equal(both.body.code, 'slot_taken')
+
+  // А в следующем часе остаётся только потолок — и он называется.
+  clock = at('2026-09-28T06:00:00Z')
+  const capped = jobs.trigger('digest')
+  assert.equal(capped.status, 429)
+  assert.equal(capped.body.code, 'daily_cap')
+  clean()
 })

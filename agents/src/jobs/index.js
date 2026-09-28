@@ -99,6 +99,16 @@ export function createJobs({
     const busy = running(job)
     if (busy) return { status: 409, body: { ok: false, code: 'busy', runId: busy } }
 
+    // Часовой слот выше суточного потолка (ADR 2026-09-28-0736, п. 6):
+    // «шестью стартами в сутки и одним стартом в час». Без него зациклившийся
+    // тик или любой держатель `AGENT_KEY` выбирает суточный потолок за
+    // секунды, и экран дня 18 с 00:05 показывает «6 из 6» до конца суток —
+    // суточная сумма при этом не меняется, а ограничение скорости исчезает
+    // (находка гейта, PR #234). Это чтение — для ответа; держит слот
+    // ограничение `UNIQUE(job, slot)`, и оно же решает гонку ниже.
+    const taken = store.slotTaken(job.id, now())
+    if (taken) return { status: 409, body: { ok: false, code: 'slot_taken', runId: taken } }
+
     const startsToday = store.startsToday(job.id, now())
     // Потолок ДО запуска, а не после (I-4).
     if (startsToday >= job.maxRunsPerDay)
@@ -109,8 +119,12 @@ export function createJobs({
 
     const runId = randomUUID()
     // Строка старта пишется до работы: счётчик суток должен вырасти раньше,
-    // чем будет потрачен первый токен, и пережить обрыв процесса.
-    store.start({ id: runId, job: job.id, at: now() })
+    // чем будет потрачен первый токен, и пережить обрыв процесса. Слот
+    // занимается здесь же: между чтением выше и этой строкой мог вклиниться
+    // второй тик, и различает их только ограничение базы.
+    const claimed = store.start({ id: runId, job: job.id, at: now() })
+    if (!claimed.ok)
+      return { status: 409, body: { ok: false, code: 'slot_taken', runId: claimed.runId } }
     log({ event: 'job_started', job: job.id, runId, startsToday: startsToday + 1 })
 
     // Фон: ответ уже посчитан и уйдёт тику сразу.
@@ -119,8 +133,14 @@ export function createJobs({
       .then((result = {}) =>
         store.finish({
           id: runId,
-          status: result.status ?? 'succeeded',
-          summary: result.summary ?? null,
+          // Статус, которого исполнитель не назвал, — НЕ «успешно»: лента дня
+          // 18 показывала бы успехом то, о чём ничего не известно (правило
+          // шапки `days/day18/public/digest.js`, находка гейта, PR #234).
+          status: typeof result.status === 'string' && result.status !== '' ? result.status : 'failed',
+          summary:
+            typeof result.status === 'string' && result.status !== ''
+              ? (result.summary ?? null)
+              : 'исполнитель не назвал статус запуска',
           trace: result.trace ?? null,
           tokens: result.tokens ?? null,
           budgetLeftUsd: result.budgetLeftUsd ?? null,

@@ -22,6 +22,12 @@ export const KEEP_RUNS = 50
  */
 export const STARTS_KEEP_DAYS = 7
 
+/** Ключ часа UTC: `2026-09-28T07`. Один старт работы на такой ключ (ADR, п. 6). */
+export function utcSlot(at) {
+  const d = new Date(at)
+  return `${utcDay(at)}T${String(d.getUTCHours()).padStart(2, '0')}`
+}
+
 /** Ключ суток UTC: `2026-09-28`. */
 export function utcDay(at) {
   const d = new Date(at)
@@ -68,6 +74,22 @@ export function createJobStore({ file, now = Date.now }) {
     `INSERT INTO job_runs (id, job, utc_day, planned_at, started_at, status)
      VALUES (?, ?, ?, ?, ?, 'running')`,
   )
+  // Часовой слот: `UNIQUE` здесь и есть держатель правила «один старт в час»
+  // (ADR 2026-09-28-0736, п. 6). Проверка чтением перед записью держала бы
+  // его только до второго одновременного тика; ограничение базы не зависит
+  // от порядка выполнения вовсе.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS job_slots (
+      job TEXT NOT NULL,
+      slot TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      PRIMARY KEY (job, slot)
+    )
+  `)
+
+  const claimSlot = db.prepare('INSERT INTO job_slots (job, slot, run_id) VALUES (?, ?, ?)')
+  const takenSlot = db.prepare('SELECT run_id FROM job_slots WHERE job = ? AND slot = ?')
+  const pruneSlots = db.prepare('DELETE FROM job_slots WHERE slot < ?')
   const bumpStarts = db.prepare(
     `INSERT INTO job_starts (job, utc_day, starts) VALUES (?, ?, 1)
      ON CONFLICT(job, utc_day) DO UPDATE SET starts = starts + 1`,
@@ -107,6 +129,11 @@ export function createJobStore({ file, now = Date.now }) {
       return Number(changes ?? 0)
     },
 
+    /** Занят ли час этой работы. Чтение — для ответа; держит слот `UNIQUE`. */
+    slotTaken(job, at = now()) {
+      return takenSlot.get(job, utcSlot(at))?.run_id ?? null
+    },
+
     /** Стартов этой работы за сутки UTC. Читается ДО решения о запуске. */
     startsToday(job, at = now()) {
       return Number(countDay.get(job, utcDay(at))?.starts ?? 0)
@@ -118,13 +145,30 @@ export function createJobStore({ file, now = Date.now }) {
     },
 
     /** Строка старта. Пишется ДО работы: иначе обрыв стёр бы след старта. */
+    /**
+     * Старт: занимает часовой слот, растит суточный счётчик и кладёт строку
+     * ленты. Занятый слот — `{ok: false, code: 'slot_taken'}`, а не бросок:
+     * это штатный отказ ручки, а не поломка. Слот занимается ПЕРВЫМ: между
+     * чтением и записью может вклиниться второй тик, и тогда единственное,
+     * что различает их, — ограничение базы.
+     */
     start({ id, job, plannedAt = null, at = now() }) {
       const day = utcDay(at)
-      // Счётчик растёт первым: строку ленты уборка может снять, счётчик — нет.
+      const slot = utcSlot(at)
+      try {
+        claimSlot.run(job, slot, id)
+      } catch (error) {
+        if (String(error.message).includes('UNIQUE'))
+          return { ok: false, code: 'slot_taken', runId: takenSlot.get(job, slot)?.run_id ?? null }
+        throw error
+      }
+      // Счётчик растёт раньше строки ленты: строку уборка может снять, счётчик — нет.
       bumpStarts.run(job, day)
-      pruneStarts.run(utcDay(at - STARTS_KEEP_DAYS * 24 * 3600_000))
+      const cutoff = utcDay(at - STARTS_KEEP_DAYS * 24 * 3600_000)
+      pruneStarts.run(cutoff)
+      pruneSlots.run(cutoff)
       insert.run(id, job, day, plannedAt, at)
-      return id
+      return { ok: true, runId: id }
     },
 
     finish({ id, status, summary = null, trace = null, tokens = null, budgetLeftUsd = null, at = now() }) {
