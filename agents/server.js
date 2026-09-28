@@ -1,13 +1,15 @@
 // Точка входа сервиса агентов (ADR 2026-09-09-0854). Битая конфигурация
 // или отсутствующий секрет валят процесс здесь — до открытия порта.
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import http from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createNewsAnalyst } from './src/agent.js'
 import { parseEnv } from './src/env.js'
 import { createInvariants } from './src/invariants.js'
+import { createJobs, loadJobs } from './src/jobs/index.js'
+import { createJobStore } from './src/jobs/store.js'
 import { createLayeredAgent, LAYERED_AGENT_ID } from './src/layered.js'
 import { STAGED15_MAX_TOKENS } from './src/params.js'
 import { createProfilePrompts, registryPrompts } from './src/prompts.js'
@@ -124,6 +126,37 @@ for (const entry of registry.values()) {
   agents.set(entry.id, agent)
 }
 
+// Планировщик дня 18. Три условия, каждое называется в `/healthz` порознь:
+// файл работ, том и ключ приложения `scheduler`. Исполнитель запуска —
+// цикл с моделью — подключается отдельно; пока его нет, работа не стартует, и
+// ручка это говорит прямо (503 `no_executor`), а не отвечает успехом.
+let jobs = null
+const jobsFile = join(here, 'config', 'jobs.json')
+if (existsSync(jobsFile)) {
+  let jobStore = null
+  try {
+    jobStore = createJobStore({ file: env.JOBS_FILE })
+    // Запуск, оборванный выкаткой, иначе висел бы `running` вечно и держал
+    // бы «работа идёт» (ADR 2026-09-28-0736, разбор вопроса 2).
+    const interrupted = jobStore.markInterruptedOnStart()
+    if (interrupted > 0) log({ event: 'jobs_interrupted_on_start', runs: interrupted })
+  } catch (error) {
+    console.error(`запуски планировщика: ${error.message}`)
+  }
+  try {
+    jobs = createJobs({
+      jobs: loadJobs(JSON.parse(readFileSync(jobsFile, 'utf8'))),
+      store: jobStore,
+      schedulerKey: env.ROUTER_APP_KEY_SCHEDULER,
+      log,
+    })
+  } catch (error) {
+    // Битый файл работ — отказ планировщика, а не отказ сервиса: дни 6–15
+    // к нему отношения не имеют.
+    console.error(`реестр работ: ${error.message}`)
+  }
+}
+
 // Готовые запуски удаляются по TTL; незавершённые живут до терминального события.
 setInterval(() => runs.sweep(), 60_000).unref()
 // Срок хранения диалогов проверяется реже: он измеряется часами.
@@ -151,6 +184,7 @@ const handler = createService({
   sessions,
   stageLog,
   invariants,
+  jobs,
   env,
   log,
 })
