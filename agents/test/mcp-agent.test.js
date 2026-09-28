@@ -475,7 +475,7 @@ async function chainPair() {
     },
     { A: news.url, B: store.url },
   )
-  return { news, store, servers }
+  return { news, store, servers, files }
 }
 
 test('работа планировщика с агентом без модели идёт цепочкой, а не отвергается', async () => {
@@ -548,4 +548,28 @@ test('цепочка планировщика оборвалась: запуск
   assert.equal(out.status, 'failed')
   assert.equal(runs.snapshot('run-broken').status, 'failed')
   await news.close()
+})
+
+test('работа планировщика пишет в один файл, а не плодит их', async () => {
+  // Держатель ADR 2026-09-28-1323, п. 5. Работа идёт 96 раз в сутки, срок
+  // хранения `mcpstore` — 30 ч, потолок — 200 файлов: имя по времени старта
+  // заняло бы 120 мест из 200, а заполнение хранилища — отказ `file.save` у
+  // ВСЕХ, включая посетителей дня 19. Перезапись файла числа файлов не
+  // меняет (`mcpstore/src/store.js:78`).
+  const { news, store, servers, files } = await chainPair()
+  const runs = createRuns()
+  let tick = 1_700_000_000_000
+  const runJob = createJobRunner({ registry, servers, runs, env, now: () => (tick += 900_000) })
+
+  for (let i = 0; i < 3; i += 1) {
+    const out = await runJob({
+      job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' },
+      runId: `run-file-${i}`,
+    })
+    assert.equal(out.status, 'succeeded')
+  }
+
+  assert.deepEqual([...files.keys()], ['pipeline-digest.txt'], 'работа завела больше одного файла в mcpstore')
+  await news.close()
+  await store.close()
 })

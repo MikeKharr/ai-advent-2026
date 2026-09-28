@@ -123,7 +123,19 @@ export async function runPipeline({ input, servers, emit = () => {}, now = Date.
   const have = new Set(tools.map((tool) => `${tool.server}/${tool.name}`))
 
   const started = now()
-  const fileName = `pipeline-${started}.txt`
+  // Имя файла по умолчанию — со временем старта: у посетителя дня 19 прогоны
+  // редки и своя история полезна. Работа планировщика передаёт ПОСТОЯННОЕ имя
+  // (`agents/src/mcp/agent.js`, `createJobRunner`), и это не косметика: при 96
+  // прогонах в сутки и сроке хранения 30 ч (`mcpstore/src/store.js`) файлы по
+  // времени заняли бы 120 из 200 мест хранилища, а заполнение — отказ
+  // `file.save` у ВСЕХ, включая посетителей дня 19. Перезапись существующего
+  // файла числа файлов не меняет (`mcpstore/src/store.js:78`). Держит тест
+  // «работа планировщика пишет в один файл, а не плодит их» в
+  // `agents/test/mcp-agent.test.js`.
+  const fileName =
+    typeof input?.fileName === 'string' && input.fileName.trim() !== ''
+      ? input.fileName.trim()
+      : `pipeline-${started}.txt`
   const state = {
     input: { query, days: input.days ?? 7, limit: input.limit ?? 5 },
     fileName,
