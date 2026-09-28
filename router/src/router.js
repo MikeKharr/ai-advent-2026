@@ -24,6 +24,24 @@ const UNREACHABLE = new Set([
   'ENETUNREACH',
 ])
 
+/**
+ * Текст, по которому меряется вход запроса. Вызывающий передаёт либо строку
+ * `input` (дни 6–16), либо диалог `messages` с блоками и определения
+ * инструментов `tools` (цикл `tool_use`). Мера у лимита, кэша и выбора
+ * провайдера должна быть одна: если брать только `input`, запрос с
+ * `messages` оценивается в ноль токенов и проходит мимо суточного потолка.
+ */
+export function inputTextOf(req) {
+  // Определения инструментов уходят провайдеру целиком и тарифицируются им как
+  // вход — значит входят в меру при обеих формах входа, не только при
+  // `messages`. Приписываются, только когда они есть: безусловное `[]`
+  // сдвинуло бы `cacheKey` строкового входа дней 6–16 и дало бы сплошной
+  // промах кэша.
+  const tools = req.tools?.length ? JSON.stringify(req.tools) : ''
+  if (req.messages) return JSON.stringify(req.messages) + tools
+  return String(req.input ?? '') + tools
+}
+
 export function createRouter({
   config,
   registry,
@@ -92,8 +110,20 @@ export function createRouter({
         [],
       )
 
+    // Определения инструментов — граница класса, а не свободный параметр
+    // запроса: класс либо объявил `tools` в `requires` реестра классов, либо
+    // не принимает их вовсе. Без этой отсечки `tools[]` проходили на любом
+    // классе, и потолок ответа с бюджетом брались у класса пощедрее
+    // (ADR 2026-09-28-0736, п. 2).
+    if (req.tools?.length && !(cls.requires ?? []).includes('tools'))
+      return refuse('refused', `класс ${taskClass} не принимает tools`, [])
+
     const schema = req.schema ?? null
     // Явная схема в запросе — это требование возможности json_schema.
+    // Возможность `tools` отдельной строкой не добавляется: после отсечки
+    // выше определения принимает только класс, у которого `tools` уже стоит
+    // в `requires`, и capabilityFit берёт их оттуда. Строка «на всякий
+    // случай» была бы правилом без держателя (I-14).
     const extraRequires = [...(req.requires ?? []), ...(schema ? ['json_schema'] : [])]
     const requires = [...(cls.requires ?? []), ...extraRequires]
     const strict = schema !== null || requires.includes('json_schema')
@@ -112,7 +142,7 @@ export function createRouter({
       requestedAnswerTokens = req.answerTokens
     }
 
-    const inputTokens = estimateTokens(req.input) + estimateTokens(req.system ?? '')
+    const inputTokens = estimateTokens(inputTextOf(req)) + estimateTokens(req.system ?? '')
     const providers = registry.list()
     // Явный выбор вызывающего (день 5: пользователь выбирает модель до
     // запуска). Политика тогда не решает — но возможность, класс данных и
@@ -260,6 +290,10 @@ export function createRouter({
         return {
           ok: true,
           text: attempt.text,
+          // Блоки ответа провайдера — как пришли: вызывающий видит `tool_use`
+          // отдельным блоком, а не склейкой в `text`.
+          content: attempt.content,
+          stopReason: attempt.stopReason,
           json: attempt.json,
           provider: {
             id: p.id,
@@ -280,7 +314,7 @@ export function createRouter({
             p,
             thinking,
             promptVersion: req.promptVersion,
-            input: req.input,
+            input: inputTextOf(req),
           }),
         }
       }
@@ -361,10 +395,12 @@ export function createRouter({
           provider: p,
           model: p.model,
           prompt: req.input,
+          messages: req.messages ?? null,
           system: req.system,
           schema,
           stop: req.stop ?? [],
           tools: requires.filter((r) => r === 'web_search'),
+          toolDefs: req.tools ?? [],
           thinking: { level: thinking, value: p.thinking[thinking] },
           answerTokens,
           maxOutputTokens,
@@ -375,7 +411,11 @@ export function createRouter({
       )
       health.noteQuota(p, result.quota)
       const text = (result.text ?? '').trim()
-      if (text.length === 0) {
+      const content = result.content ?? null
+      // Ответ из одних блоков `tool_use` текста не несёт и пустым не
+      // считается: это ход цикла инструментов, а не молчание провайдера.
+      const hasToolUse = (content ?? []).some((block) => block.type === 'tool_use')
+      if (text.length === 0 && !hasToolUse) {
         health.failure(p)
         return done('empty', 'пустой ответ при 200', { usage: result.usage })
       }
@@ -400,6 +440,8 @@ export function createRouter({
       health.success(p)
       return done('ok', null, {
         text,
+        content,
+        stopReason: result.stopReason,
         json,
         truncated,
         usage: result.usage,
@@ -467,7 +509,7 @@ export function createRouter({
   function estimateRequest(req) {
     const cls = config.classes[resolveClass(req.taskClass)]
     const level = resolveThinking(cls, req.thinking).level ?? cls.thinking
-    const inputTokens = estimateTokens(req.input) + estimateTokens(req.system ?? '')
+    const inputTokens = estimateTokens(inputTextOf(req)) + estimateTokens(req.system ?? '')
     const answerTokens = Math.min(
       req.answerTokens ?? cls.answerTokens,
       cls.maxAnswerTokens ?? cls.answerTokens,

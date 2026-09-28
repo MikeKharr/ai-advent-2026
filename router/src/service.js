@@ -231,8 +231,18 @@ function parseBody(raw) {
   }
   if (!body || typeof body !== 'object') throw new Error('тело должно быть объектом')
   if (typeof body.taskClass !== 'string') throw new Error('taskClass — строка')
-  if (typeof body.input !== 'string' || body.input.length === 0)
-    throw new Error('input — непустая строка')
+  // Вход — либо строка `input` (дни 6–16), либо диалог `messages` с блоками
+  // (цикл `tool_use`). Ровно один из двух: два входа сразу означали бы, что
+  // провайдеру уходит одно, а лимиту и кэшу меряется другое.
+  if ((body.input === undefined) === (body.messages === undefined))
+    throw new Error('нужен ровно один вход: input или messages')
+  if (body.messages === undefined) {
+    if (typeof body.input !== 'string' || body.input.length === 0)
+      throw new Error('input — непустая строка')
+  } else {
+    checkMessages(body.messages)
+  }
+  if (body.tools !== undefined) checkTools(body.tools)
   if (body.system !== undefined && typeof body.system !== 'string')
     throw new Error('system — строка')
   if (
@@ -271,6 +281,64 @@ function parseBody(raw) {
   if (body.promptVersion !== undefined && typeof body.promptVersion !== 'string')
     throw new Error('promptVersion — строка')
   return body
+}
+
+const ROLES = new Set(['user', 'assistant'])
+const BLOCK_TYPES = new Set(['text', 'tool_use', 'tool_result'])
+// Имя инструмента у Messages API: буквы, цифры, подчёркивание и дефис.
+// Имя с точкой (`clock.now`) провайдер отвергает — отображение имён делает
+// вызывающий, а не роутер.
+const TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/
+
+function checkMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0)
+    throw new Error('messages — непустой массив')
+  for (const m of messages) {
+    if (!m || typeof m !== 'object' || Array.isArray(m)) throw new Error('messages: элемент — объект')
+    if (!ROLES.has(m.role)) throw new Error('messages: role — user или assistant')
+    if (typeof m.content === 'string') {
+      if (m.content.length === 0) throw new Error('messages: content — непустая строка')
+      continue
+    }
+    if (!Array.isArray(m.content) || m.content.length === 0)
+      throw new Error('messages: content — непустая строка или непустой массив блоков')
+    for (const b of m.content) checkBlock(b)
+  }
+}
+
+function checkBlock(b) {
+  if (!b || typeof b !== 'object' || Array.isArray(b)) throw new Error('messages: блок — объект')
+  if (!BLOCK_TYPES.has(b.type))
+    throw new Error(`messages: неизвестный тип блока ${b.type}; допустимы ${[...BLOCK_TYPES].join(', ')}`)
+  if (b.type === 'text' && typeof b.text !== 'string') throw new Error('блок text: text — строка')
+  if (b.type === 'tool_use') {
+    if (typeof b.id !== 'string' || b.id.length === 0) throw new Error('блок tool_use: id — непустая строка')
+    if (typeof b.name !== 'string' || b.name.length === 0)
+      throw new Error('блок tool_use: name — непустая строка')
+    if (!b.input || typeof b.input !== 'object' || Array.isArray(b.input))
+      throw new Error('блок tool_use: input — объект')
+  }
+  if (b.type === 'tool_result') {
+    if (typeof b.tool_use_id !== 'string' || b.tool_use_id.length === 0)
+      throw new Error('блок tool_result: tool_use_id — непустая строка')
+    if (typeof b.content !== 'string' && !Array.isArray(b.content))
+      throw new Error('блок tool_result: content — строка или массив блоков')
+    if (b.is_error !== undefined && typeof b.is_error !== 'boolean')
+      throw new Error('блок tool_result: is_error — булево')
+  }
+}
+
+function checkTools(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) throw new Error('tools — непустой массив')
+  for (const t of tools) {
+    if (!t || typeof t !== 'object' || Array.isArray(t)) throw new Error('tools: элемент — объект')
+    if (typeof t.name !== 'string' || !TOOL_NAME.test(t.name))
+      throw new Error('tools: name — 1…128 символов из [a-zA-Z0-9_-]')
+    if (typeof t.description !== 'string' || t.description.length === 0)
+      throw new Error('tools: description — непустая строка')
+    if (!t.input_schema || typeof t.input_schema !== 'object' || Array.isArray(t.input_schema))
+      throw new Error('tools: input_schema — объект')
+  }
 }
 
 function readBody(req) {
