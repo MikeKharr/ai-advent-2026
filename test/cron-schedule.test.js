@@ -30,6 +30,7 @@ import { test } from 'node:test'
 // загрузке: `node:crypto` и соседний файл.
 import { loadJobs } from '../agents/src/jobs/index.js'
 import { parseSchedule, slotsPerDay } from '../agents/src/jobs/schedule.js'
+import { loadRegistry } from '../agents/src/registry.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const JOBS = 'agents/config/jobs.json'
@@ -208,17 +209,57 @@ test('суточный потолок стартов не ниже числа с
   }
 })
 
-// Часовой слот: `409 slot_taken` пропускает не больше одного старта в час
-// (`agents/src/jobs/index.js`, проверка `slotTaken`). Каденция чаще часовой
-// поэтому не ускоряет работу, а даёт отказ на каждом лишнем тике — при живом
-// контейнере и растущем счётчике отказов, то есть тихо. Правило проверяется
-// здесь, до мержа, а не в проде.
-test('каденция не чаще одного срока в час', () => {
+// Обратная сторона списка выше: формы, которые обязаны ОСТАВАТЬСЯ рабочими.
+// Без неё запрет можно было бы ужесточить до «только целая минута» и не
+// покраснеть — а каденция дня 18 как раз `*\/15`.
+const SUPPORTED = ['*/15 * * * *', '0 */6 * * *', '0 * * * *', '17 3,15 * * *']
+
+test('рабочие каденции принимают и loadJobs, и сборщик таблицы', () => {
+  for (const scheduleUtc of SUPPORTED) {
+    const loaded = loadJobs({
+      jobs: [{ id: 'alpha', name: 'n', enabled: true, agentId: 'pipeline-agent', maxRunsPerDay: 1440, scheduleUtc, prompt: ['q'] }],
+    })
+    assert.equal(loaded.get('alpha').scheduleUtc, scheduleUtc)
+    const { code, out } = build(fixture({ jobs: [{ id: 'alpha', scheduleUtc }] }))
+    assert.equal(code, 0, `сборщик отверг рабочую каденцию «${scheduleUtc}»`)
+    assert.equal(out, `${scheduleUtc} /cron/tick.sh alpha\n`)
+  }
+})
+
+// ДЕНЕЖНЫЙ ДЕРЖАТЕЛЬ (I-14, ADR 2026-09-28-1323, п. 4). Слот теперь равен
+// сроку расписания, и прежнее «не чаще одного срока в час» снято: работа без
+// модели платит ноль, и 96 прогонов в сутки стоят только чужой нагрузки.
+// Работе С МОДЕЛЬЮ та же каденция стоит денег: 96 × ~$0,05 ожидания ≈ $4,8 в
+// сутки, худшее ≈ $17 — против $0,5 суточного бюджета приложения `scheduler`.
+// Бюджет отсёк бы после 3–10 запусков, а остальные 86+ легли бы в ленту дня
+// 18 как `failed`. Поэтому проверяется НЕ «сколько сроков вообще», а
+// «сколько сроков у работы, чей агент в реестре с моделью»: смена `agentId`
+// на такого агента при `*/15` краснит прогон ДО мержа.
+//
+// Реестр берётся настоящий (`agents/config/agents.json`) и настоящим
+// разборщиком: признак `modelless` считает он (`agents/src/registry.js:40`),
+// и переписывать это правило здесь значило бы завести вторую его копию.
+const registry = loadRegistry(
+  JSON.parse(readFileSync(join(ROOT, 'agents/config/agents.json'), 'utf8')),
+)
+
+test('работа с моделью — не чаще часовой каденции', () => {
   for (const job of jobs) {
-    const minute = job.scheduleUtc.split(' ')[0]
+    const entry = registry.get(job.agentId)
+    assert.ok(entry, `работа «${job.id}»: агента «${job.agentId}» нет в реестре`)
+    if (entry.modelless) continue
+    const perDay = slotsPerDay(parseSchedule(job.scheduleUtc))
     assert.ok(
-      /^\d+$/.test(minute),
-      `работа «${job.id}»: поле минут «${minute}» даёт больше одного срока в час, а часовой слот пропустит только первый (409 slot_taken)`,
+      perDay <= 24,
+      `работа «${job.id}»: агент «${job.agentId}» ходит в модель, а сроков в сутки ${perDay} — это ${perDay} платных запусков в сутки против бюджета $0,5 приложения scheduler (ADR 2026-09-28-1323, п. 4)`,
     )
   }
+})
+
+// Предыдущая проверка молчала бы и у реестра, где модели нет НИ У КОГО:
+// сегодня работа одна и она без модели, так что ветка с моделью не
+// исполняется вовсе. Эта строка держит саму способность её исполнить.
+test('в реестре есть агент с моделью — ветке проверки есть на чём сработать', () => {
+  const withModel = [...registry.values()].filter((entry) => !entry.modelless)
+  assert.notEqual(withModel.length, 0, 'агентов с моделью в реестре нет: проверка выше проверяет пустоту')
 })
