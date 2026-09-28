@@ -23,6 +23,14 @@
     "maxAnswerTokens": 32000,
     "dataClass": "public"
   },
+  "tool_use": {
+    "tiers": ["cloud-frontier"],
+    "requires": ["text_generation", "tools"],
+    "thinking": "none",
+    "answerTokens": 1024,
+    "maxAnswerTokens": 2048,
+    "dataClass": "public"
+  },
   "extract_json": {
     "tiers": ["self-hosted", "cloud-frontier"],
     "requires": ["text_generation", "json_schema"],
