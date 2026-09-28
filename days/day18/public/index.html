@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day18 -> /day18/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Планировщик — AI Advent 2026, день 18</title>
+<!-- Раскладка НЕ новая: style.css — дословный срез <style> дня 16
+     (days/day16/public/index.html). Совпадение держит тест
+     test/style-copy.test.js. Своих токенов и своих шкал у дня нет. -->
+<link rel="stylesheet" href="style.css">
+<style>
+  /* Единственная добавка к копии: раскрываемый трейс. Собственных цветов и
+     размеров не заводит — берёт те же токены, что всё остальное. */
+  .trace > summary {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    cursor:pointer; padding:var(--s-1) 0; list-style-position:outside;
+  }
+  .trace > summary:hover { color:var(--fg); }
+  .trace > summary:active { transform:translateY(1px); }
+  .trace[open] > summary { margin-bottom:var(--s-3); }
+  .trace .feed { margin-top:var(--s-3); }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Планировщик</h1>
+  <p class="sub">Раз в шесть часов работа запускается сама: агент собирает сводку через
+    инструменты MCP. Кнопки «запустить» здесь нет намеренно — «когда» решает планировщик,
+    а включают и выключают работу правкой файла настроек через PR, не с этого экрана.
+    Ниже — состав работы, ближайший срок, сколько стартов было сегодня, остаток бюджета
+    и лента сводок: у каждой раскрывается трейс — сырые вызовы JSON-RPC с именами серверов.</p>
+
+  <p class="notice">! У работы свой ключ приложения роутера и свой суточный потолок расхода.
+    Без этого ключа автономных запусков не бывает вовсе — не «они выключены», а их нечем
+    оплатить.</p>
+
+  <p class="wire" id="facts">
+    <span>планировщик <b id="f-enabled">…</b></span>
+    <span>следующий срок <b id="f-next">…</b></span>
+    <span>стартов сегодня <b id="f-starts">…</b></span>
+    <span>остаток бюджета <b id="f-budget">…</b></span>
+  </p>
+  <p class="cmd-status" id="state" role="status" aria-live="polite">Загружаем сводки…</p>
+
+  <noscript>
+    <p class="notice">Страница читает сводки и поток событий в браузере, поэтому без
+      JavaScript она не работает. Включите JavaScript.</p>
+  </noscript>
+
+  <section>
+    <h2 id="live-title">Идущий запуск</h2>
+    <p class="hint" id="live-note">Сейчас ничего не идёт. Когда планировщик начнёт запуск,
+      его вызовы появятся здесь по мере того, как они происходят.</p>
+    <ol class="feed" id="live" aria-labelledby="live-title"></ol>
+  </section>
+
+  <section>
+    <div class="feed-head">
+      <h2 id="feed-title">Сводки</h2>
+      <label class="indent"><input type="checkbox" id="indent"> Показать с отступами</label>
+    </div>
+    <p class="empty" id="empty">Сводок ещё нет. Первая появится после первого планового запуска.</p>
+    <ol class="feed" id="feed" aria-labelledby="feed-title"></ol>
+  </section>
+
+  <footer>
+    Сводки собирает сервис агентов этого проекта; ключ сервиса живёт на сервере дня 18
+    и на страницу не попадает. Хранятся последние 50 запусков, и больше ничего: адреса
+    посетителей в сводках не участвуют и нигде не сохраняются. Содержание сводок приходит
+    из внешних источников, не проверяется и не является редакцией проекта.
+    Вопросы: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>
+  </footer>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

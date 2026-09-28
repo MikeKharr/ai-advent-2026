@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day19 -> /day19/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Цепочка MCP — AI Advent 2026, день 19</title>
+<!-- Раскладка НЕ новая: style.css — дословный срез <style> дня 16
+     (days/day16/public/index.html). Совпадение держит тест
+     test/style-copy.test.js. Своих токенов и своих шкал у дня нет. -->
+<link rel="stylesheet" href="style.css">
+<style>
+  /* Единственная добавка к копии: две мелочи, которых у дня 16 не было. */
+  /* Шаги цепочки — не кнопки: это подпись к тому, что делает код, и нажать
+     на них нельзя. Поэтому своё правило, а не .chip с курсором-рукой. */
+  .steps { list-style:none; display:flex; flex-wrap:wrap; gap:var(--s-2); margin:0 0 var(--s-5); padding:0; }
+  .step {
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    padding:var(--s-2) var(--s-3); border-radius:var(--r-full);
+    background:var(--surface); color:var(--fg-mut); border:1px solid var(--line);
+  }
+  .step[data-state="done"] { color:var(--fg); border-color:var(--line-ctl); }
+  /* Два хеша рядом: на узком экране — друг под другом, иначе 64 знака
+     моноширинного текста в две колонки не помещаются. */
+  .hashes { display:grid; grid-template-columns:1fr; gap:var(--s-3); margin:0 0 var(--s-4); }
+  @media (min-width:48rem) { .hashes { grid-template-columns:1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Цепочка MCP</h1>
+  <p class="sub">Четыре вызова к двум серверам MCP подряд: найти новости, сделать выжимку,
+    сохранить её файлом, прочитать файл обратно. Порядок задаёт код, а не модель, и данные
+    между шагами переносит тоже код — расход модели здесь нулевой. Ниже видно каждый вызов:
+    имя сервера, метод и сырые тела JSON-RPC, как они прошли по проводу.</p>
+
+  <p class="notice">! Смысл последнего шага — сверка. Сервер выжимки возвращает её sha256,
+    сервер хранилища возвращает sha256 прочитанного. Оба хеша показаны рядом: если они
+    совпали, значит по цепочке дошли те же байты, а не похожие.</p>
+
+  <p class="wire">
+    <span>серверы <b>mcpnews</b>, <b>mcpstore</b></span>
+    <span>MCP-Protocol-Version <b>2025-11-25</b></span>
+    <span>расход модели: <b>0</b></span>
+  </p>
+
+  <noscript>
+    <p class="notice">Страница получает вызовы потоком событий и рисует их в браузере,
+      поэтому без JavaScript она не работает. Включите JavaScript.</p>
+  </noscript>
+
+  <h2 id="steps-title">Шаги цепочки</h2>
+  <ol class="steps" id="steps" aria-labelledby="steps-title">
+    <li class="step" data-tool="news.search">1 · news.search</li>
+    <li class="step" data-tool="news.summarize">2 · news.summarize</li>
+    <li class="step" data-tool="file.save">3 · file.save</li>
+    <li class="step" data-tool="file.read">4 · file.read</li>
+  </ol>
+
+  <form class="composer" id="run-form">
+    <label class="field" for="task">Сфера или запрос</label>
+    <div class="cmd-row">
+      <input id="task" type="text" maxlength="600" autocomplete="off" spellcheck="false"
+             placeholder="fintech" aria-describedby="run-status">
+      <button class="send" id="send" type="submit">Запустить</button>
+    </div>
+    <p class="cmd-status" id="run-status" role="status" aria-live="polite">&nbsp;</p>
+  </form>
+
+  <section>
+    <h2 id="hash-title">Две sha256</h2>
+    <p class="hint" id="hash-note">Сверять нечего: запуска ещё не было.</p>
+    <div class="hashes" aria-labelledby="hash-title">
+      <div>
+        <p class="entry-label" id="hash-a-label">sha256 выжимки (news.summarize)</p>
+        <pre class="rpc is-empty" id="hash-a" tabindex="0" role="region" aria-labelledby="hash-a-label">хеша ещё нет</pre>
+      </div>
+      <div>
+        <p class="entry-label" id="hash-b-label">sha256 прочитанного (file.read)</p>
+        <pre class="rpc is-empty" id="hash-b" tabindex="0" role="region" aria-labelledby="hash-b-label">хеша ещё нет</pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="feed-head">
+      <h2 id="feed-title">Вызовы</h2>
+      <label class="indent"><input type="checkbox" id="indent"> Показать с отступами</label>
+    </div>
+    <p class="hint">Меняются только переносы строк и пробелы. Поля, порядок и значения — как пришли.</p>
+    <p class="empty" id="empty">Вызовов ещё не было. Введите сферу и нажмите «Запустить»:
+      вызовы появятся здесь по мере того, как цепочка их делает.</p>
+    <ol class="feed" id="feed" aria-labelledby="feed-title"></ol>
+  </section>
+
+  <footer>
+    Запуск идёт через сервис агентов этого проекта; ключ сервиса живёт на сервере дня 19
+    и на страницу не попадает. Новости берутся у Hacker News, их содержание не проверяется
+    и не является редакцией проекта. Файл выжимки живёт в хранилище 30 часов и затем
+    удаляется. Адрес посетителя нигде не сохраняется.
+    Вопросы: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>
+  </footer>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
