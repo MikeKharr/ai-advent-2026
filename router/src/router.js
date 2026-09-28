@@ -119,14 +119,12 @@ export function createRouter({
       return refuse('refused', `класс ${taskClass} не принимает tools`, [])
 
     const schema = req.schema ?? null
-    // Явная схема в запросе — это требование возможности json_schema, а
-    // определения инструментов — возможности tools: провайдер без неё молча
-    // ответил бы текстом вместо вызова инструмента.
-    const extraRequires = [
-      ...(req.requires ?? []),
-      ...(schema ? ['json_schema'] : []),
-      ...(req.tools?.length ? ['tools'] : []),
-    ]
+    // Явная схема в запросе — это требование возможности json_schema.
+    // Возможность `tools` отдельной строкой не добавляется: после отсечки
+    // выше определения принимает только класс, у которого `tools` уже стоит
+    // в `requires`, и capabilityFit берёт их оттуда. Строка «на всякий
+    // случай» была бы правилом без держателя (I-14).
+    const extraRequires = [...(req.requires ?? []), ...(schema ? ['json_schema'] : [])]
     const requires = [...(cls.requires ?? []), ...extraRequires]
     const strict = schema !== null || requires.includes('json_schema')
     // Класс со схемой без схемы — граница, а не тихий свободный текст.
@@ -518,11 +516,7 @@ export function createRouter({
     )
     const outputTokens = answerTokens + THINKING_TOKENS[level]
     const dataClass = req.dataClass ?? cls.dataClass
-    const extraRequires = [
-      ...(req.requires ?? []),
-      ...(req.schema ? ['json_schema'] : []),
-      ...(req.tools?.length ? ['tools'] : []),
-    ]
+    const extraRequires = [...(req.requires ?? []), ...(req.schema ? ['json_schema'] : [])]
     // При явном выборе способный кандидат ровно один — по нему и считаем,
     // иначе запрос к дешёвой модели резервируется по ставке дорогой.
     const pool = req.provider

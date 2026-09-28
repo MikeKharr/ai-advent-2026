@@ -286,8 +286,11 @@ test('проба compliance: layered_dialogue с tools и answerTokens 32000 н�
   // потолком инструментов не принимает.
   assert.equal(CLASSES.layered_dialogue.maxAnswerTokens, 32000)
   assert.equal(CLASSES.layered_dialogue.requires.includes('tools'), false)
+  // Лимиты — как у развёрнутого приложения agents: отказ должен прийти от
+  // класса, а не от того, что запрос не помещается в тестовый потолок.
   const { post, calls, close } = await start(t, {
     hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk },
+    apps: APPS({ dailyTokens: 10000000, dailyCostUsd: 10 }),
   })
   const res = await post({
     taskClass: 'layered_dialogue',
