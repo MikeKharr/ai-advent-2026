@@ -90,9 +90,14 @@ export function createRuns({ now = Date.now, ttlMs = 10 * 60_000 } = {}) {
   }
 
   return {
-    create({ agent, input, parentRunId = null }) {
+    /**
+     * `id` задаётся снаружи только планировщиком дня 18: идентификатор
+     * запуска там уже записан на том до начала работы, и страница дня читает
+     * поток событий именно по нему. Всем остальным его выдаёт `randomUUID`.
+     */
+    create({ agent, input, parentRunId = null, id = randomUUID() }) {
       const run = {
-        id: randomUUID(),
+        id,
         agent: { id: agent.id, version: agent.version },
         input,
         status: 'queued',

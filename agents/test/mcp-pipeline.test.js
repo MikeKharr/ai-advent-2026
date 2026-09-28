@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import http from 'node:http'
 import test from 'node:test'
 import { loadServers } from '../src/mcp/servers.js'
+import { PIPELINE_AGENT_ID } from '../src/mcp/pipeline-agent.js'
 import { payloadOf, PipelineError, runPipeline, sha256 } from '../src/mcp/pipeline.js'
 import { API_TOOL_NAME, apiToolName, buildToolIndex } from '../src/mcp/tool-names.js'
 import { loadRegistry } from '../src/registry.js'
@@ -351,13 +352,24 @@ test('одноимённый инструмент чужого сервера н
   await kit.close()
 })
 
-test('каждый агент реестра имеет исполнителя: агента без модели в конфигурации нет', () => {
+test('каждый агент реестра без модели имеет своего исполнителя, и его ветка стоит до общей', () => {
   // Держатель находки гейта (PR #233): запись без исполнителя доставалась
   // развилке `else` в server.js и уходила исполнителем дня 6 в роутер с
-  // `taskClass: null`. Пока цепочка не подключена, такой записи быть не должно.
+  // `taskClass: null`. Теперь исполнитель есть (`createPipelineAgent`), и
+  // держится ДВЕ вещи: список агентов без модели известен поимённо, а ветка
+  // такого агента в server.js стоит раньше и отсечки `modelless`, и общей
+  // развилки `else` — иначе цепочка снова стала бы платным агентом дня 6.
   const raw = JSON.parse(
     readFileSync(new URL('../config/agents.json', import.meta.url), 'utf8'),
   )
   const modelless = raw.agents.filter((a) => a.defaults?.model === undefined).map((a) => a.id)
-  assert.deepEqual(modelless, [], `в реестре агент без модели и без исполнителя: ${modelless.join(', ')}`)
+  assert.deepEqual(modelless, [PIPELINE_AGENT_ID], `в реестре агент без модели и без исполнителя: ${modelless.join(', ')}`)
+
+  const server = readFileSync(new URL('../server.js', import.meta.url), 'utf8')
+  const branch = server.indexOf('entry.id === PIPELINE_AGENT_ID')
+  const skip = server.indexOf('entry.modelless')
+  const fallback = server.indexOf('else agent = createNewsAnalyst')
+  assert.ok(branch > 0, 'в server.js нет ветки исполнителя цепочки')
+  assert.ok(branch < skip, 'ветка цепочки должна стоять до отсечки agents без модели')
+  assert.ok(branch < fallback, 'ветка цепочки должна стоять до общей развилки else')
 })
