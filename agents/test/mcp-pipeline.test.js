@@ -373,3 +373,37 @@ test('каждый агент реестра без модели имеет св
   assert.ok(branch < skip, 'ветка цепочки должна стоять до отсечки agents без модели')
   assert.ok(branch < fallback, 'ветка цепочки должна стоять до общей развилки else')
 })
+
+test('имя файла берётся из входа, а без него — со временем старта', async () => {
+  // Постоянное имя — не косметика: при 96 прогонах в сутки и сроке хранения
+  // 30 ч файлы по времени заняли бы 120 из 200 мест `mcpstore`, и заполнение
+  // отказало бы `file.save` у посетителей дня 19 (ADR 2026-09-28-1323, п. 5).
+  const kit = await pair({ summary: 'выжимка' })
+
+  const named = await runPipeline({
+    input: { query: 'fintech', fileName: 'pipeline-digest.txt' },
+    servers: kit.servers,
+    now: () => 1_700_000_000_000,
+  })
+  assert.equal(named.fileName, 'pipeline-digest.txt')
+  // Имя ушло именно в хранилище, а не только в ответ.
+  assert.deepEqual([...kit.files.keys()], ['pipeline-digest.txt'])
+
+  // Второй прогон с тем же именем новых файлов не заводит.
+  await runPipeline({
+    input: { query: 'fintech', fileName: 'pipeline-digest.txt' },
+    servers: kit.servers,
+    now: () => 1_700_000_900_000,
+  })
+  assert.equal(kit.files.size, 1, 'работа с постоянным именем завела второй файл')
+
+  // Без поля — прежнее поведение посетителя дня 19: имя со временем старта.
+  const auto = await runPipeline({
+    input: { query: 'fintech' },
+    servers: kit.servers,
+    now: () => 1_700_000_000_000,
+  })
+  assert.equal(auto.fileName, 'pipeline-1700000000000.txt')
+  assert.equal(kit.files.size, 2)
+  await kit.close()
+})
