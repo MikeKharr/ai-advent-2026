@@ -166,9 +166,16 @@ export function wordsTitle(words) {
   return `круг ${words.round ?? NO_ROUND} · слова модели`
 }
 
+/**
+ * Круг прошёл без слов. Пробельный текст — тот же случай, и решение о нём
+ * здесь ОДНО на оба места (текст и класс): `"\n  \n"` даёт под подписью не
+ * состояние, а пустую полосу в 42 пикселя, и это не то, что видно на круге.
+ */
+export const isSilent = (words) => words.text.trim() === ''
+
 /** Что показать в месте текста: сами слова либо прямое «без слов». */
 export function wordsText(words) {
-  return words.text === '' ? NO_WORDS : words.text
+  return isSilent(words) ? NO_WORDS : words.text
 }
 
 /** Строка выбора: сервер и инструмент парой, как их назвал хост. */
@@ -250,7 +257,7 @@ export function renderWords(words, { id } = {}) {
   if (note) parts.push(node('p', 'entry-note', note))
   const caption = node('p', 'entry-label', 'Слова модели')
   caption.id = `words-${id}`
-  const body = node('p', `words${words.text === '' ? ' is-none' : ''}`, wordsText(words))
+  const body = node('p', `words${isSilent(words) ? ' is-none' : ''}`, wordsText(words))
   body.setAttribute('aria-labelledby', caption.id)
   parts.push(caption, body)
   li.replaceChildren(...parts)

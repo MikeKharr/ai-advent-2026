@@ -13,6 +13,7 @@ import {
   callMeta,
   callTitle,
   compareHashes,
+  isSilent,
   parseCall,
   parseWords,
   picksLine,
@@ -142,6 +143,23 @@ test('текста у круга нет — на его месте слово, �
   assert.match(shown, /\S/, `на месте слов модели пустота: ${JSON.stringify(shown)}`)
   assert.equal(shown, NO_WORDS)
   // И непустые слова заглушка не вытесняет.
+  assert.equal(wordsText(parseWords(said())), said().text)
+})
+
+// Пробельный текст доезжал до страницы: `agents/src/mcp/agent.js` отбрасывает
+// блок только по точному равенству пустой строке, и `"\n  \n"` проходил насквозь.
+// На экране это давало не состояние, а пустую полосу под подписью — 42 пикселя
+// на один перевод строки, 63 на три. Сравнение с '' такой круг не различает.
+test('текст из одних пробелов — тот же случай «без слов», а не пустота под подписью', () => {
+  for (const blank of ['\n  \n', '   ', '\n\n\n', '\t']) {
+    const words = parseWords(said({ text: blank }))
+    // Разбор текст НЕ подменяет: решение о показе принимает показ.
+    assert.equal(words.text, blank)
+    assert.equal(wordsText(words), NO_WORDS, `на месте слов пробельный текст: ${JSON.stringify(blank)}`)
+    assert.equal(isSilent(words), true, `класс пустого состояния не встанет на ${JSON.stringify(blank)}`)
+  }
+  // И непробельные слова в «без слов» не превращаются.
+  assert.equal(isSilent(parseWords(said())), false)
   assert.equal(wordsText(parseWords(said())), said().text)
 })
 
