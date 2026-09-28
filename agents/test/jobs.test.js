@@ -235,6 +235,7 @@ test('тело сводок переводит имена конфигураци
     agent: 'mcp-agent',
     schedule: '0 */6 * * *',
     maxRunsPerDay: 6,
+    prompt: 'Собери короткую сводку.',
   })
   assert.equal(body.nextRunAt, '2026-09-28T12:00:00.000Z')
   assert.equal(body.startsToday, 1)
@@ -247,6 +248,23 @@ test('тело сводок переводит имена конфигураци
   assert.equal(body.runs[0].trace[0].server, 'mcpnews')
   assert.equal(body.runs[0].status, 'succeeded')
   clean()
+})
+
+// Запрос показывает страница дня 18, и показывать ей нечего, если он не доехал
+// от настроек до тела ручки. Проверка ведёт ИМЕННО этот путь: текст берётся из
+// `jobs.json` многострочным, как он там и лежит, и сверяется в ответе целиком —
+// совпадение по куску прошло бы и на обрезанном запросе.
+test('текст запроса доезжает от настроек до тела ручки — весь и склеенным', () => {
+  const clock = at('2026-09-28T07:30:00Z')
+  const lines = ['Собери сводку новостей.', 'Сохрани её файлом.', 'Прочитай файл обратно.']
+  const jobs = createJobs({
+    jobs: loadJobs({ jobs: [{ ...RAW.jobs[0], prompt: lines }] }),
+    schedulerKey: 'к',
+    now: () => clock,
+  })
+  assert.equal(jobs.view('digest').job.prompt, lines.join(' '))
+  // И ни одна строка настроек не потерялась по дороге.
+  for (const line of lines) assert.ok(jobs.view('digest').job.prompt.includes(line), line)
 })
 
 test('неизвестное не притворяется нулём: без тома startsToday — null', () => {

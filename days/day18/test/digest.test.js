@@ -5,10 +5,10 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { UNKNOWN, enabledLine, formatUsd, formatWhen, runMeta, shapeDigest, startsLine } from '../public/digest.js'
+import { UNKNOWN, enabledLine, formatBangkok, formatUsd, formatWhen, promptLine, runMeta, shapeDigest, startsLine } from '../public/digest.js'
 
 const full = {
-  job: { enabled: true, agent: 'mcp-agent', schedule: '0 */6 * * *', maxRunsPerDay: 6 },
+  job: { enabled: true, agent: 'mcp-agent', schedule: '0 */6 * * *', maxRunsPerDay: 6, prompt: 'Собери сводку. Сохрани файлом.' },
   nextRunAt: '2026-09-28T12:00:00.000Z',
   startsToday: 1,
   budgetLeftUsd: 0.41,
@@ -76,4 +76,47 @@ test('чужие типы полей не проходят за значения
   assert.equal(d.maxRunsPerDay, null)
   assert.equal(d.budgetLeftUsd, null)
   assert.deepEqual(d.runs, [])
+})
+
+// Срок показывается по Бангкоку — это единственное место, где время уходит из
+// UTC, и уходит только для показа.
+test('срок следующего запуска — по Бангкоку и с названием пояса в строке', () => {
+  assert.equal(formatBangkok('2026-09-28T12:00:00.000Z'), '2026-09-28 19:00 Бангкок')
+  // Пояс обязан быть назван: «19:00» без него не отличить от UTC.
+  assert.ok(formatBangkok('2026-09-28T12:00:00.000Z').includes('Бангкок'))
+  // Смещение — не ноль: строка UTC и строка Бангкока обязаны различаться.
+  assert.notEqual(formatBangkok('2026-09-28T12:00:00.000Z'), formatWhen('2026-09-28T12:00:00.000Z'))
+})
+
+test('перевод пояса переносит и сутки, а не только часы', () => {
+  // 21:30 UTC — это уже следующий день в Бангкоке. Сложение часов без переноса
+  // даты дало бы 28-е число, и срок на экране отставал бы на сутки.
+  assert.equal(formatBangkok('2026-09-28T21:30:00.000Z'), '2026-09-29 04:30 Бангкок')
+  // Полночь по Бангкоку — 00, а не 24: час пишется в цикле h23.
+  assert.equal(formatBangkok('2026-09-28T17:00:00.000Z'), '2026-09-29 00:00 Бангкок')
+})
+
+test('неизвестный срок не превращается ни в «сейчас», ни в прочерк', () => {
+  assert.equal(formatBangkok(null), UNKNOWN)
+  assert.equal(formatBangkok('не дата'), UNKNOWN)
+})
+
+// Запрос — предмет показа, а не украшение: посетитель по нему судит, что
+// именно работа спрашивает. Отсюда два требования: показывать его целиком и
+// не подменять отсутствие пустотой.
+test('запрос показывается целиком, без обрезания', () => {
+  const d = shapeDigest(full)
+  assert.equal(d.prompt, 'Собери сводку. Сохрани файлом.')
+  assert.equal(promptLine(d.prompt), full.job.prompt)
+})
+
+test('непришедший запрос назван словом, а не пустотой и не прочерком', () => {
+  assert.equal(shapeDigest({}).prompt, null)
+  assert.equal(promptLine(null), UNKNOWN)
+  // Именно словом: пустая строка и прочерк на экране читались бы как «запроса нет».
+  assert.notEqual(promptLine(null), '')
+  assert.notEqual(promptLine(null), '—')
+  // Чужой тип за запрос не проходит: число в рамке выглядело бы запросом.
+  assert.equal(shapeDigest({ job: { prompt: 42 } }).prompt, null)
+  assert.equal(shapeDigest({ job: { prompt: '' } }).prompt, null)
 })

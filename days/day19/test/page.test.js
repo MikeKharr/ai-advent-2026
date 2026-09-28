@@ -107,3 +107,28 @@ test('на экране есть место под обе sha256 — смысл 
   assert.match(page, /id="hash-b"/)
   assert.ok(stripJs(read('app.js')).includes('compareHashes'), 'хеши не сверяются')
 })
+
+// Пояснение дня — предмет текстовый. Проверка именами: «цепочка инструментов»
+// без имён шагов не объясняет ничего, а бесплатность прогона — то, чем день 19
+// отличается от дня 20, и умолчать о ней значит их спутать.
+test('пояснение называет цепочку, её шаги, сверку и нулевой расход модели', () => {
+  const start = page.indexOf('<section class="about"')
+  assert.notEqual(start, -1, 'блока пояснения на странице нет')
+  const about = page.slice(start, page.indexOf('</section>', start))
+  for (const word of ['news.search', 'news.summarize', 'file.save', 'file.read', 'sha256'])
+    assert.ok(about.includes(word), `пояснение не называет ${word}`)
+  assert.ok(about.includes('не участвует'), 'пояснение не говорит, что модель не участвует')
+  assert.ok(about.includes('бесплатн'), 'пояснение не говорит, что прогон бесплатный')
+})
+
+// Поле ввода оформляет style.css — а оформляет он ПО ID (#cmd). Поле с другим
+// id проходит мимо всех правил и получает браузерное умолчание: нулевой радиус,
+// чужой шрифт, высота вдвое меньше кнопки рядом. Ни один тест этого не ловил,
+// и дефект так и доехал до ревью. Проверка связывает три места, где id один.
+test('текстовое поле носит id, который оформляет style.css, и его же ищет app.js', () => {
+  const m = page.match(/<input id="([^"]+)" type="text"/)
+  assert.ok(m, 'текстового поля на странице нет')
+  const id = m[1]
+  assert.match(read('style.css'), new RegExp(`#${id}\\s*\\{`), `style.css не оформляет #${id}`)
+  assert.ok(stripJs(read('app.js')).includes(`byId('${id}')`), `app.js не ищет #${id}`)
+})
