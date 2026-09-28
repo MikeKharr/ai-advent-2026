@@ -130,6 +130,73 @@ export function compareHashes(a, b) {
   return { kind: 'bad', note: 'Хеши разошлись: прочитано не то, что было сохранено.' }
 }
 
+/**
+ * СЛОВА МОДЕЛИ между вызовами (ADR 2026-09-28-1852, заход 1). Событие стадии
+ * `llm_text`: `{round, text, chosen: [{server, tool}], stopReason}`.
+ *
+ * Что здесь НЕ делается:
+ *   пустой текст не подменяется и не прячется — «модель выбрала без слов» это
+ *   факт круга, и он говорится словом (`NO_WORDS`);
+ *   связь «слова → вызов» не утверждается: текст сгенерирован моделью рядом с
+ *   выбором, а не является протоколом выбора. Подпись записи это называет.
+ */
+export const NO_WORDS = 'Модель выбрала без слов.'
+/** Номера круга нет — выдумывать его нечем. */
+export const NO_ROUND = 'круг не назван'
+/** Инструментов на круге не названо (так выглядит заключительный круг). */
+export const NO_PICKS = 'Инструменты на этом круге не названы.'
+
+export function parseWords(data) {
+  const d = isObject(data) ? data : {}
+  const str = (v) => (typeof v === 'string' && v !== '' ? v : null)
+  return {
+    round: typeof d.round === 'number' && Number.isFinite(d.round) ? d.round : null,
+    // Текста не было — пустая строка. Не null: разницы между «поля не было» и
+    // «модель промолчала» на экране нет, оба случая — «без слов».
+    text: typeof d.text === 'string' ? d.text : '',
+    chosen: Array.isArray(d.chosen)
+      ? d.chosen.filter(isObject).map((pick) => ({ server: str(pick.server), tool: str(pick.tool) }))
+      : [],
+    stopReason: str(d.stopReason),
+  }
+}
+
+/** Заголовок записи. Подпись «модель» — та самая граница: это слова, не протокол. */
+export function wordsTitle(words) {
+  return `круг ${words.round ?? NO_ROUND} · слова модели`
+}
+
+/**
+ * Круг прошёл без слов. Пробельный текст — тот же случай, и решение о нём
+ * здесь ОДНО на оба места (текст и класс): `"\n  \n"` даёт под подписью не
+ * состояние, а пустую полосу в 42 пикселя, и это не то, что видно на круге.
+ */
+export const isSilent = (words) => words.text.trim() === ''
+
+/** Что показать в месте текста: сами слова либо прямое «без слов». */
+export function wordsText(words) {
+  return isSilent(words) ? NO_WORDS : words.text
+}
+
+/** Строка выбора: сервер и инструмент парой, как их назвал хост. */
+export function picksLine(words) {
+  if (words.chosen.length === 0) return NO_PICKS
+  const one = (pick) => (pick.server ? `${pick.server} · ${pick.tool ?? NO_METHOD}` : (pick.tool ?? NO_METHOD))
+  return `Выбрано: ${words.chosen.map(one).join(', ')}`
+}
+
+/**
+ * Обрыв по длине не должен пропасть молча: при `length` блок вызова обрезан и
+ * инструменты НЕ исполняются, поэтому названный инструмент в такой записи —
+ * не то же самое, что вызов в ленте ниже. Прочие причины остановки записи не
+ * касаются: их место — сводка запуска.
+ */
+export function stopNote(words) {
+  return words.stopReason === 'length'
+    ? 'Ответ модели обрезан потолком токенов: названные здесь инструменты не исполнялись.'
+    : null
+}
+
 // ——— единственное место с DOM ———
 
 const node = (tag, className, text) => {
@@ -175,6 +242,24 @@ export function renderCall(call, { id, indent = false } = {}) {
     }
     parts.push(...pre(`${key}-${id}`, label, text, indent, key === 'req' ? 'is-req' : undefined))
   }
+  li.replaceChildren(...parts)
+  return li
+}
+
+/** Одна запись со словами модели. `id` уникален в пределах страницы. */
+export function renderWords(words, { id } = {}) {
+  const li = node('li', 'entry')
+  li.dataset.kind = 'words'
+  const head = node('p', 'entry-head')
+  head.append(node('span', 'entry-cmd', wordsTitle(words)), node('span', 'entry-meta', picksLine(words)))
+  const parts = [head]
+  const note = stopNote(words)
+  if (note) parts.push(node('p', 'entry-note', note))
+  const caption = node('p', 'entry-label', 'Слова модели')
+  caption.id = `words-${id}`
+  const body = node('p', `words${isSilent(words) ? ' is-none' : ''}`, wordsText(words))
+  body.setAttribute('aria-labelledby', caption.id)
+  parts.push(caption, body)
   li.replaceChildren(...parts)
   return li
 }

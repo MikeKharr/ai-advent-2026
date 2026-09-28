@@ -10,7 +10,7 @@
 //   бы и прислал те же события второй раз, а лента показывала бы вызовы,
 //   которых не было.
 
-import { NO_SERVER, parseCall, renderCall } from './trace.js'
+import { NO_SERVER, parseCall, parseWords, renderCall, renderWords } from './trace.js'
 
 const byId = (id) => document.getElementById(id)
 const form = byId('run-form')
@@ -25,6 +25,14 @@ const serversNote = byId('servers-note')
 
 /** Вызовы этого запуска, в порядке прихода. Нигде не сохраняются. */
 const calls = []
+/**
+ * Лента запуска: записи вызовов и записи со словами модели В ОДНОМ ПОРЯДКЕ, в
+ * каком пришли события. Порядок и есть предмет показа — слова круга стоят
+ * перед вызовами, которые модель на этом круге выбрала, потому что событие
+ * приходит до исполнения инструментов, а не потому, что страница их
+ * переставляет.
+ */
+const items = []
 let stream = null
 
 function setStatus(text, bad = false) {
@@ -38,7 +46,13 @@ function lock(on) {
 }
 
 function redraw() {
-  feed.replaceChildren(...calls.map((call, i) => renderCall(call, { id: i + 1, indent: indent.checked })))
+  feed.replaceChildren(
+    ...items.map((item, i) =>
+      item.kind === 'words'
+        ? renderWords(item.value, { id: i + 1 })
+        : renderCall(item.value, { id: i + 1, indent: indent.checked }),
+    ),
+  )
 }
 
 /**
@@ -74,9 +88,19 @@ function onEvent(raw) {
   } catch {
     return
   }
+  if (event?.stage === 'llm_text') {
+    // Событие уходит на каждом круге, в том числе когда модель не сказала
+    // ничего. Такую запись страница показывает словом «без слов» и НЕ
+    // пропускает: молчание модели — тоже ответ на вопрос «как она выбирает».
+    items.push({ kind: 'words', value: parseWords(event.data) })
+    empty.hidden = true
+    redraw()
+    return
+  }
   if (event?.stage !== 'rpc') return
   const call = parseCall(event.data)
   calls.push(call)
+  items.push({ kind: 'call', value: call })
   empty.hidden = true
   redraw()
   showServers()
@@ -114,6 +138,7 @@ form.addEventListener('submit', async (event) => {
   if (!task) return setStatus('Не запущено: поле пустое.', true)
 
   calls.length = 0
+  items.length = 0
   feed.replaceChildren()
   empty.hidden = false
   showServers()
