@@ -429,6 +429,48 @@ test('после N отказов за минуту адрес получает 
   }
 })
 
+test('адрес в журнале — сокет, а не X-Forwarded-For: залп с подставными адресами всё равно ловится окном', async () => {
+  // Держатель под `remoteOf`. Он нужен не для красоты учёта: `remote` лежит
+  // в `control_log` В ОДНОЙ СТРОКЕ с текстом сообщения посетителя и живёт
+  // там 30 суток. Заголовок сюда придёт в тот день, когда у поверхности
+  // появится маршрут в `Caddyfile` — а каждый маршрут дня ставит
+  // `header_up X-Forwarded-For {client_ip}`. Правки этого кода для отказа
+  // не требуется вовсе, поэтому комментарий его не держит.
+  const ctx = await setup({ failsPerMin: 3 })
+  const SPOOF = '203.0.113.9'
+  try {
+    // Залп: каждая попытка несёт СВОЙ подставной адрес. Если бы окно велось
+    // по заголовку, каждая попадала бы в своё ведро и 429 не наступил бы
+    // никогда. Именно это и различает две гипотезы — одного запроса тут мало.
+    for (let i = 0; i < 3; i += 1) {
+      const out = await ctx.call('/control/profiles', {
+        key: 'D'.repeat(44),
+        headers: { 'x-forwarded-for': `${SPOOF}, 198.51.100.${i}` },
+      })
+      assert.equal(out.status, 401, `попытка ${i}`)
+    }
+    const blocked = await ctx.call('/control/profiles', {
+      headers: { 'x-forwarded-for': '198.51.100.250' },
+    })
+    assert.equal(blocked.status, 429, 'окно ведётся по сокету, а не по заголовку')
+
+    // И в журнале — адрес соединения, а не подставленный. Проверяется и то,
+    // что подставного там нет, и то, что записан именно локальный сокет:
+    // «не равно SPOOF» удовлетворил бы и пустой столбец.
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(ctx.controlLogFile)
+    const remotes = db.prepare('SELECT remote FROM control_log').all().map((r) => r.remote)
+    db.close()
+    assert.equal(remotes.length > 0, true, 'строки журнала есть')
+    for (const remote of remotes) {
+      assert.equal(String(remote).includes(SPOOF), false, 'подставного адреса в журнале нет')
+      assert.match(String(remote), /127\.0\.0\.1$/, 'записан адрес соединения')
+    }
+  } finally {
+    ctx.close()
+  }
+})
+
 test('суточный потолок платных операций считается ДО вызова модели', async () => {
   const ctx = await setup({ dailyCap: 1 })
   try {
