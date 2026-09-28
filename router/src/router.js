@@ -32,8 +32,14 @@ const UNREACHABLE = new Set([
  * `messages` оценивается в ноль токенов и проходит мимо суточного потолка.
  */
 export function inputTextOf(req) {
-  if (req.messages) return JSON.stringify(req.messages) + JSON.stringify(req.tools ?? [])
-  return String(req.input ?? '')
+  // Определения инструментов уходят провайдеру целиком и тарифицируются им как
+  // вход — значит входят в меру при обеих формах входа, не только при
+  // `messages`. Приписываются, только когда они есть: безусловное `[]`
+  // сдвинуло бы `cacheKey` строкового входа дней 6–16 и дало бы сплошной
+  // промах кэша.
+  const tools = req.tools?.length ? JSON.stringify(req.tools) : ''
+  if (req.messages) return JSON.stringify(req.messages) + tools
+  return String(req.input ?? '') + tools
 }
 
 export function createRouter({
@@ -103,6 +109,14 @@ export function createRouter({
         `класс данных ${dataClass} шире, чем ${cls.dataClass} у класса ${taskClass}`,
         [],
       )
+
+    // Определения инструментов — граница класса, а не свободный параметр
+    // запроса: класс либо объявил `tools` в `requires` реестра классов, либо
+    // не принимает их вовсе. Без этой отсечки `tools[]` проходили на любом
+    // классе, и потолок ответа с бюджетом брались у класса пощедрее
+    // (ADR 2026-09-28-0736, п. 2).
+    if (req.tools?.length && !(cls.requires ?? []).includes('tools'))
+      return refuse('refused', `класс ${taskClass} не принимает tools`, [])
 
     const schema = req.schema ?? null
     // Явная схема в запросе — это требование возможности json_schema, а

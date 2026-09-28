@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import { loadConfig } from '../src/config.js'
 import { createLedger } from '../src/ledger.js'
 import { createStaticRegistry } from '../src/registry.js'
-import { createRouter } from '../src/router.js'
+import { createRouter, inputTextOf } from '../src/router.js'
 import { createService } from '../src/service.js'
 import { ENV, httpJson, ollamaGenerate, PROVIDERS, scriptedFetch } from './fixtures.js'
 
@@ -47,7 +47,7 @@ const APPS = (limits = { dailyTokens: 50000, dailyCostUsd: 1 }) => ({
     {
       id: 'smoke',
       secretEnv: 'APP_KEY_SMOKE',
-      classes: ['summarize', 'tool_use', 'other'],
+      classes: ['summarize', 'layered_dialogue', 'tool_use', 'other'],
       limits,
     },
   ],
@@ -181,53 +181,125 @@ test('ответ из одних блоков tool_use не считается �
   assert.equal(calls.length, 1)
 })
 
-test('расход: объём messages и tools входит в оценку — исчерпанный лимит останавливает до провайдера', async (t) => {
-  // Потолок 1200 токенов: выход класса summarize — 500, значит отказ может
-  // прийти только от измеренного входа (~750 токенов диалога).
-  const { post, calls, close } = await start(t, {
-    hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk },
-    apps: APPS({ dailyTokens: 1200 }),
+// Определение инструмента на 8 000 знаков: сам диалог и строка входа малы,
+// поэтому выйти за потолок 2000 токенов может только мера определений.
+// Класс tool_use: выход 1024 токена, единственный способный провайдер —
+// значит оценка равна (вход + 1024).
+const FAT_TOOL = { ...TOOL, description: 'x'.repeat(8000) }
+
+test('расход: определения инструментов входят в меру при входе messages', async (t) => {
+  const messages = [{ role: 'user', content: 'какие новости' }]
+  const withTools = await start(t, {
+    hosts: { [CLOUD]: cloudToolUse },
+    apps: APPS({ dailyTokens: 2000, dailyCostUsd: 1 }),
   })
-  const res = await post({
-    taskClass: 'summarize',
-    messages: [{ role: 'user', content: 'a'.repeat(3000) }],
-    tools: [TOOL],
-  })
+  const res = await withTools.post({ taskClass: 'tool_use', messages, tools: [FAT_TOOL] })
   const body = await res.json()
-  await close()
+  await withTools.close()
   assert.equal(res.status, 429)
   assert.equal(body.code, 'budget_exceeded')
-  assert.equal(calls.length, 0, 'провайдера не звали')
+  assert.equal(withTools.calls.length, 0, 'провайдера не звали')
+
+  // Тот же класс, тот же диалог и тот же потолок без определений проходит —
+  // значит отказ выше дала мера tools, а не размер диалога или лимит.
+  const without = await start(t, {
+    hosts: { [CLOUD]: cloudToolUse },
+    apps: APPS({ dailyTokens: 2000, dailyCostUsd: 1 }),
+  })
+  const ok = await without.post({ taskClass: 'tool_use', messages })
+  assert.equal(ok.status, 200)
+  assert.equal(without.calls.length, 1)
+  await without.close()
 })
 
-test('выбор: определения инструментов требуют возможности tools у провайдера', async (t) => {
-  const withTools = await start(t, { hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
-  const a = await withTools.post({
-    taskClass: 'summarize',
-    messages: [{ role: 'user', content: 'какие новости' }],
-    tools: [TOOL],
+test('расход: определения инструментов входят в меру и при строковом входе input', async (t) => {
+  const withTools = await start(t, {
+    hosts: { [CLOUD]: cloudToolUse },
+    apps: APPS({ dailyTokens: 2000, dailyCostUsd: 1 }),
   })
-  assert.equal((await a.json()).ok, true)
-  assert.deepEqual(
-    withTools.calls.map((c) => c.host),
-    [CLOUD],
-    'ноутбук без возможности tools не зовётся',
-  )
+  const res = await withTools.post({
+    taskClass: 'tool_use',
+    input: 'какие новости',
+    tools: [FAT_TOOL],
+  })
+  const body = await res.json()
   await withTools.close()
+  assert.equal(res.status, 429)
+  assert.equal(body.code, 'budget_exceeded')
+  assert.equal(withTools.calls.length, 0, 'провайдера не звали')
 
-  // Тот же класс и тот же диалог без инструментов уходит на ноутбук —
-  // значит отсечка выше сделана именно наличием tools.
-  const without = await start(t, { hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
-  const b = await without.post({
-    taskClass: 'summarize',
-    messages: [{ role: 'user', content: 'какие новости' }],
+  // Та же строка и тот же потолок без определений проходит.
+  const without = await start(t, {
+    hosts: { [CLOUD]: cloudToolUse },
+    apps: APPS({ dailyTokens: 2000, dailyCostUsd: 1 }),
   })
+  const ok = await without.post({ taskClass: 'tool_use', input: 'какие новости' })
+  assert.equal(ok.status, 200)
+  assert.equal(without.calls.length, 1)
+  await without.close()
+})
+
+test('мера входа не меняет ключ кэша строкового входа без tools', () => {
+  // Держатель оговорки в inputTextOf: припиши мера пустой `[]` — ключ дней
+  // 6–16 сдвинулся бы, и весь кэш промахнулся бы разом.
+  assert.equal(inputTextOf({ input: 'текст дня 7' }), 'текст дня 7')
+  assert.equal(inputTextOf({ input: 'текст дня 7', tools: [] }), 'текст дня 7')
+})
+
+test('tools[] принимает только класс, объявивший tools: на summarize отказ до вызова', async (t) => {
+  const messages = [{ role: 'user', content: 'какие новости' }]
+  const refused = await start(t, { hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
+  const a = await refused.post({ taskClass: 'summarize', messages, tools: [TOOL] })
+  const body = await a.json()
+  assert.equal(body.ok, false)
+  assert.equal(body.code, 'refused')
+  assert.match(body.reason ?? body.message ?? '', /не принимает tools/)
+  assert.equal(refused.calls.length, 0, 'провайдера не звали')
+  await refused.close()
+
+  // Тот же класс и тот же диалог без определений уходит провайдеру — значит
+  // отсечку дало именно наличие tools, а не класс и не диалог.
+  const without = await start(t, { hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
+  const b = await without.post({ taskClass: 'summarize', messages })
   assert.equal((await b.json()).ok, true)
   assert.deepEqual(
     without.calls.map((c) => c.host),
     [LAPTOP],
   )
   await without.close()
+
+  // А класс, объявивший tools, их принимает — и уходит к провайдеру с
+  // возможностью tools, а не на ноутбук.
+  const allowed = await start(t, { hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
+  const c = await allowed.post({ taskClass: 'tool_use', messages, tools: [TOOL] })
+  assert.equal((await c.json()).ok, true)
+  assert.deepEqual(
+    allowed.calls.map((x) => x.host),
+    [CLOUD],
+  )
+  await allowed.close()
+})
+
+test('проба compliance: layered_dialogue с tools и answerTokens 32000 не доходит до провайдера', async (t) => {
+  // Класс разрешает 32 000 токенов ответа и стоит в списке приложения, но
+  // tools не объявляет. Потолок ответа берёт класс запроса — а класс с таким
+  // потолком инструментов не принимает.
+  assert.equal(CLASSES.layered_dialogue.maxAnswerTokens, 32000)
+  assert.equal(CLASSES.layered_dialogue.requires.includes('tools'), false)
+  const { post, calls, close } = await start(t, {
+    hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk },
+  })
+  const res = await post({
+    taskClass: 'layered_dialogue',
+    messages: [{ role: 'user', content: 'какие новости' }],
+    tools: [TOOL],
+    answerTokens: 32000,
+  })
+  const body = await res.json()
+  await close()
+  assert.equal(body.ok, false)
+  assert.equal(body.code, 'refused')
+  assert.equal(calls.length, 0, 'max_tokens 32000 провайдеру не уходил')
 })
 
 test('класс tool_use: требует tools, потолок ответа 2048 — выше отказ до вызова', async (t) => {
