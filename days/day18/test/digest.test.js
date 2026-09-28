@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { UNKNOWN, enabledLine, formatUsd, formatWhen, runMeta, shapeDigest, startsLine } from '../public/digest.js'
+import { UNKNOWN, enabledLine, formatBangkok, formatUsd, formatWhen, runMeta, shapeDigest, startsLine } from '../public/digest.js'
 
 const full = {
   job: { enabled: true, agent: 'mcp-agent', schedule: '0 */6 * * *', maxRunsPerDay: 6 },
@@ -76,4 +76,27 @@ test('чужие типы полей не проходят за значения
   assert.equal(d.maxRunsPerDay, null)
   assert.equal(d.budgetLeftUsd, null)
   assert.deepEqual(d.runs, [])
+})
+
+// Срок показывается по Бангкоку — это единственное место, где время уходит из
+// UTC, и уходит только для показа.
+test('срок следующего запуска — по Бангкоку и с названием пояса в строке', () => {
+  assert.equal(formatBangkok('2026-09-28T12:00:00.000Z'), '2026-09-28 19:00 Бангкок')
+  // Пояс обязан быть назван: «19:00» без него не отличить от UTC.
+  assert.ok(formatBangkok('2026-09-28T12:00:00.000Z').includes('Бангкок'))
+  // Смещение — не ноль: строка UTC и строка Бангкока обязаны различаться.
+  assert.notEqual(formatBangkok('2026-09-28T12:00:00.000Z'), formatWhen('2026-09-28T12:00:00.000Z'))
+})
+
+test('перевод пояса переносит и сутки, а не только часы', () => {
+  // 21:30 UTC — это уже следующий день в Бангкоке. Сложение часов без переноса
+  // даты дало бы 28-е число, и срок на экране отставал бы на сутки.
+  assert.equal(formatBangkok('2026-09-28T21:30:00.000Z'), '2026-09-29 04:30 Бангкок')
+  // Полночь по Бангкоку — 00, а не 24: час пишется в цикле h23.
+  assert.equal(formatBangkok('2026-09-28T17:00:00.000Z'), '2026-09-29 00:00 Бангкок')
+})
+
+test('неизвестный срок не превращается ни в «сейчас», ни в прочерк', () => {
+  assert.equal(formatBangkok(null), UNKNOWN)
+  assert.equal(formatBangkok('не дата'), UNKNOWN)
 })

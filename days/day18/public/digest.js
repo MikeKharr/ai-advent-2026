@@ -62,6 +62,30 @@ export function formatWhen(iso) {
   return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())} ${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())} UTC`
 }
 
+/**
+ * Срок планировщика — по времени Бангкока, и пояс назван в самой строке.
+ *
+ * Перевод ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ, ради показа. Сервер, расписание и все потолки
+ * остаются на UTC: суточный счётчик стартов считается по суткам UTC, и это
+ * держит сервер, а не страница. Строка без названия пояса была бы хуже
+ * отсутствия: через месяц «19:00» не отличить от UTC.
+ *
+ * Пояс берётся у `Intl` по имени `Asia/Bangkok`, а не сложением семи часов:
+ * смещение — свойство пояса, а не наше знание о нём.
+ */
+export function formatBangkok(iso) {
+  if (iso === null) return UNKNOWN
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return UNKNOWN
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(t)
+  const at = (type) => parts.find((p) => p.type === type).value
+  return `${at('year')}-${at('month')}-${at('day')} ${at('hour')}:${at('minute')} Бангкок`
+}
+
 /** Деньги — два знака и знак доллара; отсутствующий остаток словом. */
 export function formatUsd(value) {
   return value === null ? UNKNOWN : `$${value.toFixed(2)}`

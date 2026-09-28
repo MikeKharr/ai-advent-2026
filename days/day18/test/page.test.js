@@ -109,3 +109,16 @@ test('кнопки «запустить» на экране нет: «когда
   assert.deepEqual(buttons, [], `на экране есть кнопки: ${buttons.join(', ')}`)
   assert.ok(!code.includes("method: 'POST'"), 'страница куда-то шлёт POST')
 })
+
+// Справка о работе — предмет текстовый, и проверка ему под стать: нужно, чтобы
+// экран называл, ЧЕМ работа делается, а не «агент собирает новости». Проверка
+// именами шагов, а не длиной абзаца: абзац можно налить водой.
+test('справка называет цепочку, её шаги, сверку и источник', () => {
+  const start = page.indexOf('<section class="about"')
+  assert.notEqual(start, -1, 'блока справки на странице нет')
+  const about = page.slice(start, page.indexOf('</section>', start))
+  for (const word of ['pipeline-agent', 'news.search', 'news.summarize', 'file.save', 'file.read', 'sha256', 'Hacker News'])
+    assert.ok(about.includes(word), `справка не называет ${word}`)
+  // И почему бывает пусто — иначе пустой экран читается как поломка.
+  assert.ok(about.includes('пуст'), 'справка не объясняет пустой экран')
+})
