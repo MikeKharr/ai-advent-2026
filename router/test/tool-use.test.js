@@ -53,7 +53,11 @@ const APPS = (limits = { dailyTokens: 50000, dailyCostUsd: 1 }) => ({
   ],
 })
 
-async function start({ hosts, apps = APPS(), file } = {}) {
+/**
+ * Служба на случайном порту. Закрытие регистрируется на контексте теста:
+ * упавшее утверждение иначе оставило бы сервер открытым и подвесило прогон.
+ */
+async function start(t, { hosts, apps = APPS(), file } = {}) {
   const calls = []
   const now = () => Date.parse('2026-09-28T10:00:00Z')
   const config = loadConfig({ providers: PROVIDERS, classes: CLASSES, apps, env: ENV })
@@ -74,14 +78,16 @@ async function start({ hosts, apps = APPS(), file } = {}) {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${ENV.APP_KEY_SMOKE}` },
       body: JSON.stringify(body),
     })
-  return { post, calls, close: () => new Promise((r) => server.close(r)) }
+  const close = () => new Promise((r) => server.close(() => r()))
+  t.after(close)
+  return { post, calls, close }
 }
 
 const cloudToolUse = () => httpJson(200, anthropicToolUse())
 const laptopOk = () => httpJson(200, ollamaGenerate({ text: 'ответ ноутбука' }))
 
-test('обратная совместимость: строковый input уходит одним сообщением user, tools в теле нет', async () => {
-  const { post, calls, close } = await start({ hosts: { [LAPTOP]: laptopOk } })
+test('обратная совместимость: строковый input уходит одним сообщением user, tools в теле нет', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [LAPTOP]: laptopOk } })
   const res = await post({ taskClass: 'summarize', input: 'текст дня 7' })
   const body = await res.json()
   await close()
@@ -94,8 +100,8 @@ test('обратная совместимость: строковый input ух
   assert.equal(calls.length, 1)
 })
 
-test('messages с блоками уходят провайдеру как есть: tool_use и tool_result не склеиваются', async () => {
-  const { post, calls, close } = await start({ hosts: { [CLOUD]: () => httpJson(200, anthropicToolUse({ id: 'toolu_02B' })) } })
+test('messages с блоками уходят провайдеру как есть: tool_use и tool_result не склеиваются', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: () => httpJson(200, anthropicToolUse({ id: 'toolu_02B' })) } })
   const messages = [
     { role: 'user', content: 'какие новости' },
     {
@@ -119,8 +125,8 @@ test('messages с блоками уходят провайдеру как ест
   assert.equal(body.ok, true)
 })
 
-test('определения инструментов уходят в запрос как name/description/input_schema', async () => {
-  const { post, calls, close } = await start({ hosts: { [CLOUD]: cloudToolUse } })
+test('определения инструментов уходят в запрос как name/description/input_schema', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
   await post({
     taskClass: 'tool_use',
     messages: [{ role: 'user', content: 'какие новости' }],
@@ -132,8 +138,8 @@ test('определения инструментов уходят в запро
   ])
 })
 
-test('ответ с tool_use виден вызывающему блоками и stopReason tool_use, а не строкой', async () => {
-  const { post, close } = await start({ hosts: { [CLOUD]: cloudToolUse } })
+test('ответ с tool_use виден вызывающему блоками и stopReason tool_use, а не строкой', async (t) => {
+  const { post, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
   const res = await post({
     taskClass: 'tool_use',
     messages: [{ role: 'user', content: 'какие новости' }],
@@ -154,13 +160,13 @@ test('ответ с tool_use виден вызывающему блоками и
   assert.equal(body.text, 'Посмотрю новости.')
 })
 
-test('ответ из одних блоков tool_use не считается пустым', async () => {
+test('ответ из одних блоков tool_use не считается пустым', async (t) => {
   const onlyToolUse = () => {
     const json = anthropicToolUse()
     json.content = json.content.filter((b) => b.type === 'tool_use')
     return httpJson(200, json)
   }
-  const { post, calls, close } = await start({ hosts: { [CLOUD]: onlyToolUse } })
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: onlyToolUse } })
   const res = await post({
     taskClass: 'tool_use',
     messages: [{ role: 'user', content: 'какие новости' }],
@@ -175,10 +181,10 @@ test('ответ из одних блоков tool_use не считается �
   assert.equal(calls.length, 1)
 })
 
-test('расход: объём messages и tools входит в оценку — исчерпанный лимит останавливает до провайдера', async () => {
+test('расход: объём messages и tools входит в оценку — исчерпанный лимит останавливает до провайдера', async (t) => {
   // Потолок 1200 токенов: выход класса summarize — 500, значит отказ может
   // прийти только от измеренного входа (~750 токенов диалога).
-  const { post, calls, close } = await start({
+  const { post, calls, close } = await start(t, {
     hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk },
     apps: APPS({ dailyTokens: 1200 }),
   })
@@ -194,8 +200,8 @@ test('расход: объём messages и tools входит в оценку �
   assert.equal(calls.length, 0, 'провайдера не звали')
 })
 
-test('выбор: определения инструментов требуют возможности tools у провайдера', async () => {
-  const withTools = await start({ hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
+test('выбор: определения инструментов требуют возможности tools у провайдера', async (t) => {
+  const withTools = await start(t, { hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
   const a = await withTools.post({
     taskClass: 'summarize',
     messages: [{ role: 'user', content: 'какие новости' }],
@@ -211,7 +217,7 @@ test('выбор: определения инструментов требуют
 
   // Тот же класс и тот же диалог без инструментов уходит на ноутбук —
   // значит отсечка выше сделана именно наличием tools.
-  const without = await start({ hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
+  const without = await start(t, { hosts: { [CLOUD]: cloudToolUse, [LAPTOP]: laptopOk } })
   const b = await without.post({
     taskClass: 'summarize',
     messages: [{ role: 'user', content: 'какие новости' }],
@@ -224,11 +230,11 @@ test('выбор: определения инструментов требуют
   await without.close()
 })
 
-test('класс tool_use: требует tools, потолок ответа 2048 — выше отказ до вызова', async () => {
+test('класс tool_use: требует tools, потолок ответа 2048 — выше отказ до вызова', async (t) => {
   assert.deepEqual(CLASSES.tool_use.requires, ['text_generation', 'tools'])
   assert.equal(CLASSES.tool_use.answerTokens, 1024)
   assert.equal(CLASSES.tool_use.maxAnswerTokens, 2048)
-  const { post, calls, close } = await start({ hosts: { [CLOUD]: cloudToolUse } })
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
   const res = await post({
     taskClass: 'tool_use',
     messages: [{ role: 'user', content: 'какие новости' }],
@@ -242,8 +248,8 @@ test('класс tool_use: требует tools, потолок ответа 204
   assert.equal(calls.length, 0)
 })
 
-test('вход ровно один: input вместе с messages — 400, провайдера не звали', async () => {
-  const { post, calls, close } = await start({ hosts: { [CLOUD]: cloudToolUse } })
+test('вход ровно один: input вместе с messages — 400, провайдера не звали', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
   const res = await post({
     taskClass: 'tool_use',
     input: 'строка',
@@ -256,8 +262,8 @@ test('вход ровно один: input вместе с messages — 400, пр
   assert.equal(calls.length, 0)
 })
 
-test('кривые блоки и определения инструментов отвергаются до вызова', async () => {
-  const { post, calls, close } = await start({ hosts: { [CLOUD]: cloudToolUse } })
+test('кривые блоки и определения инструментов отвергаются до вызова', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
   const cases = [
     [{ taskClass: 'tool_use', messages: [{ role: 'system', content: 'x' }] }, /role/],
     [
