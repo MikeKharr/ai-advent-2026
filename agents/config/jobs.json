@@ -8,7 +8,7 @@
       "maxRunsPerDay": 96,
       "scheduleUtc": "*/15 * * * *",
       "prompt": [
-        "MCP protocol developer tools"
+        "MCP protocol"
       ]
     }
   ]
