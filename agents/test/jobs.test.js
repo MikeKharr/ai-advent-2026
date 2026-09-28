@@ -2,7 +2,7 @@
 // Роутер и модель не вызываются нигде: исполнитель запуска здесь подставной.
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -310,4 +310,15 @@ test('оборванный выкаткой запуск помечается н
   assert.equal(second.startsToday('digest', clock), 1)
   second.close()
   rmSync(dir, { recursive: true, force: true })
+})
+
+// Тест выше ловит подмену UTC на местное время только тогда, когда пояс
+// прогона не UTC, — а в контейнере он как раз UTC. Поэтому держатель у этого
+// правила механический: в коде суток нет ни одного обращения к местному
+// времени. Снять `getUTC*` не выйдет незаметно ни при каком поясе прогона.
+test('день суток считается только по UTC: местного времени в коде нет', () => {
+  const source = readFileSync(new URL('../src/jobs/store.js', import.meta.url), 'utf8')
+  const local = source.match(/\.get(FullYear|Month|Date|Hours|Minutes|Day)\(/g) ?? []
+  assert.deepEqual(local, [], `местное время в src/jobs/store.js: ${local.join(', ')}`)
+  assert.match(source, /getUTCFullYear/)
 })
