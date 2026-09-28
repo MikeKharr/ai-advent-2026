@@ -12,12 +12,17 @@
 // «интерактивный запуск дня 20 платит ключом приложения agents…»,
 // `test/mcp-agent.test.js`).
 //
+// Работа планировщика идёт НЕ ОБЯЗАТЕЛЬНО через модель: агент без модели
+// (цепочка дня 19) исполняется здесь же и роутера не зовёт вовсе — ключ
+// приложения такой работе не нужен и не читается. Отвергается только агент,
+// которого нет в реестре.
+//
 // Потолок кругов живёт здесь, а не в роутере: роутер меряет круг, не запуск
 // (наблюдение `compliance`). Круг — `tools/list` уже сделан, дальше запрос к
 // роутеру, и при `stopReason === 'tool_use'` вызовы инструментов с возвратом
 // результатов в диалог.
 
-import { listAllTools, payloadOf, rpcEvent } from './pipeline.js'
+import { listAllTools, payloadOf, PipelineError, rpcEvent, runPipeline } from './pipeline.js'
 import { buildToolIndex } from './tool-names.js'
 
 /** Идентификатор записи реестра: по нему сервис находит агента дней 18 и 20. */
@@ -421,10 +426,14 @@ export function createJobRunner({
 }) {
   return async function runJob({ job, runId }) {
     const entry = registry.get(job.agentId)
-    if (!entry || entry.modelless)
+    // Отказ — только для агента, которого в реестре нет. Агент БЕЗ МОДЕЛИ
+    // работе подходит и идёт цепочкой ниже: предмет дней 18–20 — инструменты
+    // и MCP, а не сводка моделью, и автономный прогон цепочки бесплатен
+    // (решение владельца: «выход одного — вход другого»).
+    if (!entry)
       return {
         status: 'failed',
-        summary: `Агент ${job.agentId} работе планировщика не подходит.`,
+        summary: `Агента ${job.agentId} нет в реестре.`,
         trace: [],
         tokens: null,
         budgetLeftUsd: null,
@@ -440,6 +449,52 @@ export function createJobRunner({
     }
 
     const startedAt = now()
+
+    // Путь БЕЗ МОДЕЛИ. Роутер здесь не зовётся вовсе, и ключ приложения —
+    // ни `scheduler`, ни `agents` — этой ветке не нужен и не читается: работа
+    // бесплатна, и зависеть от ключа, которым ей нечего оплачивать, она не
+    // должна. Токены и остаток бюджета остаются `null` — не «ноль потрачено»,
+    // а «роутера в этом запуске не было».
+    if (entry.modelless) {
+      try {
+        const result = await runPipeline({ input: { query: job.prompt }, servers, emit, now })
+        runs.finish(run.id, {
+          status: 'succeeded',
+          result,
+          event: {
+            stage: 'done',
+            title: 'Цепочка пройдена',
+            detail: `вызовов ${result.calls.length}, sha256 совпали`,
+            durationMs: now() - startedAt,
+          },
+        })
+        return {
+          status: 'succeeded',
+          summary: `${result.summary}\n\nsha256 отправленного и прочитанного совпали (${result.sentSha256.slice(0, 12)}…), файл ${result.fileName}, вызовов ${result.calls.length}.`,
+          trace,
+          tokens: null,
+          budgetLeftUsd: null,
+        }
+      } catch (error) {
+        const known = error instanceof PipelineError
+        if (!known) log(`работа ${job.id}, запуск ${runId}: ${error.stack ?? error.message}`)
+        const message = known ? error.message : 'Внутренняя ошибка агента'
+        runs.finish(run.id, {
+          status: 'failed',
+          error: { code: known ? (error.reason ?? 'pipeline') : 'internal', message, paidNothing: true },
+          event: {
+            stage: 'error',
+            level: 'error',
+            title: 'Цепочка не пройдена',
+            detail: message,
+            data: { step: known ? error.step : null, reason: known ? error.reason : 'internal' },
+            durationMs: now() - startedAt,
+          },
+        })
+        return { status: 'failed', summary: message, trace, tokens: null, budgetLeftUsd: null }
+      }
+    }
+
     let out
     try {
       out = await runToolLoop({

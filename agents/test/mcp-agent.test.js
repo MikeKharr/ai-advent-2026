@@ -445,3 +445,107 @@ test('пустое задание цепочки отвергается до е�
   assert.equal(agent.parseInput({ task: '  ' }).ok, false)
   assert.equal(agent.parseInput({ task: 'x'.repeat(601) }).ok, false)
 })
+
+/** Пара серверов цепочки: новости и хранилище, в их настоящих формах ответов. */
+async function chainPair() {
+  const files = new Map()
+  const news = await fakeMcp({
+    tools: ['news.search', 'news.summarize'],
+    call: (name, args) =>
+      name === 'news.search'
+        ? packed({ items: [{ title: `о ${args.query}` }] })
+        : packed({ text: 'выжимка' }),
+  })
+  const store = await fakeMcp({
+    tools: ['file.save', 'file.read'],
+    call: (name, args) => {
+      if (name === 'file.save') {
+        files.set(args.name, args.content)
+        return packed({ name: args.name })
+      }
+      return packed({ found: true, name: args.name, content: files.get(args.name) })
+    },
+  })
+  const { servers } = loadServers(
+    {
+      servers: [
+        { name: 'mcpnews', title: 'Новости', urlEnv: 'A' },
+        { name: 'mcpstore', title: 'Файлы', urlEnv: 'B' },
+      ],
+    },
+    { A: news.url, B: store.url },
+  )
+  return { news, store, servers }
+}
+
+test('работа планировщика с агентом без модели идёт цепочкой, а не отвергается', async () => {
+  // Держатель решения владельца: предмет работы — инструменты и MCP, а не
+  // сводка моделью. Отказ `modelless` ронял бы работу на КАЖДОМ сроке.
+  const { news, store, servers } = await chainPair()
+  const router = fakeRouter([answer('этого быть не должно')])
+  const runs = createRuns()
+  const runJob = createJobRunner({ registry, servers, runs, env, fetchImpl: router.fetchImpl })
+
+  const out = await runJob({ job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' }, runId: 'run-chain' })
+
+  assert.equal(out.status, 'succeeded')
+  // Роутер не вызывался: у цепочки модели нет, и расход её равен нулю.
+  assert.equal(router.calls.length, 0)
+  assert.equal(out.tokens, null)
+  assert.equal(out.budgetLeftUsd, null)
+  // Трейс ленты дня 18: два списка инструментов и четыре вызова.
+  assert.equal(out.trace.length, 6)
+  assert.equal(runs.snapshot('run-chain').status, 'succeeded')
+  await news.close()
+  await store.close()
+})
+
+test('бесплатная работа не зависит от ключа приложения: без ROUTER_APP_KEY_SCHEDULER цепочка идёт', async () => {
+  const { news, store, servers } = await chainPair()
+  const router = fakeRouter([answer('этого быть не должно')])
+  const runs = createRuns()
+  // Ключа планировщика нет вовсе — платить цепочке всё равно нечем.
+  const runJob = createJobRunner({
+    registry,
+    servers,
+    runs,
+    env: { ...env, ROUTER_APP_KEY_SCHEDULER: null },
+    fetchImpl: router.fetchImpl,
+  })
+
+  const out = await runJob({ job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' }, runId: 'run-nokey' })
+
+  assert.equal(out.status, 'succeeded')
+  assert.equal(router.calls.length, 0)
+  await news.close()
+  await store.close()
+})
+
+test('отказ планировщика остаётся для агента, которого в реестре нет', async () => {
+  const { news, store, servers } = await chainPair()
+  const runs = createRuns()
+  const router = fakeRouter([answer('нет')])
+  const runJob = createJobRunner({ registry, servers, runs, env, fetchImpl: router.fetchImpl })
+  const out = await runJob({ job: { id: 'digest', agentId: 'нет-такого', prompt: 'x' }, runId: 'run-unknown' })
+  assert.equal(out.status, 'failed')
+  assert.match(out.summary, /нет в реестре/)
+  assert.equal(router.calls.length, 0)
+  await news.close()
+  await store.close()
+})
+
+test('цепочка планировщика оборвалась: запуск failed, а не молчаливый успех', async () => {
+  const news = await fakeMcp({ tools: ['news.search'], call: () => packed({ items: [] }) })
+  const { servers } = loadServers(
+    { servers: [{ name: 'mcpnews', title: 'Новости', urlEnv: 'A' }] },
+    { A: news.url },
+  )
+  const runs = createRuns()
+  const out = await createJobRunner({ registry, servers, runs, env })({
+    job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' },
+    runId: 'run-broken',
+  })
+  assert.equal(out.status, 'failed')
+  assert.equal(runs.snapshot('run-broken').status, 'failed')
+  await news.close()
+})
