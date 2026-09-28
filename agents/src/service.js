@@ -118,6 +118,11 @@ export function createService({
    * ручки инвариантов отвечают 404: памяти инвариантов у сервиса нет.
    */
   invariants = null,
+  /**
+   * Работы планировщика дня 18 (ADR 2026-09-28-0736, п. 6). Без них обе
+   * ручки `/v1/jobs/*` отвечают 404: планировщика у сервиса нет.
+   */
+  jobs = null,
   env,
   fetchImpl = fetch,
   log = console.error,
@@ -392,6 +397,9 @@ export function createService({
         // Срок хранения отдаёт тот, кто его исполняет: у дня своя переменная
         // окружения, и обещать страницей чужое число нельзя.
         sessionTtlHours: sessions ? env.SESSION_TTL_HOURS : null,
+        // Почему планировщик не работает, если не работает: ключ, том и
+        // исполнитель названы порознь — оператор идёт сюда именно за этим.
+        scheduler: jobs ? jobs.health() : 'выключен: работ нет',
       })
     }
 
@@ -399,6 +407,23 @@ export function createService({
     if (!safeEqual(bearer(req), env.AGENT_KEY)) {
       log(JSON.stringify({ event: 'refuse', path, code: 'unauthorized' }))
       return send(res, 401, { ok: false, code: 'unauthorized' })
+    }
+
+    // Ручки планировщика дня 18. Ответ на запуск — РЕШЕНИЕ, а не конец
+    // работы: тик ждёт 20 секунд (`deploy/cron/tick.sh`), работа идёт минуты.
+    const triggerMatch = /^\/v1\/jobs\/([a-z0-9-]{2,31})\/trigger$/.exec(path)
+    if (triggerMatch && req.method === 'POST') {
+      if (!jobs) return send(res, 404, { ok: false, code: 'no_jobs' })
+      const decision = jobs.trigger(triggerMatch[1])
+      log(JSON.stringify({ event: 'job_trigger', job: triggerMatch[1], status: decision.status, code: decision.body.code }))
+      return send(res, decision.status, decision.body)
+    }
+    const jobMatch = /^\/v1\/jobs\/([a-z0-9-]{2,31})$/.exec(path)
+    if (jobMatch && req.method === 'GET') {
+      if (!jobs) return send(res, 404, { ok: false, code: 'no_jobs' })
+      const body = jobs.view(jobMatch[1])
+      if (!body) return send(res, 404, { ok: false, code: 'unknown_job' })
+      return send(res, 200, body)
     }
 
     if (path === '/v1/runs' && req.method === 'POST') return createRun(req, res)
