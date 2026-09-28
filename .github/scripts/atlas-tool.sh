@@ -20,8 +20,8 @@
 set -euo pipefail
 
 TOOL_REPO=https://github.com/MikeKharr/project-atlas
-TOOL_TAG=v2.0.1
-TOOL_SHA=27304b80ff7c0aac8ce230373db85558c75f557f
+TOOL_TAG=v2.1.0
+TOOL_SHA=283a27620ba459a6afc7a6768c7d41da866a674d
 
 # Пин проверяется до любого обращения к сети: пустая или неполная версия — не
 # повод сходить за «каким-нибудь» кодом.
