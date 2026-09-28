@@ -25,6 +25,7 @@ export function shapeDigest(json) {
     enabled: typeof job.enabled === 'boolean' ? job.enabled : null,
     agent: str(job.agent),
     schedule: str(job.schedule),
+    prompt: str(job.prompt),
     maxRunsPerDay: int(job.maxRunsPerDay),
     nextRunAt: str(d.nextRunAt),
     startsToday: int(d.startsToday),
@@ -98,6 +99,16 @@ export function formatUsd(value) {
 export function startsLine({ startsToday, maxRunsPerDay }) {
   if (startsToday === null || maxRunsPerDay === null) return UNKNOWN
   return `${startsToday} из ${maxRunsPerDay}`
+}
+
+/**
+ * Текст запроса работы — как он пришёл, без сокращения. Не пришёл — так и
+ * сказано словом: пустая рамка на экране читалась бы как «запроса нет», хотя
+ * запрос есть и работа по нему идёт, просто ручка его не отдала.
+ */
+export function promptLine(prompt) {
+  if (prompt === null) return UNKNOWN
+  return prompt
 }
 
 /** Состояние планировщика словом. Третьего случая «наверное включён» нет. */

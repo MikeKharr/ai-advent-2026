@@ -5,10 +5,10 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { UNKNOWN, enabledLine, formatBangkok, formatUsd, formatWhen, runMeta, shapeDigest, startsLine } from '../public/digest.js'
+import { UNKNOWN, enabledLine, formatBangkok, formatUsd, formatWhen, promptLine, runMeta, shapeDigest, startsLine } from '../public/digest.js'
 
 const full = {
-  job: { enabled: true, agent: 'mcp-agent', schedule: '0 */6 * * *', maxRunsPerDay: 6 },
+  job: { enabled: true, agent: 'mcp-agent', schedule: '0 */6 * * *', maxRunsPerDay: 6, prompt: 'Собери сводку. Сохрани файлом.' },
   nextRunAt: '2026-09-28T12:00:00.000Z',
   startsToday: 1,
   budgetLeftUsd: 0.41,
@@ -99,4 +99,24 @@ test('перевод пояса переносит и сутки, а не тол
 test('неизвестный срок не превращается ни в «сейчас», ни в прочерк', () => {
   assert.equal(formatBangkok(null), UNKNOWN)
   assert.equal(formatBangkok('не дата'), UNKNOWN)
+})
+
+// Запрос — предмет показа, а не украшение: посетитель по нему судит, что
+// именно работа спрашивает. Отсюда два требования: показывать его целиком и
+// не подменять отсутствие пустотой.
+test('запрос показывается целиком, без обрезания', () => {
+  const d = shapeDigest(full)
+  assert.equal(d.prompt, 'Собери сводку. Сохрани файлом.')
+  assert.equal(promptLine(d.prompt), full.job.prompt)
+})
+
+test('непришедший запрос назван словом, а не пустотой и не прочерком', () => {
+  assert.equal(shapeDigest({}).prompt, null)
+  assert.equal(promptLine(null), UNKNOWN)
+  // Именно словом: пустая строка и прочерк на экране читались бы как «запроса нет».
+  assert.notEqual(promptLine(null), '')
+  assert.notEqual(promptLine(null), '—')
+  // Чужой тип за запрос не проходит: число в рамке выглядело бы запросом.
+  assert.equal(shapeDigest({ job: { prompt: 42 } }).prompt, null)
+  assert.equal(shapeDigest({ job: { prompt: '' } }).prompt, null)
 })

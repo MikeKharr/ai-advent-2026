@@ -10,7 +10,7 @@
 //   повторной подписки на оборванный поток: EventSource прислал бы те же
 //   события второй раз, и лента показывала бы вызовы, которых не было.
 
-import { UNKNOWN, enabledLine, formatBangkok, formatUsd, formatWhen, runMeta, shapeDigest, startsLine } from './digest.js'
+import { UNKNOWN, enabledLine, formatBangkok, formatUsd, formatWhen, promptLine, runMeta, shapeDigest, startsLine } from './digest.js'
 import { parseCall, renderCall } from './trace.js'
 
 const byId = (id) => document.getElementById(id)
@@ -46,6 +46,9 @@ function drawFacts(d) {
   // только подписью, и она есть у обоих.
   byId('f-next').textContent = formatBangkok(d.nextRunAt)
   byId('f-starts').textContent = startsLine(d)
+  // Запрос кладётся текстом и целиком: он объясняет, что работа делает, а
+  // обрезанный запрос объяснял бы неправду. Чего не пришло — названо словом.
+  byId('f-prompt').textContent = promptLine(d.prompt)
   byId('f-budget').textContent =
     d.budgetLeftUsd === null ? UNKNOWN : `${formatUsd(d.budgetLeftUsd)} из ${formatUsd(d.dailyCostUsd)}`
 }
