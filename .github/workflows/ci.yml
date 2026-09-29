@@ -268,11 +268,14 @@ jobs:
       - name: Проверка Caddyfile
         run: docker run --rm -v "$PWD/deploy:/w" -w /w caddy:2-alpine caddy validate --config Caddyfile
 
-  # Изоляция службы MCP в отдельной сети compose — условие вето compliance
-  # (ADR 2026-09-23-1227, п. 5). Проверяет структуру deploy/compose.yml, а не
-  # намерение: mcp только в сети mcp, в сети mcp — только caddy, mcp и день 16;
-  # cron только в сети cron, в сети cron — только agents и cron
-  # (ADR 2026-09-28-0736, п. 6).
+  # Границы сетей compose — условие вето compliance (ADR 2026-09-23-1227,
+  # п. 5, заменён в части ADR 2026-09-29-0236). Проверяет структуру
+  # deploy/compose.yml, а не намерение: mcp только в сети mcp, в сети mcp —
+  # caddy, mcp, день 16 и agents, причём agents обязан там быть (иначе хост
+  # не дотянется до службы дня 16); cron только в сети cron, в сети cron —
+  # только agents и cron (ADR 2026-09-28-0736, п. 6).
+  # Отрезанной от agents сеть mcp больше НЕ является: достижимость службы
+  # дня 16 держит ключ MCP_KEY, а не топология.
   compose:
     runs-on: ubuntu-latest
     steps:
