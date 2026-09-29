@@ -33,6 +33,12 @@ class Chunk:
     commit: str = ""
     # Что уходит в эмбеддинг: у структурной стратегии — с цепочкой заголовков.
     embed_text: str = field(default="")
+    # Граница слева — рез стратегии, а не готовая граница документа. У
+    # структурной стратегии заголовок в текст чанка не попадает, и без этого
+    # признака два ЦЕЛЫХ списка в соседних разделах читались бы как один
+    # разорванный (находка reviewer к PR #278). В метаданные не идёт: набор
+    # полей задан ADR 2026-09-29-1352, п. 3, а это внутреннее свойство нарезки.
+    continues: bool = False
 
     def as_meta(self) -> dict:
         return {
@@ -106,6 +112,7 @@ def chunk_fixed(source: str, text: str, commit: str = "") -> list[Chunk]:
                     chunk_id=f"{source}#{len(chunks)}",
                     strategy="fixed",
                     text=body,
+                    continues=bool(chunks),
                 )
             )
         if end >= n:
@@ -213,11 +220,11 @@ def chunk_structural(source: str, text: str, commit: str = "") -> list[Chunk]:
     title = doc_title(source, text)
     chunks: list[Chunk] = []
 
-    def add(section: str, body: str) -> None:
-        for part in _hard_split(body.strip(), SECTION_LIMIT):
-            _append(section, part)
+    def add(section: str, body: str, continues: bool = False) -> None:
+        for i, part in enumerate(_hard_split(body.strip(), SECTION_LIMIT)):
+            _append(section, part, continues or i > 0)
 
-    def _append(section: str, body: str) -> None:
+    def _append(section: str, body: str, continues: bool) -> None:
         head = f"{title} › {section}" if section else title
         chunks.append(
             Chunk(
@@ -228,6 +235,7 @@ def chunk_structural(source: str, text: str, commit: str = "") -> list[Chunk]:
                 strategy="structural",
                 text=body,
                 embed_text=f"{head}\n\n{body}",
+                continues=continues,
             )
         )
 
@@ -236,15 +244,15 @@ def chunk_structural(source: str, text: str, commit: str = "") -> list[Chunk]:
             if len(body) <= SECTION_LIMIT:
                 add(section, body)
             else:
-                for part in _split_paragraphs(body, SECTION_LIMIT):
-                    add(section, part)
+                for i, part in enumerate(_split_paragraphs(body, SECTION_LIMIT)):
+                    add(section, part, continues=i > 0)
     else:
         section = source.rsplit("/", 1)[-1]
         if len(text.strip()) <= SECTION_LIMIT:
             add(section, text)
         else:
-            for part in _split_top_level(text, SECTION_LIMIT):
-                add(section, part)
+            for i, part in enumerate(_split_top_level(text, SECTION_LIMIT)):
+                add(section, part, continues=i > 0)
     return _finish(chunks, commit)
 
 
@@ -258,11 +266,17 @@ def cuts_block(chunk: Chunk, next_chunk: Chunk | None) -> bool:
 
     Блок кода: нечётное число оград ``` — открыли и не закрыли (или наоборот).
     Список: чанк оборвался на пункте, а следующий чанк того же файла
-    начинается с пункта — значит перечисление разъехалось по двум чанкам.
+    начинается с пункта И ПРОДОЛЖАЕТ его — значит перечисление разъехалось по
+    двум чанкам. Одного совпадения `source` мало: `_markdown_sections`
+    выбрасывает строку заголовка, и без признака `continues` два ЦЕЛЫХ списка
+    в соседних разделах читались бы как один разорванный. Фиксированная
+    стратегия от этого защищена построением — она заголовок не вырезает, —
+    поэтому ошибка била ровно по одной из двух сравниваемых сторон и
+    переворачивала знак вывода (находка reviewer к PR #278).
     """
     if chunk.text.count("```") % 2 == 1:
         return True
-    if next_chunk is None or next_chunk.source != chunk.source:
+    if next_chunk is None or next_chunk.source != chunk.source or not next_chunk.continues:
         return False
     tail = [l for l in chunk.text.splitlines() if l.strip()]
     head = [l for l in next_chunk.text.splitlines() if l.strip()]

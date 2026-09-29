@@ -34,6 +34,8 @@ class VectorIndex:
 
     @classmethod
     def build(cls, strategy: str, meta: list[dict], vectors: np.ndarray) -> "VectorIndex":
+        # Сверка до normalize, а не после: normalize переписывает vectors, и
+        # охранник за ней читал бы уже не то, что пришло (нит reviewer).
         if len(meta) != len(vectors):
             raise ValueError(f"метаданных {len(meta)}, векторов {len(vectors)}")
         vectors = normalize(vectors)

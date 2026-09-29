@@ -1,5 +1,6 @@
 import contextlib
 import io
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -85,3 +86,42 @@ class CopyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CiRegexTest(unittest.TestCase):
+    """Вторая копия списка корпуса — регулярка `rag=` в ci.yml — покрывает первую.
+
+    Держатель требуемого 3 ревьюера к PR #278: без него правка файла,
+    который в корпусе есть, а в регулярке нет (так было с atlas/README.md),
+    не запускает единицу rag — индекс стареет молча, и заметить это можно
+    только чтением диффа.
+    """
+
+    ROOT = Path(__file__).resolve().parent.parent.parent
+    CI = ROOT / ".github" / "workflows" / "ci.yml"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not cls.CI.is_file():
+            raise AssertionError(f"ci.yml не найден: {cls.CI}")
+        text = cls.CI.read_text(encoding="utf-8")
+        found = re.search(r"^\s*rag='(.+)'\s*$", text, re.MULTILINE)
+        if not found:
+            raise AssertionError("в ci.yml нет строки rag='…' — регулярку корпуса не с чем сверять")
+        # Регулярка живёт в YAML внутри shell: `\\.` там — экранированная
+        # точка для grep, в Python это `\.`.
+        cls.pattern = re.compile(found.group(1).replace("\\\\", "\\"))
+        cls.corpus = corpus.collect(cls.ROOT)
+
+    def test_регулярка_из_ci_покрывает_каждый_путь_корпуса(self):
+        missed = [str(p) for p in self.corpus if not self.pattern.search(str(p))]
+        self.assertEqual(missed, [])
+
+    def test_корпус_не_пуст_иначе_проверка_ничего_не_значит(self):
+        self.assertGreater(len(self.corpus), 100)
+
+    def test_путь_вне_корпуса_регуляркой_не_ловится(self):
+        # Иначе «покрывает всё» выполнялось бы регуляркой `^` — и шаг
+        # запускал бы rag на любой правке, а тест выше был бы зелёным.
+        for alien in ("days/day1/server.js", ".agents/skills/x/SKILL.md", "atlas/build.js"):
+            self.assertIsNone(self.pattern.search(alien), alien)

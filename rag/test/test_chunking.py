@@ -139,8 +139,13 @@ class CutsBlockTest(unittest.TestCase):
 
     def test_список_разъехавшийся_по_двум_чанкам(self):
         a = chunking.Chunk("a.md", "t", "", "a.md#0", "fixed", "- раз\n- два")
-        b = chunking.Chunk("a.md", "t", "", "a.md#1", "fixed", "- три\n- четыре")
+        b = chunking.Chunk("a.md", "t", "", "a.md#1", "fixed", "- три\n- четыре", continues=True)
         self.assertTrue(chunking.cuts_block(a, b))
+
+    def test_следующий_чанк_не_продолжение_список_не_режет(self):
+        a = chunking.Chunk("a.md", "t", "A", "a.md#0", "structural", "- раз\n- два")
+        b = chunking.Chunk("a.md", "t", "Б", "a.md#1", "structural", "- три", continues=False)
+        self.assertFalse(chunking.cuts_block(a, b))
 
     def test_соседний_чанк_другого_файла_список_не_режет(self):
         a = chunking.Chunk("a.md", "t", "", "a.md#0", "fixed", "- раз")
@@ -174,3 +179,58 @@ class HardSplitTest(unittest.TestCase):
         self.assertGreater(len(parts), 1)
         for part in parts:
             self.assertTrue(all(len(l) == 100 for l in part.splitlines()))
+
+
+class ContinuesTest(unittest.TestCase):
+    """Признак «граница слева — рез стратегии, а не граница документа».
+
+    Без него мера переворачивала знак вывода: структурная стратегия
+    выглядела режущей блоки в пять раз чаще фиксированной, хотя режет реже.
+    """
+
+    DOC = (
+        "# Заголовок\n\n## Раздел A\n\n- пункт A1\n- пункт A2\n"
+        "\n## Раздел B\n\n- пункт B1\n- пункт B2\n"
+    )
+
+    def cuts(self, chunks):
+        return sum(
+            chunking.cuts_block(c, chunks[i + 1] if i + 1 < len(chunks) else None)
+            for i, c in enumerate(chunks)
+        )
+
+    def test_два_целых_списка_в_соседних_разделах_не_разрезаны(self):
+        chunks = chunking.chunk_structural("a.md", self.DOC)
+        self.assertEqual([c.section for c in chunks], ["Заголовок › Раздел A", "Заголовок › Раздел B"])
+        self.assertEqual(self.cuts(chunks), 0)
+
+    def test_та_же_проверка_у_фиксированной_стратегии(self):
+        self.assertEqual(self.cuts(chunking.chunk_fixed("a.md", self.DOC)), 0)
+
+    def test_список_разорванный_внутри_одного_раздела_считается(self):
+        body = "\n".join(f"- пункт {i} " + "я" * 120 for i in range(40))
+        chunks = chunking.chunk_structural("a.md", f"# Док\n\n## Р\n\n{body}\n")
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(chunks[1].continues)
+        self.assertGreaterEqual(self.cuts(chunks), 1)
+
+    def test_первый_чанк_раздела_не_продолжение(self):
+        chunks = chunking.chunk_structural("a.md", self.DOC)
+        self.assertEqual([c.continues for c in chunks], [False, False])
+
+    def test_у_фиксированной_продолжением_считается_всё_кроме_первого(self):
+        chunks = chunking.chunk_fixed("a.md", "ю" * 5000)
+        self.assertEqual([c.continues for c in chunks], [False, True, True, True])
+
+    def test_части_одного_файла_кода_продолжают_друг_друга(self):
+        block = "function f{i}() {{\n  const x = '{pad}'\n}}"
+        code = "\n\n".join(block.format(i=i, pad="п" * 400) for i in range(10))
+        chunks = chunking.chunk_structural("src/a.js", code)
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual([c.continues for c in chunks][0], False)
+        self.assertTrue(all(c.continues for c in chunks[1:]))
+
+    def test_дорезка_помечает_свои_куски_продолжением(self):
+        chunks = chunking.chunk_structural("a.md", "# Док\n\n## Р\n\n" + "Ю" * 9000)
+        self.assertEqual([c.continues for c in chunks][0], False)
+        self.assertTrue(all(c.continues for c in chunks[1:]))

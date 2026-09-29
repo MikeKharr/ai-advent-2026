@@ -198,46 +198,73 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "граница зависимостей ok"
       # Хэши в манифестах прибивают байты, пока закрыт список. Источник
-      # пакетов они не закрывают: pip.conf, .npmrc и переменные окружения
-      # уводят установку на чужой индекс МИМО манифестов, которые читает шаг
+      # пакетов они не закрывают: pip.conf, .npmrc, переменные окружения и
+      # вторые источники в самой команде (--extra-index-url, --find-links,
+      # npm --registry) уводят установку мимо манифестов, которые читает шаг
       # выше, — и подставленный пакет приедет со своим, сходящимся хэшем.
       # Это первый замок, а не второй (условие гейта к заходу 2 дня 21,
       # ADR 2026-09-29-1639).
-      # Честная граница: шаг смотрит на файлы, которые ставят пакеты
-      # (Dockerfile, *.sh, workflow), а не на прозу документов и не на среду
-      # раннера. Переопределение в окружении, которого в репозитории не
-      # видно, он поймать не может — от него защищает явный --index-url в
-      # самой команде (п. 3), который сильнее переменной.
+      #
+      # Зона шага — КАЖДЫЙ файл дерева, кроме .md, .agents/ и node_modules.
+      # Именного списка расширений здесь нет намеренно: прежняя редакция
+      # читала только Dockerfile, *.sh и workflows/*.yml, и мимо неё проходили
+      # setup_env.py, .github/actions/*/action.yml и тот же workflow с
+      # расширением .yaml (находки compliance к PR #278). Файлы .md исключены
+      # потому, что проза не ставит пакеты: иначе краснели бы ADR и чужой
+      # набор .agents/skills/**.
+      #
+      # АСИММЕТРИЯ, которую видно в выводе шага и которую он не скрывает:
+      # Имя команды ищется не по пробелу, а по короткому разделителю
+      # (`pip[^A-Za-z0-9_-]{0,8}install`): форма `subprocess.run(["pip",
+      # "install", …])` — та же установка, и по пробелу она не находилась.
+      # Обратная сторона: шаг краснеет и на строке КОММЕНТАРИЯ с такой
+      # командой. Это выбрано осознанно — лучше ложное красное на прозе в
+      # исполняемом файле, чем пропуск.
+      #   pip — требование ПОЛОЖИТЕЛЬНОЕ: источник ровно один и назван в самой
+      #     команде (--index-url https://pypi.org/simple), второй источник
+      #     красный. Явный флаг сильнее переменной окружения, поэтому он же
+      #     держит и среду раннера, которой в репозитории не видно.
+      #   npm — требование только ОТРИЦАТЕЛЬНОЕ: переопределение реестра
+      #     краснеет, но умолчание registry.npmjs.org ничем не прибито.
+      #     Положительное требование к npm — это правка mcp/Dockerfile,
+      #     другая единица и другой PR; обещать его здесь нельзя.
       - name: Реестр пакетов не переопределяется
         run: |
           fail=0
-          seen=0
-          runners=$(find . \( -name Dockerfile -o -name '*.sh' -o -path './.github/workflows/*.yml' \) -not -path '*/node_modules/*' -not -path './.git/*' -not -path './.agents/*' | sort)
           # 1. Конфигурация реестра файлом: pip и npm читают её сами, и в
           #    манифесте её не видно.
-          cfg=$(find . \( -name pip.conf -o -name pip.ini -o -name .npmrc -o -name .netrc -o -name .pydistutils.cfg \) -not -path '*/node_modules/*' -not -path './.git/*' | sort)
+          cfg=$(find . \( -name pip.conf -o -name pip.ini -o -name .npmrc -o -name .netrc -o -name .pydistutils.cfg \) -not -path '*/node_modules/*' -not -path './.git/*' -not -path './.agents/*' | sort)
           if [ -n "$cfg" ]; then
             while IFS= read -r f; do
               echo "::error file=${f#./}::файл задаёт реестр пакетов мимо манифестов — источник обязан стоять в самой команде установки"
             done <<< "$cfg"
             fail=1
           fi
+          # Предварительный отбор: файлы, где вообще есть речь об установке
+          # или о реестре. Он сужает перебор, а не зону: что не попало сюда,
+          # не содержит ни одной из искомых строк.
+          candidates=$(grep -rlIE 'pip[^A-Za-z0-9_-]{0,8}install|npm[^A-Za-z0-9_-]{0,8}(ci|install|i)([^A-Za-z0-9_-]|$)|PIP_[A-Z_]*(URL|HOST|LINKS)|NPM_CONFIG_REGISTRY|npm_config_registry|--registry|--index-url|--extra-index-url|--find-links|--trusted-host' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.agents --exclude-dir=corpus --exclude='*.md' . || true)
+          [ -n "$candidates" ] || { echo "::error::в дереве нет ни одного файла, ставящего пакеты — шаг не проверил ничего"; exit 1; }
+          seen=0
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             seen=$((seen + 1))
-            # 2. То же переменной окружения. Шаблон написан так, что не
-            #    находит сам себя: после имени в нём идёт `|` или `)`, а не
-            #    `=` и не `:`.
-            hits=$(grep -nE '(PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|PIP_TRUSTED_HOST|NPM_CONFIG_REGISTRY|npm_config_registry)[[:space:]]*[=:]' "$f" || true)
+            rel=${f#./}
+            said_pip=0
+            said_npm=0
+            # 2. Реестр переменной окружения. Шаблон написан так, что не
+            #    находит сам себя: после имени в нём идёт `(`, `|` или `)`,
+            #    а не `=` и не `:`. PIP_CONFIG_FILE под него не подпадает —
+            #    он реестр не задаёт, а наоборот отключает чтение конфигов.
+            hits=$(grep -nE '(PIP_[A-Z_]*(URL|HOST|LINKS)|NPM_CONFIG_REGISTRY|npm_config_registry)[[:space:]]*[=:]' "$f" || true)
             if [ -n "$hits" ]; then
               while IFS= read -r line; do
-                echo "::error file=${f#./}::переменная уводит реестр пакетов: ${line}"
+                echo "::error file=${rel}::переменная уводит реестр пакетов: ${line}"
               done <<< "$hits"
               fail=1
             fi
-            # 3. Каждая установка pip называет индекс явно. Продолжения строк
-            #    склеиваются тем же awk, что в шаге выше: флаг стоит на
-            #    следующей строке через `\`.
+            # Продолжения строк склеиваются тем же awk, что в шаге выше:
+            # флаг может стоять на следующей строке через `\`.
             joined=$(awk '
               { line = buf $0; buf = "" }
               line ~ /\\[ \t]*$/ { sub(/\\[ \t]*$/, "", line); buf = line; next }
@@ -245,19 +272,33 @@ jobs:
               END { if (buf != "") print buf }
             ' "$f")
             while IFS= read -r line; do
-              [[ $line =~ pip[[:space:]]+install ]] || continue
-              case "$line" in
-                *"--index-url https://pypi.org/simple"*) echo "ok: ${f#./} — индекс установки закреплён" ;;
-                *) echo "::error file=${f#./}::установка pip без явного «--index-url https://pypi.org/simple»: ${line}"; fail=1 ;;
-              esac
+              # 3. pip: источник ровно один и назван в команде.
+              if [[ $line =~ pip[^A-Za-z0-9_-]{0,8}install ]]; then
+                extra=""
+                case "$line" in *--extra-index-url*) extra="${extra} --extra-index-url" ;; esac
+                case "$line" in *--find-links*) extra="${extra} --find-links" ;; esac
+                case "$line" in *--trusted-host*) extra="${extra} --trusted-host" ;; esac
+                if [ -n "$extra" ]; then
+                  echo "::error file=${rel}::у установки pip есть второй источник (${extra# }) — pypi.org обязан быть единственным: ${line}"
+                  fail=1
+                else
+                  case "$line" in
+                    *"--index-url https://pypi.org/simple"*) [ "$said_pip" -eq 1 ] || echo "ok: ${rel} — pip: источник один и назван в команде"; said_pip=1 ;;
+                    *) echo "::error file=${rel}::установка pip без явного «--index-url https://pypi.org/simple»: ${line}"; fail=1 ;;
+                  esac
+                fi
+              fi
+              # 4. npm: только отрицательное требование — см. комментарий выше.
+              if [[ $line =~ npm[^A-Za-z0-9_-]{0,8}(ci|install|i)([^A-Za-z0-9_-]|$) ]]; then
+                case "$line" in
+                  *--registry*|*:registry=*) echo "::error file=${rel}::установка npm переопределяет реестр: ${line}"; fail=1 ;;
+                  *) [ "$said_npm" -eq 1 ] || echo "ok: ${rel} — npm: переопределения реестра нет (умолчание ничем не прибито)"; said_npm=1 ;;
+                esac
+              fi
             done <<< "$joined"
-          done <<< "$runners"
-          if [ "$seen" -eq 0 ]; then
-            echo "::error::не найдено ни одного файла, ставящего пакеты — шаг не проверил ничего"
-            exit 1
-          fi
+          done <<< "$candidates"
           [ "$fail" -eq 0 ] || exit 1
-          echo "реестр пакетов ok: проверено файлов ${seen}"
+          echo "реестр пакетов ok: просмотрено файлов ${seen}"
       - id: set
         name: Какие дни затронуты
         run: |
@@ -284,7 +325,13 @@ jobs:
           # правка документа или кода живой единицы обязана переехать в
           # индекс выкаткой, иначе он стареет молча (ADR 2026-09-29-1639,
           # п. 3). Та же роль, что у регулярки atlas ниже.
-          rag='^(agent_docs/|AGENTS\.md$|README\.md$|rag/|router/|agents/|mcp/|mcpnews/|mcpstore/|deploy/|\.github/|test/)'
+          # Это ВТОРАЯ копия списка корпуса, и разъехаться ей есть куда:
+          # первая редакция забыла README единиц вне списка кода, и правка
+          # atlas/README.md меняла бы корпус, не запуская выкатку (находка
+          # reviewer к PR #278). Совпадение держит не комментарий, а тест
+          # rag/test/test_corpus.py::CiRegexTest — он берёт эту регулярку из
+          # ci.yml и прогоняет по ней каждый путь corpus.collect().
+          rag='^(agent_docs/|AGENTS\.md$|README\.md$|rag/|router/|agents/|mcp/|mcpnews/|mcpstore/|deploy/|\.github/|test/|atlas/README\.md$|site/README\.md$)'
           atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
           # Исключение из совпадения с deploy-units.sh: дни 13, 14 и 15 работают
           # через службу агентов, и их связку проверяют тесты из единицы
@@ -433,7 +480,11 @@ jobs:
           # `unittest discover` заканчивается кодом 0, поэтому наличие тестов
           # проверяется до запуска, а не по его коду: единица на Python без
           # тестов проходила бы шаг зелёной (условие гейта к заходу 2).
-          if [ -f requirements.txt ]; then
+          # Условие шире, чем «есть манифест»: единица на Python может
+          # обходиться stdlib и не иметь requirements.txt вовсе, и тогда её
+          # тесты пропускались бы молча — у ветви Node такой дыры нет, она
+          # включается по наличию тестов (находка reviewer к PR #278).
+          if [ -f requirements.txt ] || ls test/test_*.py >/dev/null 2>&1; then
             if ! ls test/test_*.py >/dev/null 2>&1; then
               echo "::error::в ${PWD} есть requirements.txt, но нет test/test_*.py — тестов у единицы нет"
               exit 1
