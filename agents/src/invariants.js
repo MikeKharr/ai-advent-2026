@@ -413,7 +413,19 @@ export function createInvariants({ sessions, ask = askSummary }) {
      * Отказы до вызова — длина черновика и полный профиль: платить за ход,
      * итог которого некуда положить, незачем.
      */
-    async draft({ profileId, text: raw, env, fetchImpl = fetch, system = null }) {
+    /**
+     * Все отказы хода формулировщика, которые видны ДО вызова модели: длина
+     * черновика, живой профиль, полный список. Вынесено из `draft` отдельной
+     * функцией, чтобы вызывающий мог спросить «этот ход вообще состоится?» не
+     * платя за ответ, — и спросить ТЕМИ ЖЕ проверками, а не своей копией
+     * (поверхность управления, ADR 2026-09-28-1820: слот суточного потолка не
+     * должен уходить на клиентскую опечатку).
+     *
+     * Порядок и тексты — слово в слово прежние: день 14 этого не заметил.
+     * Возвращает нормализованный текст и снимок — `draft` их переиспользует и
+     * второй раз не считает.
+     */
+    preflightDraft({ profileId, text: raw }) {
       const text = normalizeInvariant(raw)
       if (text === '') {
         return { ok: false, status: 400, code: 'bad_input', message: 'Напишите черновик правила' }
@@ -446,6 +458,15 @@ export function createInvariants({ sessions, ask = askSummary }) {
           message: `Инвариантов не больше ${PROFILE_INVARIANT_CAP}: удалите лишние`,
         }
       }
+      return { ok: true, text, existing }
+    },
+
+    async draft({ profileId, text: raw, env, fetchImpl = fetch, system = null }) {
+      // Те же проверки и в том же порядке — ОДНОЙ строкой. Разойтись с
+      // предварительной проверкой вызывающего им теперь нечем: это она и есть.
+      const pre = this.preflightDraft({ profileId, text: raw })
+      if (!pre.ok) return pre
+      const { text, existing } = pre
 
       const request = buildDraftRequest({ invariants: existing, text, system })
       let answer

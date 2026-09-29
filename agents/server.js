@@ -6,6 +6,12 @@ import http from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createNewsAnalyst } from './src/agent.js'
+import { createControlLog } from './src/control/log.js'
+import {
+  controlHealth,
+  createControlService,
+  startControlListener,
+} from './src/control/service.js'
 import { parseEnv } from './src/env.js'
 import { createInvariants } from './src/invariants.js'
 import { createJobs, loadJobs } from './src/jobs/index.js'
@@ -197,6 +203,22 @@ if (sessions) {
   }, 10 * 60_000).unref()
 }
 
+// Поверхность управления инструментами агентов — ВТОРОЙ слушатель этого
+// процесса (ADR 2026-09-28-1820, п. 1). Свой порт, свой ключ, свой перечень
+// операций, свой режим отказа. Операции зовут те же функции хранилища и
+// агента изнутри процесса, а не ручки `/v1` по HTTP.
+//
+// Журнал обращений держит ТЕКСТЫ сообщений посетителей (решение владельца при
+// приёмке ADR), поэтому его отказ — не мелочь: без журнала поверхность
+// работает, но обязанность «кто и что делал» не исполняется, и это
+// называется в журнале процесса.
+let controlLog = null
+try {
+  controlLog = createControlLog({ file: env.CONTROL_LOG_FILE, keepDays: env.CONTROL_LOG_DAYS })
+} catch (error) {
+  log({ event: 'control_log_off', file: env.CONTROL_LOG_FILE, reason: error.message })
+}
+
 const handler = createService({
   agents,
   archive,
@@ -207,7 +229,40 @@ const handler = createService({
   jobs,
   env,
   log,
+  controlState: () => controlHealth(env, notes),
 })
+startControlListener({
+  handler: createControlService({
+    sessions,
+    invariants,
+    agents,
+    runs,
+    controlLog,
+    env,
+    log,
+  }),
+  port: env.CONTROL_PORT,
+  log,
+  onReady: () =>
+    log({ event: 'control_start', port: env.CONTROL_PORT, control: controlHealth(env, notes) }),
+})
+
+// Уборка журнала обращений: 30 суток (решение владельца при приёмке ADR).
+// Держатель срока — эта строка и тест уборки: тексты посетителей не остаются
+// на поверхности дольше названного срока.
+if (controlLog) {
+  const sweepControl = () => {
+    try {
+      const rows = controlLog.prune()
+      if (rows > 0) log({ event: 'control_log_pruned', rows })
+    } catch (error) {
+      console.error(`уборка журнала поверхности: ${error.message}`)
+    }
+  }
+  sweepControl()
+  setInterval(sweepControl, 6 * 3600_000).unref()
+}
+
 http.createServer(handler).listen(env.PORT, () => {
   log({
     event: 'start',
