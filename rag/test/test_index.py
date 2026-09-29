@@ -41,6 +41,13 @@ class BuildTest(unittest.TestCase):
         got = normalize(np.asarray([[0.0, 0.0]], dtype="float32"))
         self.assertFalse(np.isnan(got).any())
 
+    def test_пустой_плоский_массив_не_падает_на_оси(self):
+        # normalize берёт длину по оси 1; на `np.asarray([])` это AxisError,
+        # и охранники `if len(vectors)` ниже были мёртвыми (нит reviewer).
+        empty = VectorIndex.build("fixed", [], np.asarray([], dtype="float32"))
+        self.assertEqual(empty.index.ntotal, 0)
+        self.assertEqual(empty.search(np.asarray([1.0, 0.0]), 5), [])
+
     def test_поиск_в_пустом_индексе_возвращает_пусто(self):
         self.assertEqual(VectorIndex.build("fixed", [], np.zeros((0, 2), "float32")).search(np.asarray([1.0, 0.0]), 5), [])
 

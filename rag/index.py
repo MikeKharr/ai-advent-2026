@@ -34,14 +34,18 @@ class VectorIndex:
 
     @classmethod
     def build(cls, strategy: str, meta: list[dict], vectors: np.ndarray) -> "VectorIndex":
-        # Сверка до normalize, а не после: normalize переписывает vectors, и
-        # охранник за ней читал бы уже не то, что пришло (нит reviewer).
         if len(meta) != len(vectors):
             raise ValueError(f"метаданных {len(meta)}, векторов {len(vectors)}")
+        # Пустой набор отсекается ДО normalize: он берёт длину по оси 1, и
+        # на плоском пустом массиве падал с AxisError — то есть охранники
+        # `if len(vectors)` ниже по течению были мёртвыми, а отказ приходил
+        # не оттуда и не с тем словом. Через build_all недостижимо: пустой
+        # корпус отсекается раньше. Нит reviewer к PR #278, закрыт кодом.
+        if len(vectors) == 0:
+            return cls(strategy, faiss.IndexFlatIP(1), [])
         vectors = normalize(vectors)
-        index = faiss.IndexFlatIP(vectors.shape[1] if len(vectors) else 1)
-        if len(vectors):
-            index.add(vectors)
+        index = faiss.IndexFlatIP(vectors.shape[1])
+        index.add(vectors)
         return cls(strategy, index, meta)
 
     @staticmethod
