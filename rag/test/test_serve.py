@@ -170,36 +170,104 @@ class PublicReasonTest(unittest.TestCase):
         self.assertEqual(len({serve.reason(e) for e in errors}), 4)
 
 
-class StartupReasonTest(unittest.TestCase):
-    """Второе место записи публичного `error` — старт без корпуса.
+class StartupTest(unittest.TestCase):
+    """Обе ветви `main`, а не одна.
 
-    Мест записи два (`run_build` и `main`), а прибито было одно: подмена
-    строки в `main` чем угодно оставляла прогон зелёным (находка `reviewer`,
-    Н2). Здесь проверяется, что и эта строка берёт значение из набора, а не
-    печатает путь или окружение.
+    Мест записи публичного `error` три, и прибивались они по одному, по мере
+    того как их находили: `run_build` — заходом 3, ветвь `else` в `main` —
+    находкой `reviewer` Н2, а **ветвь `then` того же `if`** — находкой
+    `reviewer` Б5, то есть после правки, прошедшей вплотную к ней и мимо неё.
+    Здесь обе ветви держатся рядом, чтобы класс закрывался целиком, а не по
+    экземпляру.
+
+    Почему ветвь `then` вообще нуждается в держателе. `run_build` покрыт
+    прямым вызовом, `build_all` — двумя десятками проверок, но то, что
+    `main` их ЗАПУСКАЕТ, не держало ничто: снятие `Thread(...).start()`
+    оставляло прогон зелёным. В проде это самый тихий из возможных отказов —
+    индекс не собирается никогда, `/healthz` вечно отдаёт 200 со `starting`,
+    шаг «Проверка живого сайта» смотрит на код ответа, шаг «Контейнер
+    поднимается и отвечает на /healthz» делает `curl -fsS … >/dev/null` и в
+    тело не заглядывает. Девять зелёных проверок при мёртвой единице.
     """
+
+    def run_main(self, env: dict):
+        """Поднять `main` до места, где он ушёл бы в `serve_forever`.
+
+        `Status` НЕ подменяется намеренно: объект состояния создаёт сам
+        `main`, а тест забирает тот, который `main` отдал серверу. Пока
+        `Status` подменялся на заранее созданный, проверка «сборке передали
+        то же состояние, что серверу» была вырожденной — она выполнялась при
+        любом аргументе, потому что `Status()` внутри `main` возвращал тот
+        же объект. Поймано мутацией М15 уже после правки по Б5.
+        """
+        from unittest import mock
+
+        captured = []
+
+        def grab(status, *_a, **_k):
+            captured.append(status)
+            raise RuntimeError("стоп")
+
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(serve, "make_server", grab),
+        ):
+            with self.assertRaises(RuntimeError):
+                serve.main()
+        self.assertEqual(len(captured), 1, "main не дошёл до создания сервера")
+        return captured[0]
 
     def test_старт_без_корпуса_пишет_причину_из_набора(self):
         import tempfile
 
-        from unittest import mock
-
-        status = serve.Status()
         with tempfile.TemporaryDirectory() as tmp:
             missing = str(Path(tmp) / "нет-такого-каталога")
-            with (
-                mock.patch.dict(os.environ, {"RAG_CORPUS": missing}),
-                mock.patch.object(serve, "Status", return_value=status),
-                mock.patch.object(serve, "make_server", side_effect=RuntimeError("стоп")),
-            ):
-                with self.assertRaises(RuntimeError):
-                    serve.main()
+            status = self.run_main({"RAG_CORPUS": missing})
         body = status.read()
         self.assertEqual(body["state"], "failed")
         self.assertIn(body["error"], serve.REASONS)
         self.assertEqual(body["error"], serve.NO_CORPUS)
         # Путь к корпусу в публичную строку не попадает ни при каком tmp.
         self.assertNotIn(missing, json.dumps(body, ensure_ascii=False))
+
+    def test_с_корпусом_сборка_действительно_запускается(self):
+        import tempfile
+        import threading as th
+        from unittest import mock
+
+        started = th.Event()
+        seen = []
+
+        def fake_run_build(status):
+            seen.append(status)
+            status.update(state="building")
+            started.set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Каталог существует — значит ветвь `then`.
+            with mock.patch.object(serve, "run_build", fake_run_build):
+                status = self.run_main({"RAG_CORPUS": tmp})
+            # Поток демонский: ждём его по событию, а не по времени.
+            self.assertTrue(started.wait(5), "сборка не запущена из main")
+        self.assertEqual(len(seen), 1, "run_build вызван не один раз")
+        # Тот же объект, что ушёл серверу: иначе сборка писала бы состояние,
+        # которого /healthz никогда не покажет.
+        self.assertIs(seen[0], status, "сборке передали не то состояние")
+        self.assertEqual(status.read()["state"], "building")
+
+    def test_ветви_не_перепутаны_местами(self):
+        # Иначе проверка выше проходила бы и при `if not ... .is_dir()`:
+        # без корпуса сборка запускаться не должна.
+        import tempfile
+        from unittest import mock
+
+        called = []
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "нет-такого-каталога")
+            with mock.patch.object(serve, "run_build", lambda s: called.append(s)):
+                status = self.run_main({"RAG_CORPUS": missing})
+        self.assertEqual(called, [])
+        self.assertEqual(status.read()["state"], "failed")
 
 
 if __name__ == "__main__":
