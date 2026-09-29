@@ -6,6 +6,10 @@ import { LAYERED_MODELS, MODELS, REVIEW_ROUNDS } from './params.js'
 
 const KNOWN_TOOLS = new Set(['archive', 'mcp'])
 const ID = /^[a-z][a-z0-9-]{1,40}$/
+// Та же форма имени, что у `name` в `mcp-servers.json` (`src/mcp/servers.js`).
+// Здесь проверяется только форма: существует ли сервер — знает реестр серверов,
+// и сводит их `assertAgentServers` там же.
+const SERVER_NAME = /^[a-z][a-z0-9-]{1,30}$/
 
 function fail(id, message) {
   throw new Error(`реестр агентов${id ? ` (${id})` : ''}: ${message}`)
@@ -27,6 +31,28 @@ export function loadRegistry(raw) {
     }
     if (!Array.isArray(entry.tools) || entry.tools.some((t) => !KNOWN_TOOLS.has(t)))
       fail(id, `tools: допустимы только ${[...KNOWN_TOOLS].join(', ')}`)
+
+    // Отбор серверов по агенту (ADR 2026-09-29-0236, п. 6). Реестр серверов
+    // один на хост, но каждому агенту достаётся не весь: третий сервер,
+    // заведённый ради дня 20, иначе автоматически попал бы и в цепочку
+    // планировщика дня 18 — 96 лишних `tools/list` в сутки и третья запись в
+    // его ленте на каждом запуске.
+    //
+    // Поле ОБЯЗАТЕЛЬНО у агента с инструментом `mcp`, а не «по умолчанию весь
+    // реестр»: умолчание вернуло бы ровно ту беду, ради которой поле заведено,
+    // и вернуло бы молча — забытая строка не краснеет нигде.
+    const usesMcp = entry.tools.includes('mcp')
+    if (usesMcp) {
+      if (
+        !Array.isArray(entry.servers) ||
+        entry.servers.length === 0 ||
+        entry.servers.some((name) => typeof name !== 'string' || !SERVER_NAME.test(name))
+      )
+        fail(id, 'servers: ожидался непустой список имён серверов MCP')
+      if (new Set(entry.servers).size !== entry.servers.length) fail(id, 'servers: имя повторяется')
+    } else if (entry.servers !== undefined) {
+      fail(id, 'servers: бывает только у агента с инструментом mcp')
+    }
 
     const d = entry.defaults
     if (!d || typeof d !== 'object') fail(id, 'defaults: ожидался объект')
@@ -94,6 +120,7 @@ export function loadRegistry(raw) {
       taskClass: entry.taskClass ?? null,
       modelless,
       tools: [...entry.tools],
+      servers: usesMcp ? [...entry.servers] : null,
       // Промпт хранится строками ради читаемости JSON, в модель уходит
       // одной строкой — ровно так, как показывает окно передачи.
       systemPrompt: modelless ? null : entry.systemPrompt.join(' '),

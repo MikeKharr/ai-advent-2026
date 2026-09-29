@@ -24,6 +24,11 @@ export function loadServers(raw, source = process.env, { make = createMcpClient 
 
   const servers = new Map()
   const skipped = []
+  // Имена ВСЕХ объявленных серверов, включая пропущенные без адреса: список
+  // агента сверяется с описанием реестра, а не с тем, что сегодня поднялось.
+  // Иначе «сервера нет в реестре» означало бы «переменной окружения нет», и
+  // забытая строка в compose валила бы старт вместо предупреждения.
+  const known = new Set()
   for (const entry of raw.servers) {
     const name = entry?.name
     if (typeof name !== 'string' || !NAME.test(name)) fail(name, 'name: латиница, цифры и дефис')
@@ -35,6 +40,7 @@ export function loadServers(raw, source = process.env, { make = createMcpClient 
     if (typeof entry.title !== 'string' || entry.title.trim() === '')
       fail(name, 'title: ожидалась непустая строка')
 
+    known.add(name)
     const url = source[entry.urlEnv] ?? ''
     if (!url) {
       skipped.push({ name, reason: `${entry.urlEnv} не задан` })
@@ -48,5 +54,38 @@ export function loadServers(raw, source = process.env, { make = createMcpClient 
     })
   }
 
-  return { servers, skipped }
+  return { servers, skipped, known }
+}
+
+/**
+ * Реестр, суженный до списка агента (ADR 2026-09-29-0236, п. 6). Сервер из
+ * списка, у которого нет адреса в окружении, здесь просто отсутствует — как и
+ * в общем реестре: недоступный сервер остаётся штатным состоянием.
+ *
+ * Возвращается НОВАЯ карта в порядке списка агента: порядок опроса
+ * `listAllTools` — порядок этой карты.
+ */
+export function pickServers(servers, names) {
+  const picked = new Map()
+  for (const name of names ?? []) {
+    const server = servers.get(name)
+    if (server) picked.set(name, server)
+  }
+  return picked
+}
+
+/**
+ * Сводит два файла конфигурации на старте: каждое имя в `servers` агента
+ * обязано быть объявлено в реестре серверов. Опечатка в имени иначе значила бы
+ * «инструментов нет» — молча и только в проде.
+ */
+export function assertAgentServers(registry, known) {
+  for (const entry of registry.values()) {
+    for (const name of entry.servers ?? []) {
+      if (!known.has(name))
+        throw new Error(
+          `реестр агентов (${entry.id}): servers: сервера «${name}» нет в реестре серверов MCP`,
+        )
+    }
+  }
 }

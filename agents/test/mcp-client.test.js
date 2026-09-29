@@ -12,6 +12,7 @@ import {
   RESPONSE_LIMIT,
   TRACE_BODY_LIMIT,
 } from '../src/mcp/client.js'
+import { rpcEvent } from '../src/mcp/pipeline.js'
 import { loadServers } from '../src/mcp/servers.js'
 
 /** Поддельный сервер: `handler(request, req)` отдаёт `{status, body, headers}`. */
@@ -220,6 +221,51 @@ test('HTTP-отказ сервера отличается от ошибки ин
   assert.equal(error.reason, 'http')
   assert.equal(error.status, 401)
   await fake.close()
+})
+
+// Ключ службы дня 16 — первый настоящий ключ у клиента хоста (ADR
+// 2026-09-29-0236, п. 5 и 8). До него `key` у каждого клиента был `null`:
+// запись `day16` без `MCP_DAY16_URL` всегда уходила в `skipped`, и обещание
+// «в трейс ключ не попадает» (`src/mcp/client.js:96-97`) охраняло пустоту.
+//
+// Обещание это не мелочь: трейс уходит в `rpcEvent(...).data`, оттуда потоком
+// SSE в браузер ПОСЕТИТЕЛЯ дня 20. Закрытый список полей в `parseCall` на
+// странице — про отрисовку, а не про провод: до него данные уже у клиента.
+//
+// Судим по СОДЕРЖИМОМУ, а не по списку полей: `assert.deepEqual` на ключах
+// трейса пропустил бы ключ, доехавший внутри известного поля. Ищем сам
+// секрет и слово `authorization` в целиком сериализованном трейсе и в
+// готовом событии — и на удачном вызове, и на неудачном, потому что
+// `error.trace` едет на экран так же.
+test('ключ службы не попадает в трейс ни удачного вызова, ни отказа', async () => {
+  const KEY = 'secret-day16-key-do-not-leak'
+  const leaks = (value, what) => {
+    const text = JSON.stringify(value)
+    assert.ok(!text.includes(KEY), `${what}: в трейсе нашёлся ключ службы`)
+    assert.ok(!/authorization/i.test(text), `${what}: в трейсе нашлось слово authorization`)
+  }
+
+  const ok = await fakeServer((rpc) => ({ body: { jsonrpc: '2.0', id: rpc.id, result: { tools: [] } } }))
+  const client = createMcpClient({ name: 'day16', url: ok.url, key: KEY })
+  const { trace } = await client.listTools()
+
+  // Сначала — что проверка вообще о чём-то: ключ ДОШЁЛ до сервера. Без этого
+  // тест зеленел бы и у клиента, который ключ не шлёт вовсе.
+  assert.equal(ok.seen.at(-1).headers.authorization, `Bearer ${KEY}`)
+  leaks(trace, 'удачный вызов')
+  leaks(rpcEvent(trace, 'Получен список инструментов'), 'событие удачного вызова')
+  await ok.close()
+
+  // Отказ: его трейс живёт в `error.trace` и уходит на экран тем же событием.
+  const bad = await fakeServer(() => ({ status: 401, body: { error: 'нет ключа' } }))
+  const error = await createMcpClient({ name: 'day16', url: bad.url, key: KEY })
+    .listTools()
+    .catch((e) => e)
+  assert.equal(error.reason, 'http')
+  assert.equal(bad.seen.at(-1).headers.authorization, `Bearer ${KEY}`)
+  leaks(error.trace, 'отказ')
+  leaks(rpcEvent(error.trace, 'Сервер не отдал список', 'warn'), 'событие отказа')
+  await bad.close()
 })
 
 test('реестр берёт адреса из окружения и пропускает сервер без переменной', () => {

@@ -19,7 +19,7 @@ import { createJobStore } from './src/jobs/store.js'
 import { createLayeredAgent, LAYERED_AGENT_ID } from './src/layered.js'
 import { createJobRunner, createMcpAgent, MCP_AGENT_ID } from './src/mcp/agent.js'
 import { createPipelineAgent, PIPELINE_AGENT_ID } from './src/mcp/pipeline-agent.js'
-import { loadServers } from './src/mcp/servers.js'
+import { assertAgentServers, loadServers } from './src/mcp/servers.js'
 import { STAGED15_MAX_TOKENS } from './src/params.js'
 import { createProfilePrompts, registryPrompts } from './src/prompts.js'
 import { loadRegistry } from './src/registry.js'
@@ -98,10 +98,16 @@ const profilePrompts = sessions ? createProfilePrompts({ sessions }) : registryP
 // Реестр серверов MCP (ADR 2026-09-28-0736, п. 1). Сервер без адреса в
 // окружении в реестр не попадает — и это называется в журнале, иначе день 20
 // молча остался бы без половины инструментов.
-const { servers: mcpServers, skipped: mcpSkipped } = loadServers(
+const { servers: mcpServers, skipped: mcpSkipped, known: mcpKnown } = loadServers(
   JSON.parse(readFileSync(join(here, 'config', 'mcp-servers.json'), 'utf8')),
 )
 for (const miss of mcpSkipped) log({ event: 'mcp_server_skipped', server: miss.name, reason: miss.reason })
+// Отбор серверов по агенту (ADR 2026-09-29-0236, п. 6): реестр ОДИН и уезжает
+// в точки входа целиком, а сужает его до списка агента каждая сама — там, где
+// её держат тесты. Здесь остаётся сводка двух файлов конфигурации: имя
+// сервера, которого нет в реестре серверов, валит процесс до открытия порта, а
+// не оборачивается «инструментов нет» в проде.
+assertAgentServers(registry, mcpKnown)
 
 /**
  * Реестр агентов → исполнители: аналитик новостей, слои памяти, машина

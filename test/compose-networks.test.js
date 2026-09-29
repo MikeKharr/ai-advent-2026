@@ -52,7 +52,7 @@ test('разбор видит сети там, где они есть, и их �
   assert.deepEqual(services.get('cron'), ['cron'])
   assert.deepEqual(services.get('mcpnews'), ['tools'])
   assert.deepEqual(services.get('mcpstore'), ['tools'])
-  assert.deepEqual(services.get('agents'), ['default', 'cron', 'tools'])
+  assert.deepEqual(services.get('agents'), ['default', 'cron', 'tools', 'mcp'])
 })
 
 test('приманка: у mcp убрали ключ networks — он оказался в сети по умолчанию', () => {
@@ -78,6 +78,27 @@ test('приманка: день 16 добавили в сеть по умолч
 test('приманка: у дня 16 убрали ключ networks — он в сети по умолчанию', () => {
   const decoy = inService(TEXT, 'day16', / {4}networks:\n {6}- mcp\n/, '')
   assert.match(problems(decoy).join('\n'), /у службы day16 нет ключа networks/)
+})
+
+// Связь agents↔mcp — не терпимость, а условие работы третьего сервера
+// (ADR 2026-09-29-0236, п. 5). Две пары ниже держат её с обеих сторон: снятая
+// связь и связь, расширенная не туда.
+test('приманка: у agents убрали сеть mcp — служба дня 16 стала недостижима', () => {
+  const decoy = inService(TEXT, 'agents', / {6}mcp:\n/, '')
+  assert.deepEqual(parseServices(decoy).get('agents'), ['default', 'cron', 'tools'], 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба agents обязана быть в сети mcp/)
+})
+
+test('приманка: agents вовсе без ключа networks — сеть mcp потеряна вместе с остальными', () => {
+  const decoy = inService(TEXT, 'agents', / {4}networks:\n(?: {6}.*\n)+/, '')
+  assert.equal(parseServices(decoy).get('agents'), null, 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба agents обязана быть в сети mcp.*\(сеть по умолчанию\)/)
+})
+
+test('приманка: day20 пустили в сеть mcp напрямую, мимо хоста агентов', () => {
+  const decoy = inService(TEXT, 'day20', / {4}depends_on:\n/, '    networks:\n      - default\n      - mcp\n    depends_on:\n')
+  assert.ok(parseServices(decoy).get('day20').includes('mcp'), 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба day20 в сети mcp/)
 })
 
 test('приманка: router пустили в сеть mcp', () => {
@@ -127,7 +148,7 @@ test('приманка: router пустили в сеть cron', () => {
 
 test('приманка: у agents убрали сеть cron — тик перестал доходить, но молча', () => {
   const decoy = inService(TEXT, 'agents', / {6}cron:\n/, '')
-  assert.deepEqual(parseServices(decoy).get('agents'), ['default', 'tools'], 'приманка не собралась')
+  assert.deepEqual(parseServices(decoy).get('agents'), ['default', 'tools', 'mcp'], 'приманка не собралась')
   // Нарушения изоляции тут нет — и это честный предел стража: он держит, куда
   // cron НЕ может, а не то, что тик доходит. Второе держит первый тик в проде
   // («Стенд ≠ прод» в описании PR), и притворяться, что это проверено здесь,
