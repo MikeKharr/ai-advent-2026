@@ -759,8 +759,9 @@ async function dialogAgent(replies) {
   return { news, runs, sessions, agent, router, entry }
 }
 
-test('прошлые реплики уходят в роутер сообщениями ПЕРЕД заданием, а не текстом внутри него', async () => {
+test('прошлые реплики уходят в роутер сообщениями ПЕРЕД заданием, а не текстом внутри него', async (t) => {
   const d = await dialogAgent([answer('второй ответ')])
+  t.after(() => d.news.close())
   d.sessions.append({ sessionId: SID, role: 'user', text: 'первый вопрос', tokens: 5 })
   d.sessions.append({ sessionId: SID, role: 'agent', text: 'первый ответ', tokens: 5 })
 
@@ -773,11 +774,11 @@ test('прошлые реплики уходят в роутер сообщен�
     { role: 'assistant', content: 'первый ответ' },
     { role: 'user', content: 'второе задание' },
   ])
-  await d.news.close()
 })
 
-test('ход пишется в переписку двумя репликами, слова кругов лежат рядом с ответом агента', async () => {
+test('ход пишется в переписку двумя репликами, слова кругов лежат рядом с ответом агента', async (t) => {
   const d = await dialogAgent([wantsTool('mcpnews__news_search'), answer('итог')])
+  t.after(() => d.news.close())
   const parsed = d.agent.parseInput({ task: 'что нового', sessionId: SID })
   const run = d.runs.create({ agent: d.entry, input: parsed.input })
   await d.agent.execute(run)
@@ -795,39 +796,39 @@ test('ход пишется в переписку двумя репликами,
   assert.equal(messages[1].meta.calls, 1)
   // Сырых тел JSON-RPC в переписке нет: это байты протокола, а не разговор.
   assert.ok(!JSON.stringify(messages[1].meta).includes('jsonrpc'))
-  await d.news.close()
 })
 
-test('занятая сессия получает отказ на входе, а не второй запуск', async () => {
+test('занятая сессия получает отказ на входе, а не второй запуск', async (t) => {
   const d = await dialogAgent([answer('ответ')])
+  t.after(() => d.news.close())
   d.agent.hold(SID)
   const parsed = d.agent.parseInput({ task: 'ещё раз', sessionId: SID })
   assert.equal(parsed.ok, false)
   assert.match(parsed.message, /уже идёт запуск/)
   // Чужая сессия при этом свободна: замок на диалог, а не на агента.
   assert.ok(d.agent.parseInput({ task: 'ещё раз', sessionId: '22222222-2222-4222-8222-222222222222' }).ok)
-  await d.news.close()
 })
 
-test('замок снимается после хода: следующее сообщение того же диалога проходит', async () => {
+test('замок снимается после хода: следующее сообщение того же диалога проходит', async (t) => {
   const d = await dialogAgent([answer('первый'), answer('второй')])
+  t.after(() => d.news.close())
   const first = d.agent.parseInput({ task: 'раз', sessionId: SID })
   d.agent.hold(SID)
   await d.agent.execute(d.runs.create({ agent: d.entry, input: first.input }))
   assert.ok(d.agent.parseInput({ task: 'два', sessionId: SID }).ok)
-  await d.news.close()
 })
 
-test('sessionId чужой формы отвергается на входе', async () => {
+test('sessionId чужой формы отвергается на входе', async (t) => {
   const d = await dialogAgent([answer('ответ')])
+  t.after(() => d.news.close())
   assert.equal(d.agent.parseInput({ task: 'раз', sessionId: '../../etc' }).ok, false)
   // Без сессии агент работает как раньше: одиночный запуск дня 20.
   assert.deepEqual(d.agent.parseInput({ task: 'раз' }).input.sessionId, null)
-  await d.news.close()
 })
 
-test('планировщик дня 18 истории не шлёт: в запросе одно сообщение', async () => {
+test('планировщик дня 18 истории не шлёт: в запросе одно сообщение', async (t) => {
   const { news, servers } = await oneServer()
+  t.after(() => news.close())
   const router = fakeRouter([answer('сводка')])
   const runs = createRuns()
   const runJob = createJobRunner({ registry, servers, runs, env, fetchImpl: router.fetchImpl })
@@ -835,5 +836,4 @@ test('планировщик дня 18 истории не шлёт: в запр
   await runJob({ job: jobOf('собери сводку'), runId: 'run-no-history' })
 
   assert.deepEqual(router.calls[0].body.messages, [{ role: 'user', content: 'собери сводку' }])
-  await news.close()
 })
