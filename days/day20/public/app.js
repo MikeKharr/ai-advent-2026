@@ -54,6 +54,8 @@ const calls = []
  * переставляет.
  */
 const items = []
+/** Номер круга, о котором говорит строка состояния. 0 — кругов ещё не было. */
+let round = 0
 let stream = null
 
 function setStatus(text, bad = false) {
@@ -82,6 +84,7 @@ function redraw() {
 function resetRun() {
   calls.length = 0
   items.length = 0
+  round = 0
   restored.hidden = true
   restored.textContent = ''
   redraw()
@@ -173,8 +176,11 @@ function onEvent(raw) {
     // Событие уходит на каждом круге, в том числе когда модель не сказала
     // ничего. Такую запись страница показывает словом «без слов» и НЕ
     // пропускает: молчание модели — тоже ответ на вопрос «как она выбирает».
-    items.push({ kind: 'words', value: parseWords(event.data) })
+    const words = parseWords(event.data)
+    items.push({ kind: 'words', value: words })
+    if (words.round !== null) round = words.round
     redraw()
+    setStatus(`Круг ${round}. Вызовов: ${calls.length}.`)
     return
   }
   if (event?.stage !== 'rpc') return
@@ -183,7 +189,7 @@ function onEvent(raw) {
   items.push({ kind: 'call', value: call })
   redraw()
   showServers()
-  setStatus(`Ход идёт. Вызовов: ${calls.length}.`)
+  setStatus(`Круг ${round}. Вызовов: ${calls.length}.`)
 }
 
 function subscribe(runId) {
@@ -200,7 +206,7 @@ function subscribe(runId) {
     const ok = end?.status === 'succeeded'
     setStatus(
       ok
-        ? `Готово. Вызовов: ${calls.length}.`
+        ? `Готово. Кругов: ${round}, вызовов: ${calls.length}.`
         : `Ход завершился со статусом «${end?.status ?? 'неизвестно'}».`,
       !ok,
     )
