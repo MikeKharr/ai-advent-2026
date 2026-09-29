@@ -25,11 +25,18 @@ let runsReply = { status: 202, body: JSON.stringify({ runId: 'run-abc' }) }
 /** Точные байты потока событий, которые стенд отдаст на /events. */
 let eventsBody = ''
 let eventsStatus = 200
+/** Что стенд отдаёт на /v1/sessions/:id — переписку или отказ. */
+let sessionsReply = { status: 200, body: JSON.stringify({ ok: true, messages: [] }) }
 
 const agents = http.createServer(async (req, res) => {
   const chunks = []
   for await (const c of req) chunks.push(c)
   seen.push({ method: req.method, url: req.url, headers: { ...req.headers }, body: Buffer.concat(chunks).toString() })
+
+  if (req.url.startsWith('/v1/sessions/')) {
+    res.writeHead(sessionsReply.status, { 'content-type': 'application/json' })
+    return res.end(sessionsReply.body)
+  }
 
   if (req.url.endsWith('/events')) {
     if (eventsStatus !== 200) {
@@ -166,4 +173,131 @@ test('страница отдаётся статикой и подключает
   const res = await fetch(`${base}/`)
   assert.equal(res.status, 200)
   assert.ok((await res.text()).includes('<link rel="stylesheet" href="style.css">'))
+})
+
+// ——— Диалог с сессией (ADR 2026-09-28-1852, заход 2, п. 2). Предмет тот же:
+// улика — журнал стенда, а не код ответа.
+
+/** Значение cookie дня из заголовков ответа или null. */
+const sidOf = (res) => {
+  for (const raw of res.headers.getSetCookie())
+    if (raw.startsWith('day20_sid=')) return raw
+  return null
+}
+
+test('первый запуск получает cookie сессии от СЕРВЕРА: HttpOnly, SameSite=Lax, путь дня', async () => {
+  const res = await post('fintech', '10.0.1.1')
+  const cookie = sidOf(res)
+  assert.ok(cookie, 'cookie сессии не выдана')
+  assert.match(cookie, /^day20_sid=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12};/)
+  assert.match(cookie, /HttpOnly/)
+  assert.match(cookie, /SameSite=Lax/)
+  assert.match(cookie, /Path=\/day20\//)
+  assert.match(cookie, /Max-Age=108000/)
+})
+
+test('sessionId уходит в сервис ИЗ COOKIE, а тот, что подставлен в тело, не принимается', async () => {
+  seen.length = 0
+  const mine = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const foreign = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const res = await fetch(`${base}/api/runs`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': '10.0.1.2',
+      cookie: `day20_sid=${mine}`,
+    },
+    body: JSON.stringify({ task: 'fintech', sessionId: foreign }),
+  })
+  assert.equal(res.status, 202)
+  const entry = seen.find((s) => s.url === '/v1/runs')
+  assert.equal(JSON.parse(entry.body).input.sessionId, mine)
+  // Улика различает гипотезы: совпадение с cookie ещё не значит, что тело
+  // проигнорировано, — поэтому проверяется и отсутствие чужого значения.
+  assert.ok(!entry.body.includes(foreign), `идентификатор из тела дошёл до сервиса: ${entry.body}`)
+})
+
+test('cookie чужой формы не принимается: сервер чеканит новую, а не шлёт мусор в сервис', async () => {
+  seen.length = 0
+  const res = await fetch(`${base}/api/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.0.1.3', cookie: 'day20_sid=../../etc/passwd' },
+    body: JSON.stringify({ task: 'fintech' }),
+  })
+  assert.equal(res.status, 202)
+  const entry = seen.find((s) => s.url === '/v1/runs')
+  assert.ok(!entry.body.includes('passwd'), `чужое значение cookie ушло в сервис: ${entry.body}`)
+  assert.match(JSON.parse(entry.body).input.sessionId, /^[0-9a-f-]{36}$/)
+})
+
+test('cookie уходит и с отказом: пустое задание не оставляет посетителя без сессии', async () => {
+  const res = await post('   ', '10.0.1.4')
+  assert.equal(res.status, 400)
+  assert.ok(sidOf(res), 'отказ ушёл без cookie — следующее сообщение начало бы новый диалог')
+})
+
+test('переписка читается по сессии из cookie и с ключом сервиса — свидетельство из журнала стенда', async () => {
+  seen.length = 0
+  const sid = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  sessionsReply = {
+    status: 200,
+    body: JSON.stringify({
+      ok: true,
+      messages: [
+        { id: 1, role: 'user', text: 'что нового', meta: null },
+        { id: 2, role: 'agent', text: 'итог', meta: { rounds: [{ round: 1, text: 'смотрю новости', chosen: [] }], calls: 1 } },
+      ],
+    }),
+  }
+  const res = await fetch(`${base}/api/chat`, { headers: { cookie: `day20_sid=${sid}` } })
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  // Слова кругов доезжают до страницы: именно они переживают перезагрузку.
+  assert.equal(json.messages[1].meta.rounds[0].text, 'смотрю новости')
+
+  const entry = seen.find((s) => s.url === `/v1/sessions/${sid}`)
+  assert.ok(entry, 'сервис агентов запроса переписки не видел')
+  assert.equal(entry.method, 'GET')
+  assert.equal(entry.headers.authorization, `Bearer ${KEY}`)
+})
+
+test('ключ не появляется в ответе /api/chat (I-1)', async () => {
+  const text = await (await fetch(`${base}/api/chat`, { headers: { cookie: 'day20_sid=cccccccc-cccc-4ccc-8ccc-cccccccccccc' } })).text()
+  assert.ok(!text.includes(KEY), `ключ утёк: ${text.slice(0, 120)}`)
+})
+
+test('очистка доходит до сервиса удалением и меняет cookie только после подтверждения', async () => {
+  seen.length = 0
+  const sid = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  sessionsReply = { status: 200, body: JSON.stringify({ ok: true, removed: 2 }) }
+  const res = await fetch(`${base}/api/chat`, { method: 'DELETE', headers: { cookie: `day20_sid=${sid}` } })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), { messages: [], cleared: true })
+  const entry = seen.find((s) => s.url === `/v1/sessions/${sid}`)
+  assert.ok(entry && entry.method === 'DELETE', 'удаление до сервиса не дошло')
+  const fresh = sidOf(res)
+  assert.ok(fresh && !fresh.includes(sid), 'старый идентификатор остался в браузере')
+})
+
+test('сервис не подтвердил удаление — cookie не меняется, иначе переписку не удалить уже никогда', async () => {
+  const sid = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+  sessionsReply = { status: 500, body: '{"ok":false}' }
+  const res = await fetch(`${base}/api/chat`, { method: 'DELETE', headers: { cookie: `day20_sid=${sid}` } })
+  sessionsReply = { status: 200, body: JSON.stringify({ ok: true, messages: [] }) }
+  assert.equal(res.status, 502)
+  // Идентификатор остаётся ТОТ ЖЕ и в ответе он ОДИН: пока сервис не
+  // подтвердил удаление, переписка жива, и ключ к ней терять нельзя. Одного
+  // «старый на месте» мало — свежая cookie, добавленная рядом, победила бы в
+  // браузере, а проверка осталась бы зелёной.
+  const issued = res.headers.getSetCookie().filter((c) => c.startsWith('day20_sid='))
+  assert.equal(issued.length, 1, `выдано cookie сессии: ${issued.length} — ${JSON.stringify(issued)}`)
+  assert.ok(issued[0].includes(sid), `после неудачной очистки сервер сменил cookie: ${issued[0]}`)
+})
+
+test('память диалога недоступна — день говорит это словом, а не пустой перепиской', async () => {
+  sessionsReply = { status: 503, body: JSON.stringify({ ok: false, code: 'no_sessions' }) }
+  const res = await fetch(`${base}/api/chat`, { headers: { cookie: 'day20_sid=ffffffff-ffff-4fff-8fff-ffffffffffff' } })
+  sessionsReply = { status: 200, body: JSON.stringify({ ok: true, messages: [] }) }
+  assert.equal(res.status, 503)
+  assert.match((await res.json()).error, /недоступна/)
 })

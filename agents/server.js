@@ -124,7 +124,7 @@ for (const entry of registry.values()) {
     log({ event: 'agent_skipped', agent: entry.id, reason: 'исполнителя для агента без модели нет' })
     continue
   } else if (entry.id === MCP_AGENT_ID)
-    agent = createMcpAgent({ agent: entry, servers: mcpServers, runs, env, log })
+    agent = createMcpAgent({ agent: entry, servers: mcpServers, runs, sessions, env, log })
   else if (entry.id === LAYERED_AGENT_ID) agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
   else if (entry.id === STAGED_AGENT_ID)
     agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })

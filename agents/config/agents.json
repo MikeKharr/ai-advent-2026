@@ -161,7 +161,7 @@
         "model": "anthropic-haiku",
         "maxTokens": 1024,
         "temperature": 1,
-        "contextTokens": 0
+        "contextTokens": 3000
       }
     },
     {

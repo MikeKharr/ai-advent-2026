@@ -1,38 +1,80 @@
 // Проводка страницы дня 20 в экран. Правила показа тела — в rpc.js (копия
-// правил консоли дня 16), правила записи вызова — в trace.js; здесь только DOM
-// и поток событий.
+// правил консоли дня 16), правила записи вызова — в trace.js, правила
+// разговора — в chat.js; здесь только DOM и поток событий.
 //
 // Чего здесь нет намеренно:
-//   localStorage/sessionStorage — лента живёт до перезагрузки и нигде больше;
+//   localStorage/sessionStorage — переписка живёт на сервере, идентификатор
+//   сессии лежит в cookie HttpOnly и странице не виден;
 //   scrollIntoView/scrollTop — позиция чтения принадлежит посетителю;
 //   подсветка синтаксиса — в .rpc кладётся textContent, и только он;
 //   повторного подключения к оборванному потоку нет: EventSource переподписался
 //   бы и прислал те же события второй раз, а лента показывала бы вызовы,
 //   которых не было.
+//
+// Два потока на экране живут ПОРОЗНЬ и это главное правило файла: разговор
+// приходит с сервера и переживает перезагрузку, лента хода собирается из
+// событий и показывает ОДИН ход — текущий. Новое сообщение очищает ленту и
+// не трогает разговор.
 
+import { countLine, lastRounds, parseChat, renderMessage } from './chat.js'
 import { NO_SERVER, parseCall, parseWords, renderCall, renderWords } from './trace.js'
 
 const byId = (id) => document.getElementById(id)
 const form = byId('run-form')
 const input = byId('cmd')
 const send = byId('send')
+const clear = byId('clear')
 const status = byId('run-status')
+const log = byId('log')
+const logEmpty = byId('log-empty')
+const msgs = byId('msgs')
+const restored = byId('restored')
 const feed = byId('feed')
 const empty = byId('empty')
 const indent = byId('indent')
 const serversList = byId('servers')
 const serversNote = byId('servers-note')
 
-/** Вызовы этого запуска, в порядке прихода. Нигде не сохраняются. */
+/** Лента пуста, потому что хода в этой вкладке не было. */
+const FEED_NEVER =
+  'Хода ещё не было. Отправьте сообщение — слова модели и вызовы появятся здесь по мере ' +
+  'того, как модель их выбирает.'
+/** Лента пуста, потому что от прошлого хода не осталось следа. Это другое. */
+const FEED_NO_TRACE =
+  'Ход был, но следа от него не осталось: слов модели рядом с этим ответом не записано. ' +
+  'Отправьте сообщение — слова модели и вызовы появятся здесь по мере того, как модель их выбирает.'
+const SERVERS_NEVER = 'Хода ещё не было: называть серверы нечем.'
+const SERVERS_NO_TRACE = 'Какие серверы отвечали в прошлом ходе, не сохранено.'
+
+const RESTORED_WITH_WORDS =
+  'Переписка восстановлена с сервера, и слова модели последнего хода — вместе с ней: ' +
+  'они лежат рядом с ответом. Сырого JSON-RPC среди них нет — тела вызовов живут в памяти ' +
+  'сервиса 10 минут и после перезагрузки не возвращаются.'
+/** Слов рядом с ответом нет — обещать восстановленный ход нельзя. */
+const RESTORED_WITHOUT_WORDS =
+  'Переписка восстановлена с сервера. Как шёл последний ход — нет: слов модели рядом с ' +
+  'этим ответом не записано, а тела вызовов живут в памяти сервиса 10 минут.'
+
+/** Вызовы этого хода, в порядке прихода. Нигде не сохраняются. */
 const calls = []
 /**
- * Лента запуска: записи вызовов и записи со словами модели В ОДНОМ ПОРЯДКЕ, в
+ * Лента хода: записи вызовов и записи со словами модели В ОДНОМ ПОРЯДКЕ, в
  * каком пришли события. Порядок и есть предмет показа — слова круга стоят
  * перед вызовами, которые модель на этом круге выбрала, потому что событие
  * приходит до исполнения инструментов, а не потому, что страница их
  * переставляет.
  */
 const items = []
+/** Номер круга, о котором говорит строка состояния. 0 — кругов ещё не было. */
+let round = 0
+/**
+ * Переписка восстановлена с сервера, а ход в этой вкладке не запускался.
+ * Пустые состояния ленты привязаны к ЭТОМУ факту, а не к наличию слов: у
+ * ответа агента слов рядом может не быть вовсе (ход оборвался), и тогда лента
+ * пуста, а ход всё-таки был. Строка «Хода ещё не было» рядом со строкой
+ * «переписка восстановлена» — прямая ложь, и её нельзя чинить молчанием.
+ */
+let restoredRun = false
 let stream = null
 
 function setStatus(text, bad = false) {
@@ -40,9 +82,56 @@ function setStatus(text, bad = false) {
   status.classList.toggle('is-bad', bad)
 }
 
+/**
+ * Запертый элемент отдаёт фокус телу документа и сам его не возвращает.
+ * Раскладка (п. 8.6) требует, чтобы после отправки фокус оставался в поле, и
+ * для экрана-переписки это не мелочь: иначе каждое следующее сообщение с
+ * клавиатуры начинается с поиска поля через весь порядок Tab.
+ *
+ * Условий два, и оба обязательны.
+ *
+ * `refocus` — фокус был на том, что страница сейчас запрёт. Считается при
+ * запирании: позже этого уже не узнать.
+ *
+ * `document.activeElement === document.body` — фокус ДО СИХ ПОР лежит там,
+ * куда его уронило запирание. Считается при отпирании, и только так: ход идёт
+ * секунды, и за это время посетитель успевает уйти по Tab в тело вызова или
+ * на флажок отступов. Проверь мы одно лишь `refocus`, каретка прыгнула бы из
+ * читаемого JSON-RPC в поле — ровно тот угон, который запрещает п. 10.6.
+ *
+ * Но «фокус на теле документа» — след НЕ ТОЛЬКО запирания, и это третье
+ * условие, без которого второго мало. `redraw()` пересобирает ленту целиком
+ * на каждом событии, и рамка, в которую посетитель поставил фокус, гибнет со
+ * следующим же событием — фокус падает на тело, и проверка честно срабатывает
+ * на то, чего не было. Поэтому уход отмечается СОБЫТИЕМ, в момент ухода, пока
+ * узел ещё жив. Замер: фокус в рамке → `activeElement` = `pre.rpc.is-req`,
+ * узел в документе; следующее событие → `activeElement` = `body`, тот же узел
+ * уже нет; конец хода → поле. Ход идёт секундами и события в нём приходят,
+ * так что это обычный случай, а не край.
+ */
+let refocus = false
+
+/**
+ * Посетитель ушёл с того, что заперла страница, пока ход идёт. Флаг гасится
+ * здесь, а не проверяется потом: потом узла может уже не быть.
+ *
+ * Лента не переписана намеренно: полная пересборка в `redraw` пришла из
+ * захода 1, к предмету этого PR отношения не имеет, и гасить флаг дешевле,
+ * чем трогать показ ленты ради фокуса.
+ */
+document.addEventListener('focusin', (event) => {
+  if (input.disabled && event.target !== input && event.target !== send) refocus = false
+})
+
 function lock(on) {
+  if (on) refocus = document.activeElement === input || document.activeElement === send
   input.disabled = on
   send.disabled = on
+  clear.disabled = on || log.children.length === 0
+  if (!on && refocus) {
+    refocus = false
+    if (document.activeElement === document.body) input.focus()
+  }
 }
 
 function redraw() {
@@ -53,10 +142,41 @@ function redraw() {
         : renderCall(item.value, { id: i + 1, indent: indent.checked }),
     ),
   )
+  empty.hidden = items.length > 0
+  empty.textContent = restoredRun ? FEED_NO_TRACE : FEED_NEVER
+}
+
+/** Лента хода целиком — новое сообщение показывает СВОЙ ход, а не прошлый. */
+function resetRun() {
+  calls.length = 0
+  items.length = 0
+  round = 0
+  restoredRun = false
+  restored.hidden = true
+  restored.textContent = ''
+  redraw()
+  showServers()
 }
 
 /**
- * Серверы, которые в этом запуске действительно отвечали, — в порядке первого
+ * Лента после перезагрузки: слова кругов последнего ответа и ничего больше.
+ * Строка над лентой говорит СЛОВАМИ, что именно вернулось, а что нет, —
+ * иначе пустое место на месте вызовов читалось бы как «их не было».
+ */
+function showRestored(rounds) {
+  for (const words of rounds) items.push({ kind: 'words', value: words })
+  // Флаг ставится ДО перерисовки и НЕ зависит от того, нашлись ли слова:
+  // пустая лента после восстановления — это «следа не осталось», а не
+  // «хода не было», и обе строки пустоты обязаны сказать именно это.
+  restoredRun = true
+  restored.hidden = false
+  restored.textContent = rounds.length > 0 ? RESTORED_WITH_WORDS : RESTORED_WITHOUT_WORDS
+  redraw()
+  showServers()
+}
+
+/**
+ * Серверы, которые в этом ходе действительно отвечали, — в порядке первого
  * появления. Список не задан заранее и не берётся из реестра: он собирается
  * из того, что пришло. Реестр сказал бы, какие серверы у нас ЕСТЬ, а предмет
  * показа — какие из них модель позвала.
@@ -76,9 +196,44 @@ function showServers() {
     }),
   )
   serversNote.textContent =
-    seen.length === 0
-      ? 'Запуска ещё не было: называть серверы нечем.'
-      : `Вызовы ушли на ${seen.length} ${seen.length === 1 ? 'сервер' : 'сервера'}.`
+    seen.length > 0
+      ? `Вызовы ушли на ${seen.length} ${seen.length === 1 ? 'сервер' : 'сервера'}.`
+      : restoredRun
+        ? SERVERS_NO_TRACE
+        : SERVERS_NEVER
+}
+
+function showChat(messages) {
+  log.replaceChildren(...messages.map(renderMessage))
+  logEmpty.hidden = messages.length > 0
+  msgs.textContent = countLine(messages)
+  clear.disabled = messages.length === 0
+}
+
+/**
+ * Переписка с сервера при загрузке и после каждого хода. Отказ переписку не
+ * выдумывает: лог остаётся как есть, а причина уходит в строку состояния.
+ */
+async function loadChat({ restore = false } = {}) {
+  let answer
+  let json
+  try {
+    answer = await fetch('api/chat')
+    json = await answer.json().catch(() => null)
+  } catch {
+    setStatus('Переписка не прочитана: сервер дня не ответил.', true)
+    return []
+  }
+  if (!answer.ok) {
+    setStatus(`Переписка не прочитана: ${json?.error ?? `сервер ответил ${answer.status}`}`, true)
+    return []
+  }
+  const messages = parseChat(json)
+  showChat(messages)
+  // Слова кругов последнего ответа — то, что решением владельца переживает
+  // перезагрузку. Сырых тел вызовов рядом с ними нет и не будет.
+  if (restore && messages.length > 0) showRestored(lastRounds(messages))
+  return messages
 }
 
 function onEvent(raw) {
@@ -92,25 +247,26 @@ function onEvent(raw) {
     // Событие уходит на каждом круге, в том числе когда модель не сказала
     // ничего. Такую запись страница показывает словом «без слов» и НЕ
     // пропускает: молчание модели — тоже ответ на вопрос «как она выбирает».
-    items.push({ kind: 'words', value: parseWords(event.data) })
-    empty.hidden = true
+    const words = parseWords(event.data)
+    items.push({ kind: 'words', value: words })
+    if (words.round !== null) round = words.round
     redraw()
+    setStatus(`Круг ${round}. Вызовов: ${calls.length}.`)
     return
   }
   if (event?.stage !== 'rpc') return
   const call = parseCall(event.data)
   calls.push(call)
   items.push({ kind: 'call', value: call })
-  empty.hidden = true
   redraw()
   showServers()
-  setStatus(`Вызовов: ${calls.length}. Идёт…`)
+  setStatus(`Круг ${round}. Вызовов: ${calls.length}.`)
 }
 
 function subscribe(runId) {
   stream = new EventSource(`api/runs/${encodeURIComponent(runId)}/events`)
   stream.addEventListener('event', (e) => onEvent(e.data))
-  stream.addEventListener('end', (e) => {
+  stream.addEventListener('end', async (e) => {
     stream.close()
     stream = null
     lock(false)
@@ -119,7 +275,15 @@ function subscribe(runId) {
       end = JSON.parse(e.data)
     } catch {}
     const ok = end?.status === 'succeeded'
-    setStatus(ok ? `Готово. Вызовов: ${calls.length}.` : `Запуск завершился со статусом «${end?.status ?? 'неизвестно'}».`, !ok)
+    setStatus(
+      ok
+        ? `Готово. Кругов: ${round}, вызовов: ${calls.length}.`
+        : `Ход завершился со статусом «${end?.status ?? 'неизвестно'}».`,
+      !ok,
+    )
+    // Реплики берутся с сервера, а не собираются страницей: там они и
+    // хранятся, и показывать свою версию значило бы разойтись с ней молча.
+    await loadChat()
   })
   stream.onerror = () => {
     // Поток оборвался. Второй подписки не делаем — см. шапку файла.
@@ -127,7 +291,7 @@ function subscribe(runId) {
     stream.close()
     stream = null
     lock(false)
-    setStatus(`Поток событий оборвался. Показаны вызовы, которые успели прийти: ${calls.length}.`, true)
+    setStatus(`Поток событий оборвался. Показано записей: ${items.length}.`, true)
   }
 }
 
@@ -135,15 +299,10 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault()
   if (send.disabled) return
   const task = input.value.trim()
-  if (!task) return setStatus('Не запущено: поле пустое.', true)
+  if (!task) return setStatus('Не отправлено: поле пустое.', true)
 
-  calls.length = 0
-  items.length = 0
-  feed.replaceChildren()
-  empty.hidden = false
-  showServers()
   lock(true)
-  setStatus('Запускаем…')
+  setStatus('Отправляем…')
 
   let answer
   let json
@@ -156,14 +315,53 @@ form.addEventListener('submit', async (event) => {
     json = await answer.json().catch(() => null)
   } catch {
     lock(false)
-    return setStatus('Не запущено: сервер дня не ответил.', true)
+    return setStatus('Не отправлено: сервер дня не ответил.', true)
   }
   if (answer.status !== 202 || !json?.runId) {
     lock(false)
-    return setStatus(`Не запущено: ${json?.error ?? `сервер ответил ${answer.status}`}`, true)
+    const retry =
+      answer.status === 429 && Number.isInteger(json?.retryAfterSec)
+        ? ` Повторить можно через ${json.retryAfterSec} с.`
+        : ''
+    // Сообщение сервера не пересказывается: в нём единственное достоверное
+    // число суточного предела.
+    return setStatus(`${json?.error ?? `Сервер ответил ${answer.status}.`}${retry}`, true)
   }
-  setStatus('Запуск идёт, ждём вызовы…')
+  // Ход принят — только теперь лента очищается и поле пустеет. При отказе на
+  // экране остаётся ровно то, что было: ход не начинался.
+  input.value = ''
+  resetRun()
+  setStatus('Ход идёт, ждём вызовы…')
+  // Реплика посетителя появляется в логу сразу: вопрос уже задан.
+  await loadChat()
   subscribe(json.runId)
 })
 
+// Ctrl + Enter отправляет: поле многострочное, и Enter в нём переносит строку.
+input.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) form.requestSubmit()
+})
+
+clear.addEventListener('click', async () => {
+  if (clear.disabled) return
+  clear.disabled = true
+  let answer
+  try {
+    answer = await fetch('api/chat', { method: 'DELETE' })
+  } catch {
+    clear.disabled = false
+    return setStatus('Не очищено: сервер дня не ответил.', true)
+  }
+  if (!answer.ok) {
+    clear.disabled = false
+    const json = await answer.json().catch(() => null)
+    return setStatus(`Не очищено: ${json?.error ?? `сервер ответил ${answer.status}`}`, true)
+  }
+  showChat([])
+  resetRun()
+  setStatus('Переписка удалена.')
+})
+
 indent.addEventListener('change', redraw)
+
+await loadChat({ restore: true })

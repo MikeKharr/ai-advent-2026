@@ -6,6 +6,7 @@
 // Ключ AGENT_KEY держит этот процесс. Страница его не знает, не получает и не
 // показывает (I-1). Запуск стоит денег, поэтому слот берётся ДО обращения к
 // сервису агентов (I-4) и суточный потолок проверяется первым.
+import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import http from 'node:http'
 import { dirname, join, normalize, sep } from 'node:path'
@@ -19,6 +20,10 @@ const MAX_BODY = 16 * 1024
 const AGENT_DOWN = 'Сервис агентов недоступен. Попробуйте позже.'
 /** Идентификатор запуска приходит с нашей же страницы, но проверяется как чужой ввод. */
 const RUN_ID = /^[a-zA-Z0-9-]{1,64}$/
+/** Идентификатор сессии чеканит этот сервер; чужая форма не принимается. */
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const COOKIE_NAME = 'day20_sid'
+const CHAT_DOWN = 'Память диалога сейчас недоступна: переписка не показана.'
 
 const { env, errors: envErrors } = parseEnv()
 for (const message of envErrors) console.error(`конфигурация: ${message}`)
@@ -68,49 +73,147 @@ function clientIp(req) {
   return req.socket.remoteAddress ?? 'unknown'
 }
 
+/**
+ * Идентификатор сессии из cookie (образец: days/day7/server.js). Значение
+ * чужой формы не принимается: в путь запроса к сервису оно идёт как есть.
+ */
+function sessionFromCookie(req) {
+  const raw = req.headers.cookie
+  if (typeof raw !== 'string') return null
+  for (const part of raw.split(';')) {
+    const at = part.indexOf('=')
+    if (at === -1) continue
+    if (part.slice(0, at).trim() !== COOKIE_NAME) continue
+    const value = part.slice(at + 1).trim()
+    return SESSION_ID.test(value) ? value : null
+  }
+  return null
+}
+
+/**
+ * Cookie сессии: `HttpOnly` — страница её не читает и в хранилище браузера
+ * идентификатор не кладётся (I-10 и правило дня); `SameSite=Lax` — чужой сайт
+ * не пошлёт её от вашего имени; `Path` — только адреса этого дня. Изоляцией от
+ * соседних дней на том же origin это не является, и день 7 говорит то же.
+ */
+function sessionCookie(sessionId) {
+  const parts = [
+    `${COOKIE_NAME}=${sessionId}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    `Path=${env.COOKIE_PATH}`,
+    `Max-Age=${Math.round(env.SESSION_TTL_HOURS * 3600)}`,
+  ]
+  if (env.COOKIE_SECURE) parts.push('Secure')
+  return parts.join('; ')
+}
+
+/** Сессия запроса; новая чеканится здесь, а не страницей. */
+function ensureSession(req) {
+  const existing = sessionFromCookie(req)
+  const sessionId = existing ?? randomUUID()
+  return { sessionId, headers: { 'set-cookie': sessionCookie(sessionId) } }
+}
+
+/** Запрос к сервису агентов. Ключ подставляется здесь и никуда больше не уходит (I-1). */
+async function callAgent(path, options = {}) {
+  const response = await fetch(`${env.AGENT_URL}${path}`, {
+    ...options,
+    headers: { ...agentHeaders, ...(options.headers ?? {}) },
+    signal: AbortSignal.timeout(env.AGENT_TIMEOUT_MS),
+  })
+  const json = await response.json().catch(() => null)
+  return { response, json }
+}
+
 /** Потолок текста задания. Длиннее — отказ страницы, а не обрезка молчком. */
 const MAX_TASK = 600
 
 async function handleRun(req, res) {
+  // Сессия заводится до чтения тела: cookie уходит с ЛЮБЫМ ответом, включая
+  // отказы. Иначе первый отказ оставил бы посетителя без идентификатора, и
+  // следующее сообщение начало бы новый диалог молча.
+  const session = ensureSession(req)
   let ask
   try {
     ask = JSON.parse(await readBody(req))
   } catch (error) {
-    return send(res, 400, { error: error.message === 'тело больше 16 КБ' ? error.message : 'тело не JSON' })
+    return send(res, 400, { error: error.message === 'тело больше 16 КБ' ? error.message : 'тело не JSON' }, session.headers)
   }
   const task = ask && typeof ask.task === 'string' ? ask.task.trim() : ''
-  if (!task) return send(res, 400, { error: 'Задание пустое.' })
-  if (task.length > MAX_TASK) return send(res, 400, { error: `Задание длиннее ${MAX_TASK} знаков.` })
+  if (!task) return send(res, 400, { error: 'Задание пустое.' }, session.headers)
+  if (task.length > MAX_TASK)
+    return send(res, 400, { error: `Задание длиннее ${MAX_TASK} знаков.` }, session.headers)
 
   // Слот берётся ДО обращения к сервису агентов (I-4): проверка и учёт — один
   // синхронный шаг, иначе залп параллельных запросов проходит мимо окна.
+  // Слот берётся НА КАЖДОЕ СООБЩЕНИЕ, а не на диалог: платит каждый ход.
   const slot = limiter.reserve(clientIp(req))
   if (!slot.ok)
     return send(
       res,
       429,
       { error: slot.message, retryAfterSec: slot.retryAfterSec ?? null },
-      slot.retryAfterSec ? { 'retry-after': String(slot.retryAfterSec) } : {},
+      {
+        ...session.headers,
+        ...(slot.retryAfterSec ? { 'retry-after': String(slot.retryAfterSec) } : {}),
+      },
     )
 
   let response
   let json
   try {
-    response = await fetch(`${env.AGENT_URL}/v1/runs`, {
+    // Идентификатор сессии берётся ИЗ COOKIE, а не из тела запроса: тело
+    // пишет страница, а cookie чеканит этот сервер. Иначе чужую переписку
+    // читал бы всякий, кто подставит идентификатор в JSON.
+    ;({ response, json } = await callAgent('/v1/runs', {
       method: 'POST',
-      headers: { ...agentHeaders, 'content-type': 'application/json' },
-      body: JSON.stringify({ agent: env.AGENT_ID, input: { task } }),
-      signal: AbortSignal.timeout(env.AGENT_TIMEOUT_MS),
-    })
-    json = await response.json().catch(() => null)
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agent: env.AGENT_ID,
+        input: { task, sessionId: session.sessionId },
+      }),
+    }))
   } catch (error) {
     console.error(`агент: ${error.name}`)
-    return send(res, 502, { error: AGENT_DOWN })
+    return send(res, 502, { error: AGENT_DOWN }, session.headers)
   }
-  if (response.status === 202 && json?.runId) return send(res, 202, { runId: json.runId })
-  if (response.status === 400) return send(res, 400, { error: json?.message ?? 'Запрос отклонён.' })
+  if (response.status === 202 && json?.runId)
+    return send(res, 202, { runId: json.runId }, session.headers)
+  if (response.status === 400)
+    return send(res, 400, { error: json?.message ?? 'Запрос отклонён.' }, session.headers)
   console.error(`агент: ${response.status} ${json?.code ?? ''}`)
-  return send(res, 502, { error: AGENT_DOWN })
+  return send(res, 502, { error: AGENT_DOWN }, session.headers)
+}
+
+/**
+ * Переписка сессии: чтение и очистка (образец: days/day7/server.js).
+ * Идентификатор берётся из cookie и в теле запроса не принимается.
+ *
+ * В ответе — только то, что отдал сервис: реплики и `meta` сообщений агента,
+ * где лежат слова кругов. Ключ сервиса сюда не попадает (I-1), адреса
+ * посетителя здесь нет и не запоминается (I-10).
+ */
+async function handleChat(req, res) {
+  const session = ensureSession(req)
+  try {
+    if (req.method === 'DELETE') {
+      const { response } = await callAgent(`/v1/sessions/${session.sessionId}`, { method: 'DELETE' })
+      // Пока сервис не подтвердил удаление, менять cookie нельзя: без
+      // прежнего идентификатора переписку будет не удалить уже никогда.
+      if (!response.ok) throw new Error(`агент ${response.status}`)
+      return send(res, 200, { messages: [], cleared: true }, { 'set-cookie': sessionCookie(randomUUID()) })
+    }
+    const { response, json } = await callAgent(`/v1/sessions/${session.sessionId}`)
+    // 503 `no_sessions` — это ответ сервиса, а не молчание: так и говорим.
+    if (response.status === 503 && json?.code === 'no_sessions')
+      return send(res, 503, { error: CHAT_DOWN }, session.headers)
+    if (!response.ok) throw new Error(`агент ${response.status}`)
+    return send(res, 200, { messages: json?.messages ?? [] }, session.headers)
+  } catch (error) {
+    console.error(`переписка: ${error.message}`)
+    return send(res, 502, { error: AGENT_DOWN }, session.headers)
+  }
 }
 
 /**
@@ -199,6 +302,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/runs' && req.method === 'POST') return handleRun(req, res)
+
+  if (url.pathname === '/api/chat' && (req.method === 'GET' || req.method === 'DELETE'))
+    return handleChat(req, res)
 
   const events = url.pathname.match(/^\/api\/runs\/([^/]+)\/events$/)
   if (events && req.method === 'GET') {
