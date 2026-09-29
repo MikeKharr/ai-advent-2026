@@ -298,3 +298,30 @@ class WaitForEmbedderTest(unittest.TestCase):
                 )
             self.assertEqual(len(stats), 2)
             self.assertGreaterEqual(len(tries), 3)
+
+
+class EmptyCorpusTest(unittest.TestCase):
+    """Пустой корпус — свой отказ, а не отказ эмбеддера.
+
+    Держатель того, что именно `build_all` кидает `EmptyCorpus`: без него
+    ветка в `serve.reason` существовала бы и никогда не срабатывала —
+    публичный `/healthz` показывал бы «эмбеддер не ответил» на сбой шага
+    «Сборка корпуса для индекса» (находка `reviewer`, Б3).
+    """
+
+    def test_каталог_есть_а_чанков_нет_это_отдельный_отказ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir(parents=True)
+            # Каталог существует и даже не пуст — но ни один файл в корпус не
+            # входит, то есть ровно то, чем кончается сбой шага сборки корпуса.
+            (root / "не-в-корпусе.bin").write_bytes(b"\x00")
+            with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель"}]})}) as fake:
+                embedder = OllamaEmbedder(fake.url, "модель")
+                with self.assertRaises(build.EmptyCorpus):
+                    build.build_all(root, Path(tmp) / "index", embedder)
+                # До эмбеддера дело дошло — значит отказ не про связь с ним.
+                self.assertIn("/api/tags", [path for path, _ in fake.requests])
+
+    def test_это_не_подвид_отказа_эмбеддера(self):
+        self.assertFalse(issubclass(build.EmptyCorpus, EmbedError))

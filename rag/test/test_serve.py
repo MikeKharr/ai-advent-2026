@@ -1,10 +1,12 @@
 import io
 import json
+import os
 import sys
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import serve
 
@@ -138,13 +140,66 @@ class PublicReasonTest(unittest.TestCase):
         self.assertEqual(body["error"], serve.INTERNAL)
         self.assertNotIn("/data", json.dumps(body, ensure_ascii=False))
 
+    def test_пустой_корпус_не_выдаётся_за_отказ_эмбеддера(self):
+        # Достижимо в проде: каталог есть, а шаг «Сборка корпуса для индекса»
+        # положил в него пусто. Пока это был EmbedError, единственный быстрый
+        # сигнал владельцу показывал не туда (находка `reviewer`, Б3).
+        import build
+
+        body = self.body_after_failure(build.EmptyCorpus("корпус /app/corpus пуст"))
+        self.assertEqual(body["error"], serve.EMPTY_CORPUS)
+        self.assertNotEqual(body["error"], serve.NO_EMBEDDER)
+        self.assertNotIn("/app", json.dumps(body, ensure_ascii=False))
+
     def test_набор_причин_закрыт_и_каждая_в_нём(self):
         import build
 
         from embed import EmbedError
 
-        for err in (EmbedError("x"), build.BuildTimeout("y"), RuntimeError("z"), OSError("w")):
+        errors = (
+            EmbedError("x"),
+            build.BuildTimeout("y"),
+            build.EmptyCorpus("z"),
+            RuntimeError("q"),
+            OSError("w"),
+        )
+        for err in errors:
             self.assertIn(serve.reason(err), serve.REASONS, repr(err))
+        # Ветки различаются, а не сводятся к одной строке: иначе «набор
+        # закрыт» выполнялось бы и при `return INTERNAL` на всё подряд.
+        self.assertEqual(len({serve.reason(e) for e in errors}), 4)
+
+
+class StartupReasonTest(unittest.TestCase):
+    """Второе место записи публичного `error` — старт без корпуса.
+
+    Мест записи два (`run_build` и `main`), а прибито было одно: подмена
+    строки в `main` чем угодно оставляла прогон зелёным (находка `reviewer`,
+    Н2). Здесь проверяется, что и эта строка берёт значение из набора, а не
+    печатает путь или окружение.
+    """
+
+    def test_старт_без_корпуса_пишет_причину_из_набора(self):
+        import tempfile
+
+        from unittest import mock
+
+        status = serve.Status()
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "нет-такого-каталога")
+            with (
+                mock.patch.dict(os.environ, {"RAG_CORPUS": missing}),
+                mock.patch.object(serve, "Status", return_value=status),
+                mock.patch.object(serve, "make_server", side_effect=RuntimeError("стоп")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    serve.main()
+        body = status.read()
+        self.assertEqual(body["state"], "failed")
+        self.assertIn(body["error"], serve.REASONS)
+        self.assertEqual(body["error"], serve.NO_CORPUS)
+        # Путь к корпусу в публичную строку не попадает ни при каком tmp.
+        self.assertNotIn(missing, json.dumps(body, ensure_ascii=False))
 
 
 if __name__ == "__main__":

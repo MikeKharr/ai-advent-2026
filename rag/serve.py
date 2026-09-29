@@ -30,10 +30,11 @@ PORT = int(os.environ.get("PORT", "8086"))
 
 # Закрытый набор причин отказа: ровно эти строки может увидеть посетитель.
 NO_CORPUS = "корпус не смонтирован"
+EMPTY_CORPUS = "корпус пуст"
 NO_EMBEDDER = "эмбеддер не ответил"
 TOO_LONG = "сборка не уложилась в срок"
 INTERNAL = "внутренняя ошибка сборки"
-REASONS = (NO_CORPUS, NO_EMBEDDER, TOO_LONG, INTERNAL)
+REASONS = (NO_CORPUS, EMPTY_CORPUS, NO_EMBEDDER, TOO_LONG, INTERNAL)
 
 
 class Status:
@@ -86,6 +87,11 @@ def reason(err: BaseException) -> str:
 
     if isinstance(err, build.BuildTimeout):
         return TOO_LONG
+    if isinstance(err, build.EmptyCorpus):
+        # Каталог есть, чанков нет — это сбой шага «Сборка корпуса для
+        # индекса», а не эмбеддера. Ветка отдельная, потому что набор из
+        # пяти строк бесполезен, если одна из них показывает не туда.
+        return EMPTY_CORPUS
     if isinstance(err, EmbedError):
         return NO_EMBEDDER
     return INTERNAL
