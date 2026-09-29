@@ -449,6 +449,30 @@ export function createMcpAgent({
     isBusy: lock.isBusy,
     hold: lock.hold,
 
+    /**
+     * Описание для реестра `/v1/agents`. Ручка зовёт `describe()` у ВСЕХ
+     * агентов разом, поэтому метод обязателен у каждого исполнителя, а не
+     * только у тех, чья страница его читает: его отсутствие роняло ручку
+     * целиком (PR #237, чинит PR #269).
+     *
+     * Наружу идёт то же, что у соседей, МИНУС системный промпт: страницы дней
+     * 18 и 20 его не показывают и не правят, а ручка открыта всем дням. Ни
+     * ключей, ни адресов серверов здесь нет и быть не может — из реестра
+     * серверов берутся только имена (I-1).
+     */
+    async describe() {
+      return {
+        id: agent.id,
+        name: agent.name,
+        version: agent.version,
+        purpose: agent.purpose,
+        taskClass: agent.taskClass,
+        tools: [...agent.tools],
+        servers: [...(agent.servers ?? [])],
+        defaults: { ...agent.defaults },
+      }
+    },
+
     parseInput(body) {
       if (!body || typeof body !== 'object')
         return { ok: false, message: 'input должен быть объектом' }

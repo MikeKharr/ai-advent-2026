@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import http from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createNewsAnalyst } from './src/agent.js'
+import { createAgents } from './src/agents-map.js'
 import { createControlLog } from './src/control/log.js'
 import {
   controlHealth,
@@ -16,24 +16,14 @@ import { parseEnv } from './src/env.js'
 import { createInvariants } from './src/invariants.js'
 import { createJobs, loadJobs } from './src/jobs/index.js'
 import { createJobStore } from './src/jobs/store.js'
-import { createLayeredAgent, LAYERED_AGENT_ID } from './src/layered.js'
-import { createJobRunner, createMcpAgent, MCP_AGENT_ID } from './src/mcp/agent.js'
-import { createPipelineAgent, PIPELINE_AGENT_ID } from './src/mcp/pipeline-agent.js'
+import { createJobRunner } from './src/mcp/agent.js'
 import { assertAgentServers, loadServers } from './src/mcp/servers.js'
-import { STAGED15_MAX_TOKENS } from './src/params.js'
 import { createProfilePrompts, registryPrompts } from './src/prompts.js'
 import { loadRegistry } from './src/registry.js'
 import { createRuns } from './src/runs.js'
 import { createService } from './src/service.js'
 import { createSessions } from './src/sessions.js'
 import { createStageLog } from './src/stage-log.js'
-import {
-  createStagedAgent,
-  INVARIANT_AGENT_ID,
-  PREPARE_STAGES,
-  PROMPT_AGENT_ID,
-  STAGED_AGENT_ID,
-} from './src/staged.js'
 import { createArchiveTool } from './src/tools/archive/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -109,51 +99,18 @@ for (const miss of mcpSkipped) log({ event: 'mcp_server_skipped', server: miss.n
 // не оборачивается «инструментов нет» в проде.
 assertAgentServers(registry, mcpKnown)
 
-/**
- * Реестр агентов → исполнители: аналитик новостей, слои памяти, машина
- * состояний, она же с инвариантами профиля, цикл с инструментами MCP и
- * цепочка без модели.
- */
-const agents = new Map()
-for (const entry of registry.values()) {
-  let agent
-  // Агент без модели (день 19) исполнителя здесь пока не имеет: цепочка
-  // подключается отдельно. Развилка `else` ниже отдала бы его исполнителю
-  // дня 6, и тот пошёл бы в роутер с `taskClass: null` и без системного
-  // промпта — то есть запись в реестре без исполнителя становится не
-  // «ничем», а чужим агентом, доходящим до платного вызова (находка гейта,
-  // PR #233). Поэтому такой агент не регистрируется вовсе и в выдаче
-  // `/v1/agents` не появляется, а строка в журнале называет причину.
-  if (entry.id === PIPELINE_AGENT_ID)
-    agent = createPipelineAgent({ agent: entry, servers: mcpServers, runs, log })
-  else if (entry.modelless) {
-    log({ event: 'agent_skipped', agent: entry.id, reason: 'исполнителя для агента без модели нет' })
-    continue
-  } else if (entry.id === MCP_AGENT_ID)
-    agent = createMcpAgent({ agent: entry, servers: mcpServers, runs, sessions, env, log })
-  else if (entry.id === LAYERED_AGENT_ID) agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
-  else if (entry.id === STAGED_AGENT_ID)
-    agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })
-  else if (entry.id === INVARIANT_AGENT_ID)
-    agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log, invariants })
-  // День 15 — та же машина с двумя опциями и своим потолком ответа
-  // (ADR 2026-09-23-0646, пп. 2, 4 и 5).
-  else if (entry.id === PROMPT_AGENT_ID)
-    agent = createStagedAgent({
-      agent: entry,
-      runs,
-      sessions,
-      stageLog,
-      env,
-      log,
-      invariants,
-      prompts: profilePrompts,
-      stages: PREPARE_STAGES,
-      maxOutputTokens: STAGED15_MAX_TOKENS,
-    })
-  else agent = createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log })
-  agents.set(entry.id, agent)
-}
+const agents = createAgents({
+  registry,
+  archive,
+  runs,
+  sessions,
+  stageLog,
+  invariants,
+  prompts: profilePrompts,
+  servers: mcpServers,
+  env,
+  log,
+})
 
 // Планировщик дня 18. Три условия, каждое называется в `/healthz` порознь:
 // файл работ, том и ключ приложения `scheduler`. Исполнитель запуска —

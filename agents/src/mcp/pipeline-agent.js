@@ -30,6 +30,25 @@ export function createPipelineAgent({ agent, servers, runs, now = Date.now, log 
     isBusy: () => false,
     hold: () => {},
 
+    /**
+     * Описание для реестра `/v1/agents` — та же форма, что у `mcp-agent`.
+     * `taskClass` здесь `null`, а `defaults` пуст: модели у цепочки нет, и
+     * притворяться числами вызова модели она не должна. Промпта у неё нет
+     * вовсе (реестр отвергает его у агента без модели).
+     */
+    async describe() {
+      return {
+        id: agent.id,
+        name: agent.name,
+        version: agent.version,
+        purpose: agent.purpose,
+        taskClass: agent.taskClass,
+        tools: [...agent.tools],
+        servers: [...(agent.servers ?? [])],
+        defaults: { ...agent.defaults },
+      }
+    },
+
     parseInput(body) {
       if (!body || typeof body !== 'object')
         return { ok: false, message: 'input должен быть объектом' }

@@ -380,22 +380,23 @@ test('одноимённый инструмент чужого сервера н
 
 test('каждый агент реестра без модели имеет своего исполнителя, и его ветка стоит до общей', () => {
   // Держатель находки гейта (PR #233): запись без исполнителя доставалась
-  // развилке `else` в server.js и уходила исполнителем дня 6 в роутер с
-  // `taskClass: null`. Теперь исполнитель есть (`createPipelineAgent`), и
+  // развилке `else` сборки исполнителей и уходила исполнителем дня 6 в роутер
+  // с `taskClass: null`. Теперь исполнитель есть (`createPipelineAgent`), и
   // держится ДВЕ вещи: список агентов без модели известен поимённо, а ветка
-  // такого агента в server.js стоит раньше и отсечки `modelless`, и общей
+  // такого агента в сборке стоит раньше и отсечки `modelless`, и общей
   // развилки `else` — иначе цепочка снова стала бы платным агентом дня 6.
+  // Сборка живёт в `src/agents-map.js` с PR #269 (прежде — в `server.js`).
   const raw = JSON.parse(
     readFileSync(new URL('../config/agents.json', import.meta.url), 'utf8'),
   )
   const modelless = raw.agents.filter((a) => a.defaults?.model === undefined).map((a) => a.id)
   assert.deepEqual(modelless, [PIPELINE_AGENT_ID], `в реестре агент без модели и без исполнителя: ${modelless.join(', ')}`)
 
-  const server = readFileSync(new URL('../server.js', import.meta.url), 'utf8')
-  const branch = server.indexOf('entry.id === PIPELINE_AGENT_ID')
-  const skip = server.indexOf('entry.modelless')
-  const fallback = server.indexOf('else agent = createNewsAnalyst')
-  assert.ok(branch > 0, 'в server.js нет ветки исполнителя цепочки')
+  const source = readFileSync(new URL('../src/agents-map.js', import.meta.url), 'utf8')
+  const branch = source.indexOf('entry.id === PIPELINE_AGENT_ID')
+  const skip = source.indexOf('entry.modelless')
+  const fallback = source.indexOf('else agent = createNewsAnalyst')
+  assert.ok(branch > 0, 'в сборке исполнителей нет ветки исполнителя цепочки')
   assert.ok(branch < skip, 'ветка цепочки должна стоять до отсечки agents без модели')
   assert.ok(branch < fallback, 'ветка цепочки должна стоять до общей развилки else')
 })
