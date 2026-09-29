@@ -41,7 +41,9 @@ test('настоящий compose.yml: нарушений нет', () => {
 test('разбор видит сети там, где они есть, и их отсутствие там, где их нет', () => {
   const services = parseServices(TEXT)
   assert.deepEqual(services.get('mcp'), ['mcp'])
-  assert.deepEqual(services.get('caddy'), ['default', 'mcp', 'edge'])
+  // Вход — в четырёх сетях: по default он ходит в дни, по mcp публикует
+  // /mcp, по rag — /rag/healthz, по edge к нему приходит вход zpq.
+  assert.deepEqual(services.get('caddy'), ['default', 'mcp', 'rag', 'edge'])
   // День 16 ходит только в службу MCP: в сети по умолчанию ему делать нечего.
   assert.deepEqual(services.get('day16'), ['mcp'])
   // Ключа networks нет — значит сеть по умолчанию, вместе с secrets.env.
@@ -182,4 +184,53 @@ test('службы mcpnews нет вовсе — это тоже нарушен�
   const decoy = TEXT.replace(/\n {2}mcpnews:\n(?: {4}.*\n| {6,}.*\n|\n)*/, '\n')
   assert.notEqual(decoy, TEXT)
   assert.match(problems(decoy).join('\n'), /службы mcpnews нет/)
+})
+
+// --- Сеть rag (ADR 2026-09-29-1639, п. 4) -------------------------------------
+// Эмбеддер стоит ядра общей машины, а ни ключа, ни лимитера, ни суточного
+// потолка у него до захода 4 нет. Единственное, чем он закрыт, — что имя
+// `ollama` не разрешается ни у дней, ни у router, ни у agents, ни у серверов
+// инструментов. Строка `networks: - rag` и есть вся защита, поэтому её снятие
+// обязано краснеть.
+
+test('разбор видит сети новых служб', () => {
+  const services = parseServices(TEXT)
+  assert.deepEqual(services.get('ollama'), ['rag'])
+  assert.deepEqual(services.get('rag'), ['rag'])
+})
+
+test('приманка: у ollama убрали ключ networks — эмбеддер в сети по умолчанию', () => {
+  const decoy = inService(TEXT, 'ollama', / {4}networks:\n {6}- rag\n/, '')
+  assert.equal(parseServices(decoy).get('ollama'), null, 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /у службы ollama нет ключа networks/)
+})
+
+test('приманка: ollama добавили в сеть по умолчанию — до него дотянулись дни', () => {
+  const decoy = inService(TEXT, 'ollama', / {4}networks:\n {6}- rag\n/, '    networks:\n      - rag\n      - default\n')
+  assert.deepEqual(parseServices(decoy).get('ollama'), ['rag', 'default'], 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба ollama должна быть только в сети rag/)
+})
+
+test('приманка: agents пустили в сеть rag — хост инструментов получил эмбеддер', () => {
+  const decoy = inService(TEXT, 'agents', / {6}mcp:\n/, '      mcp:\n      rag:\n')
+  assert.ok(parseServices(decoy).get('agents').includes('rag'), 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба agents в сети rag/)
+})
+
+test('приманка: day20 пустили в сеть rag напрямую', () => {
+  const decoy = inService(TEXT, 'day20', / {4}depends_on:\n/, '    networks:\n      - default\n      - rag\n    depends_on:\n')
+  assert.ok(parseServices(decoy).get('day20').includes('rag'), 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба day20 в сети rag/)
+})
+
+test('приманка: у caddy убрали сеть rag — /rag/healthz перестал доходить', () => {
+  const decoy = inService(TEXT, 'caddy', / {6}rag:\n/, '')
+  assert.deepEqual(parseServices(decoy).get('caddy'), ['default', 'mcp', 'edge'], 'приманка не собралась')
+  assert.match(problems(decoy).join('\n'), /служба caddy обязана быть в сети rag/)
+})
+
+test('службы ollama нет вовсе — это тоже нарушение, а не «ok»', () => {
+  const decoy = TEXT.replace(/\n {2}ollama:\n(?: {4}.*\n| {6,}.*\n|\n)*/, '\n')
+  assert.notEqual(decoy, TEXT)
+  assert.match(problems(decoy).join('\n'), /службы ollama нет/)
 })

@@ -24,7 +24,7 @@ name='^[a-z0-9]+$'
 # валится на белом списке. pipefail — только внутри подстановки, где нет grep:
 # сбой git не пропадает.
 tree=$(set -o pipefail; git ls-tree -r -z --name-only "$head" | tr '\n\0' '?\n')
-all=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcpnews|mcpstore|mcp)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | sort -u)
+all=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcpnews|mcpstore|mcp|rag)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | sort -u)
 
 if [ -n "$day" ]; then
   if ! [[ $day =~ $name ]] || ! printf '%s\n' "$all" | grep -qFx -- "$day"; then
@@ -55,4 +55,12 @@ changed=$(set -o pipefail; git diff -z --name-only "$base" "$head" | tr '\n\0' '
 # Входы графа атласа — явный список в atlas/atlas.config.json; то же правило,
 # что в ci.yml. Версия инструмента — atlas-tool.sh: её смена пересобирает атлас.
 atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
-printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcpnews|mcpstore|mcp)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -Fx -f <(printf '%s\n' "$all" | grep -v '^$') | jq -R . | jq -sc .
+# Корпус индекса — та же роль, что у регулярки atlas выше и та же строка, что
+# в ci.yml: правка документа или кода живой единицы обязана переехать в индекс
+# ВЫКАТКОЙ, а не только пересборкой в CI (ADR 2026-09-29-1639, п. 3). Без неё
+# правка документа собирала бы образ rag в CI и не выкатывала его — обещание
+# «свежесть держится выкаткой» держалось бы на словах. Совпадение двух копий
+# держит rag/test/test_corpus.py::CiRegexTest: он берёт регулярку из ОБОИХ
+# файлов и требует, чтобы они были одной строкой.
+rag='^(agent_docs/|AGENTS\.md$|README\.md$|rag/|router/|agents/|mcp/|mcpnews/|mcpstore/|deploy/|\.github/|test/|atlas/README\.md$|site/README\.md$)'
+printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcpnews|mcpstore|mcp|rag)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; printf '%s\n' "$changed" | grep -qE "$rag" && echo rag; } | sort -u | grep -Fx -f <(printf '%s\n' "$all" | grep -v '^$') | jq -R . | jq -sc .

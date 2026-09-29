@@ -4,17 +4,37 @@
 `/healthz` (шаг «Контейнер поднимается и отвечает на /healthz» в `ci.yml`).
 Сборка индекса идёт в фоне и `/healthz` не роняет: пока индекса нет, он
 честно говорит, на чём стоит. Инструменты MCP — заход 4, здесь их нет.
+
+Поле `error` — из закрытого набора причин (`REASONS`), а не текст
+исключения. Заходом 3 ручка становится публичной и без ключа:
+`https://challenge.zpq.ai/rag/healthz` дёргает шаг «Проверка живого сайта»
+в `deploy.yml`, а значит её читает кто угодно. Текст исключения выдавал бы
+`OLLAMA_URL` — внутреннее имя службы и порт, — а при другой ошибке выдал бы
+то, что сформатировал `urllib`: пути, адреса, содержимое ответа. Это не
+секрет, но и не то, что публикуют даром, а главное — набор возможных строк
+там неограничен. Подробность целиком уходит в журнал контейнера, где её
+читает владелец: `docker compose logs rag`.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 PORT = int(os.environ.get("PORT", "8086"))
+
+# Закрытый набор причин отказа: ровно эти строки может увидеть посетитель.
+NO_CORPUS = "корпус не смонтирован"
+EMPTY_CORPUS = "корпус пуст"
+NO_EMBEDDER = "эмбеддер не ответил"
+TOO_LONG = "сборка не уложилась в срок"
+INTERNAL = "внутренняя ошибка сборки"
+REASONS = (NO_CORPUS, EMPTY_CORPUS, NO_EMBEDDER, TOO_LONG, INTERNAL)
 
 
 class Status:
@@ -60,6 +80,23 @@ def make_server(status: Status, port: int = PORT) -> ThreadingHTTPServer:
     return ThreadingHTTPServer(("0.0.0.0", port), make_handler(status))
 
 
+def reason(err: BaseException) -> str:
+    """Причина из закрытого набора. Подробность сюда не попадает никогда."""
+    import build
+    from embed import EmbedError
+
+    if isinstance(err, build.BuildTimeout):
+        return TOO_LONG
+    if isinstance(err, build.EmptyCorpus):
+        # Каталог есть, чанков нет — это сбой шага «Сборка корпуса для
+        # индекса», а не эмбеддера. Ветка отдельная, потому что набор из
+        # пяти строк бесполезен, если одна из них показывает не туда.
+        return EMPTY_CORPUS
+    if isinstance(err, EmbedError):
+        return NO_EMBEDDER
+    return INTERNAL
+
+
 def run_build(status: Status) -> None:
     import build
     import corpus
@@ -68,7 +105,10 @@ def run_build(status: Status) -> None:
     try:
         stats = build.build_all()
     except Exception as err:  # эмбеддер недоступен — единица жива, поиска нет
-        status.update(state="failed", error=f"{type(err).__name__}: {err}")
+        # В журнал — всё, в ответ — причина из набора.
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        status.update(state="failed", error=reason(err))
         return
     status.update(state="ready", strategies=stats, error=None)
 
@@ -78,7 +118,7 @@ def main() -> int:
     if Path(os.environ.get("RAG_CORPUS", "corpus")).is_dir():
         threading.Thread(target=run_build, args=(status,), daemon=True).start()
     else:
-        status.update(state="failed", error="корпус не смонтирован")
+        status.update(state="failed", error=NO_CORPUS)
     server = make_server(status)
     print(f"rag слушает :{PORT}", flush=True)
     server.serve_forever()

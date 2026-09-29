@@ -85,6 +85,15 @@ jobs:
           ATLAS_TOOL=$(bash .github/scripts/atlas-tool.sh)
           node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --out atlas/dist
 
+      # Копия корпуса едет в образ rag, поэтому шаг стоит до docker build — по
+      # образцу витрины атласа выше. Список корпуса живёт в rag/corpus.py, а не
+      # здесь: тот же обход читает build.py, и разъехаться им негде. Репозиторий
+      # в контейнер НЕ монтируется: рядом с ним на VPS лежат deploy/*.env
+      # (ADR 2026-09-29-1639, п. 3).
+      - name: Сборка корпуса для индекса
+        if: matrix.day == 'rag'
+        run: python3 rag/corpus.py --root . --out rag/corpus
+
       - uses: docker/setup-buildx-action@v3
 
       # Токен не лежит на диске, пока исполняется код репозитория: checkout
@@ -98,7 +107,7 @@ jobs:
       - name: Сборка и публикация
         uses: docker/build-push-action@v6
         with:
-          context: ${{ contains(fromJSON('["router","agents","atlas","mcp","mcpnews","mcpstore"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
+          context: ${{ contains(fromJSON('["router","agents","atlas","mcp","mcpnews","mcpstore","rag"]'), matrix.day) && matrix.day || format('days/{0}', matrix.day) }}
           push: true
           # Владелец в GHCR должен быть в нижнем регистре.
           tags: |
@@ -241,6 +250,13 @@ jobs:
 
           # У роутера, сервиса агентов и серверов MCP дней 19–20 нет публичного
           # адреса — их здоровье проверяется здесь, по healthcheck контейнера.
+          # Единица rag публичный адрес имеет (/rag/healthz), и она здесь по той
+          # же причине, что mcp. Отдельно про неё: 200 на /healthz значит «единица
+          # поднялась», а не «индекс готов» — состояние сборки лежит в теле
+          # ответа, и первая полная сборка на VPS идёт часами уже после зелёной
+          # выкатки. Служба ollama сюда не попадает по устройству: у неё нет
+          # Dockerfile, она не единица выкатки и в $DAYS не появляется — её
+          # поднимает общий `docker compose up -d` выше.
           # Служба MCP публичный адрес имеет, но здесь она тоже: так отказ самой
           # службы отличается от неприменённого маршрута входа — иначе оба
           # выглядели бы как красная «Проверка живого сайта».
@@ -250,7 +266,7 @@ jobs:
           # mcpnews молча ждала бы здоровья чужого контейнера mcp, который в
           # этой выкатке не менялся. Зелёный результат при этом ничего не
           # значил бы.
-          for svc in router agents mcp mcpnews mcpstore; do
+          for svc in router agents mcp mcpnews mcpstore rag; do
             printf '%s' "$DAYS" | grep -q "\"$svc\"" || continue
             echo "==> ожидание $svc: healthy"
             for i in $(seq 1 20); do

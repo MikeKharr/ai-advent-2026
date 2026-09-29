@@ -65,12 +65,18 @@ class OllamaEmbedder:
         if status != "success":
             raise EmbedError(f"/api/pull: модель {self.model} не приехала (status={status!r})")
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Векторы для текстов, по одному на текст, в том же порядке."""
+    def embed(self, texts: list[str], timeout: float | None = None) -> list[list[float]]:
+        """Векторы для текстов, по одному на текст, в том же порядке.
+
+        `timeout` — срок ЭТОГО вызова. Его задаёт вызывающий, потому что у
+        прохода сборки свой срок на всё (`build.Deadline`), и вызов не вправе
+        пережить его: иначе потолок на проход был бы потолком «плюс ещё
+        десять минут». Пусто — умолчание клиента.
+        """
         if not texts:
             return []
         self.calls += 1
-        body = self._post("/api/embed", {"model": self.model, "input": texts})
+        body = self._post("/api/embed", {"model": self.model, "input": texts}, timeout=timeout)
         vectors = body.get("embeddings")
         if not isinstance(vectors, list) or len(vectors) != len(texts):
             got = len(vectors) if isinstance(vectors, list) else None

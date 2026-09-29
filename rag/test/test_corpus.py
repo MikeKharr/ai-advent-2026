@@ -89,29 +89,49 @@ if __name__ == "__main__":
 
 
 class CiRegexTest(unittest.TestCase):
-    """Вторая копия списка корпуса — регулярка `rag=` в ci.yml — покрывает первую.
+    """Копии списка корпуса вне corpus.py покрывают его и совпадают между собой.
+
+    Копий две, и у них разные роли:
+
+    * `rag='…'` в `.github/workflows/ci.yml` решает, ПЕРЕСОБИРАТЬ ли образ;
+    * `rag='…'` в `.github/scripts/deploy-units.sh` решает, ВЫКАТЫВАТЬ ли его.
 
     Держатель требуемого 3 ревьюера к PR #278: без него правка файла,
     который в корпусе есть, а в регулярке нет (так было с atlas/README.md),
     не запускает единицу rag — индекс стареет молча, и заметить это можно
-    только чтением диффа.
+    только чтением диффа. Вторая копия заведена заходом 3: без неё правка
+    документа собирала бы образ в CI и не выкатывала его, то есть обещание
+    «свежесть держится выкаткой» (ADR 2026-09-29-1639, п. 3) держалось бы
+    на словах при зелёном прогоне.
     """
 
     ROOT = Path(__file__).resolve().parent.parent.parent
     CI = ROOT / ".github" / "workflows" / "ci.yml"
+    DEPLOY = ROOT / ".github" / "scripts" / "deploy-units.sh"
+
+    @staticmethod
+    def _regex(path: Path) -> str:
+        if not path.is_file():
+            raise AssertionError(f"файл не найден: {path}")
+        found = re.search(r"^\s*rag='(.+)'\s*$", path.read_text(encoding="utf-8"), re.MULTILINE)
+        if not found:
+            raise AssertionError(f"в {path.name} нет строки rag='…' — регулярку корпуса не с чем сверять")
+        return found.group(1)
 
     @classmethod
     def setUpClass(cls) -> None:
-        if not cls.CI.is_file():
-            raise AssertionError(f"ci.yml не найден: {cls.CI}")
-        text = cls.CI.read_text(encoding="utf-8")
-        found = re.search(r"^\s*rag='(.+)'\s*$", text, re.MULTILINE)
-        if not found:
-            raise AssertionError("в ci.yml нет строки rag='…' — регулярку корпуса не с чем сверять")
+        cls.ci_source = cls._regex(cls.CI)
+        cls.deploy_source = cls._regex(cls.DEPLOY)
         # Регулярка живёт в YAML внутри shell: `\\.` там — экранированная
         # точка для grep, в Python это `\.`.
-        cls.pattern = re.compile(found.group(1).replace("\\\\", "\\"))
+        cls.pattern = re.compile(cls.ci_source.replace("\\\\", "\\"))
         cls.corpus = corpus.collect(cls.ROOT)
+
+    def test_сборка_и_выкатка_смотрят_на_одну_регулярку(self):
+        # Разойтись им есть куда: файла два, правят их порознь. Разойдясь, они
+        # дают самый тихий отказ из возможных — образ собран, выкатка зелёная,
+        # а на машине старый индекс.
+        self.assertEqual(self.ci_source, self.deploy_source)
 
     def test_регулярка_из_ci_покрывает_каждый_путь_корпуса(self):
         missed = [str(p) for p in self.corpus if not self.pattern.search(str(p))]
