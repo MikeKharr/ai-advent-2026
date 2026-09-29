@@ -101,5 +101,34 @@
       "outputPerMTok": 5,
       "perWebSearch": 0.01
     }
+  },
+  {
+    "_": "Kimi (Moonshot AI). Для локальной разработки хватает одной из четырёх моделей прода — k3, самой дорогой: explicitOnly держит её вне политики, она берётся только явным provider (ADR 2026-09-15-1448). Рассуждения у k3 не выключаются: none отображён на low плюс reasoningFloorTokens. maxRequestTokens 32768 — статический предел: заголовков остатка квоты Kimi не отдаёт.",
+    "id": "kimi-k3",
+    "revision": 1,
+    "kind": "kimi",
+    "tier": "cloud-frontier",
+    "baseUrl": "https://api.moonshot.ai",
+    "model": "kimi-k3",
+    "profile": "cloud",
+    "capabilities": ["text_generation"],
+    "contextWindow": 1048576,
+    "maxRequestTokens": 32768,
+    "jurisdiction": "sg",
+    "dataClasses": ["public", "internal", "personal"],
+    "maxConcurrency": 15,
+    "thinking": {
+      "none": "low",
+      "low": "low",
+      "medium": "high",
+      "high": "high"
+    },
+    "reasoningFloorTokens": 1024,
+    "explicitOnly": true,
+    "secretEnv": "KIMI_API_KEY",
+    "price": {
+      "inputPerMTok": 3,
+      "outputPerMTok": 15
+    }
   }
 ]
