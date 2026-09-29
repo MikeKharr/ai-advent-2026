@@ -290,6 +290,12 @@ export function renderThinking(words, { id } = {}) {
     const caption = node('p', 'entry-label', 'Сводка рассуждения')
     caption.id = `think-${id}`
     const body = node('p', 'think', words.thinking)
+    // Область со своей прокруткой обязана быть достижима с клавиатуры, иначе
+    // хвост сводки не прочесть вовсе. Роль ставится вместе с `tabindex`: на
+    // голом `<p>` подпись через `aria-labelledby` не читается — правило то же,
+    // что у рамок тел в `renderCall`.
+    body.tabIndex = 0
+    body.setAttribute('role', 'region')
     body.setAttribute('aria-labelledby', caption.id)
     parts.push(caption, body)
   }

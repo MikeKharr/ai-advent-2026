@@ -537,3 +537,32 @@ test('страница называет рассуждение среди тог
   assert.match(footer, /ассуждение/, 'подвал о рассуждении молчит')
   assert.match(footer, /10 минут/, 'подвал не называет срок жизни')
 })
+
+// Сводка рассуждения — единственный длинный текст экрана, и без потолка высоты
+// она уводит за нижний край то, ради чего день сделан: сырой JSON-RPC
+// (раскладка, пп. 0.3, 10.5). Потолок `low` — 1024 токена, на кириллице это
+// заведомо больше 1300 знаков, то есть порог переходится на первом же живом
+// прогоне, а не в краевом случае.
+test('сводка рассуждения ограничена по высоте и прокручивается сама', () => {
+  const style = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+  const at = style.indexOf('.think {')
+  assert.notEqual(at, -1, 'правила .think на странице нет')
+  const rule = style.slice(at, style.indexOf('}', at))
+  // Значение из шкалы отступов и то же, что у тел вызовов в копии дня 16:
+  // своего числа под этот потолок день не заводит.
+  assert.match(rule, /max-height:calc\(8 \* var\(--s-6\)\)/, 'у сводки нет потолка высоты из шкалы')
+  assert.match(rule, /overflow:auto/, 'сводка не прокручивается сама — потолок просто срезал бы текст')
+  // Кольцо фокуса внутрь: `overflow` срезает наружное.
+  assert.match(style, /\.think:focus-visible \{[^}]*outline-offset:-2px/, 'кольцо фокуса у сводки срезается прокруткой')
+})
+
+// Область со своей прокруткой, недостижимая с клавиатуры, — это хвост текста,
+// который нельзя прочитать вовсе. Роль ставится вместе с tabindex: на голом
+// <p> подпись через aria-labelledby не читается.
+test('сводка рассуждения достижима с клавиатуры и подписана', () => {
+  const trace = stripJs(read('trace.js'))
+  const render = trace.slice(trace.indexOf('export function renderThinking'), trace.indexOf('export function renderWords'))
+  assert.match(render, /body\.tabIndex = 0/, 'до хвоста сводки не добраться с клавиатуры')
+  assert.match(render, /setAttribute\('role', 'region'\)/, 'подпись области не читается без роли')
+  assert.match(render, /setAttribute\('aria-labelledby'/, 'у области нет подписи')
+})
