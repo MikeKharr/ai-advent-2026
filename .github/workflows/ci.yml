@@ -546,12 +546,18 @@ jobs:
           # а не что конфигурация полна — /healthz отдаёт 503 без ключа.
           # Роутеру для старта нужны ключи приложений — тоже фиктивные.
           # Сервису агентов — AGENT_KEY и ROUTER_APP_KEY, дню 6 — AGENT_KEY.
+          #
+          # RAG_KEY — не «на всякий случай»: единица rag БЕЗ него выходит с
+          # кодом 2 и до /healthz не доходит вовсе (rag/serve.py, main; ADR
+          # 2026-09-29-2139, п. 1). То есть эта строка — не ослабление
+          # проверки, а условие того, чтобы шаг проверял свой предмет:
+          # снимите её — и шаг покраснеет на rag, что и случилось в PR #282.
           docker run -d --name ci-day -e ANTHROPIC_API_KEY=ci-dummy \
             -e GROQ_API_KEY=ci-dummy -e KIMI_API_KEY=ci-dummy \
             -e ROUTER_ADMIN_KEY=ci-dummy -e APP_KEY_SMOKE=ci-dummy \
             -e APP_KEY_DAY5=ci-dummy -e APP_KEY_AGENTS=ci-dummy \
             -e ROUTER_APP_KEY=ci-dummy -e AGENT_KEY=ci-dummy \
-            -e MCP_KEY=ci-dummy \
+            -e MCP_KEY=ci-dummy -e RAG_KEY=ci-dummy \
             -p "$PORT:$PORT" "ci-check:$DAY"
           for _ in $(seq 1 20); do
             if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
