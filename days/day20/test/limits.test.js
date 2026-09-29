@@ -68,3 +68,55 @@ test('окна у адресов свои; хранение адреса не п
   limiter.reserve('c')
   assert.equal(limiter.stats().trackedIps, 1, 'адреса старше часа стёрты')
 })
+
+// Окна записей и чтений (ADR 2026-09-29-1600, п. 2). Они РАЗНЫЕ и своих
+// отметок друг другу не отдают — иначе загрузка страницы съедала бы право
+// очистить переписку.
+const seam = {
+  RATE_LIMIT_PER_MIN: 1000,
+  RATE_LIMIT_PER_HOUR: 1000,
+  RATE_LIMIT_WRITES_PER_HOUR: 2,
+  RATE_LIMIT_READS_PER_HOUR: 3,
+  MAX_DAILY_CALLS: 1000,
+}
+
+test('три окна считают порознь: исчерпанное не трогает соседние', () => {
+  const limiter = createLimiter(seam, { now: () => 1_700_000_000_000 })
+  for (let i = 0; i < 3; i += 1) assert.equal(limiter.reserveRead('a').ok, true)
+  assert.equal(limiter.reserveRead('a').ok, false, 'окно чтений не закрылось')
+  assert.equal(limiter.reserveWrite('a').ok, true, 'чтения отняли право писать')
+  assert.equal(limiter.reserve('a').ok, true, 'чтения отняли право запускать')
+})
+
+test('окно записей называет себя и свои секунды, а не окно запусков', () => {
+  const c = clock()
+  const limiter = createLimiter(seam, { now: c.now })
+  assert.equal(limiter.reserveWrite('a').ok, true)
+  c.tick(1000)
+  assert.equal(limiter.reserveWrite('a').ok, true)
+  const denied = limiter.reserveWrite('a')
+  assert.equal(denied.ok, false)
+  assert.equal(denied.reason, 'writes')
+  assert.match(denied.message, /изменений переписки/)
+  // Первая отметка стоит секунду назад: час минус это — 3599 с.
+  assert.equal(denied.retryAfterSec, 3599)
+})
+
+test('окно чтений называет себя, а не окно записей', () => {
+  const limiter = createLimiter(seam, { now: () => 1_700_000_000_000 })
+  for (let i = 0; i < 3; i += 1) limiter.reserveRead('a')
+  const denied = limiter.reserveRead('a')
+  assert.equal(denied.reason, 'reads')
+  assert.match(denied.message, /чтений страницы/)
+})
+
+test('отметки записей и чтений тоже не переживают своё окно (I-10)', () => {
+  const c = clock()
+  const limiter = createLimiter(seam, { now: c.now })
+  limiter.reserveWrite('a')
+  limiter.reserveRead('b')
+  assert.deepEqual([limiter.stats().writeIps, limiter.stats().readIps], [1, 1])
+  c.tick(60 * 60_000 + 1)
+  limiter.reserve('c')
+  assert.deepEqual([limiter.stats().writeIps, limiter.stats().readIps], [0, 0], 'адреса старше часа стёрты')
+})
