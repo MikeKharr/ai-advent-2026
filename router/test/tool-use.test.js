@@ -376,3 +376,113 @@ test('кривые блоки и определения инструментов
   await close()
   assert.equal(calls.length, 0)
 })
+
+// ——— Блоки размышления на ВХОДЕ (ADR 2026-09-29-0236; находка ревью).
+//
+// Круг 2 хода дня 20 присылает роутеру диалог, где ответ модели начинается
+// блоком `thinking`: у провайдера блок обязан вернуться вместе с подписью,
+// иначе он отвергает ход. Пока входной проверяющий этих типов не знал, такой
+// круг падал с `bad_request`, и ЛЮБОЙ ход, где модель действительно думала,
+// не доходил до ответа.
+//
+// Проверка идёт через НАСТОЯЩИЙ `createService` с настоящими `loadConfig` и
+// `classes.json`. Подставной роутер агента это место не проходит вовсе — и
+// именно поэтому тесты агента были зелены при неработающей цепочке.
+
+/** Круг 2: ответ модели с размышлением вернулся в диалог, результат готов. */
+const secondRound = (assistant) => ({
+  taskClass: 'tool_use',
+  provider: 'anthropic-haiku',
+  thinking: 'low',
+  answerTokens: 1024,
+  tools: [TOOL],
+  messages: [
+    { role: 'user', content: 'какие новости' },
+    { role: 'assistant', content: assistant },
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'toolu_01A', content: '{"items":[]}' }],
+    },
+  ],
+})
+
+test('круг 2 с блоком размышления доходит до провайдера, а не падает на входе', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
+  const res = await post(
+    secondRound([
+      { type: 'thinking', thinking: 'Сначала посмотрю новости.', signature: 'sig-abc' },
+      { type: 'tool_use', id: 'toolu_01A', name: TOOL.name, input: { query: 'fintech' } },
+    ]),
+  )
+  const body = await res.json()
+  await close()
+  assert.equal(res.status, 200, `круг 2 отвергнут входом: ${JSON.stringify(body)}`)
+  // Улика — вызов к провайдеру, а не код ответа: до правки их было ноль.
+  assert.equal(calls.length, 1, 'запрос до провайдера не дошёл')
+  const sent = calls[0].body.messages.find((m) => m.role === 'assistant').content
+  // Блок уходит провайдеру НЕТРОНУТЫМ, вместе с подписью: без неё он
+  // отвергает ход целиком, и роутеру переписывать её нечем.
+  assert.deepEqual(sent[0], { type: 'thinking', thinking: 'Сначала посмотрю новости.', signature: 'sig-abc' })
+})
+
+test('скрытый блок размышления проходит вход и уходит провайдеру нетронутым', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
+  const res = await post(
+    secondRound([
+      { type: 'redacted_thinking', data: 'EroBCkYIBBgCKkBcQ' },
+      { type: 'tool_use', id: 'toolu_01A', name: TOOL.name, input: { query: 'fintech' } },
+    ]),
+  )
+  await close()
+  assert.equal(res.status, 200)
+  const sent = calls[0].body.messages.find((m) => m.role === 'assistant').content
+  assert.deepEqual(sent[0], { type: 'redacted_thinking', data: 'EroBCkYIBBgCKkBcQ' })
+})
+
+// Расширение входа — не дыра: форма новых типов проверяется наравне с
+// прежними. Подпись здесь не формальность: без неё провайдер отвергает ход
+// целиком, и поймать это на входе честнее, чем ответом «invalid request».
+test('блок размышления без подписи отвергается входом, а не уезжает к провайдеру', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
+  const res = await post(
+    secondRound([
+      { type: 'thinking', thinking: 'думаю' },
+      { type: 'tool_use', id: 'toolu_01A', name: TOOL.name, input: { query: 'fintech' } },
+    ]),
+  )
+  const body = await res.json()
+  await close()
+  assert.equal(res.status, 400)
+  assert.match(body.message, /signature/)
+  assert.equal(calls.length, 0, 'блок без подписи всё-таки уехал к провайдеру')
+})
+
+test('скрытый блок без данных отвергается входом', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
+  const res = await post(
+    secondRound([
+      { type: 'redacted_thinking' },
+      { type: 'tool_use', id: 'toolu_01A', name: TOOL.name, input: { query: 'fintech' } },
+    ]),
+  )
+  await close()
+  assert.equal(res.status, 400)
+  assert.equal(calls.length, 0)
+})
+
+// Вход расширен ровно на два типа и ни на один больше: «пропускаем что угодно»
+// прошло бы все проверки выше и не прошло бы эту.
+test('неизвестный тип блока по-прежнему отвергается входом', async (t) => {
+  const { post, calls, close } = await start(t, { hosts: { [CLOUD]: cloudToolUse } })
+  const res = await post(
+    secondRound([
+      { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: {} },
+      { type: 'tool_use', id: 'toolu_01A', name: TOOL.name, input: { query: 'fintech' } },
+    ]),
+  )
+  const body = await res.json()
+  await close()
+  assert.equal(res.status, 400)
+  assert.match(body.message, /неизвестный тип блока server_tool_use/)
+  assert.equal(calls.length, 0)
+})

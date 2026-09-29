@@ -231,9 +231,15 @@ test('событие со словами модели не фильтруетс�
   const branch = code.slice(code.indexOf("stage === 'llm_text'"), code.indexOf('if (event?.stage !== ', code.indexOf("stage === 'llm_text'")))
   assert.ok(branch.includes('parseWords(event.data)'), 'ветка разбора слов не найдена')
   assert.doesNotMatch(branch, /\.text/, `в ветке появилось условие на текст: ${branch}`)
-  const push = branch.indexOf('items.push')
+  // Якорь — ИМЕННО запись слов, а не первый попавшийся `items.push`: с
+  // появлением записи рассуждения первым в ветке стал УСЛОВНЫЙ push, и
+  // проверка стерегла бы его вместо безусловного. Ранний выход между двумя
+  // push оставался бы тогда зелёным, а запись слов заключительного круга
+  // исчезала бы из ленты — ровно то, что здесь обязано краснеть.
+  const push = branch.indexOf("items.push({ kind: 'words'")
   const quit = branch.indexOf('return')
-  assert.ok(push !== -1 && (quit === -1 || push < quit), 'ветка выходит раньше, чем кладёт запись')
+  assert.notEqual(push, -1, 'безусловной записи слов в ветке нет')
+  assert.ok(quit === -1 || push < quit, 'ветка выходит раньше, чем кладёт запись слов')
 })
 
 // ——— Диалог (ADR 2026-09-28-1852, заход 2; раскладка 2026-09-28-1912).

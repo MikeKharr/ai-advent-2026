@@ -1017,3 +1017,134 @@ test('рассуждение не попадает ни в meta сообщени
   assert.equal(meta.rounds.length, 2)
   assert.ok(Object.hasOwn(meta.rounds[0], 'chosen'), 'слова кругов перестали сохраняться')
 })
+
+// ——— Цикл против НАСТОЯЩЕГО роутера (находка ревью, Б1).
+//
+// Все проверки выше идут через подставной `fetchImpl`, который тела не
+// проверяет. Именно поэтому они были зелены, когда цепочка рвалась: круг 2
+// уходил во входной проверяющий роутера с блоком `thinking`, тот его не знал и
+// отвечал 400, и ЛЮБОЙ ход, где модель действительно думала, падал.
+//
+// Этот тест поднимает настоящую службу роутера с настоящими `loadConfig` и
+// `classes.json` и гоняет через неё настоящий `runToolLoop`. Предмет один:
+// байты, которые агент КЛАДЁТ в диалог, проходят вход роутера на втором круге.
+// Подставным роутером это утверждение не проверяется никак.
+
+import { loadConfig } from '../../router/src/config.js'
+import { createLedger } from '../../router/src/ledger.js'
+import { createStaticRegistry } from '../../router/src/registry.js'
+import { createRouter } from '../../router/src/router.js'
+import { createService } from '../../router/src/service.js'
+import { ENV as ROUTER_ENV, httpJson, PROVIDERS, scriptedFetch } from '../../router/test/fixtures.js'
+
+const ROUTER_CLASSES = JSON.parse(
+  readFileSync(new URL('../../router/config/classes.json', import.meta.url), 'utf8'),
+)
+const ROUTER_APPS = {
+  admin: { secretEnv: 'ROUTER_ADMIN_KEY' },
+  apps: [{ id: 'agents', secretEnv: 'APP_KEY_SMOKE', classes: ['tool_use'], limits: { dailyTokens: 500000, dailyCostUsd: 10 } }],
+}
+
+/** Ответ Anthropic: размышление, потом вызов инструмента. */
+const anthropicThinks = (blocks) => ({
+  id: 'msg_1',
+  type: 'message',
+  role: 'assistant',
+  model: 'claude-haiku-4-5',
+  content: blocks,
+  stop_reason: 'tool_use',
+  stop_sequence: null,
+  usage: { input_tokens: 120, output_tokens: 40 },
+})
+
+const anthropicAnswers = (text) => ({
+  id: 'msg_2',
+  type: 'message',
+  role: 'assistant',
+  model: 'claude-haiku-4-5',
+  content: [{ type: 'text', text }],
+  stop_reason: 'end_turn',
+  stop_sequence: null,
+  usage: { input_tokens: 200, output_tokens: 30 },
+})
+
+async function realRouter(t, replies) {
+  const calls = []
+  const now = () => Date.parse('2026-09-29T10:00:00Z')
+  const config = loadConfig({ providers: PROVIDERS, classes: ROUTER_CLASSES, apps: ROUTER_APPS, env: ROUTER_ENV })
+  let n = 0
+  const router = createRouter({
+    config,
+    registry: createStaticRegistry(config.providers),
+    fetchImpl: scriptedFetch({ 'api.anthropic.test': () => httpJson(200, replies[n++]) }, { calls }),
+    now,
+    env: ROUTER_ENV,
+  })
+  const server = http.createServer(
+    createService({ config, router, ledger: createLedger({ now }), env: ROUTER_ENV, now }),
+  )
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  t.after(() => new Promise((r) => server.close(() => r())))
+  return { url: `http://127.0.0.1:${server.address().port}`, key: ROUTER_ENV.APP_KEY_SMOKE, calls }
+}
+
+test('ход с размышлением доходит до ответа через настоящий роутер: круг 2 не отвергается входом', async (t) => {
+  const { news, servers } = await oneServer()
+  t.after(() => news.close())
+  const rt = await realRouter(t, [
+    anthropicThinks([
+      { type: 'thinking', thinking: 'Посмотрю новости, потом отвечу.', signature: 'sig-abc' },
+      { type: 'tool_use', id: 'toolu_01A', name: 'mcpnews__news_search', input: { query: 'fintech' } },
+    ]),
+    anthropicAnswers('нашёл три новости'),
+  ])
+
+  const out = await runToolLoop({
+    task: 'что нового',
+    thinking: 'low',
+    system: 'ты агент',
+    servers,
+    taskClass: 'tool_use',
+    provider: 'anthropic-haiku',
+    answerTokens: 1024,
+    routerUrl: rt.url,
+    routerKey: rt.key,
+    timeoutMs: 5_000,
+  })
+
+  // Предмет проверки — второй круг: до правки входа роутера он отвечал 400,
+  // `askTools` бросал, и запуск падал с пустым ответом.
+  assert.equal(out.status, 'succeeded', `ход не дошёл до ответа: ${out.warnings.join(' | ')}`)
+  assert.equal(out.answer, 'нашёл три новости')
+  assert.equal(out.rounds, 2)
+  assert.equal(rt.calls.length, 2, 'второй круг до провайдера не дошёл')
+  // Блок размышления уехал провайдеру нетронутым, вместе с подписью.
+  const back = rt.calls[1].body.messages.find((m) => m.role === 'assistant').content
+  assert.deepEqual(back[0], { type: 'thinking', thinking: 'Посмотрю новости, потом отвечу.', signature: 'sig-abc' })
+})
+
+test('скрытый блок размышления так же переживает круг 2 через настоящий роутер', async (t) => {
+  const { news, servers } = await oneServer()
+  t.after(() => news.close())
+  const rt = await realRouter(t, [
+    anthropicThinks([
+      { type: 'redacted_thinking', data: 'EroBCkYIBBgCKkBcQ' },
+      { type: 'tool_use', id: 'toolu_01A', name: 'mcpnews__news_search', input: { query: 'fintech' } },
+    ]),
+    anthropicAnswers('готово'),
+  ])
+  const out = await runToolLoop({
+    task: 'что нового',
+    thinking: 'low',
+    system: 'ты агент',
+    servers,
+    taskClass: 'tool_use',
+    provider: 'anthropic-haiku',
+    answerTokens: 1024,
+    routerUrl: rt.url,
+    routerKey: rt.key,
+    timeoutMs: 5_000,
+  })
+  assert.equal(out.status, 'succeeded', out.warnings.join(' | '))
+  assert.equal(rt.calls.length, 2)
+})

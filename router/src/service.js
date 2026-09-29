@@ -284,7 +284,24 @@ function parseBody(raw) {
 }
 
 const ROLES = new Set(['user', 'assistant'])
-const BLOCK_TYPES = new Set(['text', 'tool_use', 'tool_result'])
+/**
+ * Типы блоков, которые роутер принимает на вход.
+ *
+ * `thinking` и `redacted_thinking` добавлены не ради удобства, а потому что без
+ * них ЦЕПОЧКА РВЁТСЯ: у провайдера блок размышления обязан вернуться в
+ * следующий ход вместе с подписью, иначе он отвергает запрос целиком. Хост
+ * кладёт ответ модели в диалог как есть (`agents/src/mcp/agent.js`,
+ * `messages.push({role:'assistant', content: reply.content})`), и на втором
+ * круге эти блоки приходят сюда. Пока их тут не было, любой ход, где модель
+ * действительно думала, падал на круге 2 с `bad_request`.
+ *
+ * Роутер общий для дней 6–20, и вход расширяется у всех. Дыры это не делает:
+ * форма обоих новых типов проверяется в `checkBlock` наравне с прежними, а
+ * понимает их только адаптер Anthropic — остальным провайдерам такие блоки
+ * прийти не могут, потому что просит размышление только день 20 и только у
+ * закреплённого им провайдера.
+ */
+const BLOCK_TYPES = new Set(['text', 'tool_use', 'tool_result', 'thinking', 'redacted_thinking'])
 // Имя инструмента у Messages API: буквы, цифры, подчёркивание и дефис.
 // Имя с точкой (`clock.now`) провайдер отвергает — отображение имён делает
 // вызывающий, а не роутер.
@@ -317,6 +334,20 @@ function checkBlock(b) {
       throw new Error('блок tool_use: name — непустая строка')
     if (!b.input || typeof b.input !== 'object' || Array.isArray(b.input))
       throw new Error('блок tool_use: input — объект')
+  }
+  if (b.type === 'thinking') {
+    if (typeof b.thinking !== 'string') throw new Error('блок thinking: thinking — строка')
+    // Подпись обязательна именно на ВОЗВРАТЕ блока: провайдер проверяет ею
+    // целость размышления и без неё отвергает ход. Ловится здесь, где видно
+    // имя поля, а не ответом провайдера, где видно только «invalid request».
+    if (typeof b.signature !== 'string' || b.signature.length === 0)
+      throw new Error('блок thinking: signature — непустая строка')
+  }
+  if (b.type === 'redacted_thinking') {
+    // Текста у скрытого блока нет и быть не может — есть непрозрачные данные,
+    // которые возвращаются провайдеру нетронутыми.
+    if (typeof b.data !== 'string' || b.data.length === 0)
+      throw new Error('блок redacted_thinking: data — непустая строка')
   }
   if (b.type === 'tool_result') {
     if (typeof b.tool_use_id !== 'string' || b.tool_use_id.length === 0)
