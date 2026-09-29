@@ -46,10 +46,15 @@ jobs:
       # вето compliance (ADR 2026-09-29-1639, п. 1; заведена ADR 2026-09-07-1525).
       - name: Граница runtime-зависимостей
         run: |
+          # Ключ карты — «единица + реестр», а не одна единица: имя пакета
+          # ничего не значит без реестра, и один список на два реестра дал бы
+          # единице rag право тянуть ИЗ NPM пакеты `numpy` и `packaging` —
+          # существующие там пакеты неродственных авторов, то есть готовую
+          # мишень подмены зависимости (находка reviewer к PR #276).
           allowed_for() {
-            case "$1" in
-              mcp) echo '@modelcontextprotocol/sdk zod' ;;
-              rag) echo 'faiss-cpu numpy packaging' ;;
+            case "$1/$2" in
+              mcp/npm) echo '@modelcontextprotocol/sdk zod' ;;
+              rag/pip) echo 'faiss-cpu numpy packaging' ;;
               *) echo '' ;;
             esac
           }
@@ -61,13 +66,19 @@ jobs:
             echo "::error::в дереве нет ни одного package.json и ни одного requirements.txt — страж не проверил ничего"
             exit 1
           fi
-          # Манифесты неизвестной формы: pip и npm — единственные два реестра,
-          # чьи манифесты страж умеет читать. Третья форма прошла бы мимо него
-          # молча, поэтому она красная, а не пропускается.
-          others=$(find . \( -name pyproject.toml -o -name Pipfile -o -name poetry.lock \) -not -path '*/node_modules/*' -not -path './.git/*' | sort)
+          # Манифесты, объявляющие зависимости мимо двух читаемых форм. Список
+          # ИМЕННОЙ, а не исчерпывающий: страж краснеет на перечисленных ниже
+          # именах, а не на «любой третьей форме» — обещать большее этот код не
+          # может, и обещание в комментарии тоже держателем не является
+          # (находки compliance и reviewer к PR #276). Имя, которого здесь нет,
+          # пройдёт молча; появилась форма — строка сюда, PR класса A.
+          # `setup.py` вдобавок ИСПОЛНЯЕТСЯ — ровно то, ради чего в проекте
+          # стоят `--ignore-scripts` и `--only-binary`. `requirements-*.txt` и
+          # `constraints.txt` pip читает, а шаг ниже — нет: они тоже красные.
+          others=$(find . \( -name pyproject.toml -o -name Pipfile -o -name Pipfile.lock -o -name poetry.lock -o -name uv.lock -o -name pdm.lock -o -name setup.py -o -name setup.cfg -o -name environment.yml -o -name environment.yaml -o -name conda-lock.yml -o -name 'requirements-*.txt' -o -name 'requirements_*.txt' -o -name constraints.txt \) -not -path '*/node_modules/*' -not -path './.git/*' | sort)
           if [ -n "$others" ]; then
             while IFS= read -r f; do
-              echo "::error file=${f#./}::манифест неизвестной страже формы — читаются только package.json и requirements.txt (ADR 2026-09-29-1639, п. 1)"
+              echo "::error file=${f#./}::манифест объявляет зависимости мимо стража — читаются только package.json и requirements.txt (ADR 2026-09-29-1639, п. 1)"
             done <<< "$others"
             fail=1
           fi
@@ -77,7 +88,7 @@ jobs:
             # Единица — каталог самого манифеста, а не первый сегмент пути:
             # иначе mcp/vendor/package.json получил бы права единицы mcp.
             unit=$(dirname "$rel")
-            allowed=$(allowed_for "$unit")
+            allowed=$(allowed_for "$unit" npm)
             # Три раздела, а не один: `optionalDependencies` ставится тем же
             # `npm ci` и доезжает до образа (`--omit=dev` его не снимает),
             # `peerDependencies` объявляет ту же чужую единицу зависимостью.
@@ -89,7 +100,7 @@ jobs:
             for name in $names; do
               case " $allowed " in
                 *" $name "*) ;;
-                *) echo "::error file=${rel}::runtime-зависимость ${name} вне карты единицы ${unit} (разрешено: ${allowed:-ничего}) — ADR 2026-09-29-1639, п. 1"; fail=1; continue ;;
+                *) echo "::error file=${rel}::runtime-зависимость ${name} вне карты единицы ${unit} для реестра npm (разрешено: ${allowed:-ничего}) — ADR 2026-09-29-1639, п. 1"; fail=1; continue ;;
               esac
               # Версия точная, без ^ и ~: поднятие версии SDK — отдельный PR
               # класса A с гейтом compliance, а не тихий разброс диапазона.
@@ -109,7 +120,7 @@ jobs:
             [ -n "$f" ] || continue
             rel=${f#./}
             unit=$(dirname "$rel")
-            allowed=$(allowed_for "$unit")
+            allowed=$(allowed_for "$unit" pip)
             # Продолжения строк склеиваются: pip пишет хэши на следующих
             # строках через `\`, и разбор построчно принял бы «пакет==версия»
             # как строку без хэша, а хвост с хэшами — как мусор.
@@ -120,13 +131,26 @@ jobs:
               END { if (buf != "") print buf }
             ' "$f")
             while IFS= read -r line; do
-              line=${line%%#*}
-              line=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+              # Комментарий отрезается по правилу pip — `#` в начале строки
+              # или после пробела, а не по любому `#`: страж должен читать
+              # строку так же, как читатель, которого он стережёт (находка
+              # reviewer к PR #276). `#` внутри токена остаётся и краснеет
+              # ниже как лишний хвост.
+              line=$(printf '%s' "$line" | sed -E -e 's/(^|[[:space:]])#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
               [ -n "$line" ] || continue
               case "$line" in
-                --require-hashes|--no-deps|--only-binary=*) continue ;;
+                --require-hashes|--no-deps) continue ;;
+                # Ветвь ниже — шаблон, и `*` съедает ОСТАТОК СТРОКИ, а не хвост
+                # значения: `--only-binary=:all: --index-url https://…` прошла
+                # бы зелёной мимо ветви `-*)`, и pip такую строку разбирает
+                # через shlex — обе опции применяются (находка compliance к
+                # PR #276). Поэтому вторая директива в той же строке — красная.
+                --only-binary=*[[:space:]]*) echo "::error file=${rel}::после --only-binary= в строке «${line}» ещё одна директива — по директиве на строку (ADR 2026-09-29-1639, п. 1)"; fail=1; continue ;;
+                --only-binary=*) continue ;;
                 # -r, --index-url, -e и прочее тянут зависимости и код из мест,
                 # которых в этом файле не видно: в карту они не вписываются.
+                # Хэши здесь не спасают: удалённый `-r <url>` приносит свои
+                # пакеты со своими хэшами, сходящимися сами с собой.
                 -*) echo "::error file=${rel}::директива «${line}» не читается стражем — в requirements.txt только «пакет==версия --hash=sha256:…» (ADR 2026-09-29-1639, п. 1)"; fail=1; continue ;;
               esac
               if [[ ! $line =~ ^([A-Za-z0-9][A-Za-z0-9._-]*)==([^[:space:]]+)(.*)$ ]]; then
@@ -139,7 +163,7 @@ jobs:
               rest=${BASH_REMATCH[3]}
               case " $allowed " in
                 *" $name "*) ;;
-                *) echo "::error file=${rel}::runtime-зависимость ${name} вне карты единицы ${unit} (разрешено: ${allowed:-ничего}) — ADR 2026-09-29-1639, п. 1"; fail=1; continue ;;
+                *) echo "::error file=${rel}::runtime-зависимость ${name} вне карты единицы ${unit} для реестра pip (разрешено: ${allowed:-ничего}) — ADR 2026-09-29-1639, п. 1"; fail=1; continue ;;
               esac
               if [[ ! $version =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
                 echo "::error file=${rel}::версия ${name} не точная: ${version} (ADR 2026-09-29-1639, п. 1)"
@@ -151,7 +175,10 @@ jobs:
               # снять его — одна строка. Прибивать байты должен тот же файл.
               hashes=0
               bad=0
-              for token in $rest; do
+              # В массив через `read -ra`, а не `for token in $rest`: там
+              # токены проходили бы ещё и глоббинг (находка compliance).
+              read -ra tokens <<< "$rest"
+              for token in "${tokens[@]}"; do
                 if [[ $token =~ ^--hash=sha256:[0-9a-f]{64}$ ]]; then
                   hashes=$((hashes + 1))
                 else

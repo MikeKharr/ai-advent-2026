@@ -80,7 +80,7 @@ test('приманка: dependencies у чужой единицы — код 1 �
 test('приманка: зависимость в mcp вне списка — код 1', () => {
   const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0', zod: '4.6.5', express: '5.1.0' } } })
   assert.equal(run.status, 1, run.output)
-  assert.match(run.output, /вне карты единицы mcp/)
+  assert.match(run.output, /вне карты единицы mcp для реестра/)
 })
 
 test('приманка: диапазон вместо точной версии — код 1', () => {
@@ -103,7 +103,7 @@ test('приманка: optionalDependencies у чужой единицы — к
 test('приманка: optionalDependencies в mcp вне списка — код 1', () => {
   const run = runStep({ ...CLEAN, 'mcp/package.json': { name: 'mcp', dependencies: { [SDK]: '1.30.0', zod: '4.6.5' }, optionalDependencies: { hono: '4.9.0' } } })
   assert.equal(run.status, 1, run.output)
-  assert.match(run.output, /вне карты единицы mcp/)
+  assert.match(run.output, /вне карты единицы mcp для реестра/)
   assert.match(run.output, /hono/)
 })
 
@@ -192,7 +192,7 @@ test('приманка: новая единица с requirements.txt — её �
   const run = runStep({ ...CLEAN, 'scraper/requirements.txt': `requests==2.32.5 ${H1}\n` })
   assert.equal(run.status, 1, run.output)
   assert.match(run.output, /scraper\/requirements\.txt/)
-  assert.match(run.output, /вне карты единицы scraper/)
+  assert.match(run.output, /вне карты единицы scraper для реестра pip/)
   assert.match(run.output, /разрешено: ничего/)
 })
 
@@ -200,13 +200,33 @@ test('приманка: rag тянет пакет сверх своего спи
   const run = runStep({ ...CLEAN, 'rag/requirements.txt': `${RAG_OK}torch==2.9.0 ${H1}\n` })
   assert.equal(run.status, 1, run.output)
   assert.match(run.output, /torch/)
-  assert.match(run.output, /вне карты единицы rag/)
+  assert.match(run.output, /вне карты единицы rag для реестра pip/)
 })
 
 test('приманка: карта держит единицу, а не форму — faiss-cpu в mcp красный', () => {
   const run = runStep({ ...CLEAN, 'mcp/requirements.txt': `faiss-cpu==1.15.1 ${H1}\n` })
   assert.equal(run.status, 1, run.output)
-  assert.match(run.output, /вне карты единицы mcp/)
+  assert.match(run.output, /вне карты единицы mcp для реестра pip/)
+})
+
+// Ключ карты — «единица + реестр». Имена ниже В СПИСКЕ своей единицы есть, но
+// реестр чужой: `numpy` и `packaging` существуют и в npm — пакеты
+// неродственных авторов, то есть готовая мишень подмены зависимости. Пара
+// приманок ниже стережёт обе стороны, а не одну (находка reviewer к PR #276).
+test('приманка: pip-имена единицы rag в её же package.json — код 1', () => {
+  const deps = { 'faiss-cpu': '1.0.0', numpy: '1.0.0', packaging: '1.0.0' }
+  const run = runStep({ ...CLEAN, 'rag/package.json': { name: 'rag', dependencies: deps } })
+  assert.equal(run.status, 1, run.output)
+  assert.match(run.output, /вне карты единицы rag для реестра npm/)
+  assert.match(run.output, /разрешено: ничего/)
+  for (const name of Object.keys(deps)) assert.match(run.output, new RegExp(`зависимость ${name} вне карты`))
+})
+
+test('приманка: npm-имена единицы mcp в её же requirements.txt — код 1', () => {
+  const run = runStep({ ...CLEAN, 'mcp/requirements.txt': `zod==1.0.0 ${H1}\n` })
+  assert.equal(run.status, 1, run.output)
+  assert.match(run.output, /вне карты единицы mcp для реестра pip/)
+  assert.match(run.output, /разрешено: ничего/)
 })
 
 test('приманка: версия без == — код 1', () => {
@@ -247,12 +267,77 @@ test('приманка: -r и --index-url тянут невидимое отсю
   }
 })
 
-test('приманка: манифест третьей формы — код 1', () => {
-  for (const path of ['rag/pyproject.toml', 'rag/Pipfile', 'rag/poetry.lock']) {
+// В `case` шаблон `--only-binary=*` съедает ОСТАТОК СТРОКИ, а не хвост
+// значения: `--only-binary=:all: --index-url https://…` уходила зелёной мимо
+// ветви `-*)`, и pip такую строку разбирает через shlex — обе опции
+// применяются. Хэши от этого не спасают: удалённый `-r <url>` приносит свои
+// пакеты со своими хэшами, сходящимися сами с собой (находка compliance к
+// PR #276). Приманка ниже — за эту форму.
+test('приманка: вторая директива после --only-binary= — код 1', () => {
+  const lines = [
+    '--only-binary=:all: --index-url https://example.invalid/simple',
+    '--only-binary=x -r https://example.invalid/r.txt',
+    '--only-binary=:all: -e .',
+  ]
+  for (const line of lines) {
+    const run = runStep({ ...CLEAN, 'rag/requirements.txt': `${line}\n` })
+    assert.equal(run.status, 1, `${line}: ${run.output}`)
+    assert.match(run.output, /ещё одна директива/)
+  }
+})
+
+test('одиночные --only-binary=, --require-hashes и --no-deps проходят', () => {
+  const body = ['--require-hashes', '--no-deps', '--only-binary=:all:', `faiss-cpu==1.15.1 ${H1}`, ''].join('\n')
+  const run = runStep({ ...CLEAN, 'rag/requirements.txt': body })
+  assert.equal(run.status, 0, run.output)
+})
+
+test('приманка: довесок к --require-hashes и --no-deps — код 1', () => {
+  for (const line of ['--require-hashes -r other.txt', '--no-deps --index-url https://example.invalid/simple']) {
+    const run = runStep({ ...CLEAN, 'rag/requirements.txt': `${line}\n` })
+    assert.equal(run.status, 1, `${line}: ${run.output}`)
+    assert.match(run.output, /не читается стражем/)
+  }
+})
+
+// Не три имени из ADR, а все рабочие способы объявить зависимость в Python:
+// `setup.py` ещё и исполняется — ровно то, ради чего в проекте стоят
+// `--ignore-scripts` и `--only-binary` (находка compliance к PR #276).
+test('приманка: манифест мимо стража — код 1', () => {
+  const paths = [
+    'rag/pyproject.toml', 'rag/Pipfile', 'rag/Pipfile.lock', 'rag/poetry.lock',
+    'rag/uv.lock', 'rag/pdm.lock', 'rag/setup.py', 'rag/setup.cfg',
+    'rag/environment.yml', 'rag/environment.yaml', 'rag/conda-lock.yml',
+    'rag/requirements-dev.txt', 'rag/requirements_test.txt', 'rag/constraints.txt',
+  ]
+  for (const path of paths) {
     const run = runStep({ ...CLEAN, [path]: '[project]\n' })
     assert.equal(run.status, 1, `${path}: ${run.output}`)
-    assert.match(run.output, /манифест неизвестной страже формы/)
+    assert.match(run.output, /мимо стража/)
   }
+})
+
+// Комментарий режется по правилу pip: `#` в начале строки или после пробела.
+// Страж, читающий строку иначе, чем читатель, которого он стережёт, — тот же
+// класс, что дыра с `--only-binary=*` (находка reviewer к PR #276).
+test('комментарий после пробела отрезается, «#» внутри токена — красный', () => {
+  const ok = runStep({ ...CLEAN, 'rag/requirements.txt': `faiss-cpu==1.15.1 ${H1}  # пин от 2026-09-29\n` })
+  assert.equal(ok.status, 0, ok.output)
+  assert.match(ok.output, /хэшей: 1/)
+  const bad = runStep({ ...CLEAN, 'rag/requirements.txt': `faiss-cpu==1.15.1 ${H1}#хвост\n` })
+  assert.equal(bad.status, 1, bad.output)
+  assert.match(bad.output, /лишний хвост/)
+})
+
+test('приманка: имя файла с глоб-символами в хвосте строки — код 1', () => {
+  // `for token in $rest` без кавычек прогонял бы токены через глоббинг.
+  const run = runStep({
+    ...CLEAN,
+    'rag/requirements.txt': `faiss-cpu==1.15.1 --hash=sha256:${'1'.repeat(63)}*\n`,
+    [`--hash=sha256:${'1'.repeat(64)}`]: 'подложка под глоббинг\n',
+  })
+  assert.equal(run.status, 1, run.output)
+  assert.match(run.output, /лишний хвост/)
 })
 
 test('дерево из одних requirements.txt страж проверяет, а не зовёт пустым', () => {
