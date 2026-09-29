@@ -573,3 +573,107 @@ test('работа планировщика пишет в один файл, а 
   await news.close()
   await store.close()
 })
+
+// ——— слова модели между вызовами (ADR 2026-09-28-1852, заход 1) ———
+//
+// Событие стадии `llm_text` берёт текст из ОТВЕТА ТОГО ЖЕ КРУГА: второго
+// обращения к модели у него нет, и подставной роутер ниже это показывает —
+// число запросов к нему от появления события не меняется.
+
+/** Ответ круга: слова модели и её выбор инструментов рядом, как их шлёт API. */
+const wordsThenTool = (text, name, stopReason = 'tool_use') => ({
+  text,
+  content: [
+    { type: 'text', text },
+    { type: 'tool_use', id: `tu-${name}`, name, input: {} },
+  ],
+  stopReason,
+  usage: { inputTokens: 10, outputTokens: 5 },
+  budgetLeft: { costUsd: 0.4, tokens: 1000 },
+})
+
+const textEvents = (events) => events.filter((e) => e.stage === 'llm_text')
+
+test('слова модели на круге с вызовом уходят событием: текст и выбор с именем сервера', async () => {
+  const { news, servers } = await oneServer()
+  const router = fakeRouter([wordsThenTool('Сначала поищу новости.', 'mcpnews__news_search'), answer('готово')])
+  const runs = createRuns()
+  const entry = registry.get('mcp-agent')
+  const agent = createMcpAgent({ agent: entry, servers, runs, env, fetchImpl: router.fetchImpl })
+  const run = runs.create({ agent: entry, input: agent.parseInput({ task: 'что нового' }).input })
+
+  await agent.execute(run)
+
+  const said = textEvents(runs.snapshot(run.id).events)
+  assert.equal(said.length, 2, 'событие идёт на каждом круге, включая заключительный')
+  assert.equal(said[0].data.round, 1)
+  assert.equal(said[0].data.text, 'Сначала поищу новости.')
+  assert.deepEqual(said[0].data.chosen, [{ server: 'mcpnews', tool: 'news.search' }])
+  assert.equal(said[0].data.stopReason, 'tool_use')
+  // Заключительный круг: слова есть, выбора нет.
+  assert.deepEqual(said[1].data.chosen, [])
+  assert.equal(said[1].data.text, 'готово')
+  // Текст взят из уже пришедшего ответа: лишнего круга к модели не появилось.
+  assert.equal(router.calls.length, 2)
+  await news.close()
+})
+
+test('текста у круга нет — событие всё равно уходит, и text в нём пустая строка', async () => {
+  const { news, servers } = await oneServer()
+  const router = fakeRouter([wantsTool('mcpnews__news_search'), answer('готово')])
+  const runs = createRuns()
+  const entry = registry.get('mcp-agent')
+  const agent = createMcpAgent({ agent: entry, servers, runs, env, fetchImpl: router.fetchImpl })
+  const run = runs.create({ agent: entry, input: agent.parseInput({ task: 'что нового' }).input })
+
+  await agent.execute(run)
+
+  const said = textEvents(runs.snapshot(run.id).events)
+  // Гипотезы, которые эта проверка различает: «событие спрятали, раз текста
+  // нет» (длина стала бы 1) и «пустоту подменили заглушкой» (text !== '').
+  assert.equal(said.length, 2)
+  assert.equal(said[0].data.text, '')
+  assert.deepEqual(said[0].data.chosen, [{ server: 'mcpnews', tool: 'news.search' }])
+  await news.close()
+})
+
+test('обрыв по длине не пропадает молча: причина остановки стоит в событии рядом с названными инструментами', async () => {
+  const { news, servers } = await oneServer()
+  const long = 'Объясняю выбор. '.repeat(200)
+  const router = fakeRouter([wordsThenTool(long, 'mcpnews__news_search', 'length')])
+  const runs = createRuns()
+  const entry = registry.get('mcp-agent')
+  const agent = createMcpAgent({ agent: entry, servers, runs, env, fetchImpl: router.fetchImpl })
+  const run = runs.create({ agent: entry, input: agent.parseInput({ task: 'что нового' }).input })
+
+  await agent.execute(run)
+
+  const said = textEvents(runs.snapshot(run.id).events)
+  assert.equal(said.length, 1)
+  assert.equal(said[0].data.text, long, 'длинный текст уходит целиком, а не обрезанным событием')
+  assert.equal(said[0].data.stopReason, 'length')
+  // Инструмент назван, но НЕ исполнен: обрезанный блок исполнять нельзя.
+  assert.deepEqual(said[0].data.chosen, [{ server: 'mcpnews', tool: 'news.search' }])
+  assert.deepEqual(news.seen, [])
+  await news.close()
+})
+
+test('слова модели не попадают ни в трейс работы планировщика дня 18, ни в его ленту', async () => {
+  const { news, servers } = await oneServer()
+  const router = fakeRouter([wordsThenTool('Ищу новости.', 'mcpnews__news_search'), answer('сводка')])
+  const runs = createRuns()
+  const runJob = createJobRunner({ registry, servers, runs, env, fetchImpl: router.fetchImpl })
+
+  const out = await runJob({ job: jobOf(), runId: 'run-holder' })
+
+  // Различение гипотез: событие действительно было (иначе пустой трейс ничего
+  // не доказывал бы), и в трейс работы оно всё равно не попало.
+  assert.equal(textEvents(runs.snapshot('run-holder').events).length, 2)
+  assert.ok(out.trace.length > 0)
+  for (const entry of out.trace) {
+    assert.equal(typeof entry.method, 'string', `в трейсе работы запись не от JSON-RPC: ${JSON.stringify(entry)}`)
+    assert.equal(entry.text, undefined)
+    assert.equal(entry.chosen, undefined)
+  }
+  await news.close()
+})
