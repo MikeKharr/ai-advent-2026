@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -110,9 +111,33 @@ def _commit(root: Path) -> str:
     return done.stdout.strip() if done.returncode == 0 else "unknown"
 
 
+# Годная форма коммита: 7–40 знаков `[0-9a-f]`. Семь — короткий вид, сорок —
+# полный sha1. Нижняя граница не даёт принять за коммит одну букву, верхняя —
+# файл произвольной длины.
+COMMIT_FORM = re.compile(r"[0-9a-f]{7,40}")
+
+
 def read_commit(corpus_dir: Path) -> str:
+    """Коммит корпуса из файла `COMMIT`, либо `unknown`.
+
+    Граница нужна потому, что дальше это значение никем не проверяется: оно
+    уходит на ОТКРЫТЫЙ `/rag/healthz` и в каждый результат поиска (ADR
+    2026-09-29-2139, п. 9). До этой правки функция отдавала содержимое файла
+    как есть — то есть что угодно любой длины, попавшее в том или в образ,
+    печаталось бы в публичный ответ дословно.
+
+    `unknown` тут не «ошибка», а честный ответ: ровно его же отдаёт
+    `_commit`, когда `git rev-parse` не сработал, и оно же тогда лежит в
+    `COMMIT`.
+    """
     marker = Path(corpus_dir) / "COMMIT"
-    return marker.read_text(encoding="utf-8").strip() if marker.is_file() else "unknown"
+    if not marker.is_file():
+        return "unknown"
+    try:
+        raw = marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "unknown"
+    return raw if COMMIT_FORM.fullmatch(raw) else "unknown"
 
 
 def copy_to(root: Path, out: Path) -> int:

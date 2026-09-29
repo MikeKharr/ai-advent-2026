@@ -1,24 +1,65 @@
+import hmac
 import io
 import json
 import os
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+import numpy as np
+
+import limits
+import rpc
 import serve
+import tools
+from index import VectorIndex
+
+# Ключ службы в тестах. Настоящий живёт только в `.env` на сервере и в
+# GitHub Secrets (AGENTS.md, «Универсальные правила»).
+KEY = "test-rag-key-0123456789"
+
+
+def start_service(case, key: str = KEY, **over):
+    """Поднять службу на свободном порту и убрать её за собой.
+
+    Индекс, лимитер и суточный потолок — свои на каждый тест и в своём
+    временном каталоге: иначе тесты делили бы `/data` и счёт суток.
+    """
+    import tempfile
+
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    case.index_dir = Path(tmp.name)
+    case.status = over.pop("status", None) or serve.Status()
+    case.indexes = over.pop("indexes", None) or tools.Indexes(case.index_dir)
+    case.limiter = over.pop("limiter", None) or limits.Limiter()
+    case.daily_cap = over.pop("daily_cap", None) or limits.DailyCap(case.index_dir / "usage.json", limit=100)
+    case.journal = []
+    case.server = serve.make_server(
+        case.status,
+        port=0,
+        indexes=case.indexes,
+        limiter=case.limiter,
+        daily_cap=case.daily_cap,
+        handle_one=over.pop("handle_one", None) or (lambda _m: None),
+        key=key,
+        log=case.journal.append,
+        **over,
+    )
+    threading.Thread(target=case.server.serve_forever, daemon=True).start()
+    case.url = f"http://127.0.0.1:{case.server.server_address[1]}"
+    case.addCleanup(case.server.server_close)
+    case.addCleanup(case.server.shutdown)
+    return case.url
 
 
 class HealthzTest(unittest.TestCase):
     def setUp(self):
-        self.status = serve.Status()
-        self.server = serve.make_server(self.status, port=0)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
+        start_service(self)
 
     def get(self, path: str):
         with urllib.request.urlopen(f"{self.url}{path}", timeout=5) as resp:
@@ -79,12 +120,7 @@ class PublicReasonTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.status = serve.Status()
-        self.server = serve.make_server(self.status, port=0)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
+        start_service(self)
 
     def body_after_failure(self, err: Exception) -> dict:
         """Прогнать run_build, у которого сборка падает заданной ошибкой."""
@@ -99,7 +135,7 @@ class PublicReasonTest(unittest.TestCase):
         build.build_all = boom
         stderr, sys.stderr = sys.stderr, io.StringIO()
         try:
-            serve.run_build(self.status)
+            serve.run_build(self.status, tools.Indexes(self.index_dir))
             self.journal = sys.stderr.getvalue()
         finally:
             sys.stderr = stderr
@@ -208,8 +244,10 @@ class StartupTest(unittest.TestCase):
             captured.append(status)
             raise RuntimeError("стоп")
 
+        # RAG_KEY — часть окружения старта: без него `main` не доходит до
+        # сервера вовсе (проверяется отдельно в `KeyRequiredTest`).
         with (
-            mock.patch.dict(os.environ, env),
+            mock.patch.dict(os.environ, {"RAG_KEY": KEY, **env}),
             mock.patch.object(serve, "make_server", grab),
         ):
             with self.assertRaises(RuntimeError):
@@ -238,7 +276,7 @@ class StartupTest(unittest.TestCase):
         started = th.Event()
         seen = []
 
-        def fake_run_build(status):
+        def fake_run_build(status, indexes):
             seen.append(status)
             status.update(state="building")
             started.set()
@@ -264,10 +302,425 @@ class StartupTest(unittest.TestCase):
         called = []
         with tempfile.TemporaryDirectory() as tmp:
             missing = str(Path(tmp) / "нет-такого-каталога")
-            with mock.patch.object(serve, "run_build", lambda s: called.append(s)):
+            with mock.patch.object(serve, "run_build", lambda s, i: called.append(s)):
                 status = self.run_main({"RAG_CORPUS": missing})
         self.assertEqual(called, [])
         self.assertEqual(status.read()["state"], "failed")
+
+
+
+
+class RouteTableTest(unittest.TestCase):
+    """Конвенция лимитера у этой единицы (ADR 2026-09-29-2139, п. 7).
+
+    Смысл тот же, что у корневого `test/limiter-seam-days.test.js` для дней:
+    ручка объявляет своё окно в таблице, исключение обязано нести причину, а
+    запись без окна не даёт модулю загрузиться. Разница в наборе имён окон —
+    у этой единицы ручек две и окно одно.
+    """
+
+    def test_у_каждой_записи_названо_окно(self):
+        self.assertGreater(len(serve.ROUTES), 0, "таблица ручек пуста")
+        for route in serve.ROUTES:
+            self.assertIn(route.limit, serve.LIMITS, f"{route}: окно не названо")
+            if route.limit == "open":
+                self.assertTrue(route.why.strip(), f"{route}: исключение без причины")
+
+    def test_запись_без_окна_не_даёт_загрузиться(self):
+        bad = (serve.Route("GET", ("/x",), "нет-такого-окна", handler="healthz"),)
+        with self.assertRaises(RuntimeError):
+            serve.check_routes(bad)
+
+    def test_исключение_без_причины_не_даёт_загрузиться(self):
+        bad = (serve.Route("GET", ("/x",), "open", handler="healthz", why="  "),)
+        with self.assertRaises(RuntimeError):
+            serve.check_routes(bad)
+
+    def test_проверка_таблицы_зовётся_при_загрузке_модуля_а_не_из_main(self):
+        # Держатель стоит не на функции, а на её месте: `check_routes` может
+        # быть сколь угодно строгой и при этом никем не вызванной. Здесь
+        # проверяется, что её зовёт сам модуль — импорт с негодной таблицей
+        # обязан упасть.
+        import importlib.util
+
+        source = Path(serve.__file__).read_text(encoding="utf-8")
+        broken = source.replace('Route("POST", ("/rag",), "call", handler="rpc")',
+                                'Route("POST", ("/rag",), "", handler="rpc")')
+        self.assertNotEqual(broken, source, "приманка не подставилась")
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "serve_broken.py"
+        path.write_text(broken, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("serve_broken", path)
+        module = importlib.util.module_from_spec(spec)
+        with self.assertRaises(RuntimeError):
+            spec.loader.exec_module(module)
+
+    def test_путь_вне_таблицы_не_находится(self):
+        self.assertIsNone(serve.match("/tools/call"))
+        self.assertIsNone(serve.match("/"))
+        self.assertIsNotNone(serve.match("/rag"))
+        self.assertIsNotNone(serve.match("/rag/"))
+        self.assertIsNotNone(serve.match("/rag/healthz"))
+
+    def test_запрос_не_обманывает_таблицу_хвостом(self):
+        # `/rag?x=1` — тот же /rag, `/ragged` — не он.
+        self.assertIsNotNone(serve.match("/rag?query=1"))
+        self.assertIsNone(serve.match("/ragged"))
+        self.assertIsNone(serve.match("/rag/tools"))
+
+
+def request(url: str, path: str, method: str = "POST", key: str | None = KEY, body=None, headers=None):
+    """Сырой запрос без исключений: возвращает (код, заголовки, тело-байты)."""
+    import http.client
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=5)
+    head = dict(headers or {})
+    if key is not None:
+        head["authorization"] = f"Bearer {key}"
+    raw = body if isinstance(body, (bytes, type(None))) else json.dumps(body).encode("utf-8")
+    if raw is not None:
+        head["content-type"] = "application/json"
+    try:
+        conn.request(method, path, body=raw, headers=head)
+        resp = conn.getresponse()
+        return resp.status, dict(resp.getheaders()), resp.read()
+    finally:
+        conn.close()
+
+
+class KeyTest(unittest.TestCase):
+    """Ключ — всегда и до чтения тела; отказ выглядит как пустое место."""
+
+    def setUp(self):
+        start_service(self, handle_one=lambda m: {"jsonrpc": "2.0", "id": m.get("id"), "result": {"ok": True}})
+
+    def test_годный_ключ_пропускает(self):
+        code, _h, raw = request(self.url, "/rag", body={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw)["result"], {"ok": True})
+
+    def test_отказ_по_ключу_и_неизвестный_путь_совпадают_побайтно(self):
+        # Решение владельца по /mcp (ADR 2026-09-23-1844, пп. 1–2): два
+        # разных ответа снова отличали бы эндпоинт от пустого места.
+        bad_key = request(self.url, "/rag", key="wrong-key", body={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        unknown = request(self.url, "/no-such-path", key=None)
+        for name in ("date", "server", "connection"):
+            bad_key[1].pop(name, None)
+            unknown[1].pop(name, None)
+        self.assertEqual(bad_key, unknown)
+        self.assertEqual(bad_key[0], 404)
+        self.assertEqual(bad_key[2], b"")
+
+    def test_без_заголовка_ключа_тот_же_пустой_404(self):
+        code, _h, raw = request(self.url, "/rag", key=None, body={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        self.assertEqual((code, raw), (404, b""))
+
+    def test_тело_неавторизованного_запроса_не_читается(self):
+        # Иначе потолок тела не был бы потолком: кто угодно без ключа
+        # заставлял бы службу читать сколько угодно байт.
+        code, _h, _raw = request(
+            self.url, "/rag", key="wrong-key", body={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}}
+        )
+        self.assertEqual(code, 404)
+        # Ни один вызов инструмента не дошёл до RPC — и слот не занят.
+        self.assertEqual(self.limiter.stats()["trackedIps"], 0)
+
+    def test_сверка_идёт_через_compare_digest_а_не_через_равенство(self):
+        # I-14 для утверждения «сверка ключа постоянного времени». Держится
+        # не замером времени (он флакует), а тем, ЧЕМ сравнивают: замена
+        # `hmac.compare_digest` на `==` краснит эту проверку.
+        from unittest import mock
+
+        calls = []
+        real = hmac.compare_digest
+
+        def spy(a, b):
+            calls.append((a, b))
+            return real(a, b)
+
+        with mock.patch.object(serve.hmac, "compare_digest", spy):
+            request(self.url, "/rag", body={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        self.assertEqual(len(calls), 1, "ключ сверили не через compare_digest")
+        self.assertEqual(calls[0][1], KEY.encode("utf-8"))
+
+    def test_ключ_сверяется_и_на_методе_который_всё_равно_получит_405(self):
+        # Порядок: ключ ДО метода. Иначе прохожий отличал бы живой адрес от
+        # пустого места по 405.
+        self.assertEqual(request(self.url, "/rag", method="DELETE", key="wrong-key")[0], 404)
+        self.assertEqual(request(self.url, "/rag", method="DELETE")[0], 405)
+
+    def test_чужой_метод_не_отвечает_501_от_библиотеки(self):
+        # `BaseHTTPRequestHandler` на неописанный метод отвечает своим 501 с
+        # текстом — то есть отличал бы адрес от пустого места ещё до ключа.
+        for method in ("PUT", "PATCH", "OPTIONS", "HEAD"):
+            self.assertEqual(request(self.url, "/no-such-path", method=method, key=None)[0], 404, method)
+
+    def test_перебор_даёт_одну_строку_в_журнал_за_окно_и_без_адреса(self):
+        limiter = limits.Limiter(refusal_signal=3)
+        start_service(self, limiter=limiter)
+        for _ in range(10):
+            request(self.url, "/rag", key="wrong-key", body={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        bursts = [e for e in self.journal if e["event"] == "refusal_burst"]
+        self.assertEqual(len(bursts), 1, "сигнал о переборе сам стал перебором строк")
+        self.assertEqual(bursts[0]["count"], 3)
+        # I-10: журнал контейнера переживает часовое окно, адреса в нём нет.
+        self.assertNotIn("127.0.0.1", json.dumps(self.journal, ensure_ascii=False))
+
+
+class HealthzOpenTest(unittest.TestCase):
+    def setUp(self):
+        start_service(self)
+
+    def test_healthz_открыт_без_ключа(self):
+        # Его дёргает шаг «Проверка живого сайта» в deploy.yml и HEALTHCHECK
+        # образа — оба без заголовков.
+        code, _h, raw = request(self.url, "/healthz", method="GET", key=None)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw)["state"], "starting")
+
+    def test_healthz_называет_и_сборку_и_загруженный_индекс(self):
+        # `state` — про СБОРКУ, `index` — про то, по чему идёт поиск сейчас.
+        body = json.loads(request(self.url, "/rag/healthz", method="GET", key=None)[2])
+        self.assertEqual(body["state"], "starting")
+        self.assertEqual(body["index"], {"commit": "unknown", "strategies": [], "chunks": {}})
+
+    def test_остаток_суточного_потолка_в_открытую_ручку_не_идёт(self):
+        # Он говорил бы прохожему, пользуется ли службой кто-то прямо сейчас.
+        raw = request(self.url, "/rag/healthz", method="GET", key=None)[2].decode("utf-8")
+        self.assertNotIn("daily", raw)
+        self.assertNotIn("remaining", raw)
+
+
+class OrderAndLimiterTest(unittest.TestCase):
+    """Лимитер ДО передачи `tools/call` обработчику."""
+
+    def setUp(self):
+        self.seen = []
+
+        def handle_one(message):
+            self.seen.append(message)
+            return {"jsonrpc": "2.0", "id": message.get("id"), "result": {"content": []}}
+
+        start_service(self, limiter=limits.Limiter(per_min=2, per_hour=2), handle_one=handle_one)
+
+    def call(self, n=1):
+        body = [{"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {"name": "project.search"}} for i in range(n)]
+        return request(self.url, "/rag", body=body if n > 1 else body[0])
+
+    def test_отказ_лимитера_не_доходит_до_обработчика(self):
+        self.assertEqual(self.call()[0], 200)
+        self.assertEqual(self.call()[0], 200)
+        code, _h, raw = self.call()
+        self.assertEqual(code, 429)
+        self.assertEqual(json.loads(raw)["error"]["code"], -32002)
+        self.assertEqual(len(self.seen), 2, "обработчик позван поверх окна")
+
+    def test_пачка_считается_поштучно_а_не_за_один_вызов(self):
+        code, _h, _raw = self.call(3)
+        self.assertEqual(code, 429)
+        self.assertEqual(self.seen, [], "пачка прошла мимо окна")
+
+    def test_не_вызовы_инструментов_слотов_не_занимают(self):
+        for _ in range(5):
+            self.assertEqual(request(self.url, "/rag", body={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})[0], 200)
+        self.assertEqual(self.call()[0], 200, "tools/list съел слот вызова")
+
+    def test_отказ_лимитера_несёт_id_запроса(self):
+        self.call()
+        self.call()
+        body = json.loads(request(self.url, "/rag", body={"jsonrpc": "2.0", "id": "мой", "method": "tools/call"})[2])
+        self.assertEqual(body["id"], "мой")
+
+
+class BodyTest(unittest.TestCase):
+    def setUp(self):
+        start_service(self, handle_one=lambda m: {"jsonrpc": "2.0", "id": m.get("id"), "result": {}})
+
+    def test_тело_больше_потолка_не_читается(self):
+        big = b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"x":"' + b"a" * (serve.MAX_BODY + 10) + b'"}}'
+        code, _h, raw = request(self.url, "/rag", body=big)
+        self.assertEqual(code, 400)
+        self.assertEqual(json.loads(raw)["error"]["code"], rpc.PARSE_ERROR)
+        self.assertEqual(self.limiter.stats()["trackedIps"], 0, "слот занят телом, которое не прочли")
+
+    def test_не_json_это_parse_error(self):
+        code, _h, raw = request(self.url, "/rag", body="{это не json".encode("utf-8"))
+        self.assertEqual(code, 400)
+        self.assertEqual(json.loads(raw)["error"]["code"], rpc.PARSE_ERROR)
+
+    def test_уведомление_даёт_202_без_тела(self):
+        start_service(self, handle_one=lambda _m: None)
+        code, _h, raw = request(self.url, "/rag", body={"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual((code, raw), (202, b""))
+
+    def test_пустая_пачка_это_негодный_запрос(self):
+        code, _h, raw = request(self.url, "/rag", body=[])
+        self.assertEqual(code, 400)
+        self.assertEqual(json.loads(raw)["error"]["code"], rpc.INVALID_REQUEST)
+
+
+class EndToEndTest(unittest.TestCase):
+    """Настоящий RPC поверх настоящих инструментов, с поддельным эмбеддером."""
+
+    def setUp(self):
+        start_service(self)
+        rows = [{
+            "source": "agent_docs/invariants.md", "title": "Инварианты", "section": "I-4",
+            "chunk_id": "c1", "strategy": "structural", "sha256": "0" * 64, "commit": "a1b2c3d",
+            "text": "проверка лимита предшествует вызову API",
+        }]
+        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.index_dir)
+        self.indexes.load()
+        self.embed_calls = []
+
+        class Embedder:
+            def embed(_self, texts, timeout=None):
+                self.embed_calls.append(texts)
+                return [[1.0, 0.0] for _ in texts]
+
+        handle_one = rpc.create_rpc(serve.SERVER_INFO, serve.make_tools(self.status, self.indexes, self.daily_cap, Embedder()))
+        start_service(self, status=self.status, indexes=self.indexes, daily_cap=self.daily_cap, handle_one=handle_one)
+
+    def call(self, name, arguments=None, id_=1):
+        body = {"jsonrpc": "2.0", "id": id_, "method": "tools/call", "params": {"name": name, "arguments": arguments or {}}}
+        code, _h, raw = request(self.url, "/rag", body=body)
+        return code, json.loads(raw)
+
+    def test_список_инструментов_это_ровно_два_имени(self):
+        code, _h, raw = request(self.url, "/rag", body={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        self.assertEqual(code, 200)
+        self.assertEqual([t["name"] for t in json.loads(raw)["result"]["tools"]], ["project.search", "project.status"])
+
+    def test_поиск_доходит_до_выдачи(self):
+        code, answer = self.call("project.search", {"query": "лимит"})
+        self.assertEqual(code, 200)
+        payload = json.loads(answer["result"]["content"][0]["text"])
+        self.assertEqual(payload["results"][0]["source"], "agent_docs/invariants.md")
+        self.assertEqual(payload["index"]["commit"], "a1b2c3d")
+        self.assertEqual(self.embed_calls, [["лимит"]])
+
+    def test_состояние_доходит_до_выдачи(self):
+        code, answer = self.call("project.status")
+        payload = json.loads(answer["result"]["content"][0]["text"])
+        self.assertEqual(payload["index"]["strategies"], ["structural"])
+        self.assertEqual(payload["daily"]["limit"], 100)
+        self.assertEqual(self.embed_calls, [], "status позвал эмбеддер")
+
+    def test_ответ_не_несёт_ни_адреса_ни_заголовков_запроса(self):
+        _code, answer = self.call("project.search", {"query": "лимит"})
+        raw = json.dumps(answer, ensure_ascii=False)
+        for forbidden in ("127.0.0.1", "authorization", "Bearer", "user-agent", KEY):
+            self.assertNotIn(forbidden, raw, forbidden)
+
+
+class KeyRequiredTest(unittest.TestCase):
+    """Без `RAG_KEY` процесс не стартует (ADR 2026-09-29-2139, п. 1)."""
+
+    def run_main(self, env):
+        from unittest import mock
+
+        reached = []
+        with (
+            mock.patch.dict(os.environ, env, clear=False),
+            mock.patch.object(serve, "make_server", lambda *a, **k: reached.append(1)),
+        ):
+            code = serve.main()
+        return code, reached
+
+    def test_без_ключа_служба_не_поднимается(self):
+        stderr, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            code, reached = self.run_main({"RAG_KEY": ""})
+            journal = sys.stderr.getvalue()
+        finally:
+            sys.stderr = stderr
+        self.assertEqual(code, 2)
+        self.assertEqual(reached, [], "сервер создан без ключа")
+        self.assertIn("RAG_KEY", journal)
+
+    def test_пробелы_за_ключ_не_считаются(self):
+        stderr, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            code, reached = self.run_main({"RAG_KEY": "   "})
+        finally:
+            sys.stderr = stderr
+        self.assertEqual((code, reached), (2, []))
+
+
+class RunBuildReadyTest(unittest.TestCase):
+    """Удачный путь `run_build` — долг захода 3 (ADR 2026-09-29-2139, п. 9).
+
+    До этого захода поле `state` никто не читал, и ни один из тринадцати
+    тестов `run_build` не доводил его до `ready`: покрыты были только четыре
+    ветви отказа. Теперь `state` читает `project.status`, и «сборка удалась»
+    стало наблюдаемым снаружи — значит, обязано быть под тестом.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.status = serve.Status()
+        self.indexes = tools.Indexes(self.dir)
+
+    def run_ok(self, stats=None, write_index=True):
+        import build
+        from unittest import mock
+
+        if write_index:
+            rows = [{
+                "source": "AGENTS.md", "title": "Правила", "section": "Роли", "chunk_id": "c1",
+                "strategy": "structural", "sha256": "0" * 64, "commit": "abcdef1",
+                "text": "роли определены в .claude/agents",
+            }]
+            VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.dir)
+
+        done = stats if stats is not None else [{"strategy": "structural", "count": 1}]
+        with (
+            mock.patch.object(build, "build_all", lambda *a, **k: done),
+            mock.patch.object(build, "CORPUS_DIR", self.dir),
+        ):
+            serve.run_build(self.status, self.indexes)
+        return self.status.read()
+
+    def test_удачная_сборка_доводит_состояние_до_ready(self):
+        state = self.run_ok()
+        self.assertEqual(state["state"], "ready")
+        self.assertIsNone(state["error"])
+        self.assertEqual(state["strategies"], [{"strategy": "structural", "count": 1}])
+
+    def test_удачная_сборка_перечитывает_том(self):
+        # Без этого свежесобранный индекс не искался бы до перезапуска
+        # контейнера: в памяти остался бы индекс прошлой выкатки.
+        self.assertEqual(self.indexes.load(), [], "том не пуст до сборки")
+        self.run_ok()
+        self.assertEqual(self.indexes.state()["strategies"], ["structural"])
+        self.assertEqual(self.indexes.commit(), "abcdef1")
+
+    def test_коммит_корпуса_попадает_в_состояние_до_сборки_а_не_после(self):
+        # Иначе при отказе сборки `project.status` не сказал бы, какой
+        # корпус вообще пытались собрать.
+        (self.dir / "COMMIT").write_text("0123456789abcdef\n", encoding="utf-8")
+        self.assertEqual(self.run_ok()["commit"], "0123456789abcdef")
+
+    def test_отказ_сборки_том_не_перечитывает(self):
+        import build
+        from unittest import mock
+
+        loaded = []
+        self.indexes.load = lambda: loaded.append(1)
+        stderr, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            with (
+                mock.patch.object(build, "build_all", side_effect=RuntimeError("нет")),
+                mock.patch.object(build, "CORPUS_DIR", self.dir),
+            ):
+                serve.run_build(self.status, self.indexes)
+        finally:
+            sys.stderr = stderr
+        self.assertEqual(self.status.read()["state"], "failed")
+        self.assertEqual(loaded, [])
 
 
 if __name__ == "__main__":
