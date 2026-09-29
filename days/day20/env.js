@@ -15,6 +15,9 @@ const NUMBERS = {
   // Быстрые вызовы к сервису агентов. Поток событий идёт без таймаута, пока
   // агент его не закроет.
   AGENT_TIMEOUT_MS: 10_000,
+  // Срок жизни cookie сессии. Тот же, что у дня 7 и у хранилища сервиса
+  // (ADR 2026-09-09-1906): переписка живёт 30 часов без сообщений.
+  SESSION_TTL_HOURS: 30,
   PORT: 8080,
 }
 
@@ -23,6 +26,11 @@ export function parseEnv(source = process.env) {
   const env = {
     AGENT_URL: source.AGENT_URL || 'http://agents:8082',
     AGENT_ID: source.AGENT_ID || 'mcp-agent',
+    // Умолчание уже верно для прода: cookie уходит только на адреса дня.
+    // Поэтому в deploy/day20.env переменной нет — как у дней 9–15.
+    COOKIE_PATH: source.COOKIE_PATH || '/day20/',
+    // `Secure` снимается только явным 'false' — для локального http.
+    COOKIE_SECURE: source.COOKIE_SECURE !== 'false',
   }
 
   const key = source.AGENT_KEY ?? ''
