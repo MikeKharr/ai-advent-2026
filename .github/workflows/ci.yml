@@ -243,7 +243,7 @@ jobs:
           # Предварительный отбор: файлы, где вообще есть речь об установке
           # или о реестре. Он сужает перебор, а не зону: что не попало сюда,
           # не содержит ни одной из искомых строк.
-          candidates=$(grep -rlIE 'pip[^A-Za-z0-9_-]{0,8}install|npm[^A-Za-z0-9_-]{0,8}(ci|install|i)([^A-Za-z0-9_-]|$)|PIP_[A-Z_]*(URL|HOST|LINKS)|NPM_CONFIG_REGISTRY|npm_config_registry|--registry|--index-url|--extra-index-url|--find-links|--trusted-host' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.agents --exclude-dir=corpus --exclude='*.md' . || true)
+          candidates=$(grep -rlIE 'pip[^A-Za-z0-9_-]{0,8}install|npm[^A-Za-z0-9_-]{0,8}(ci|install|i)([^A-Za-z0-9_-]|$)|PIP_[A-Z_]*(URL|HOST|LINKS)|NPM_CONFIG_REGISTRY|npm_config_registry|--registry|--index-url|--extra-index-url|--find-links|--trusted-host' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.agents --exclude='*.md' . || true)
           [ -n "$candidates" ] || { echo "::error::в дереве нет ни одного файла, ставящего пакеты — шаг не проверил ничего"; exit 1; }
           seen=0
           while IFS= read -r f; do
@@ -278,13 +278,27 @@ jobs:
                 case "$line" in *--extra-index-url*) extra="${extra} --extra-index-url" ;; esac
                 case "$line" in *--find-links*) extra="${extra} --find-links" ;; esac
                 case "$line" in *--trusted-host*) extra="${extra} --trusted-host" ;; esac
+                # Источники СЧИТАЮТСЯ, а не ищутся подстрокой. `--index-url`
+                # у pip — опция store, а не накопительная: выигрывает
+                # последняя, поэтому «pypi.org где-то в строке» ничего не
+                # значит ни при каком порядке флагов (находка compliance к
+                # PR #278). `--extra-index-url` в этот счёт не попадает —
+                # в нём перед `index-url` один дефис, а не два, — и ловится
+                # отдельно веткой выше.
+                sources=$(printf '%s\n' "$line" | grep -oE -- '--index-url' | wc -l | tr -d ' ')
                 if [ -n "$extra" ]; then
                   echo "::error file=${rel}::у установки pip есть второй источник (${extra# }) — pypi.org обязан быть единственным: ${line}"
+                  fail=1
+                elif [ "$sources" -eq 0 ]; then
+                  echo "::error file=${rel}::установка pip без явного «--index-url https://pypi.org/simple»: ${line}"
+                  fail=1
+                elif [ "$sources" -ne 1 ]; then
+                  echo "::error file=${rel}::у установки pip источников ${sources}, а должен быть ровно один: --index-url — опция store, выигрывает последняя: ${line}"
                   fail=1
                 else
                   case "$line" in
                     *"--index-url https://pypi.org/simple"*) [ "$said_pip" -eq 1 ] || echo "ok: ${rel} — pip: источник один и назван в команде"; said_pip=1 ;;
-                    *) echo "::error file=${rel}::установка pip без явного «--index-url https://pypi.org/simple»: ${line}"; fail=1 ;;
+                    *) echo "::error file=${rel}::единственный источник установки pip — не «--index-url https://pypi.org/simple»: ${line}"; fail=1 ;;
                   esac
                 fi
               fi
