@@ -872,3 +872,148 @@ test('после неудачного хода роли в следующем з
   assert.match(all, /первый вопрос/)
   assert.match(all, /второй вопрос/)
 })
+
+// ——— Рассуждение модели (ADR 2026-09-29-0236, пп. 1–4).
+//
+// Два утверждения этого блока противоположны по смыслу и обязаны держаться
+// порознь: рассуждение ДОХОДИТ до экрана и НЕ ДОХОДИТ до базы. Одного теста на
+// оба не бывает: код, который не эмитит ничего, прошёл бы «не сохраняется», а
+// код, который кладёт всё в `meta`, прошёл бы «доходит до экрана».
+
+/** Ответ модели с блоками размышления перед вызовом инструмента. */
+const thinksAndWants = (name, thought, extra = []) => ({
+  text: '',
+  content: [
+    ...(thought === null ? [] : [{ type: 'thinking', thinking: thought, signature: 'sig-1' }]),
+    ...extra,
+    { type: 'tool_use', id: 'tu-1', name, input: {} },
+  ],
+  stopReason: 'tool_use',
+  usage: { inputTokens: 10, outputTokens: 5 },
+  budgetLeft: { costUsd: 0.4, tokens: 1000 },
+})
+
+/** Событие стадии `llm_text` круга N из собранного потока. */
+const saidOn = (events, round) =>
+  events.find((e) => e.stage === 'llm_text' && e.data.round === round)?.data ?? null
+
+async function loopWith(replies, options = {}) {
+  const { news, servers } = await oneServer()
+  const router = fakeRouter(replies)
+  const events = []
+  const out = await runToolLoop({
+    task: 'что нового',
+    system: 'ты агент',
+    servers,
+    taskClass: 'tool_use',
+    provider: 'anthropic-haiku',
+    answerTokens: 1024,
+    routerUrl: env.ROUTER_URL,
+    routerKey: APP_KEY,
+    timeoutMs: 5_000,
+    emit: (event) => events.push(event),
+    fetchImpl: router.fetchImpl,
+    ...options,
+  })
+  await news.close()
+  return { out, events, router }
+}
+
+test('уровень размышления просит только день 20; планировщик дня 18 зовёт роутер без поля', async (t) => {
+  const { news, servers } = await oneServer()
+  t.after(() => news.close())
+  const runs = createRuns()
+  const entry = registry.get('mcp-agent')
+
+  const day20 = fakeRouter([answer('ответ')])
+  const agent = createMcpAgent({ agent: entry, servers, runs, env, fetchImpl: day20.fetchImpl })
+  const parsed = agent.parseInput({ task: 'что нового' })
+  await agent.execute(runs.create({ agent: entry, input: parsed.input }))
+  assert.equal(day20.calls[0].body.thinking, 'low')
+
+  const scheduler = fakeRouter([answer('сводка')])
+  const runJob = createJobRunner({ registry, servers, runs, env, fetchImpl: scheduler.fetchImpl })
+  await runJob({ job: jobOf('собери сводку'), runId: 'run-no-thinking' })
+  // Ключа НЕТ вовсе, а не `none`: умолчание уровня принадлежит классу в
+  // роутере, и подставлять своё здесь значило бы завести второе место, где
+  // решается, за что платит планировщик.
+  assert.ok(
+    !('thinking' in scheduler.calls[0].body),
+    `планировщик просит размышление: ${JSON.stringify(scheduler.calls[0].body.thinking)}`,
+  )
+})
+
+test('рассуждение доходит до события круга вместе со словами и выбором', async () => {
+  const { events } = await loopWith(
+    [thinksAndWants('mcpnews__news_search', 'Сначала посмотрю новости.'), answer('итог')],
+    { thinking: 'low' },
+  )
+  const first = saidOn(events, 1)
+  assert.equal(first.thinking, 'Сначала посмотрю новости.')
+  assert.equal(first.redacted, false)
+  // Стадия та же: рассуждение — часть того же ответа, что слова и выбор
+  // (ADR, п. 4). Второй стадии нет и заводить её нельзя.
+  assert.equal(events.filter((e) => e.stage === 'llm_thinking').length, 0)
+})
+
+test('блоков размышления не было — поле null, а не пустая строка и не выдуманный текст', async () => {
+  const { events } = await loopWith(
+    [thinksAndWants('mcpnews__news_search', null), answer('итог')],
+    { thinking: 'low' },
+  )
+  assert.equal(saidOn(events, 1).thinking, null)
+  // Круг 2 у Haiku 4.5 блоков не несёт никогда: чередующегося размышления у
+  // модели нет. Экран обязан показать это отсутствием записи, а не пустотой.
+  assert.equal(saidOn(events, 2).thinking, null)
+})
+
+test('поставщик скрыл часть рассуждения — это отдельное состояние, а не отсутствие', async () => {
+  const { events } = await loopWith(
+    [
+      thinksAndWants('mcpnews__news_search', null, [{ type: 'redacted_thinking', data: 'зашифровано' }]),
+      answer('итог'),
+    ],
+    { thinking: 'low' },
+  )
+  assert.equal(saidOn(events, 1).redacted, true)
+  assert.equal(saidOn(events, 1).thinking, null, 'скрытый блок не притворяется текстом рассуждения')
+})
+
+test('блоки размышления возвращаются в следующий круг без изменений, вместе с подписью', async () => {
+  const { router } = await loopWith(
+    [thinksAndWants('mcpnews__news_search', 'думаю'), answer('итог')],
+    { thinking: 'low' },
+  )
+  const second = router.calls[1].body.messages
+  const assistant = second.find((m) => m.role === 'assistant')
+  assert.ok(assistant, 'ответ модели не вернулся в диалог')
+  const block = assistant.content.find((b) => b.type === 'thinking')
+  assert.ok(block, 'блок размышления в следующий круг не ушёл')
+  // Подпись обязана уехать вместе с блоком: без неё поставщик отвергает
+  // запрос целиком, и диалог ломался бы на втором круге.
+  assert.deepEqual(block, { type: 'thinking', thinking: 'думаю', signature: 'sig-1' })
+})
+
+test('рассуждение не попадает ни в meta сообщения, ни в ответ истории', async (t) => {
+  const { news, servers } = await oneServer()
+  t.after(() => news.close())
+  const router = fakeRouter([
+    thinksAndWants('mcpnews__news_search', 'вот моя внутренняя сводка'),
+    answer('итог'),
+  ])
+  const runs = createRuns()
+  const sessions = memorySessions()
+  const entry = registry.get('mcp-agent')
+  const agent = createMcpAgent({ agent: entry, servers, runs, sessions, env, fetchImpl: router.fetchImpl })
+  const parsed = agent.parseInput({ task: 'что нового', sessionId: SID })
+  await agent.execute(runs.create({ agent: entry, input: parsed.input }))
+
+  const stored = JSON.stringify(sessions.history(SID))
+  assert.ok(!stored.includes('вот моя внутренняя сводка'), `рассуждение сохранилось: ${stored}`)
+  assert.ok(!stored.includes('thinking'), `поле рассуждения сохранилось: ${stored}`)
+  // Слова при этом сохраняются — иначе проверка была бы зелена и на коде,
+  // который не сохраняет ничего.
+  const meta = sessions.history(SID).at(-1).meta
+  assert.equal(meta.rounds.length, 2)
+  assert.ok(Object.hasOwn(meta.rounds[0], 'chosen'), 'слова кругов перестали сохраняться')
+})

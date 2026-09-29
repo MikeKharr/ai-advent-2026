@@ -60,7 +60,7 @@ export function clipToolResult(text) {
  * агента ключи разные, и молчаливое умолчание свело бы их в один.
  */
 export async function askTools(
-  { messages, tools, system, taskClass, provider, answerTokens },
+  { messages, tools, system, taskClass, provider, answerTokens, thinking },
   { routerUrl, routerKey, fetchImpl = fetch, timeoutMs },
 ) {
   if (typeof routerKey !== 'string' || routerKey === '')
@@ -68,7 +68,12 @@ export async function askTools(
   const response = await fetchImpl(`${routerUrl}/v1/route`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${routerKey}` },
-    body: JSON.stringify({ taskClass, provider, answerTokens, system, messages, tools }),
+    // `thinking` не задан — ключа в теле НЕ БУДЕТ: `JSON.stringify` отбрасывает
+    // `undefined`. Это и есть граница между двумя точками входа: день 20
+    // просит уровень явно, планировщик дня 18 не просит ничего, и роутер
+    // берёт уровень класса (`tool_use` → `none`), то есть не платит за
+    // размышление. Умолчания здесь нет намеренно.
+    body: JSON.stringify({ taskClass, provider, answerTokens, system, messages, tools, thinking }),
     signal: AbortSignal.timeout(timeoutMs),
   })
   const json = await response.json().catch(() => null)
@@ -163,6 +168,7 @@ function buildMessages(history, task) {
 export async function runToolLoop({
   task,
   history = [],
+  thinking,
   system,
   servers,
   taskClass,
@@ -239,7 +245,7 @@ export async function runToolLoop({
     let reply
     try {
       reply = await askTools(
-        { messages, tools: defs, system, taskClass, provider, answerTokens },
+        { messages, tools: defs, system, taskClass, provider, answerTokens, thinking },
         { routerUrl, routerKey, fetchImpl, timeoutMs },
       )
     } catch (error) {
@@ -286,12 +292,32 @@ export async function runToolLoop({
       chosen,
       stopReason: reply.stopReason ?? null,
     }
+    // В `says` — и, значит, в `meta` сообщения агента — кладётся ИМЕННО `said`,
+    // без рассуждения. Решение ADR 2026-09-29-0236, п. 1: слова сохраняются,
+    // рассуждение не сохраняется НИГДЕ — ни в `meta`, ни в переписке, ни в
+    // ответе истории. Оно живёт в памяти запуска 10 минут, как протокол.
+    // Поэтому объект события собирается отдельно, а не дополняется на месте:
+    // общая ссылка утащила бы рассуждение в базу молча.
     says.push(said)
+    // Блоки размышления того же ответа. `thinking` — склейка текстов,
+    // `redacted` — были блоки, которые поставщик скрыл. Отсутствие блоков
+    // (`null`) — не «модель промолчала», а свойство модели: у Haiku 4.5 нет
+    // чередующегося размышления, и блоки приходят один раз на сообщение, до
+    // первого вызова инструмента. Страница обязана показывать это как
+    // отсутствие записи, а не как пустой круг.
+    const thought = reply.content
+      .filter((block) => block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking !== '')
+      .map((block) => block.thinking)
+      .join('\n\n')
     emit({
       stage: 'llm_text',
       title: `Слова модели, круг ${rounds}`,
       detail: chosen.map((pick) => (pick.server ? `${pick.server} · ${pick.tool}` : pick.tool)).join(', '),
-      data: said,
+      data: {
+        ...said,
+        thinking: thought === '' ? null : thought,
+        redacted: reply.content.some((block) => block?.type === 'redacted_thinking'),
+      },
     })
 
     // ЕДИНСТВЕННОЕ условие исполнения инструментов. Обрыв по длине роутер
@@ -460,6 +486,11 @@ export function createMcpAgent({
         const out = await runToolLoop({
           task,
           history,
+          // Уровень размышления просит ТОЛЬКО эта точка входа (ADR
+          // 2026-09-29-0236, п. 2): у дня 20 есть экран, который рассуждение
+          // показывает. Планировщик дня 18 поля не передаёт и за размышление
+          // не платит — его страница текста не показывает вовсе.
+          thinking: 'low',
           system: agent.systemPrompt,
           servers: agentServers,
           taskClass: agent.taskClass,

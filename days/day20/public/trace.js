@@ -141,6 +141,15 @@ export function compareHashes(a, b) {
  *   выбором, а не является протоколом выбора. Подпись записи это называет.
  */
 export const NO_WORDS = 'Модель выбрала без слов.'
+/**
+ * Подпись записи рассуждения. Слово «рассуждение» допустимо только вместе со
+ * «сводкой поставщика» (ADR 2026-09-29-0236, п. 10.4): в блоке `thinking`
+ * лежит не сама цепочка рассуждения модели, а её сводка, составленную другой
+ * моделью поставщика. Платим при этом за полные токены размышления.
+ */
+export const THINKING_LABEL = 'сводка поставщика'
+/** Часть блоков поставщик скрыл. Это состояние, а не пустота. */
+export const REDACTED_NOTE = 'Часть рассуждения скрыта поставщиком: её текста нет и у нас.'
 /** Номера круга нет — выдумывать его нечем. */
 export const NO_ROUND = 'круг не назван'
 /** Инструментов на круге не названо (так выглядит заключительный круг). */
@@ -158,7 +167,22 @@ export function parseWords(data) {
       ? d.chosen.filter(isObject).map((pick) => ({ server: str(pick.server), tool: str(pick.tool) }))
       : [],
     stopReason: str(d.stopReason),
+    // Рассуждение круга. `null` — блоков не было, и это НЕ «модель
+    // промолчала»: у Haiku 4.5 нет чередующегося размышления, блоки приходят
+    // один раз на сообщение, до первого вызова инструмента. Поэтому пустое
+    // место здесь показывается ОТСУТСТВИЕМ записи, а не строкой о молчании —
+    // в отличие от слов, где молчание есть выбор круга.
+    thinking: str(d.thinking),
+    redacted: d.redacted === true,
   }
+}
+
+/** Есть ли что показать рассуждением на этом круге. */
+export const hasThinking = (words) => words.thinking !== null || words.redacted
+
+/** Заголовок записи рассуждения. Оговорка встроена в подпись, а не рядом. */
+export function thinkingTitle(words) {
+  return `круг ${words.round ?? NO_ROUND} · рассуждение · ${THINKING_LABEL}`
 }
 
 /** Заголовок записи. Подпись «модель» — та самая граница: это слова, не протокол. */
@@ -241,6 +265,29 @@ export function renderCall(call, { id, indent = false } = {}) {
       text = cut.text
     }
     parts.push(...pre(`${key}-${id}`, label, text, indent, key === 'req' ? 'is-req' : undefined))
+  }
+  li.replaceChildren(...parts)
+  return li
+}
+
+/**
+ * Одна запись с рассуждением круга. Вызывается ТОЛЬКО когда `hasThinking`:
+ * отсутствие блоков — свойство модели, и рисовать на этом месте пустую
+ * карточку значило бы выдать свойство модели за молчание круга.
+ */
+export function renderThinking(words, { id } = {}) {
+  const li = node('li', 'entry')
+  li.dataset.kind = 'thinking'
+  const head = node('p', 'entry-head')
+  head.append(node('span', 'entry-cmd', thinkingTitle(words)))
+  const parts = [head]
+  if (words.redacted) parts.push(node('p', 'entry-note', REDACTED_NOTE))
+  if (words.thinking !== null) {
+    const caption = node('p', 'entry-label', 'Сводка рассуждения')
+    caption.id = `think-${id}`
+    const body = node('p', 'think', words.thinking)
+    body.setAttribute('aria-labelledby', caption.id)
+    parts.push(caption, body)
   }
   li.replaceChildren(...parts)
   return li
