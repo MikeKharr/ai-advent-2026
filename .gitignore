@@ -104,3 +104,8 @@ venv/
 .venv/
 .pytest_cache/
 .mypy_cache/
+
+# Индекс проекта (день 21): корпус собирает шаг CI перед docker build,
+# векторы живут в томе rag_data, а не в git (ADR 2026-09-29-1639, пп. 3, 6).
+rag/corpus/
+rag/index/

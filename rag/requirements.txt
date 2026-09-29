@@ -1,0 +1,12 @@
+# Карта единицы rag для реестра pip — шаг «Граница runtime-зависимостей»
+# в .github/workflows/ci.yml (ADR 2026-09-29-1639, п. 1). Директивы pip
+# живут не здесь, а в команде Dockerfile: --index-url, --only-binary=:all:,
+# --require-hashes, --no-deps. Поэтому --no-deps: транзитивные зависимости
+# faiss-cpu (numpy, packaging) названы здесь поимённо, а не подбираются.
+#
+# Хэши — колёс linux x86_64: faiss-cpu публикует abi3-колесо (одно на
+# cp310+), numpy — по колесу на версию Python, поэтому здесь cp312 —
+# ровно то, что стоит в образе и в шаге CI.
+faiss-cpu==1.15.1 --hash=sha256:f2c31b7f2f6647eb76829a5cfe3c398fb9346df9f26b1d4db35269c91eb58c33
+numpy==2.5.3 --hash=sha256:b7e18c623bb5c95acb3b3328861272816ba199fb531921c5d6d0b675f1fde9e3
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c

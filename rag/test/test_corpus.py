@@ -1,0 +1,87 @@
+import contextlib
+import io
+import tempfile
+import unittest
+from pathlib import Path
+
+import corpus
+
+
+def tree(root: Path, paths: list[str]) -> None:
+    for rel in paths:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x\n", encoding="utf-8")
+
+
+class CollectTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_берёт_документы_корня_и_agent_docs(self):
+        tree(self.root, ["AGENTS.md", "README.md", "agent_docs/invariants.md", "agent_docs/adr/a.md"])
+        got = {str(p) for p in corpus.collect(self.root)}
+        self.assertEqual(got, {"AGENTS.md", "README.md", "agent_docs/invariants.md", "agent_docs/adr/a.md"})
+
+    def test_в_agent_docs_только_markdown(self):
+        tree(self.root, ["agent_docs/a.md", "agent_docs/guides/single-source.tsv", "agent_docs/x.json"])
+        self.assertEqual([str(p) for p in corpus.collect(self.root)], ["agent_docs/a.md"])
+
+    def test_сданные_дни_и_чужие_скиллы_не_берутся(self):
+        tree(self.root, ["days/day1/server.js", ".agents/skills/x/SKILL.md", "router/src/service.js"])
+        self.assertEqual([str(p) for p in corpus.collect(self.root)], ["router/src/service.js"])
+
+    def test_node_modules_и_lock_файлы_не_берутся(self):
+        tree(self.root, ["mcp/node_modules/z/index.js", "mcp/package-lock.json", "mcp/package.json"])
+        self.assertEqual([str(p) for p in corpus.collect(self.root)], ["mcp/package.json"])
+
+    def test_тесты_единиц_не_берутся_а_корневой_test_берётся(self):
+        tree(self.root, ["agents/test/a.test.js", "agents/src/a.js", "test/secrets-step.test.js"])
+        got = {str(p) for p in corpus.collect(self.root)}
+        self.assertEqual(got, {"agents/src/a.js", "test/secrets-step.test.js"})
+
+    def test_файлы_без_расширения_только_из_списка(self):
+        tree(self.root, ["deploy/Caddyfile", "deploy/Dockerfile", "deploy/notes", "deploy/bootstrap.sh"])
+        got = {str(p) for p in corpus.collect(self.root)}
+        self.assertEqual(got, {"deploy/Caddyfile", "deploy/Dockerfile", "deploy/bootstrap.sh"})
+
+    def test_readme_единиц_вне_списка_кода(self):
+        tree(self.root, ["atlas/README.md", "atlas/build.js", "rag/README.md"])
+        got = {str(p) for p in corpus.collect(self.root)}
+        self.assertEqual(got, {"atlas/README.md", "rag/README.md"})
+
+    def test_пустое_дерево_даёт_пустой_список(self):
+        self.assertEqual(corpus.collect(self.root), [])
+
+
+class CopyTest(unittest.TestCase):
+    def test_копия_сохраняет_пути_и_пишет_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "src"
+            out = Path(tmp) / "out"
+            tree(root, ["AGENTS.md", "agent_docs/a.md"])
+            count = corpus.copy_to(root, out)
+            self.assertEqual(count, 2)
+            self.assertTrue((out / "agent_docs/a.md").is_file())
+            self.assertEqual(corpus.read_commit(out), "unknown")
+
+    def test_повторная_копия_не_оставляет_удалённого_файла(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, out = Path(tmp) / "src", Path(tmp) / "out"
+            tree(root, ["AGENTS.md", "agent_docs/a.md"])
+            corpus.copy_to(root, out)
+            (root / "agent_docs/a.md").unlink()
+            corpus.copy_to(root, out)
+            self.assertFalse((out / "agent_docs/a.md").exists())
+
+    def test_пустой_корпус_даёт_ненулевой_код_возврата(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                code = corpus.main(["--root", tmp, "--out", f"{tmp}/out"])
+            self.assertEqual(code, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
