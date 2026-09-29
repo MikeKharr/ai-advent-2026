@@ -265,13 +265,19 @@ test('модуль разговора не рисует слов модели: �
 test('восстановление названо словами: что вернулось и что не вернётся', () => {
   assert.match(page, /<p class="restored" id="restored" hidden><\/p>/, 'места для строки восстановления нет')
   const app = stripJs(read('app.js'))
-  const note = app.slice(app.indexOf('const RESTORED_WITH_WORDS'), app.indexOf('const calls'))
-  assert.match(note, /восстановлена/)
-  assert.match(note, /слова модели/)
-  assert.match(note, /10 минут/, 'срок жизни тел вызовов не назван')
+  const block = app.slice(app.indexOf('const RESTORED_WITH_WORDS'), app.indexOf('const calls'))
   // Слов рядом с ответом может не быть — тогда восстановленный ход не
   // обещается: у страницы для этого случая своя строка, а не та же самая.
-  assert.match(note, /RESTORED_WITHOUT_WORDS/, 'случай «слов не записано» назван тем же текстом')
+  assert.match(block, /RESTORED_WITHOUT_WORDS/, 'случай «слов не записано» назван тем же текстом')
+  // Срок жизни тел вызовов обязана назвать КАЖДАЯ из двух строк: посетитель
+  // видит одну из них, и «названо где-то в коде» ему ничего не даёт.
+  const strings = block.split(/const RESTORED_/).filter((x) => x.includes('='))
+  assert.equal(strings.length, 2, `строк восстановления в коде: ${strings.length}`)
+  for (const one of strings) {
+    assert.match(one, /восстановлена/)
+    assert.match(one, /10 минут/, `срок жизни тел вызовов не назван: ${one.slice(0, 40)}`)
+  }
+  assert.match(block, /слова модели/)
 })
 
 // Лента хода показывает ОДИН ход — текущий. Новое сообщение её очищает и не
@@ -279,10 +285,16 @@ test('восстановление названо словами: что вер�
 // при отказе ход не начинался, и стирать показанное не за что.
 test('ход очищает ленту только после того, как сервер его принял', () => {
   const app = stripJs(read('app.js'))
-  const accepted = app.indexOf("input.value = ''")
+  const start = app.indexOf("form.addEventListener('submit'")
+  const refusal = app.indexOf('answer.status !== 202', start)
+  const accepted = app.indexOf("input.value = ''", refusal)
   const reset = app.indexOf('resetRun()', accepted)
-  const refusal = app.indexOf('answer.status !== 202')
-  assert.ok(refusal !== -1 && accepted > refusal, 'лента очищается до проверки ответа сервера')
+  assert.ok(start !== -1 && refusal !== -1, 'отправки или проверки ответа в коде нет')
+  // ДО ответа сервера лента не трогается вовсе: при отказе ход не начинался,
+  // и стирать показанное не за что. Именно здесь была бы ошибка «очистили, а
+  // ход не пошёл», поэтому проверяется весь отрезок, а не одна строка.
+  const beforeAnswer = app.slice(start, refusal)
+  assert.ok(!beforeAnswer.includes('resetRun'), `лента очищается до ответа сервера: ${beforeAnswer.slice(-160)}`)
   assert.ok(reset !== -1 && reset - accepted < 200, 'после принятого хода лента не очищается')
   // Разговор при этом не трогается: `resetRun` о логе реплик не знает.
   const body = app.slice(app.indexOf('function resetRun'), app.indexOf('function showServers'))

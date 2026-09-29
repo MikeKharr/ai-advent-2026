@@ -285,9 +285,13 @@ test('сервис не подтвердил удаление — cookie не м
   const res = await fetch(`${base}/api/chat`, { method: 'DELETE', headers: { cookie: `day20_sid=${sid}` } })
   sessionsReply = { status: 200, body: JSON.stringify({ ok: true, messages: [] }) }
   assert.equal(res.status, 502)
-  // Идентификатор остаётся ТОТ ЖЕ: пока сервис не подтвердил удаление,
-  // переписка жива, и ключ к ней терять нельзя.
-  assert.ok(sidOf(res).includes(sid), `после неудачной очистки сервер сменил cookie: ${sidOf(res)}`)
+  // Идентификатор остаётся ТОТ ЖЕ и в ответе он ОДИН: пока сервис не
+  // подтвердил удаление, переписка жива, и ключ к ней терять нельзя. Одного
+  // «старый на месте» мало — свежая cookie, добавленная рядом, победила бы в
+  // браузере, а проверка осталась бы зелёной.
+  const issued = res.headers.getSetCookie().filter((c) => c.startsWith('day20_sid='))
+  assert.equal(issued.length, 1, `выдано cookie сессии: ${issued.length} — ${JSON.stringify(issued)}`)
+  assert.ok(issued[0].includes(sid), `после неудачной очистки сервер сменил cookie: ${issued[0]}`)
 })
 
 test('память диалога недоступна — день говорит это словом, а не пустой перепиской', async () => {
