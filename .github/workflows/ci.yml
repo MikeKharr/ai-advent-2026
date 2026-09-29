@@ -35,23 +35,49 @@ jobs:
           fi
           echo "имена единиц ok"
       # Граница исключения из «Node 22 без runtime-зависимостей»
-      # (ADR 2026-09-07-1525) — ADR 2026-09-23-1227, п. 2: зависимости
-      # разрешены только в единице mcp/ и только для пакетов протокола.
+      # (ADR 2026-09-07-1525): зависимости разрешены только тем единицам и
+      # только на те пакеты, которые названы в карте ниже.
       # Проза границ не держит, поэтому держит этот шаг. Он читает КАЖДЫЙ
-      # package.json дерева, а не список известных единиц: новая единица со
+      # манифест дерева, а не список известных единиц: новая единица со
       # своими зависимостями появилась бы молча.
+      # Карта «единица → точные имена пакетов». Умолчание для любой единицы
+      # вне карты — ноль: новая единица получает право на пакет только строкой
+      # в этой карте, а карта живёт в .github/** — защищённый путь, класс A,
+      # вето compliance (ADR 2026-09-29-1639, п. 1; заведена ADR 2026-09-07-1525).
       - name: Граница runtime-зависимостей
         run: |
-          allowed='@modelcontextprotocol/sdk zod'
+          allowed_for() {
+            case "$1" in
+              mcp) echo '@modelcontextprotocol/sdk zod' ;;
+              rag) echo 'faiss-cpu numpy packaging' ;;
+              *) echo '' ;;
+            esac
+          }
           fail=0
           # node_modules исключён: это установленные пакеты, а не наши манифесты.
           files=$(find . -name package.json -not -path '*/node_modules/*' -not -path './.git/*' | sort)
-          if [ -z "$files" ]; then
-            echo "::error::в дереве нет ни одного package.json — страж не проверил ничего"
+          reqs=$(find . -name requirements.txt -not -path '*/node_modules/*' -not -path './.git/*' | sort)
+          if [ -z "$files" ] && [ -z "$reqs" ]; then
+            echo "::error::в дереве нет ни одного package.json и ни одного requirements.txt — страж не проверил ничего"
             exit 1
           fi
+          # Манифесты неизвестной формы: pip и npm — единственные два реестра,
+          # чьи манифесты страж умеет читать. Третья форма прошла бы мимо него
+          # молча, поэтому она красная, а не пропускается.
+          others=$(find . \( -name pyproject.toml -o -name Pipfile -o -name poetry.lock \) -not -path '*/node_modules/*' -not -path './.git/*' | sort)
+          if [ -n "$others" ]; then
+            while IFS= read -r f; do
+              echo "::error file=${f#./}::манифест неизвестной страже формы — читаются только package.json и requirements.txt (ADR 2026-09-29-1639, п. 1)"
+            done <<< "$others"
+            fail=1
+          fi
           while IFS= read -r f; do
-            unit=${f#./}
+            [ -n "$f" ] || continue
+            rel=${f#./}
+            # Единица — каталог самого манифеста, а не первый сегмент пути:
+            # иначе mcp/vendor/package.json получил бы права единицы mcp.
+            unit=$(dirname "$rel")
+            allowed=$(allowed_for "$unit")
             # Три раздела, а не один: `optionalDependencies` ставится тем же
             # `npm ci` и доезжает до образа (`--omit=dev` его не снимает),
             # `peerDependencies` объявляет ту же чужую единицу зависимостью.
@@ -59,16 +85,11 @@ jobs:
             # переименование раздела (находка reviewer к PR дня 16).
             # `devDependencies` намеренно не в счёт: в образ они не едут.
             runtime='[(.dependencies // {}), (.optionalDependencies // {}), (.peerDependencies // {})] | add'
-            names=$(jq -r "$runtime | keys[]" "$f") || { echo "::error file=${unit}::package.json не разобран"; fail=1; continue; }
+            names=$(jq -r "$runtime | keys[]" "$f") || { echo "::error file=${rel}::package.json не разобран"; fail=1; continue; }
             for name in $names; do
-              if [ "$unit" != mcp/package.json ]; then
-                echo "::error file=${unit}::runtime-зависимость ${name}: правило «Node 22 без runtime-зависимостей» (ADR 2026-09-07-1525); исключение — только единица mcp/"
-                fail=1
-                continue
-              fi
               case " $allowed " in
                 *" $name "*) ;;
-                *) echo "::error file=${unit}::runtime-зависимость ${name} вне списка исключения (${allowed}) — ADR 2026-09-23-1227, п. 2"; fail=1; continue ;;
+                *) echo "::error file=${rel}::runtime-зависимость ${name} вне карты единицы ${unit} (разрешено: ${allowed:-ничего}) — ADR 2026-09-29-1639, п. 1"; fail=1; continue ;;
               esac
               # Версия точная, без ^ и ~: поднятие версии SDK — отдельный PR
               # класса A с гейтом compliance, а не тихий разброс диапазона.
@@ -77,13 +98,76 @@ jobs:
               # вида `1.30.0 || 2.0.0` — диапазон из двух версий — проходила
               # бы как точная (находка reviewer к PR дня 16).
               if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-                echo "ok: ${unit} — ${name}@${version}"
+                echo "ok: ${rel} — ${name}@${version}"
               else
-                echo "::error file=${unit}::версия ${name} не точная: ${version} (ADR 2026-09-23-1227, п. 2)"
+                echo "::error file=${rel}::версия ${name} не точная: ${version} (ADR 2026-09-23-1227, п. 2)"
                 fail=1
               fi
             done
           done <<< "$files"
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            rel=${f#./}
+            unit=$(dirname "$rel")
+            allowed=$(allowed_for "$unit")
+            # Продолжения строк склеиваются: pip пишет хэши на следующих
+            # строках через `\`, и разбор построчно принял бы «пакет==версия»
+            # как строку без хэша, а хвост с хэшами — как мусор.
+            joined=$(awk '
+              { line = buf $0; buf = "" }
+              line ~ /\\[ \t]*$/ { sub(/\\[ \t]*$/, "", line); buf = line; next }
+              { print line }
+              END { if (buf != "") print buf }
+            ' "$f")
+            while IFS= read -r line; do
+              line=${line%%#*}
+              line=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+              [ -n "$line" ] || continue
+              case "$line" in
+                --require-hashes|--no-deps|--only-binary=*) continue ;;
+                # -r, --index-url, -e и прочее тянут зависимости и код из мест,
+                # которых в этом файле не видно: в карту они не вписываются.
+                -*) echo "::error file=${rel}::директива «${line}» не читается стражем — в requirements.txt только «пакет==версия --hash=sha256:…» (ADR 2026-09-29-1639, п. 1)"; fail=1; continue ;;
+              esac
+              if [[ ! $line =~ ^([A-Za-z0-9][A-Za-z0-9._-]*)==([^[:space:]]+)(.*)$ ]]; then
+                echo "::error file=${rel}::строка «${line}» не вида «пакет==версия»: версия не закреплена (ADR 2026-09-29-1639, п. 1)"
+                fail=1
+                continue
+              fi
+              name=${BASH_REMATCH[1]}
+              version=${BASH_REMATCH[2]}
+              rest=${BASH_REMATCH[3]}
+              case " $allowed " in
+                *" $name "*) ;;
+                *) echo "::error file=${rel}::runtime-зависимость ${name} вне карты единицы ${unit} (разрешено: ${allowed:-ничего}) — ADR 2026-09-29-1639, п. 1"; fail=1; continue ;;
+              esac
+              if [[ ! $version =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+                echo "::error file=${rel}::версия ${name} не точная: ${version} (ADR 2026-09-29-1639, п. 1)"
+                fail=1
+                continue
+              fi
+              # Хэш обязателен у каждой строки: `pip --require-hashes` без него
+              # откажется ставить, но флаг живёт в Dockerfile, а не здесь, и
+              # снять его — одна строка. Прибивать байты должен тот же файл.
+              hashes=0
+              bad=0
+              for token in $rest; do
+                if [[ $token =~ ^--hash=sha256:[0-9a-f]{64}$ ]]; then
+                  hashes=$((hashes + 1))
+                else
+                  echo "::error file=${rel}::у ${name} лишний хвост «${token}» — допустимы только --hash=sha256:… (ADR 2026-09-29-1639, п. 1)"
+                  bad=1
+                fi
+              done
+              if [ "$bad" -eq 1 ]; then fail=1; continue; fi
+              if [ "$hashes" -eq 0 ]; then
+                echo "::error file=${rel}::у ${name}==${version} нет --hash=sha256:… — байты пакета ничем не прибиты (ADR 2026-09-29-1639, п. 1)"
+                fail=1
+                continue
+              fi
+              echo "ok: ${rel} — ${name}==${version}, хэшей: ${hashes}"
+            done <<< "$joined"
+          done <<< "$reqs"
           [ "$fail" -eq 0 ] || exit 1
           echo "граница зависимостей ok"
       - id: set
