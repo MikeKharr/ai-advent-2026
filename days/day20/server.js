@@ -6,6 +6,12 @@
 // Ключ AGENT_KEY держит этот процесс. Страница его не знает, не получает и не
 // показывает (I-1). Запуск стоит денег, поэтому слот берётся ДО обращения к
 // сервису агентов (I-4) и суточный потолок проверяется первым.
+//
+// Окно объявляет ТАБЛИЦА МАРШРУТОВ, а не обработчик (ADR 2026-09-29-1600):
+// слот занимает `dispatch` до вызова обработчика, ручка без поля `limit` не
+// даёт процессу запуститься, а исключения лежат в той же таблице и обязаны
+// назвать `why`. До этого лимитер вешался на ручку руками, и `DELETE /api/chat`
+// оказался мимо окна — дефект приехал копией из дня 7.
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import http from 'node:http'
@@ -129,10 +135,21 @@ async function callAgent(path, options = {}) {
 /** Потолок текста задания. Длиннее — отказ страницы, а не обрезка молчком. */
 const MAX_TASK = 600
 
+/**
+ * Запуск хода. Слот окна `run` к этому месту УЖЕ занят диспетчером
+ * (ADR 2026-09-29-1600, п. 2): обработчик лимитера не трогает, и порядок
+ * «сначала слот, потом сервис» (I-4) держит таблица, а не внимательность
+ * автора ручки.
+ *
+ * Цена этого порядка названа прямо: слот тратится до разбора тела, поэтому
+ * пустое задание теперь стоит слота. Учёт слота (возврат на 4xx) ADR оставил
+ * нерешённым и сюда не трогается.
+ */
 async function handleRun(req, res) {
-  // Сессия заводится до чтения тела: cookie уходит с ЛЮБЫМ ответом, включая
-  // отказы. Иначе первый отказ оставил бы посетителя без идентификатора, и
-  // следующее сообщение начало бы новый диалог молча.
+  // Сессия заводится до чтения тела: cookie уходит с ЛЮБЫМ ответом дальше по
+  // коду, включая отказы разбора. Отказ лимитера приходит РАНЬШЕ и cookie не
+  // несёт: у посетителя, которому окно отказало на первом же запросе, ещё нет
+  // переписки, которую можно потерять.
   const session = ensureSession(req)
   let ask
   try {
@@ -144,21 +161,6 @@ async function handleRun(req, res) {
   if (!task) return send(res, 400, { error: 'Задание пустое.' }, session.headers)
   if (task.length > MAX_TASK)
     return send(res, 400, { error: `Задание длиннее ${MAX_TASK} знаков.` }, session.headers)
-
-  // Слот берётся ДО обращения к сервису агентов (I-4): проверка и учёт — один
-  // синхронный шаг, иначе залп параллельных запросов проходит мимо окна.
-  // Слот берётся НА КАЖДОЕ СООБЩЕНИЕ, а не на диалог: платит каждый ход.
-  const slot = limiter.reserve(clientIp(req))
-  if (!slot.ok)
-    return send(
-      res,
-      429,
-      { error: slot.message, retryAfterSec: slot.retryAfterSec ?? null },
-      {
-        ...session.headers,
-        ...(slot.retryAfterSec ? { 'retry-after': String(slot.retryAfterSec) } : {}),
-      },
-    )
 
   let response
   let json
@@ -293,30 +295,122 @@ async function serveStatic(url, res) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
+/** Проба живости: состояние конфигурации и счётчики окон, без ключа (I-1). */
+function handleHealth(req, res) {
+  const ok = envErrors.length === 0
+  return send(res, ok ? 200 : 503, { ok, errors: envErrors, limiter: limiter.stats() })
+}
+
+/** Поток событий запуска. Идентификатор из URL проверяется как чужой ввод. */
+function handleEvents(req, res, ctx) {
+  if (!RUN_ID.test(ctx.params[0])) return send(res, 404, { error: 'Запуск не найден' })
+  return proxyEvents(req, res, ctx.params[0])
+}
+
+/**
+ * ТАБЛИЦА РУЧЕК ДНЯ — единственный вход в серверную логику
+ * (ADR 2026-09-29-1600, п. 1). Поле `limit` обязательно у каждой записи:
+ *
+ *   run   — запуск хода, стоит денег: `limiter.reserve`;
+ *   write — правит общую базу сервиса: `limiter.reserveWrite`;
+ *   read  — читает: `limiter.reserveRead`;
+ *   open  — вне окон, и запись ОБЯЗАНА сказать `why`, почему.
+ *
+ * Ручка без `limit`, с неизвестным значением или `open` без `why` не даёт
+ * модулю загрузиться (`checkRoutes` ниже) — забыть окно нельзя, можно только
+ * назвать его вслух. Весь список исключений добывается одной строкой:
+ * `grep "limit: 'open'" days/day20/server.js`.
+ */
+const routes = [
+  {
+    method: 'GET',
+    path: '/healthz',
+    limit: 'open',
+    why: 'проба живости контейнера: до сервиса агентов не ходит и денег не стоит, а окно на ней перезапускало бы здоровый контейнер',
+    handler: handleHealth,
+  },
+  { method: 'POST', path: '/api/runs', limit: 'run', handler: handleRun },
+  { method: 'GET', path: '/api/chat', limit: 'read', handler: handleChat },
+  // Очистка переписки — запись в общую базу сервиса: сервис за AGENT_KEY
+  // сразу отменяет запуск и чистит сессию, своего гейта у него нет.
+  { method: 'DELETE', path: '/api/chat', limit: 'write', handler: handleChat },
+  { method: 'GET', path: /^\/api\/runs\/([^/]+)\/events$/, limit: 'read', handler: handleEvents },
+]
+
+const LIMITS = new Set(['run', 'write', 'read', 'open'])
+
+/**
+ * Проверка таблицы при загрузке модуля: умолчание безопасное ОТКАЗОМ СТАРТА,
+ * а не пропуском. Красным это становится не в одном тесте, а во всех сразу —
+ * сервер просто не поднимается (ADR 2026-09-29-1600, «Держатель», слой 1).
+ */
+function checkRoutes(list) {
+  for (const route of list) {
+    const name = `${route.method} ${route.path}`
+    if (!LIMITS.has(route.limit))
+      throw new Error(`ручка ${name}: поле limit обязано быть run|write|read|open, получено ${JSON.stringify(route.limit)}`)
+    if (route.limit === 'open' && !(typeof route.why === 'string' && route.why.trim() !== ''))
+      throw new Error(`ручка ${name}: limit 'open' обязан назвать why — почему ручка вне окон`)
+    if (typeof route.handler !== 'function') throw new Error(`ручка ${name}: нет обработчика`)
+  }
+  return list
+}
+
+checkRoutes(routes)
+
+/** Окно → чем занимается слот. `open` сюда не попадает по построению. */
+const RESERVE = {
+  run: (ip) => limiter.reserve(ip),
+  write: (ip) => limiter.reserveWrite(ip),
+  read: (ip) => limiter.reserveRead(ip),
+}
+
+function match(list, method, pathname) {
+  for (const route of list) {
+    if (route.method !== method) continue
+    if (typeof route.path === 'string') {
+      if (route.path === pathname) return { route, params: [] }
+      continue
+    }
+    const hit = pathname.match(route.path)
+    if (hit) return { route, params: hit.slice(1) }
+  }
+  return null
+}
+
+/**
+ * Единственный вход. Слот занимается ЗДЕСЬ, до вызова обработчика (I-4):
+ * порядок «сначала окно, потом работа» виден чтением сверху вниз и не зависит
+ * от того, вспомнил ли о нём автор ручки. Отказ отвечает словами лимитера, и
+ * обработчик не вызывается вовсе — до сервиса агентов ничего не доходит.
+ *
+ * Возврат слота (`release`) шов не трогает: учёт слота ADR оставил на потом.
+ */
+async function dispatch(req, res) {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)
+  const found = match(routes, req.method, url.pathname)
+  // Не ручка — статика: всё, чего нет в таблице, отвечает файлом или 404.
+  if (!found) return serveStatic(url, res)
 
-  if (url.pathname === '/healthz') {
-    const ok = envErrors.length === 0
-    return send(res, ok ? 200 : 503, { ok, errors: envErrors, limiter: limiter.stats() })
+  const ip = clientIp(req)
+  let slot = null
+  if (found.route.limit !== 'open') {
+    slot = RESERVE[found.route.limit](ip)
+    if (!slot.ok)
+      return send(
+        res,
+        429,
+        { error: slot.message, retryAfterSec: slot.retryAfterSec ?? null },
+        slot.retryAfterSec ? { 'retry-after': String(slot.retryAfterSec) } : {},
+      )
   }
+  return found.route.handler(req, res, { ip, slot, params: found.params })
+}
 
-  if (url.pathname === '/api/runs' && req.method === 'POST') return handleRun(req, res)
-
-  if (url.pathname === '/api/chat' && (req.method === 'GET' || req.method === 'DELETE'))
-    return handleChat(req, res)
-
-  const events = url.pathname.match(/^\/api\/runs\/([^/]+)\/events$/)
-  if (events && req.method === 'GET') {
-    if (!RUN_ID.test(events[1])) return send(res, 404, { error: 'Запуск не найден' })
-    return proxyEvents(req, res, events[1])
-  }
-
-  return serveStatic(url, res)
-})
+const server = http.createServer(dispatch)
 
 if (process.env.NODE_ENV !== 'test') {
   server.listen(env.PORT, () => console.log(`день 20 слушает :${env.PORT}`))
 }
 
-export { env, server }
+export { checkRoutes, env, routes, server }

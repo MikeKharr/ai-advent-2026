@@ -12,6 +12,11 @@
 //
 // Состояние в памяти процесса. Окно — оно же граница хранения адреса: дольше
 // часа IP не живёт (I-10).
+//
+// Окон здесь три, и они РАЗНЫЕ (ADR 2026-09-29-1600, п. 2): запуски (`reserve`,
+// минута и час плюс суточный потолок), записи (`reserveWrite`, час) и чтения
+// (`reserveRead`, час). Чтения не сидят в окне записей нарочно: иначе загрузка
+// страницы отнимала бы у посетителя право очистить переписку.
 
 const MINUTE = 60_000
 const HOUR = 60 * 60_000
@@ -32,8 +37,12 @@ function secondsUntilFree(oldest, window, t) {
 }
 
 export function createLimiter(env, { now = () => Date.now() } = {}) {
-  /** @type {Map<string, number[]>} адрес → отметки запросов, по возрастанию */
+  /** @type {Map<string, number[]>} адрес → отметки запусков, по возрастанию */
   const hits = new Map()
+  /** @type {Map<string, number[]>} адрес → отметки записей, по возрастанию */
+  const writes = new Map()
+  /** @type {Map<string, number[]>} адрес → отметки чтений, по возрастанию */
+  const reads = new Map()
   let callsToday = 0
   let day = new Date(now()).toISOString().slice(0, 10)
 
@@ -46,11 +55,30 @@ export function createLimiter(env, { now = () => Date.now() } = {}) {
   }
 
   function sweep(t) {
-    for (const [ip, times] of hits) {
-      const kept = times.filter((x) => t - x < HOUR)
-      if (kept.length === 0) hits.delete(ip)
-      else hits.set(ip, kept)
+    for (const map of [hits, writes, reads]) {
+      for (const [ip, times] of map) {
+        const kept = times.filter((x) => t - x < HOUR)
+        if (kept.length === 0) map.delete(ip)
+        else map.set(ip, kept)
+      }
     }
+  }
+
+  /**
+   * Часовое окно на адрес поверх карты отметок. Проверка и учёт — один
+   * синхронный шаг без await между ними (I-4), как у `reserve`.
+   */
+  function reserveHourly(map, ip, limit, reason, message) {
+    const t = now()
+    rollDay()
+    sweep(t)
+
+    const times = map.get(ip) ?? []
+    if (times.length >= limit) {
+      return { ok: false, reason, retryAfterSec: secondsUntilFree(times[0], HOUR, t), message }
+    }
+    map.set(ip, [...times, t])
+    return { ok: true }
   }
 
   return {
@@ -99,12 +127,45 @@ export function createLimiter(env, { now = () => Date.now() } = {}) {
       return { ok: true }
     },
 
+    /**
+     * Резервирует одну ЗАПИСЬ в общую базу сервиса (очистка переписки).
+     * Денег не стоит, но правит состояние за всех, поэтому окно своё и
+     * отдельное от запусков: исчерпав право писать, посетитель не теряет
+     * право запускать, и наоборот.
+     */
+    reserveWrite(ip) {
+      return reserveHourly(
+        writes,
+        ip,
+        env.RATE_LIMIT_WRITES_PER_HOUR,
+        'writes',
+        'Слишком много изменений переписки за час. Попробуйте позже.',
+      )
+    },
+
+    /**
+     * Резервирует одно ЧТЕНИЕ (переписка, поток событий запуска). Окно своё:
+     * страница читает на каждой загрузке и после каждого хода, и под окном
+     * записей чтение отнимало бы право писать.
+     */
+    reserveRead(ip) {
+      return reserveHourly(
+        reads,
+        ip,
+        env.RATE_LIMIT_READS_PER_HOUR,
+        'reads',
+        'Слишком много чтений страницы за час. Попробуйте позже.',
+      )
+    },
+
     stats() {
       rollDay()
       return {
         callsToday,
         dailyLimit: env.MAX_DAILY_CALLS,
         trackedIps: hits.size,
+        writeIps: writes.size,
+        readIps: reads.size,
         perMin: env.RATE_LIMIT_PER_MIN,
         perHour: env.RATE_LIMIT_PER_HOUR,
       }
