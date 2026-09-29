@@ -273,6 +273,7 @@ test('агент без модели живёт в реестре без taskCla
         version: '1.0.0',
         purpose: 'Цепочка в коде',
         tools: ['mcp'],
+        servers: ['mcpnews', 'mcpstore'],
         defaults: {},
       },
     ],

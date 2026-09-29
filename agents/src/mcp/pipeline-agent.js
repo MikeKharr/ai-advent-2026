@@ -9,6 +9,7 @@
 // поэтому запись и исполнитель приезжают вместе.
 
 import { PipelineError, runPipeline } from './pipeline.js'
+import { pickServers } from './servers.js'
 
 export const PIPELINE_AGENT_ID = 'pipeline-agent'
 
@@ -16,6 +17,10 @@ export const PIPELINE_AGENT_ID = 'pipeline-agent'
 export const MAX_TASK_CHARS = 600
 
 export function createPipelineAgent({ agent, servers, runs, now = Date.now, log = () => {} }) {
+  // `servers` — полный реестр хоста; цепочке достаётся список её агента
+  // (ADR 2026-09-29-0236, п. 6). Третий сервер, заведённый ради дня 20, в её
+  // списке не назван и не опрашивается.
+  const agentServers = pickServers(servers, agent.servers)
   return {
     id: agent.id,
     version: agent.version,
@@ -40,7 +45,7 @@ export function createPipelineAgent({ agent, servers, runs, now = Date.now, log 
       try {
         const result = await runPipeline({
           input: { query: run.input.task },
-          servers,
+          servers: agentServers,
           emit: (event) => runs.emit(run.id, event),
           now,
         })

@@ -26,6 +26,7 @@ import { estimateTokens } from '../llm.js'
 import { isSessionId } from '../params.js'
 import { createSessionLock } from '../shared.js'
 import { listAllTools, payloadOf, PipelineError, rpcEvent, runPipeline } from './pipeline.js'
+import { pickServers } from './servers.js'
 import { buildToolIndex } from './tool-names.js'
 
 /** Идентификатор записи реестра: по нему сервис находит агента дней 18 и 20. */
@@ -400,6 +401,11 @@ export function createMcpAgent({
   now = Date.now,
   log = () => {},
 }) {
+  // `servers` — полный реестр хоста; агенту достаётся его список
+  // (ADR 2026-09-29-0236, п. 6). Сужение здесь, а не в `server.js`: иначе
+  // единственным держателем отбора у этой точки входа была бы строка сборки
+  // процесса, которую ни один тест не исполняет.
+  const agentServers = pickServers(servers, agent.servers)
   // Сессия дня 7, а не дня 15 (ADR 2026-09-28-1852, заход 2, п. 1): замок на
   // сессию, хвост переписки текстом, две записи на ход. Профилей, тем и
   // ветвления у агента нет и не заводится.
@@ -455,7 +461,7 @@ export function createMcpAgent({
           task,
           history,
           system: agent.systemPrompt,
-          servers,
+          servers: agentServers,
           taskClass: agent.taskClass,
           provider: agent.defaults.model,
           answerTokens: agent.defaults.maxTokens,
@@ -559,6 +565,11 @@ function finishRun(runs, run, out, durationMs) {
  *
  * Запуск заводится в памяти сервиса ПОД ТЕМ ЖЕ идентификатором, что записан
  * на томе: страница дня 18 читает поток событий идущего запуска по нему.
+ *
+ * `servers` — ПОЛНЫЙ реестр хоста; сужение до списка агента делается ниже, по
+ * записи найденного агента. Иначе, чем у точек входа `createMcpAgent` и
+ * `createPipelineAgent`, потому что агент здесь известен только в момент
+ * запуска: работа называет его своим `agentId` (ADR 2026-09-29-0236, п. 6).
  */
 export function createJobRunner({
   registry,
@@ -584,6 +595,11 @@ export function createJobRunner({
         budgetLeftUsd: null,
       }
 
+    // Серверы ЭТОГО агента, а не весь реестр хоста. Без сужения третий сервер,
+    // заведённый ради дня 20, доставался бы работе `digest` — 96 запусков в
+    // сутки, 96 лишних `tools/list` и третья запись в ленте каждого.
+    const agentServers = pickServers(servers, entry.servers)
+
     const run = runs.create({ id: runId, agent: entry, input: { task: job.prompt, params: {} } })
     // Трейс ленты дня 18 — те же данные, что уходят в поток событий: страница
     // разбирает их одной функцией и живьём, и из ленты.
@@ -606,7 +622,7 @@ export function createJobRunner({
         // идёт 96 раз в сутки и хранилище на 200 файлов не её одно.
         const result = await runPipeline({
           input: { query: job.prompt, fileName: `pipeline-${job.id}.txt` },
-          servers,
+          servers: agentServers,
           emit,
           now,
         })
@@ -652,7 +668,7 @@ export function createJobRunner({
       out = await runToolLoop({
         task: job.prompt,
         system: entry.systemPrompt,
-        servers,
+        servers: agentServers,
         taskClass: entry.taskClass,
         provider: entry.defaults.model,
         answerTokens: entry.defaults.maxTokens,

@@ -1,9 +1,13 @@
 // Изоляция служб в отдельных сетях compose. Два правила, оба — условие вето
 // compliance:
-//   - `mcp` (ADR 2026-09-23-1227, п. 5): контейнер `mcp` живёт ТОЛЬКО в сети
-//     `mcp`, а в сети `mcp` — только `caddy`, сам `mcp` и день 16. В сети по
-//     умолчанию, где `router`, `agents` и всё, что читает `secrets.env`, его
-//     нет: оттуда не разрешается даже имя.
+//   - `mcp` (ADR 2026-09-23-1227, п. 5, в части состава заменён ADR
+//     2026-09-29-0236, п. 5): контейнер `mcp` живёт ТОЛЬКО в сети `mcp`, а в
+//     сети `mcp` — `caddy`, сам `mcp`, день 16 и `agents`. В сети по
+//     умолчанию, где `router` и всё, что читает `secrets.env`, службы нет:
+//     оттуда не разрешается даже имя. Честно о том, чего правило больше НЕ
+//     держит: `agents` из сети `mcp` достижим, и его порты 8082 и 8086
+//     держат только ключи. Обещания «отрезано от agents» тут больше нет —
+//     держится «отрезано от router и secrets.env».
 //   - `cron` (ADR 2026-09-28-0736, п. 6): контейнер времени живёт ТОЛЬКО в
 //     сети `cron`, а в сети `cron` — только он и `agents`. Он держит копию
 //     `AGENT_KEY`, и единственное, до чего он вправе дотянуться, — ручка
@@ -41,6 +45,14 @@ export const COMPOSE = 'deploy/compose.yml'
  * сеть по умолчанию положена по работе — по ней к нему приходят дни 6–15.
  * Изолированы там контейнер времени и серверы MCP, а не сервис агентов.
  *
+ * `joined` — службы, которые ОБЯЗАНЫ объявить эту сеть, будучи при этом и в
+ * других. Без него `allowed` был бы защитой в одну сторону: он краснеет, когда
+ * в сеть войдёт кто не должен, но молчит, когда нужная связь исчезнет. У сети
+ * `mcp` связь с `agents` — не терпимость, а условие работы третьего сервера
+ * (ADR 2026-09-29-0236, п. 5): сняв две строки, получили бы `day16` в
+ * `unreachable` при зелёном страже. Для `cron` и `tools` поля нет намеренно:
+ * там связность `agents` этим ADR не вводилась и не меняется.
+ *
  * `required` — службы, пропажа которых сама по себе нарушение. Она названа
  * отдельно от `only` потому, что `only` пропажу прощает осознанно (уехавшая
  * служба — не дыра, дыра была бы, останься она с двумя сетями), а вот
@@ -48,7 +60,13 @@ export const COMPOSE = 'deploy/compose.yml'
  * Имя сети при этом именем службы быть не обязано: сеть `tools` держит две.
  */
 export const RULES = [
-  { network: 'mcp', required: ['mcp'], allowed: ['caddy', 'mcp', 'day16'], only: ['mcp', 'day16'] },
+  {
+    network: 'mcp',
+    required: ['mcp'],
+    allowed: ['caddy', 'mcp', 'day16', 'agents'],
+    only: ['mcp', 'day16'],
+    joined: ['agents'],
+  },
   { network: 'cron', required: ['cron'], allowed: ['agents', 'cron'], only: ['cron'] },
   {
     network: 'tools',
@@ -136,6 +154,16 @@ export function problems(text) {
         found.push(`служба ${name} в сети ${rule.network}: там разрешены только ${rule.allowed.join(', ')}`)
       }
     }
+
+    // Связь, снятая молча, — такая же дыра в проверке, как связь лишняя.
+    for (const name of rule.joined ?? []) {
+      const networks = services.get(name) ?? null
+      if (networks === null || !networks.includes(rule.network)) {
+        found.push(
+          `служба ${name} обязана быть в сети ${rule.network}, а объявлена в: ${networks?.join(', ') || '(сеть по умолчанию)'}`,
+        )
+      }
+    }
   }
   return found
 }
@@ -144,12 +172,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const found = problems(readFileSync(join(process.cwd(), COMPOSE), 'utf8'))
   for (const problem of found) console.log(`::error file=${COMPOSE}::${problem}`)
   if (found.length) {
-    console.log('::error::изоляция сетей нарушена — ADR 2026-09-23-1227, п. 5 и 2026-09-28-0736, п. 6')
+    console.log(
+      '::error::изоляция сетей нарушена — ADR 2026-09-23-1227, п. 5; 2026-09-28-0736, п. 6; 2026-09-29-0236, п. 5',
+    )
     process.exit(1)
   }
   for (const rule of RULES) {
     console.log(
-      `ok: ${rule.only.join(' и ')} — каждая только в сети ${rule.network}; в сети ${rule.network} — только ${rule.allowed.join(', ')}`,
+      `ok: ${rule.only.join(' и ')} — каждая только в сети ${rule.network}; в сети ${rule.network} — только ${rule.allowed.join(', ')}` +
+        (rule.joined ? `; ${rule.joined.join(' и ')} — обязательно в ней` : ''),
     )
   }
 }
