@@ -837,3 +837,38 @@ test('планировщик дня 18 истории не шлёт: в запр
 
   assert.deepEqual(router.calls[0].body.messages, [{ role: 'user', content: 'собери сводку' }])
 })
+
+// Осиротевший вопрос после неудачного хода — достижимое состояние базы, а не
+// теория: `execute` пишет реплику `user` ВСЕГДА, ошибкой помечает только
+// ответ агента, а `sessions.tail` записи с `meta.error` в контекст не берёт
+// (`agents/src/sessions.js`). Значит после одного неудачного хода в хвосте
+// остаётся `user` без пары, и следующий ход даёт два `user` подряд.
+//
+// Провайдер такой список отвергает целиком — то есть диалог ломался бы не на
+// одном сообщении, а НАВСЕГДА, до очистки переписки. Поэтому проверка идёт по
+// свойству («ролей подряд не бывает»), а не по конкретной склейке: способ
+// починки может смениться, требование — нет.
+test('после неудачного хода роли в следующем запросе чередуются, а не идут двумя user подряд', async (t) => {
+  // Первый ход: модель вернула пустой ответ — запуск `failed`, ответ агента
+  // уходит в переписку с пометкой ошибки. Второй ход должен пройти.
+  const d = await dialogAgent([answer(''), answer('второй ответ')])
+  t.after(() => d.news.close())
+
+  const first = d.agent.parseInput({ task: 'первый вопрос', sessionId: SID })
+  await d.agent.execute(d.runs.create({ agent: d.entry, input: first.input }))
+  // Предпосылка проверки: хвост действительно осиротел. Без неё тест был бы
+  // зелёным и на переписке, где двух `user` подряд не бывает вовсе.
+  const tail = d.sessions.tail(SID, 3000)
+  assert.deepEqual(tail.messages.map((m) => m.role), ['user'], 'ответ неудачного хода не помечен ошибкой — предпосылка не воспроизвелась')
+
+  const second = d.agent.parseInput({ task: 'второй вопрос', sessionId: SID })
+  await d.agent.execute(d.runs.create({ agent: d.entry, input: second.input }))
+
+  const sent = d.router.calls[1].body.messages
+  for (let i = 1; i < sent.length; i += 1)
+    assert.notEqual(sent[i].role, sent[i - 1].role, `две реплики роли ${sent[i].role} подряд: ${JSON.stringify(sent)}`)
+  // Ни одна реплика при этом не потеряна: слияние — не выбрасывание.
+  const all = sent.map((m) => m.content).join('\n')
+  assert.match(all, /первый вопрос/)
+  assert.match(all, /второй вопрос/)
+})

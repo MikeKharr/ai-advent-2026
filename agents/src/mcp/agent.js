@@ -117,26 +117,39 @@ function toolDefs(tools) {
 }
 
 /**
- * Прошлые реплики диалога → сообщения для модели (ADR 2026-09-28-1852, заход 2,
- * п. 1). Только текст: хранилище держит `user` и `agent`, блоки `tool_use` и
- * `tool_result` прошлых ходов не воспроизводятся и воспроизводиться не могут.
+ * Прошлые реплики диалога и текущее задание → сообщения для модели
+ * (ADR 2026-09-28-1852, заход 2, п. 1). Только текст: хранилище держит `user`
+ * и `agent`, блоки `tool_use` и `tool_result` прошлых ходов не воспроизводятся
+ * и воспроизводиться не могут.
  *
- * Подряд идущие реплики ОДНОЙ роли сливаются в одну. Это не украшение: хвост
- * `sessions.tail` выбрасывает записи об отказах (`meta.error`), и после
- * неудачного хода в истории остаются два вопроса посетителя подряд. Провайдер
- * такой список отвергает целиком, и диалог после одной ошибки перестал бы
- * работать навсегда.
+ * Подряд идущие реплики ОДНОЙ роли сливаются в одну — **включая границу между
+ * хвостом и заданием**, и это здесь главное. `sessions.tail` выбрасывает
+ * записи об отказах (`meta.error`, `agents/src/sessions.js`), а `execute`
+ * пишет реплику `user` всегда и ошибкой помечает только ответ агента. Значит
+ * после одного неудачного хода в хвосте остаётся вопрос без пары, и следующее
+ * задание встаёт вторым `user` подряд. Провайдер такой список отвергает
+ * целиком — диалог ломался бы не на одном сообщении, а навсегда, до очистки
+ * переписки.
+ *
+ * Поэтому задание проходит через тот же слив, что и хвост: отдельная сборка
+ * «хвост, потом задание» закрывала бы склейки внутри хвоста и оставляла
+ * открытой ровно ту, из-за которой всё и затевалось.
  */
-function historyMessages(history) {
+function buildMessages(history, task) {
   const out = []
-  for (const row of Array.isArray(history) ? history : []) {
-    const text = typeof row?.text === 'string' ? row.text : ''
-    if (text === '') continue
-    const role = row.role === 'agent' ? 'assistant' : 'user'
+  const add = (role, text) => {
     const last = out[out.length - 1]
     if (last && last.role === role) last.content += `\n\n${text}`
     else out.push({ role, content: text })
   }
+  for (const row of Array.isArray(history) ? history : []) {
+    const text = typeof row?.text === 'string' ? row.text : ''
+    if (text === '') continue
+    add(row.role === 'agent' ? 'assistant' : 'user', text)
+  }
+  // Задание кладётся БЕЗ проверки на пустоту: пустого его сюда не пускают
+  // точки входа, а молчаливый пропуск оставил бы запрос без вопроса вовсе.
+  add('user', task)
   return out
 }
 
@@ -201,7 +214,7 @@ export async function runToolLoop({
     }
   }
 
-  const messages = [...historyMessages(history), { role: 'user', content: task }]
+  const messages = buildMessages(history, task)
   let tokens = 0
   let counted = false
   let budgetLeftUsd = null
