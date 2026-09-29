@@ -101,6 +101,15 @@ class ParseTest(ToolsCase):
     def test_чужая_стратегия_не_принимается(self):
         self.assertFalse(self.tool().parse({"query": "x", "strategy": "bm25"})[0])
 
+    def test_нестрока_в_стратегии_это_отказ_разбора_а_не_исключение(self):
+        # `in` по словарю хеширует ключ: без проверки типа объект или массив
+        # давал TypeError мимо `try` в rpc.py, то есть HTTP 500 вместо
+        # отказа инструмента (находка гейтов к PR #282).
+        for bad in ({}, [], {"a": 1}, ["structural"], 5, None):
+            ok, err = self.tool().parse({"query": "x", "strategy": bad})
+            self.assertFalse(ok, repr(bad))
+            self.assertIn("strategy", err)
+
     def test_слишком_длинный_запрос_не_эмбеддится(self):
         ok, err = self.tool().parse({"query": "щ" * (tools.MAX_QUERY + 1)})
         self.assertFalse(ok)

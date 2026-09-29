@@ -444,6 +444,21 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(len(calls), 1, "ключ сверили не через compare_digest")
         self.assertEqual(calls[0][1], KEY.encode("utf-8"))
 
+    def test_решение_принимает_результат_сверки_а_не_сам_её_вызов(self):
+        # Проверка выше говорит только «вызов был», и мутант, который
+        # оставляет вызов, а решает через `==`, её пережил бы (находка
+        # гейтов к PR #282, третий раз за PR та же форма: держатель стоит
+        # на факте, а не на его роли в пути исполнения).
+        #
+        # Здесь подменяется РЕЗУЛЬТАТ, и ответ службы обязан пойти за ним.
+        from unittest import mock
+
+        body = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        with mock.patch.object(serve.hmac, "compare_digest", lambda _a, _b: False):
+            self.assertEqual(request(self.url, "/rag", body=body)[0], 404, "годный ключ прошёл вопреки отказу сверки")
+        with mock.patch.object(serve.hmac, "compare_digest", lambda _a, _b: True):
+            self.assertEqual(request(self.url, "/rag", key="wrong-key", body=body)[0], 200, "негодный ключ не прошёл вопреки согласию сверки")
+
     def test_ключ_сверяется_и_на_методе_который_всё_равно_получит_405(self):
         # Порядок: ключ ДО метода. Иначе прохожий отличал бы живой адрес от
         # пустого места по 405.
@@ -721,6 +736,174 @@ class RunBuildReadyTest(unittest.TestCase):
             sys.stderr = stderr
         self.assertEqual(self.status.read()["state"], "failed")
         self.assertEqual(loaded, [])
+
+
+def raw_exchange(url: str, request: bytes, wait: float = 1.5) -> bytes:
+    """Послать сырые байты в одно соединение и собрать ВСЁ, что пришло.
+
+    Не `http.client`: предмет проверки — сколько ответов сервер прислал на
+    одно соединение, а клиент протокола прочитал бы ровно один и про второй
+    промолчал бы.
+    """
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    sock = socket.create_connection((parts.hostname, parts.port), timeout=5)
+    sock.sendall(request)
+    sock.settimeout(wait)
+    chunks = []
+    try:
+        while True:
+            piece = sock.recv(4096)
+            if not piece:
+                break
+            chunks.append(piece)
+    except (TimeoutError, OSError):
+        pass
+    finally:
+        sock.close()
+    return b"".join(chunks)
+
+
+class SmugglingTest(unittest.TestCase):
+    """Тело неавторизованного запроса не разбирается как следующий запрос.
+
+    Находка гейтов Б1 к PR #282. Ключ проверяется ДО чтения тела — это и
+    есть замысел (иначе потолок тела не был бы потолком), но из него следует,
+    что байты тела остаются в сокете. Если соединение при этом не закрыть,
+    `BaseHTTPRequestHandler` идёт на следующий круг и разбирает их как
+    запрос: кто угодно без ключа получает на том же соединении второй ответ.
+
+    `/rag` — единственный путь, который этот заход открывает наружу без
+    ключа (открытым он не становится, но до проверки ключа доходит кто
+    угодно), Caddy переносит тело дословно и держит keep-alive к `rag:8086`.
+
+    Ближайший `KeyTest::test_тело_неавторизованного_запроса_не_читается`
+    смотрит на код ответа и на незанятый слот лимитера — про закрытие
+    соединения в нём нет ничего, и снятие `close_connection` он не краснил.
+    """
+
+    def setUp(self):
+        start_service(self, handle_one=lambda m: {"jsonrpc": "2.0", "id": m.get("id"), "result": {}})
+
+    def smuggle(self, key_header: bytes, path: bytes = b"/rag") -> bytes:
+        smuggled = b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n"
+        return raw_exchange(
+            self.url,
+            b"POST " + path + b" HTTP/1.1\r\nHost: x\r\n" + key_header
+            + b"content-type: application/json\r\n"
+            + b"content-length: " + str(len(smuggled)).encode() + b"\r\n\r\n"
+            + smuggled,
+        )
+
+    def test_протащенный_запрос_не_получает_второго_ответа(self):
+        raw = self.smuggle(b"authorization: Bearer wrong-key\r\n")
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:400]!r}")
+        self.assertIn(b"HTTP/1.1 404", raw)
+
+    def test_протащенный_healthz_не_отдаёт_своё_тело(self):
+        # Отдельным утверждением, а не тем же: число ответов и содержимое
+        # второго — разные наблюдения, и второе прямее говорит, что именно
+        # утекало бы.
+        raw = self.smuggle(b"authorization: Bearer wrong-key\r\n")
+        self.assertNotIn(b'"state"', raw)
+        self.assertNotIn(b'"index"', raw)
+
+    def test_то_же_на_запросе_вовсе_без_ключа(self):
+        raw = self.smuggle(b"")
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:400]!r}")
+        self.assertNotIn(b'"state"', raw)
+
+    def test_то_же_на_неизвестном_пути(self):
+        # Вторая причина того же пустого 404 — путь вне таблицы. Ключа тут
+        # нет вовсе, и тело всё равно остаётся непрочитанным.
+        raw = self.smuggle(b"", path=b"/no-such-path")
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:400]!r}")
+        self.assertNotIn(b'"state"', raw)
+
+    def test_стенд_живой_годный_ключ_на_том_же_сокете_отвечает(self):
+        # Иначе «пришёл один ответ» выполнялось бы и при мёртвой службе:
+        # проверка обязана различать гипотезы.
+        body = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
+        raw = raw_exchange(
+            self.url,
+            b"POST /rag HTTP/1.1\r\nHost: x\r\n"
+            b"authorization: Bearer " + KEY.encode() + b"\r\n"
+            b"content-type: application/json\r\n"
+            b"content-length: " + str(len(body)).encode() + b"\r\n\r\n" + body,
+        )
+        self.assertIn(b"HTTP/1.1 200", raw)
+
+
+class StartupIndexTest(unittest.TestCase):
+    """`main` перечитывает том ДО того, как начал отвечать.
+
+    Находка гейтов Б2 к PR #282. Это **единственное**, что делает истинными
+    п. 6 ADR `2026-09-29-2139` и абзац `rag/README.md` «Сборка не удалась —
+    поиск может работать»: при отказе сборки `run_build` уходит по раннему
+    `return` и до своего `indexes.load()` не доходит вовсе. Без строки в
+    `main` служба с целой парой файлов в томе отвечала бы «индекса нет».
+
+    `StartupTest` доводит `main` ровно до `make_server`, то есть строка
+    исполнялась и раньше — не хватало утверждения, а не возможности.
+    """
+
+    def run_main(self, index_dir: Path, corpus_dir: str):
+        from unittest import mock
+
+        captured = {}
+
+        def grab(status, *_a, **kwargs):
+            captured.update(kwargs, status=status)
+            raise RuntimeError("стоп")
+
+        with (
+            mock.patch.dict(os.environ, {"RAG_KEY": KEY, "RAG_CORPUS": corpus_dir}),
+            mock.patch.object(serve, "INDEX_DIR", index_dir),
+            mock.patch.object(serve, "make_server", grab),
+        ):
+            with self.assertRaises(RuntimeError):
+                serve.main()
+        self.assertIn("indexes", captured, "main не передал серверу индекс")
+        return captured
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        # Корпуса нет намеренно: поток сборки не стартует, и наблюдается
+        # ровно загрузка из `main`, а не та, что в конце `run_build`.
+        self.no_corpus = str(self.dir / "нет-такого-каталога")
+
+    def write_pair(self, commit="abcdef1"):
+        rows = [{
+            "source": "AGENTS.md", "title": "Правила", "section": "Роли", "chunk_id": "c1",
+            "strategy": "structural", "sha256": "0" * 64, "commit": commit,
+            "text": "роли определены в .claude/agents",
+        }]
+        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.dir)
+
+    def test_целая_пара_в_томе_загружена_до_первого_ответа(self):
+        self.write_pair()
+        captured = self.run_main(self.dir, self.no_corpus)
+        self.assertEqual(captured["indexes"].state()["strategies"], ["structural"])
+        self.assertEqual(captured["indexes"].commit(), "abcdef1")
+
+    def test_поиск_работает_при_отказавшей_сборке(self):
+        # То самое обещание п. 6 и README целиком: состояние сборки `failed`,
+        # а индекс загружен и по нему ищется.
+        self.write_pair()
+        captured = self.run_main(self.dir, self.no_corpus)
+        self.assertEqual(captured["status"].read()["state"], "failed")
+        self.assertEqual(captured["status"].read()["error"], serve.NO_CORPUS)
+        self.assertTrue(captured["indexes"].any_loaded, "сборка отказала — и поиска не стало")
+
+    def test_пустой_том_это_не_ложная_загрузка(self):
+        # Иначе проверка выше проходила бы и при `state()`, отдающем заглушку.
+        captured = self.run_main(self.dir, self.no_corpus)
+        self.assertEqual(captured["indexes"].state()["strategies"], [])
+        self.assertFalse(captured["indexes"].any_loaded)
 
 
 if __name__ == "__main__":

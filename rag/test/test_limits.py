@@ -81,6 +81,41 @@ class WindowTest(unittest.TestCase):
         self.limiter.reserve("2.2.2.2")
         self.assertEqual(self.limiter.stats()["trackedIps"], 1)
 
+    def test_полный_обход_карт_идёт_не_чаще_раза_в_минуту(self):
+        """Троттлинг `_sweep_all` — не украшение, а починка именованного дефекта.
+
+        Докстрока в коде называет его тем же дефектом, из-за которого
+        развязка появилась в `mcp/src/limits.js`: работа, растущая с числом
+        гостей, на каждом запросе публичного пути. Снятие раннего `return`
+        оставляло прогон зелёным (находка гейтов к PR #282).
+
+        Проверка различает обе стороны: и «обход идёт на каждом запросе», и
+        «обход не идёт никогда».
+        """
+        limiter = make_limiter(self.clock, per_min=1000, per_hour=1000)
+        for i in range(50):
+            limiter.reserve(f"10.0.0.{i}")
+
+        calls = []
+        original = limiter._sweep_ip
+
+        def counted(table, ip, t):
+            calls.append(ip)
+            return original(table, ip, t)
+
+        limiter._sweep_ip = counted
+
+        # Минута прошла — обход всей карты положен ровно один раз.
+        self.clock.advance(61)
+        limiter.reserve("1.1.1.1")
+        swept = len(calls)
+        self.assertGreater(swept, 10, "полный обход не случился ни разу")
+
+        # Следующий запрос в ту же минуту обходить карту не должен.
+        calls.clear()
+        limiter.reserve("1.1.1.1")
+        self.assertEqual(len(calls), 1, f"полный обход идёт на каждом запросе: {len(calls)} адресов")
+
     def test_проверка_и_учёт_идут_под_одним_замком(self):
         """Второй запрос не входит в участок, пока в нём первый.
 
@@ -208,6 +243,47 @@ class DailyCapTest(unittest.TestCase):
         self.cap().take()
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(sorted(raw.keys()), ["count", "date"])
+
+    def test_проверка_и_учёт_суточного_потолка_под_одним_замком(self):
+        """Второй запрос не входит в участок, пока в нём первый.
+
+        Тот же замок и тот же довод, что у `Limiter.reserve`, — и держатель
+        обязан стоять на ОБОИХ: докстрока модуля обещает два, а мутация
+        `with self._lock` → `nullcontext` в `DailyCap.take` оставляла весь
+        `test_limits` зелёным (находка гейтов Б3 к PR #282). Это та самая
+        правка по одному найденному месту вместо обхода всех мест, где живёт
+        то же утверждение.
+
+        Держится остановкой ВНУТРИ участка, а не залпом: залп на таком
+        коротком участке не краснеет (мутация М3, тот же урок).
+        """
+        cap = self.cap(limit=1)
+        entered, release = threading.Event(), threading.Event()
+        original, first = cap._read, []
+
+        def hooked():
+            if not first:
+                first.append(1)
+                entered.set()
+                release.wait(5)
+            return original()
+
+        cap._read = hooked
+        answers = []
+        a = threading.Thread(target=lambda: answers.append(cap.take()))
+        a.start()
+        self.assertTrue(entered.wait(5), "первый вызов не дошёл до критического участка")
+
+        b = threading.Thread(target=lambda: answers.append(cap.take()))
+        b.start()
+        b.join(0.5)
+        self.assertTrue(b.is_alive(), "второй вызов вошёл в участок, пока в нём первый")
+
+        release.set()
+        a.join(5)
+        b.join(5)
+        self.assertEqual([ok for ok, _r in answers], [True, False], "потолок обойдён")
+        self.assertEqual(cap.state()["used"], 1, "счёт разошёлся с числом пропущенных вызовов")
 
     def test_состояние_не_занимает_слотов(self):
         cap = self.cap()

@@ -128,7 +128,12 @@ def _parse_search(args: dict) -> tuple[bool, object]:
         return False, f"limit — целое от 1 до {MAX_LIMIT}"
 
     strategy = args.get("strategy", DEFAULT_STRATEGY)
-    if strategy not in chunking.STRATEGIES:
+    # `isinstance` ДО проверки принадлежности, а не вместе с ней: `in` по
+    # словарю хеширует ключ, и `strategy` объектом или массивом давал
+    # `TypeError` мимо `try` в `rpc.py` — то есть HTTP 500 вместо отказа
+    # инструмента, против докстроки `Tool` («отказ разбора — отказ
+    # ИНСТРУМЕНТА, а не протокола»). Находка гейтов к PR #282.
+    if not isinstance(strategy, str) or strategy not in chunking.STRATEGIES:
         return False, f"strategy — одно из: {', '.join(sorted(chunking.STRATEGIES))}"
 
     return True, {"query": query.strip(), "limit": limit, "strategy": strategy}
