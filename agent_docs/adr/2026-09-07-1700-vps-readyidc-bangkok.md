@@ -2,7 +2,9 @@
 
 ## Статус
 
-Заменяет `agent_docs/adr/2026-09-07-1535-vps-vultr-singapore.md`
+Заменяет `agent_docs/adr/2026-09-07-1535-vps-vultr-singapore.md`.
+Заменено на `agent_docs/adr/2026-09-07-1800-vps-plan-lxs-plus.md` — действующее
+решение о машине; провайдер и способ оплаты подтверждены там же.
 
 ## Контекст
 
