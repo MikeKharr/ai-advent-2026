@@ -25,6 +25,7 @@ import { createPipelineAgent } from '../src/mcp/pipeline-agent.js'
 import { loadServers } from '../src/mcp/servers.js'
 import { loadRegistry } from '../src/registry.js'
 import { createRuns } from '../src/runs.js'
+import { createSessions } from '../src/sessions.js'
 
 const APP_KEY = 'app-key-agents'
 const SCHEDULER_KEY = 'app-key-scheduler'
@@ -675,5 +676,164 @@ test('слова модели не попадают ни в трейс рабо�
     assert.equal(entry.text, undefined)
     assert.equal(entry.chosen, undefined)
   }
+  await news.close()
+})
+
+// ——— Порядок вызовов принадлежит модели (ADR 2026-09-28-1852, условие
+// приёмки владельца: «важно чтобы модель реально сама выбирала инструмент»).
+//
+// Держатель устроен так, что сценарий в коде его ломает: задание ОДНО И ТО ЖЕ,
+// меняется только ответ подставного роутера. Если порядок вызовов перестанет
+// зависеть от ответа модели — отсортируется, зафиксируется реестром, сведётся к
+// цепочке — оба порядка совпадут и тест покраснеет. Третий инструмент модель не
+// называет ни разу: «зовём всё, что есть» тоже должно краснеть.
+
+const THREE_TOOLS = ['alpha.one', 'beta.two', 'gamma.three']
+
+const wantsThese = (names) => ({
+  text: '',
+  content: names.map((name, i) => ({ type: 'tool_use', id: `tu-${i}`, name: `mcpnews__${name.replace(/\./g, "_")}`, input: {} })),
+  stopReason: 'tool_use',
+  usage: { inputTokens: 10, outputTokens: 5 },
+  budgetLeft: { costUsd: 0.4, tokens: 1000 },
+})
+
+/** Один прогон одного и того же задания при заданном моделью порядке. */
+async function runWithOrder(order) {
+  const { news, servers } = await oneServer({
+    tools: THREE_TOOLS,
+    call: (name) => packed({ called: name }),
+  })
+  const router = fakeRouter([wantsThese(order), answer('готово')])
+  const out = await runToolLoop({
+    task: 'одно и то же задание',
+    system: 'ты агент',
+    servers,
+    taskClass: 'tool_use',
+    provider: 'anthropic-haiku',
+    answerTokens: 1024,
+    routerUrl: env.ROUTER_URL,
+    routerKey: APP_KEY,
+    timeoutMs: 5_000,
+    fetchImpl: router.fetchImpl,
+  })
+  const seen = news.seen.map((c) => c.name)
+  await news.close()
+  return { out, seen }
+}
+
+test('порядок вызовов задаёт ответ модели: то же задание, другой ответ — другой порядок', async () => {
+  const first = await runWithOrder(['alpha.one', 'beta.two'])
+  const second = await runWithOrder(['beta.two', 'alpha.one'])
+
+  assert.equal(first.out.status, 'succeeded')
+  assert.equal(second.out.status, 'succeeded')
+  // Каждый прогон исполнил ровно то, что назвала модель, и в её порядке.
+  assert.deepEqual(first.seen, ['alpha.one', 'beta.two'])
+  assert.deepEqual(second.seen, ['beta.two', 'alpha.one'])
+  // Главное утверждение: задание одно, порядки разные. Любая фиксация порядка
+  // в коде — сортировка, реестр, цепочка — сводит эти два списка в один.
+  assert.notDeepEqual(first.seen, second.seen)
+  // Инструмент, которого модель не называла, не зовётся ни в одном прогоне:
+  // «позвать всё, что есть» — тоже сценарий, а не выбор.
+  assert.ok(!first.seen.includes('gamma.three'))
+  assert.ok(!second.seen.includes('gamma.three'))
+})
+
+// ——— Диалог с сессией (ADR 2026-09-28-1852, заход 2). Механизм дня 7:
+// хвост переписки текстом, замок на сессию, две записи на ход.
+
+const SID = '11111111-1111-4111-8111-111111111111'
+
+function memorySessions() {
+  return createSessions({ file: ':memory:', ttlMs: 30 * 3600_000, log: () => {} })
+}
+
+async function dialogAgent(replies) {
+  const { news, servers } = await oneServer()
+  const router = fakeRouter(replies)
+  const runs = createRuns()
+  const sessions = memorySessions()
+  const entry = registry.get('mcp-agent')
+  const agent = createMcpAgent({ agent: entry, servers, runs, sessions, env, fetchImpl: router.fetchImpl })
+  return { news, runs, sessions, agent, router, entry }
+}
+
+test('прошлые реплики уходят в роутер сообщениями ПЕРЕД заданием, а не текстом внутри него', async () => {
+  const d = await dialogAgent([answer('второй ответ')])
+  d.sessions.append({ sessionId: SID, role: 'user', text: 'первый вопрос', tokens: 5 })
+  d.sessions.append({ sessionId: SID, role: 'agent', text: 'первый ответ', tokens: 5 })
+
+  const parsed = d.agent.parseInput({ task: 'второе задание', sessionId: SID })
+  assert.ok(parsed.ok)
+  await d.agent.execute(d.runs.create({ agent: d.entry, input: parsed.input }))
+
+  assert.deepEqual(d.router.calls[0].body.messages, [
+    { role: 'user', content: 'первый вопрос' },
+    { role: 'assistant', content: 'первый ответ' },
+    { role: 'user', content: 'второе задание' },
+  ])
+  await d.news.close()
+})
+
+test('ход пишется в переписку двумя репликами, слова кругов лежат рядом с ответом агента', async () => {
+  const d = await dialogAgent([wantsTool('mcpnews__news_search'), answer('итог')])
+  const parsed = d.agent.parseInput({ task: 'что нового', sessionId: SID })
+  const run = d.runs.create({ agent: d.entry, input: parsed.input })
+  await d.agent.execute(run)
+
+  const messages = d.sessions.history(SID)
+  assert.deepEqual(messages.map((m) => [m.role, m.text]), [
+    ['user', 'что нового'],
+    ['agent', 'итог'],
+  ])
+  assert.equal(messages[1].runId, run.id)
+  // Слова кругов переживают перезагрузку страницы: поток событий живёт
+  // 10 минут, переписка — 30 часов (решение владельца при приёмке).
+  assert.equal(messages[1].meta.rounds.length, 2)
+  assert.deepEqual(messages[1].meta.rounds[0].chosen, [{ server: 'mcpnews', tool: 'news.search' }])
+  assert.equal(messages[1].meta.calls, 1)
+  // Сырых тел JSON-RPC в переписке нет: это байты протокола, а не разговор.
+  assert.ok(!JSON.stringify(messages[1].meta).includes('jsonrpc'))
+  await d.news.close()
+})
+
+test('занятая сессия получает отказ на входе, а не второй запуск', async () => {
+  const d = await dialogAgent([answer('ответ')])
+  d.agent.hold(SID)
+  const parsed = d.agent.parseInput({ task: 'ещё раз', sessionId: SID })
+  assert.equal(parsed.ok, false)
+  assert.match(parsed.message, /уже идёт запуск/)
+  // Чужая сессия при этом свободна: замок на диалог, а не на агента.
+  assert.ok(d.agent.parseInput({ task: 'ещё раз', sessionId: '22222222-2222-4222-8222-222222222222' }).ok)
+  await d.news.close()
+})
+
+test('замок снимается после хода: следующее сообщение того же диалога проходит', async () => {
+  const d = await dialogAgent([answer('первый'), answer('второй')])
+  const first = d.agent.parseInput({ task: 'раз', sessionId: SID })
+  d.agent.hold(SID)
+  await d.agent.execute(d.runs.create({ agent: d.entry, input: first.input }))
+  assert.ok(d.agent.parseInput({ task: 'два', sessionId: SID }).ok)
+  await d.news.close()
+})
+
+test('sessionId чужой формы отвергается на входе', async () => {
+  const d = await dialogAgent([answer('ответ')])
+  assert.equal(d.agent.parseInput({ task: 'раз', sessionId: '../../etc' }).ok, false)
+  // Без сессии агент работает как раньше: одиночный запуск дня 20.
+  assert.deepEqual(d.agent.parseInput({ task: 'раз' }).input.sessionId, null)
+  await d.news.close()
+})
+
+test('планировщик дня 18 истории не шлёт: в запросе одно сообщение', async () => {
+  const { news, servers } = await oneServer()
+  const router = fakeRouter([answer('сводка')])
+  const runs = createRuns()
+  const runJob = createJobRunner({ registry, servers, runs, env, fetchImpl: router.fetchImpl })
+
+  await runJob({ job: jobOf('собери сводку'), runId: 'run-no-history' })
+
+  assert.deepEqual(router.calls[0].body.messages, [{ role: 'user', content: 'собери сводку' }])
   await news.close()
 })

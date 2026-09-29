@@ -22,6 +22,9 @@
 // роутеру, и при `stopReason === 'tool_use'` вызовы инструментов с возвратом
 // результатов в диалог.
 
+import { estimateTokens } from '../llm.js'
+import { isSessionId } from '../params.js'
+import { createSessionLock } from '../shared.js'
 import { listAllTools, payloadOf, PipelineError, rpcEvent, runPipeline } from './pipeline.js'
 import { buildToolIndex } from './tool-names.js'
 
@@ -114,6 +117,30 @@ function toolDefs(tools) {
 }
 
 /**
+ * Прошлые реплики диалога → сообщения для модели (ADR 2026-09-28-1852, заход 2,
+ * п. 1). Только текст: хранилище держит `user` и `agent`, блоки `tool_use` и
+ * `tool_result` прошлых ходов не воспроизводятся и воспроизводиться не могут.
+ *
+ * Подряд идущие реплики ОДНОЙ роли сливаются в одну. Это не украшение: хвост
+ * `sessions.tail` выбрасывает записи об отказах (`meta.error`), и после
+ * неудачного хода в истории остаются два вопроса посетителя подряд. Провайдер
+ * такой список отвергает целиком, и диалог после одной ошибки перестал бы
+ * работать навсегда.
+ */
+function historyMessages(history) {
+  const out = []
+  for (const row of Array.isArray(history) ? history : []) {
+    const text = typeof row?.text === 'string' ? row.text : ''
+    if (text === '') continue
+    const role = row.role === 'agent' ? 'assistant' : 'user'
+    const last = out[out.length - 1]
+    if (last && last.role === role) last.content += `\n\n${text}`
+    else out.push({ role, content: text })
+  }
+  return out
+}
+
+/**
  * Цикл с моделью. Возвращает `{status, summary, answer, tokens, budgetLeftUsd,
  * rounds, warnings, calls}` и НИКОГДА не бросает из-за отказа роутера или
  * сервера: отказ — предупреждение и статус `failed`, а не исключение сквозь
@@ -121,6 +148,7 @@ function toolDefs(tools) {
  */
 export async function runToolLoop({
   task,
+  history = [],
   system,
   servers,
   taskClass,
@@ -138,6 +166,13 @@ export async function runToolLoop({
   const startedAt = now()
   const warnings = []
   const calls = []
+  /**
+   * Слова модели по кругам — те же данные, что уходят событием `llm_text`.
+   * Собираются здесь, чтобы точка входа дня 20 могла положить их рядом с
+   * сообщением агента: поток событий живёт 10 минут, переписка — 30 часов
+   * (ADR 2026-09-28-1852, решение владельца при приёмке).
+   */
+  const says = []
 
   const { tools, unreachable } = await listAllTools({ servers, emit })
   for (const miss of unreachable)
@@ -161,11 +196,12 @@ export async function runToolLoop({
       rounds: 0,
       warnings,
       calls,
+      says,
       table: index.table(),
     }
   }
 
-  const messages = [{ role: 'user', content: task }]
+  const messages = [...historyMessages(history), { role: 'user', content: task }]
   let tokens = 0
   let counted = false
   let budgetLeftUsd = null
@@ -227,19 +263,21 @@ export async function runToolLoop({
         const at = index.resolve(block.name)
         return at ? { server: at.server, tool: at.tool } : { server: null, tool: String(block.name) }
       })
+    const said = {
+      round: rounds,
+      text: reply.content
+        .filter((block) => block?.type === 'text' && typeof block.text === 'string' && block.text !== '')
+        .map((block) => block.text)
+        .join('\n\n'),
+      chosen,
+      stopReason: reply.stopReason ?? null,
+    }
+    says.push(said)
     emit({
       stage: 'llm_text',
       title: `Слова модели, круг ${rounds}`,
       detail: chosen.map((pick) => (pick.server ? `${pick.server} · ${pick.tool}` : pick.tool)).join(', '),
-      data: {
-        round: rounds,
-        text: reply.content
-          .filter((block) => block?.type === 'text' && typeof block.text === 'string' && block.text !== '')
-          .map((block) => block.text)
-          .join('\n\n'),
-        chosen,
-        stopReason: reply.stopReason ?? null,
-      },
+      data: said,
     })
 
     // ЕДИНСТВЕННОЕ условие исполнения инструментов. Обрыв по длине роутер
@@ -282,6 +320,7 @@ export async function runToolLoop({
     rounds,
     warnings,
     calls,
+    says,
     table: index.table(),
   }
 
@@ -342,19 +381,25 @@ export function createMcpAgent({
   agent,
   servers,
   runs,
+  sessions = null,
   env,
   fetchImpl = fetch,
   now = Date.now,
   log = () => {},
 }) {
+  // Сессия дня 7, а не дня 15 (ADR 2026-09-28-1852, заход 2, п. 1): замок на
+  // сессию, хвост переписки текстом, две записи на ход. Профилей, тем и
+  // ветвления у агента нет и не заводится.
+  const lock = createSessionLock()
+  const contextTokens = agent.defaults.contextTokens ?? 0
+
   return {
     id: agent.id,
     version: agent.version,
     tools: [...agent.tools],
     defaults: { ...agent.defaults },
-    // Диалогов и сессий у агента нет: замка тоже нет.
-    isBusy: () => false,
-    hold: () => {},
+    isBusy: lock.isBusy,
+    hold: lock.hold,
 
     parseInput(body) {
       if (!body || typeof body !== 'object')
@@ -363,14 +408,39 @@ export function createMcpAgent({
       if (task === '') return { ok: false, message: 'Поле task должно быть непустой строкой' }
       if (task.length > MAX_TASK_CHARS)
         return { ok: false, message: `Поле task длиннее ${MAX_TASK_CHARS} знаков` }
-      return { ok: true, input: { task, sessionId: null, params: { model: agent.defaults.model } } }
+      const sessionId = body.sessionId ?? null
+      if (sessionId !== null && !isSessionId(sessionId))
+        return { ok: false, message: 'Поле sessionId должно быть идентификатором сессии' }
+      // Один ход на сессию за раз: два параллельных перемешали бы порядок
+      // реплик в базе (тот же довод, что у дня 7).
+      if (lock.isBusy(sessionId))
+        return { ok: false, message: 'В этом диалоге уже идёт запуск' }
+      return { ok: true, input: { task, sessionId, params: { model: agent.defaults.model } } }
     },
 
     async execute(run) {
       const startedAt = now()
+      const { task, sessionId } = run.input
+      const memory = sessions !== null && sessionId !== null
       try {
+        // Хвост переписки — ДО обращения к модели: он и есть то, что уйдёт в
+        // запрос. Отказ хранилища не валит ход: диалог без памяти хуже
+        // диалога, но лучше упавшего запуска (правило дня 7).
+        let history = []
+        let dropped = 0
+        if (memory) {
+          try {
+            const tail = sessions.tail(sessionId, contextTokens)
+            history = tail.messages
+            dropped = tail.dropped
+          } catch (error) {
+            log(`сессия ${sessionId.slice(0, 8)}…: хвост не прочитан: ${error.message}`)
+          }
+        }
+
         const out = await runToolLoop({
-          task: run.input.task,
+          task,
+          history,
           system: agent.systemPrompt,
           servers,
           taskClass: agent.taskClass,
@@ -384,6 +454,31 @@ export function createMcpAgent({
           fetchImpl,
           now,
         })
+        if (dropped > 0)
+          out.warnings.push(`Прежних сообщений не поместилось в контекст: ${dropped}.`)
+
+        if (memory) {
+          const failed = out.status !== 'succeeded'
+          const reply = out.answer !== '' ? out.answer : out.summary
+          try {
+            sessions.append({ sessionId, role: 'user', text: task, tokens: estimateTokens(task), runId: run.id })
+            sessions.append({
+              sessionId,
+              role: 'agent',
+              text: reply,
+              tokens: estimateTokens(reply),
+              runId: run.id,
+              // Слова модели кругов живут ЗДЕСЬ, рядом с ответом: поток
+              // событий исчезает через 10 минут, а решение владельца — чтобы
+              // они пережили перезагрузку. Сырых тел JSON-RPC здесь нет и не
+              // будет: это байты протокола, а не переписка.
+              meta: { rounds: out.says, calls: out.calls.length, ...(failed ? { error: true } : {}) },
+            })
+          } catch (error) {
+            out.warnings.push('Ход не записан в переписку: память диалога недоступна.')
+            log(`сессия ${sessionId.slice(0, 8)}…: запись не удалась: ${error.message}`)
+          }
+        }
         return finishRun(runs, run, out, now() - startedAt)
       } catch (error) {
         log(`запуск ${run.id}: ${error.stack ?? error.message}`)
@@ -398,6 +493,10 @@ export function createMcpAgent({
             durationMs: now() - startedAt,
           },
         })
+      } finally {
+        // Замок снимается при ЛЮБОМ исходе: иначе один сбой запер бы диалог
+        // до перезапуска сервиса.
+        lock.release(sessionId)
       }
     },
   }
