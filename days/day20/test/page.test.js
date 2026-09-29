@@ -186,8 +186,13 @@ test('класс пустого состояния берётся из того 
 // доехало до ревью. style.css трогать нельзя, поэтому правило ищется в <style>.
 test('запись со словами отличается от карточки вызова без чтения текста', () => {
   const trace = stripJs(read('trace.js'))
-  const kind = trace.match(/li\.dataset\.kind = '(\w+)'/)
+  // Помеченных видов записи на странице несколько, и брать ПЕРВЫЙ найденный
+  // нельзя: проверка молча переехала бы на чужую запись. Вид берётся из тела
+  // той функции, которая рисует слова.
+  const render = trace.slice(trace.indexOf('export function renderWords'))
+  const kind = render.match(/li\.dataset\.kind = '(\w+)'/)
   assert.ok(kind, 'запись со словами ничем не помечена в разметке')
+  assert.equal(kind[1], 'words')
   const style = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
   const sel = `.entry[data-kind="${kind[1]}"]`
   const rule = style.slice(style.indexOf(sel))
@@ -226,9 +231,15 @@ test('событие со словами модели не фильтруетс�
   const branch = code.slice(code.indexOf("stage === 'llm_text'"), code.indexOf('if (event?.stage !== ', code.indexOf("stage === 'llm_text'")))
   assert.ok(branch.includes('parseWords(event.data)'), 'ветка разбора слов не найдена')
   assert.doesNotMatch(branch, /\.text/, `в ветке появилось условие на текст: ${branch}`)
-  const push = branch.indexOf('items.push')
+  // Якорь — ИМЕННО запись слов, а не первый попавшийся `items.push`: с
+  // появлением записи рассуждения первым в ветке стал УСЛОВНЫЙ push, и
+  // проверка стерегла бы его вместо безусловного. Ранний выход между двумя
+  // push оставался бы тогда зелёным, а запись слов заключительного круга
+  // исчезала бы из ленты — ровно то, что здесь обязано краснеть.
+  const push = branch.indexOf("items.push({ kind: 'words'")
   const quit = branch.indexOf('return')
-  assert.ok(push !== -1 && (quit === -1 || push < quit), 'ветка выходит раньше, чем кладёт запись')
+  assert.notEqual(push, -1, 'безусловной записи слов в ветке нет')
+  assert.ok(quit === -1 || push < quit, 'ветка выходит раньше, чем кладёт запись слов')
 })
 
 // ——— Диалог (ADR 2026-09-28-1852, заход 2; раскладка 2026-09-28-1912).
@@ -430,4 +441,128 @@ test('уход посетителя во время хода отмечаетс�
   // Само поле и кнопка — не «уход»: с них фокус уронило запирание.
   assert.match(handler, /event\.target !== input/, 'возврат фокуса на поле считается уходом')
   assert.match(handler, /event\.target !== send/, 'возврат фокуса на кнопку считается уходом')
+})
+
+// ——— Рассуждение модели (ADR 2026-09-29-0236).
+
+// Форм записи в ленте теперь три, и различаться они обязаны БЕЗ чтения текста.
+// Признаков тоже три — поверхность, рамка, линейка слева, — и ни одно
+// сочетание не повторяется: вызов = карточка без линейки, слова = линейка без
+// карточки, рассуждение = и то и другое.
+test('запись рассуждения отличается и от слов, и от карточки вызова без чтения текста', () => {
+  const trace = stripJs(read('trace.js'))
+  const render = trace.slice(trace.indexOf('export function renderThinking'))
+  const kind = render.match(/li\.dataset\.kind = '(\w+)'/)
+  assert.ok(kind, 'запись рассуждения ничем не помечена в разметке')
+  assert.equal(kind[1], 'thinking')
+  const style = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+  const sel = `.entry[data-kind="${kind[1]}"]`
+  assert.notEqual(style.indexOf(sel), -1, `правила под ${sel} на странице нет`)
+  const own = style.slice(style.indexOf(sel), style.indexOf('}', style.indexOf(sel)))
+  // Линейка есть — этим она не карточка вызова.
+  assert.match(own, /border-left:\s*2px/, `у ${sel} нет левой линейки`)
+  // Карточку она при этом НЕ снимает — этим она не запись слов: у слов
+  // правило гасит рамку `border:0`, здесь его быть не должно.
+  assert.ok(!/border:\s*0/.test(own), `у ${sel} снята карточка — от записи слов не отличить`)
+  const note = style.slice(style.indexOf(`${sel} .entry-note`))
+  assert.notEqual(style.indexOf(`${sel} .entry-note`), -1, `у пояснения записи ${sel} нет полосы чтения`)
+  assert.match(note.slice(0, note.indexOf('}')), /max-width:\s*68ch/, 'пояснение шире прозы, которую ограничивает')
+})
+
+// Сводка рассуждения — проза, и полоса чтения у неё своя, а не общая со
+// словами: общий селектор снял бы одну из двух проверок молча.
+test('сводка рассуждения ограничена полосой чтения корпуса и сохраняет переносы строк', () => {
+  const m = code.match(/node\('p', '(\w+)', words\.thinking\)/)
+  assert.ok(m, 'сводка рассуждения кладётся не тем узлом, что ожидает проверка')
+  const style = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+  assert.match(style, new RegExp(`\\.${m[1]}\\s*\\{[^}]*max-width:68ch`), `у .${m[1]} нет полосы чтения`)
+  assert.match(style, new RegExp(`\\.${m[1]}\\s*\\{[^}]*white-space:pre-wrap`), `у .${m[1]} съедаются переносы строк`)
+})
+
+// Отсутствие блоков — свойство ЗАПРОСА, а не молчание круга: эта форма запроса
+// чередующегося размышления не включает. Поэтому на кругах без блоков записи нет вовсе, а
+// не пустая карточка, — и это прямо обратно правилу для слов, где молчание
+// круга показывается словом.
+test('запись рассуждения ставится только когда есть что показать', () => {
+  const app = stripJs(read('app.js'))
+  const cut = (from, to) => {
+    const a = app.indexOf(from)
+    const b = app.indexOf(to, a + 1)
+    assert.ok(a !== -1 && b > a, `границы среза не найдены: ${from} … ${to}`)
+    return app.slice(a, b)
+  }
+  const branch = cut("stage === 'llm_text'", 'if (event?.stage !== ')
+  assert.match(branch, /if \(hasThinking\(words\)\) items\.push\(\{ kind: 'thinking'/, 'запись рассуждения ставится безусловно или не ставится вовсе')
+  // Слова при этом кладутся ВСЕГДА — иначе правило «молчание круга видно»
+  // исчезло бы вместе с рассуждением.
+  assert.match(branch, /items\.push\(\{ kind: 'words'/, 'запись слов перестала ставиться')
+  // Рассуждение стоит ПЕРЕД словами того же круга: оно про то, что модель
+  // собирается делать, слова — про то, что она уже назвала (ADR, критерий
+  // «запись рассуждения одна на ход и стоит первой»).
+  assert.ok(branch.indexOf("kind: 'thinking'") < branch.indexOf("kind: 'words'"), 'рассуждение встало после слов того же круга')
+})
+
+// Оговорка стоит на экране постоянно и называет ровно то, что нельзя узнать
+// из самой записи: почему рассуждения нет на кругах 2–8 и чей это текст.
+test('оговорка о рассуждении постоянна и называет обе границы', () => {
+  const feed = page.indexOf('<ol class="feed"')
+  const head = page.lastIndexOf('<div class="feed-head">', feed)
+  const above = page.slice(head, feed)
+  assert.ok(above.includes('один раз на сообщение'), 'не сказано, что рассуждение приходит один раз')
+  assert.ok(above.includes('до первого вызова'), 'не сказано, когда именно оно приходит')
+  assert.ok(above.includes('сводка'), 'не сказано, что текст — сводка, а не сама цепочка')
+  assert.ok(above.includes('поставщик'), 'не названо, кто эту сводку составил')
+
+  // ПРИЧИНА названа тем, что проверяется по источнику: чередование включается
+  // бета-заголовком, которого адаптер роутера не шлёт (`router/src/adapters/
+  // anthropic.js`), — то есть дело в форме запроса. «Модель не умеет» — это
+  // утверждение о модели, ничем у нас не проверяемое, и печатать его как факт
+  // экрану нельзя: наблюдаемое от этого не меняется, а обещание меняется.
+  assert.ok(above.includes('форма запроса'), 'причина названа не формой запроса')
+  for (const claim of ['у этой модели нет', 'модель не умеет', 'не поддерживает', 'свойство модели'])
+    assert.ok(!above.includes(claim), `на экране утверждение о модели, не проверяемое у нас: «${claim}»`)
+})
+
+// Рассуждение не сохраняется нигде — и страница обязана сказать это словами,
+// а не оставить посетителя гадать, почему после перезагрузки записи нет.
+test('страница называет рассуждение среди того, что не переживает перезагрузку', () => {
+  const app = stripJs(read('app.js'))
+  const at = app.indexOf('const RESTORED_WITH_WORDS')
+  const block = app.slice(at, app.indexOf('const calls', at))
+  const strings = block.split(/const RESTORED_/).filter((x) => x.includes('='))
+  assert.equal(strings.length, 2, `строк восстановления в коде: ${strings.length}`)
+  for (const one of strings) assert.match(one, /ассужден/, `строка не называет рассуждение: ${one.slice(0, 40)}`)
+  // Подвал говорит то же: 10 минут и «не сохраняется нигде».
+  const footer = page.slice(page.indexOf('<footer>'), page.indexOf('</footer>'))
+  assert.match(footer, /ассуждение/, 'подвал о рассуждении молчит')
+  assert.match(footer, /10 минут/, 'подвал не называет срок жизни')
+})
+
+// Сводка рассуждения — единственный длинный текст экрана, и без потолка высоты
+// она уводит за нижний край то, ради чего день сделан: сырой JSON-RPC
+// (раскладка, пп. 0.3, 10.5). Потолок `low` — 1024 токена, на кириллице это
+// заведомо больше 1300 знаков, то есть порог переходится на первом же живом
+// прогоне, а не в краевом случае.
+test('сводка рассуждения ограничена по высоте и прокручивается сама', () => {
+  const style = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+  const at = style.indexOf('.think {')
+  assert.notEqual(at, -1, 'правила .think на странице нет')
+  const rule = style.slice(at, style.indexOf('}', at))
+  // Значение из шкалы отступов и то же, что у тел вызовов в копии дня 16:
+  // своего числа под этот потолок день не заводит.
+  assert.match(rule, /max-height:calc\(8 \* var\(--s-6\)\)/, 'у сводки нет потолка высоты из шкалы')
+  assert.match(rule, /overflow:auto/, 'сводка не прокручивается сама — потолок просто срезал бы текст')
+  // Кольцо фокуса внутрь: `overflow` срезает наружное.
+  assert.match(style, /\.think:focus-visible \{[^}]*outline-offset:-2px/, 'кольцо фокуса у сводки срезается прокруткой')
+})
+
+// Область со своей прокруткой, недостижимая с клавиатуры, — это хвост текста,
+// который нельзя прочитать вовсе. Роль ставится вместе с tabindex: на голом
+// <p> подпись через aria-labelledby не читается.
+test('сводка рассуждения достижима с клавиатуры и подписана', () => {
+  const trace = stripJs(read('trace.js'))
+  const render = trace.slice(trace.indexOf('export function renderThinking'), trace.indexOf('export function renderWords'))
+  assert.match(render, /body\.tabIndex = 0/, 'до хвоста сводки не добраться с клавиатуры')
+  assert.match(render, /setAttribute\('role', 'region'\)/, 'подпись области не читается без роли')
+  assert.match(render, /setAttribute\('aria-labelledby'/, 'у области нет подписи')
 })

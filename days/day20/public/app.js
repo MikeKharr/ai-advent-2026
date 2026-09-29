@@ -17,7 +17,7 @@
 // не трогает разговор.
 
 import { countLine, lastRounds, parseChat, renderMessage } from './chat.js'
-import { NO_SERVER, parseCall, parseWords, renderCall, renderWords } from './trace.js'
+import { hasThinking, NO_SERVER, parseCall, parseWords, renderCall, renderThinking, renderWords } from './trace.js'
 
 const byId = (id) => document.getElementById(id)
 const form = byId('run-form')
@@ -48,12 +48,12 @@ const SERVERS_NO_TRACE = 'Какие серверы отвечали в прош
 
 const RESTORED_WITH_WORDS =
   'Переписка восстановлена с сервера, и слова модели последнего хода — вместе с ней: ' +
-  'они лежат рядом с ответом. Сырого JSON-RPC среди них нет — тела вызовов живут в памяти ' +
-  'сервиса 10 минут и после перезагрузки не возвращаются.'
+  'они лежат рядом с ответом. Рассуждения и сырого JSON-RPC среди них нет — и то и другое ' +
+  'живёт в памяти сервиса 10 минут и после перезагрузки не возвращается.'
 /** Слов рядом с ответом нет — обещать восстановленный ход нельзя. */
 const RESTORED_WITHOUT_WORDS =
   'Переписка восстановлена с сервера. Как шёл последний ход — нет: слов модели рядом с ' +
-  'этим ответом не записано, а тела вызовов живут в памяти сервиса 10 минут.'
+  'этим ответом не записано, а рассуждение и тела вызовов живут в памяти сервиса 10 минут.'
 
 /** Вызовы этого хода, в порядке прихода. Нигде не сохраняются. */
 const calls = []
@@ -137,9 +137,11 @@ function lock(on) {
 function redraw() {
   feed.replaceChildren(
     ...items.map((item, i) =>
-      item.kind === 'words'
-        ? renderWords(item.value, { id: i + 1 })
-        : renderCall(item.value, { id: i + 1, indent: indent.checked }),
+      item.kind === 'thinking'
+        ? renderThinking(item.value, { id: i + 1 })
+        : item.kind === 'words'
+          ? renderWords(item.value, { id: i + 1 })
+          : renderCall(item.value, { id: i + 1, indent: indent.checked }),
     ),
   )
   empty.hidden = items.length > 0
@@ -248,6 +250,12 @@ function onEvent(raw) {
     // ничего. Такую запись страница показывает словом «без слов» и НЕ
     // пропускает: молчание модели — тоже ответ на вопрос «как она выбирает».
     const words = parseWords(event.data)
+    // Рассуждение круга встаёт ПЕРЕД словами того же круга: оно пришло в том
+    // же ответе, но относится к тому, что модель собирается делать, а слова —
+    // к тому, что она уже назвала. Записи нет вовсе, когда блоков не было:
+    // у Haiku 4.5 рассуждение приходит один раз на сообщение, и пустая
+    // карточка на кругах 2–8 читалась бы как «здесь модель промолчала».
+    if (hasThinking(words)) items.push({ kind: 'thinking', value: words })
     items.push({ kind: 'words', value: words })
     if (words.round !== null) round = words.round
     redraw()

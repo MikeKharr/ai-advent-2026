@@ -4,25 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import {
-  NO_METHOD,
-  NO_PICKS,
-  NO_ROUND,
-  NO_SERVER,
-  NO_WORDS,
-  callMeta,
-  callTitle,
-  compareHashes,
-  isSilent,
-  parseCall,
-  parseWords,
-  picksLine,
-  sha256Of,
-  stopNote,
-  toolName,
-  wordsText,
-  wordsTitle,
-} from '../public/trace.js'
+import { callMeta, callTitle, compareHashes, hasThinking, isSilent, NO_METHOD, NO_PICKS, NO_ROUND, NO_SERVER, NO_WORDS, parseCall, parseWords, picksLine, sha256Of, stopNote, thinkingTitle, toolName, wordsText, wordsTitle } from '../public/trace.js'
 
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
@@ -190,4 +172,36 @@ test('обрыв по длине не пропадает молча: у запи
   // Прочие причины остановки записи не касаются — их место в сводке запуска.
   assert.equal(stopNote(parseWords(said())), null)
   assert.equal(stopNote(parseWords(said({ stopReason: null }))), null)
+})
+
+// ——— Рассуждение круга (ADR 2026-09-29-0236, пп. 3, 4).
+
+test('блоков рассуждения не было — null, а не пустая строка: пустая строка означала бы «думала молча»', () => {
+  assert.equal(parseWords({ round: 1, text: 'раз' }).thinking, null)
+  assert.equal(parseWords({ round: 1, thinking: '' }).thinking, null)
+  assert.equal(parseWords({ round: 1, thinking: 'вот сводка' }).thinking, 'вот сводка')
+})
+
+test('скрытое поставщиком — отдельное состояние, и одного лишь текста для него мало', () => {
+  assert.equal(parseWords({ round: 1 }).redacted, false)
+  assert.equal(parseWords({ round: 1, redacted: true }).redacted, true)
+  // Записи нет только тогда, когда нет НИ текста, НИ скрытых блоков: скрытый
+  // блок — это «рассуждение было, текста не дали», и молчать об этом нельзя.
+  assert.equal(hasThinking(parseWords({ round: 1 })), false)
+  assert.equal(hasThinking(parseWords({ round: 1, redacted: true })), true)
+  assert.equal(hasThinking(parseWords({ round: 1, thinking: 'раз' })), true)
+})
+
+test('подпись записи называет рассуждение сводкой поставщика, а не цепочкой рассуждения', () => {
+  const title = thinkingTitle(parseWords({ round: 1, thinking: 'раз' }))
+  assert.match(title, /круг 1/)
+  assert.match(title, /рассуждение/)
+  // Слово «рассуждение» допустимо ТОЛЬКО вместе со «сводкой поставщика»
+  // (ADR, п. 10.4): текст блока составлен другой моделью поставщика, а не
+  // является самой цепочкой. Подпись это ограничение называет, а не снимает.
+  assert.match(title, /сводка поставщика/)
+})
+
+test('номера круга нет — он не выдумывается и в подписи рассуждения', () => {
+  assert.match(thinkingTitle(parseWords({ thinking: 'раз' })), /круг не назван/)
 })
