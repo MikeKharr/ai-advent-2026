@@ -28,7 +28,7 @@ jobs:
           # без совпадений ниже не валит шаг.
           tree=$(set -o pipefail; git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n') || { echo "::error::git ls-tree упал — имена единиц не проверены"; exit 1; }
           # Управляющие символы имени не уходят в команду workflow.
-          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcpnews|mcpstore|mcp)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
+          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcpnews|mcpstore|mcp|rag)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
           if [ -n "$bad" ]; then
             echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
             exit 1
@@ -197,6 +197,127 @@ jobs:
           done <<< "$reqs"
           [ "$fail" -eq 0 ] || exit 1
           echo "граница зависимостей ok"
+      # Хэши в манифестах прибивают байты, пока закрыт список. Источник
+      # пакетов они не закрывают: pip.conf, .npmrc, переменные окружения и
+      # вторые источники в самой команде (--extra-index-url, --find-links,
+      # npm --registry) уводят установку мимо манифестов, которые читает шаг
+      # выше, — и подставленный пакет приедет со своим, сходящимся хэшем.
+      # Это первый замок, а не второй (условие гейта к заходу 2 дня 21,
+      # ADR 2026-09-29-1639).
+      #
+      # Зона шага — КАЖДЫЙ файл дерева, кроме .md, .agents/ и node_modules.
+      # Именного списка расширений здесь нет намеренно: прежняя редакция
+      # читала только Dockerfile, *.sh и workflows/*.yml, и мимо неё проходили
+      # setup_env.py, .github/actions/*/action.yml и тот же workflow с
+      # расширением .yaml (находки compliance к PR #278). Файлы .md исключены
+      # потому, что проза не ставит пакеты: иначе краснели бы ADR и чужой
+      # набор .agents/skills/**.
+      #
+      # АСИММЕТРИЯ, которую видно в выводе шага и которую он не скрывает:
+      # Имя команды ищется не по пробелу, а по короткому разделителю
+      # (`pip[^A-Za-z0-9_-]{0,8}install`): форма `subprocess.run(["pip",
+      # "install", …])` — та же установка, и по пробелу она не находилась.
+      # Обратная сторона: шаг краснеет и на строке КОММЕНТАРИЯ с такой
+      # командой. Это выбрано осознанно — лучше ложное красное на прозе в
+      # исполняемом файле, чем пропуск.
+      #   pip — требование ПОЛОЖИТЕЛЬНОЕ: источник ровно один и назван в самой
+      #     команде (--index-url https://pypi.org/simple), второй источник
+      #     красный. Явный флаг сильнее переменной окружения, поэтому он же
+      #     держит и среду раннера, которой в репозитории не видно.
+      #   npm — требование только ОТРИЦАТЕЛЬНОЕ: переопределение реестра
+      #     краснеет, но умолчание registry.npmjs.org ничем не прибито.
+      #     Положительное требование к npm — это правка mcp/Dockerfile,
+      #     другая единица и другой PR; обещать его здесь нельзя.
+      - name: Реестр пакетов не переопределяется
+        run: |
+          fail=0
+          # 1. Конфигурация реестра файлом: pip и npm читают её сами, и в
+          #    манифесте её не видно.
+          cfg=$(find . \( -name pip.conf -o -name pip.ini -o -name .npmrc -o -name .netrc -o -name .pydistutils.cfg \) -not -path '*/node_modules/*' -not -path './.git/*' -not -path './.agents/*' | sort)
+          if [ -n "$cfg" ]; then
+            while IFS= read -r f; do
+              echo "::error file=${f#./}::файл задаёт реестр пакетов мимо манифестов — источник обязан стоять в самой команде установки"
+            done <<< "$cfg"
+            fail=1
+          fi
+          # Предварительный отбор: файлы, где вообще есть речь об установке
+          # или о реестре. Он сужает перебор, а не зону: что не попало сюда,
+          # не содержит ни одной из искомых строк.
+          candidates=$(grep -rlIE 'pip[^A-Za-z0-9_-]{0,8}install|npm[^A-Za-z0-9_-]{0,8}(ci|install|i)([^A-Za-z0-9_-]|$)|PIP_[A-Z_]*(URL|HOST|LINKS)|NPM_CONFIG_REGISTRY|npm_config_registry|--registry|--index-url|--extra-index-url|--find-links|--trusted-host' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.agents --exclude='*.md' . || true)
+          [ -n "$candidates" ] || { echo "::error::в дереве нет ни одного файла, ставящего пакеты — шаг не проверил ничего"; exit 1; }
+          seen=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            seen=$((seen + 1))
+            rel=${f#./}
+            said_pip=0
+            said_npm=0
+            # 2. Реестр переменной окружения. Шаблон написан так, что не
+            #    находит сам себя: после имени в нём идёт `(`, `|` или `)`,
+            #    а не `=` и не `:`. PIP_CONFIG_FILE под него не подпадает —
+            #    он реестр не задаёт, а наоборот отключает чтение конфигов.
+            hits=$(grep -nE '(PIP_[A-Z_]*(URL|HOST|LINKS)|NPM_CONFIG_REGISTRY|npm_config_registry)[[:space:]]*[=:]' "$f" || true)
+            if [ -n "$hits" ]; then
+              while IFS= read -r line; do
+                echo "::error file=${rel}::переменная уводит реестр пакетов: ${line}"
+              done <<< "$hits"
+              fail=1
+            fi
+            # Продолжения строк склеиваются тем же awk, что в шаге выше:
+            # флаг может стоять на следующей строке через `\`.
+            joined=$(awk '
+              { line = buf $0; buf = "" }
+              line ~ /\\[ \t]*$/ { sub(/\\[ \t]*$/, "", line); buf = line; next }
+              { print line }
+              END { if (buf != "") print buf }
+            ' "$f")
+            while IFS= read -r line; do
+              # 3. pip: источник ровно один и назван в команде.
+              if [[ $line =~ pip[^A-Za-z0-9_-]{0,8}install ]]; then
+                extra=""
+                case "$line" in *--extra-index-url*) extra="${extra} --extra-index-url" ;; esac
+                case "$line" in *--find-links*) extra="${extra} --find-links" ;; esac
+                case "$line" in *--trusted-host*) extra="${extra} --trusted-host" ;; esac
+                # Источники СЧИТАЮТСЯ, а не ищутся подстрокой. `--index-url`
+                # у pip — опция store, а не накопительная: выигрывает
+                # последняя, поэтому «pypi.org где-то в строке» ничего не
+                # значит ни при каком порядке флагов (находка compliance к
+                # PR #278). `--extra-index-url` в этот счёт не попадает —
+                # в нём перед `index-url` один дефис, а не два, — и ловится
+                # отдельно веткой выше.
+                # `|| true` обязателен: grep без совпадений выходит с 1, а
+                # шаг идёт под `-o pipefail`, и присваивание уронило бы его
+                # молча — без ::error, то есть с красным без объяснения
+                # ровно на том случае, ради которого ветвь и написана
+                # (найдено прогоном мутации М10 после введения счёта).
+                sources=$( { printf '%s\n' "$line" | grep -oE -- '--index-url' || true; } | wc -l | tr -d ' ')
+                if [ -n "$extra" ]; then
+                  echo "::error file=${rel}::у установки pip есть второй источник (${extra# }) — pypi.org обязан быть единственным: ${line}"
+                  fail=1
+                elif [ "$sources" -eq 0 ]; then
+                  echo "::error file=${rel}::установка pip без явного «--index-url https://pypi.org/simple»: ${line}"
+                  fail=1
+                elif [ "$sources" -ne 1 ]; then
+                  echo "::error file=${rel}::у установки pip источников ${sources}, а должен быть ровно один: --index-url — опция store, выигрывает последняя: ${line}"
+                  fail=1
+                else
+                  case "$line" in
+                    *"--index-url https://pypi.org/simple"*) [ "$said_pip" -eq 1 ] || echo "ok: ${rel} — pip: источник один и назван в команде"; said_pip=1 ;;
+                    *) echo "::error file=${rel}::единственный источник установки pip — не «--index-url https://pypi.org/simple»: ${line}"; fail=1 ;;
+                  esac
+                fi
+              fi
+              # 4. npm: только отрицательное требование — см. комментарий выше.
+              if [[ $line =~ npm[^A-Za-z0-9_-]{0,8}(ci|install|i)([^A-Za-z0-9_-]|$) ]]; then
+                case "$line" in
+                  *--registry*|*:registry=*) echo "::error file=${rel}::установка npm переопределяет реестр: ${line}"; fail=1 ;;
+                  *) [ "$said_npm" -eq 1 ] || echo "ok: ${rel} — npm: переопределения реестра нет (умолчание ничем не прибито)"; said_npm=1 ;;
+                esac
+              fi
+            done <<< "$joined"
+          done <<< "$candidates"
+          [ "$fail" -eq 0 ] || exit 1
+          echo "реестр пакетов ok: просмотрено файлов ${seen}"
       - id: set
         name: Какие дни затронуты
         run: |
@@ -219,6 +340,17 @@ jobs:
           # Граф атласа строится из входов atlas/atlas.config.json: правка любого
           # из них пересобирает атлас, и только его. Версия инструмента живёт в
           # atlas-tool.sh — её смена тоже пересобирает витрину.
+          # Корпус индекса — не каталог единицы, а список из rag/corpus.py:
+          # правка документа или кода живой единицы обязана переехать в
+          # индекс выкаткой, иначе он стареет молча (ADR 2026-09-29-1639,
+          # п. 3). Та же роль, что у регулярки atlas ниже.
+          # Это ВТОРАЯ копия списка корпуса, и разъехаться ей есть куда:
+          # первая редакция забыла README единиц вне списка кода, и правка
+          # atlas/README.md меняла бы корпус, не запуская выкатку (находка
+          # reviewer к PR #278). Совпадение держит не комментарий, а тест
+          # rag/test/test_corpus.py::CiRegexTest — он берёт эту регулярку из
+          # ci.yml и прогоняет по ней каждый путь corpus.collect().
+          rag='^(agent_docs/|AGENTS\.md$|README\.md$|rag/|router/|agents/|mcp/|mcpnews/|mcpstore/|deploy/|\.github/|test/|atlas/README\.md$|site/README\.md$)'
           atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
           # Исключение из совпадения с deploy-units.sh: дни 13, 14 и 15 работают
           # через службу агентов, и их связку проверяют тесты из единицы
@@ -231,7 +363,7 @@ jobs:
           # `agents` здесь готовое, из пути ничего не выводится.
           # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
           # идёт только [a-z0-9]+ с каталогом единицы в дереве.
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcpnews|mcpstore|mcp)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day1[345]/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas|mcpnews|mcpstore|mcp) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
+          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcpnews|mcpstore|mcp|rag)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day1[345]/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; printf '%s\n' "$changed" | grep -qE "$rag" && echo rag; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas|mcpnews|mcpstore|mcp|rag) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -276,6 +408,7 @@ jobs:
             mcp) echo "dir=mcp" >> "$GITHUB_OUTPUT"; echo "port=8083" >> "$GITHUB_OUTPUT" ;;
             mcpnews) echo "dir=mcpnews" >> "$GITHUB_OUTPUT"; echo "port=8084" >> "$GITHUB_OUTPUT" ;;
             mcpstore) echo "dir=mcpstore" >> "$GITHUB_OUTPUT"; echo "port=8085" >> "$GITHUB_OUTPUT" ;;
+            rag) echo "dir=rag" >> "$GITHUB_OUTPUT"; echo "port=8086" >> "$GITHUB_OUTPUT" ;;
             *) echo "dir=days/$DAY" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -292,6 +425,26 @@ jobs:
           npm ci --ignore-scripts
           npm audit --omit=dev
 
+      # Единственная единица не на Node (ADR 2026-09-29-1639, п. 2). Версия
+      # прибита, а не взята из образа раннера: хэши в rag/requirements.txt —
+      # колёс cp312, и на другой версии Python установка откажет не «не тем»,
+      # а отсутствием подходящего колеса.
+      - uses: actions/setup-python@v5
+        if: matrix.day == 'rag'
+        with: { python-version: '3.12' }
+      # Та же команда, что в rag/Dockerfile: тесты идут против тех же байтов,
+      # что поедут в образ.
+      - name: Зависимости единицы rag
+        if: matrix.day == 'rag'
+        working-directory: rag
+        env:
+          PIP_CONFIG_FILE: /dev/null
+        run: |
+          pip install --no-cache-dir \
+            --index-url https://pypi.org/simple \
+            --only-binary=:all: --require-hashes --no-deps \
+            -r requirements.txt
+
       # -print0 и while-read, а не `for f in $(find …)`: имя файла с пробелом
       # или переносом строки разлетелось бы на несколько аргументов (SC2044).
       # Код запоминается, а не обрывает цикл: печатаются все битые файлы, а не
@@ -305,28 +458,60 @@ jobs:
             seen=$((seen + 1))
             node --check "$f" || fail=1
           done < <(find . -name '*.js' -not -path './node_modules/*' -print0)
+          # Второй язык — второй разбор (ADR 2026-09-29-1639, п. 3). corpus/ —
+          # копия чужих файлов, собранная шагом ниже, а не код единицы.
+          pyseen=0
+          while IFS= read -r -d '' f; do
+            pyseen=$((pyseen + 1))
+            python3 -m py_compile "$f" || fail=1
+          done < <(find . -name '*.py' -not -path './corpus/*' -not -path './__pycache__/*' -print0)
           # Пустая выборка у единицы с кодом — не успех: страж, не проверивший
           # ни одного файла, зелёным быть не должен (находка reviewer к PR #225;
-          # тот же образец стоит у шага про package.json выше).
-          # Граница: единица без package.json и без .js — это конфигурация и
+          # тот же образец стоит у шага про package.json выше). Проверка идёт
+          # по КАЖДОМУ манифесту отдельно: до дня 21 единица с requirements.txt
+          # и без .js проходила этот шаг зелёной с notice, то есть без единой
+          # проверки кода (условие гейта к заходу 2 ADR 2026-09-29-1639).
+          if [ -f package.json ] && [ "$seen" -eq 0 ]; then
+            echo "::error::в ${PWD} есть package.json, но ни одного .js — шаг не проверил ничего"
+            fail=1
+          fi
+          if [ -f requirements.txt ] && [ "$pyseen" -eq 0 ]; then
+            echo "::error::в ${PWD} есть requirements.txt, но ни одного .py — шаг не проверил ничего"
+            fail=1
+          fi
+          # Граница: единица без манифеста и без кода — это конфигурация и
           # документы (atlas: его app.js генерируемый и в репозиторий не
-          # коммитится). Такую пропускаем вслух, а не молча. А вот package.json
-          # без единого .js — подозрительно, и это красное.
-          if [ "$seen" -eq 0 ]; then
-            if [ -f package.json ]; then
-              echo "::error::в ${PWD} есть package.json, но ни одного .js — шаг не проверил ничего"
-              exit 1
-            fi
-            echo "::notice::в ${PWD} нет .js и нет package.json — единица без исполняемого кода, проверять нечего"
+          # коммитится). Такую пропускаем вслух, а не молча.
+          if [ "$seen" -eq 0 ] && [ "$pyseen" -eq 0 ] && [ ! -f package.json ] && [ ! -f requirements.txt ]; then
+            echo "::notice::в ${PWD} нет кода и нет манифеста — единица без исполняемого кода, проверять нечего"
           fi
           exit $fail
 
       - name: Тесты
         working-directory: ${{ steps.unit.outputs.dir }}
         run: |
+          ran=0
           if ls test/*.test.js >/dev/null 2>&1 || ls ./*.test.js >/dev/null 2>&1; then
             node --test
-          else
+            ran=1
+          fi
+          # Вторая ветвь — по наличию requirements.txt. Пустой прогон
+          # `unittest discover` заканчивается кодом 0, поэтому наличие тестов
+          # проверяется до запуска, а не по его коду: единица на Python без
+          # тестов проходила бы шаг зелёной (условие гейта к заходу 2).
+          # Условие шире, чем «есть манифест»: единица на Python может
+          # обходиться stdlib и не иметь requirements.txt вовсе, и тогда её
+          # тесты пропускались бы молча — у ветви Node такой дыры нет, она
+          # включается по наличию тестов (находка reviewer к PR #278).
+          if [ -f requirements.txt ] || ls test/test_*.py >/dev/null 2>&1; then
+            if ! ls test/test_*.py >/dev/null 2>&1; then
+              echo "::error::в ${PWD} есть requirements.txt, но нет test/test_*.py — тестов у единицы нет"
+              exit 1
+            fi
+            python3 -m unittest discover -s test -t .
+            ran=1
+          fi
+          if [ "$ran" -eq 0 ]; then
             echo "тестов нет — пропуск"
           fi
 
@@ -337,6 +522,15 @@ jobs:
         run: |
           ATLAS_TOOL=$(bash .github/scripts/atlas-tool.sh)
           node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --out atlas/dist
+
+      # В образ rag идёт копия корпуса, поэтому сборка — до docker build, как
+      # у атласа (ADR 2026-09-12-0440 — прецедент; ADR 2026-09-29-1639, п. 3).
+      # Список корпуса живёт в rag/corpus.py, а не здесь: тот же обход читает
+      # build.py, и разъехаться им негде. Репозиторий в контейнер не
+      # монтируется — рядом с ним на VPS лежат deploy/*.env.
+      - name: Сборка корпуса для индекса
+        if: matrix.day == 'rag'
+        run: python3 rag/corpus.py --root . --out rag/corpus
 
       - name: Сборка образа (без публикации)
         env:
