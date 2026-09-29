@@ -126,3 +126,78 @@ test('без mcp/Dockerfile единица не выкатывается — и�
   assert.match(manual.output, /не единица выкатки/)
   rmSync(r.dir, { recursive: true, force: true })
 })
+
+// --- единица rag (ADR 2026-09-29-1639, п. 3) ----------------------------------
+// У rag две особенности против остальных единиц. Первая: она попадает в
+// выкатку не только от правки своего каталога, но и от правки КОРПУСА —
+// документов и кода живых единиц, — потому что корпус едет в образ. Без этого
+// свежесть индекса держалась бы на памяти человека. Вторая: регулярка корпуса
+// живёт в двух файлах (ci.yml решает «пересобирать», этот скрипт — «выкатывать»),
+// и их совпадение держит rag/test/test_corpus.py::CiRegexTest.
+
+function ragTree(dir) {
+  baseTree(dir)
+  write(dir, 'rag/Dockerfile', 'FROM python:3.12-slim\n')
+  write(dir, 'rag/build.py', '# сборка\n')
+  write(dir, 'README.md', '# проект\n')
+  write(dir, 'days/day1/public/index.html', '<p>день</p>\n')
+}
+
+test('rag — единица выкатки: она есть в полном списке', () => {
+  const r = repo(ragTree)
+  r.commit('первый')
+  const run = units(r.dir, '', '')
+  assert.equal(run.status, 0, run.output)
+  assert.ok(JSON.parse(run.stdout).includes('rag'), run.stdout)
+  rmSync(r.dir, { recursive: true, force: true })
+})
+
+// Корневой README.md, а не agent_docs/: он в корпусе есть, а в регулярке
+// атласа его нет — иначе в ответе стояло бы ещё и `atlas`, и проверка
+// перестала бы говорить именно про rag.
+test('правка документа в корпусе выкатывает rag — иначе индекс стареет молча', () => {
+  const r = repo(ragTree)
+  const base = r.commit('первый')
+  write(r.dir, 'README.md', '# проект\n\nновый абзац\n')
+  r.commit('второй')
+  const run = units(r.dir, '', base)
+  assert.equal(run.status, 0, run.output)
+  assert.deepEqual(JSON.parse(run.stdout), ['rag'])
+  rmSync(r.dir, { recursive: true, force: true })
+})
+
+test('правка кода живой единицы выкатывает и её саму, и rag', () => {
+  const r = repo(ragTree)
+  const base = r.commit('первый')
+  write(r.dir, 'router/src/policy.js', '// политика\n')
+  r.commit('второй')
+  const run = units(r.dir, '', base)
+  assert.deepEqual(JSON.parse(run.stdout), ['rag', 'router'])
+  rmSync(r.dir, { recursive: true, force: true })
+})
+
+// Обратная сторона: если бы регулярка ловила всё подряд, обе проверки выше
+// были бы зелёными и не значили бы ничего. Дни в корпус не входят — правило
+// владельца от 2026-09-08, сданные дни не поддерживаются.
+test('правка сданного дня rag НЕ выкатывает: дней в корпусе нет', () => {
+  const r = repo(ragTree)
+  const base = r.commit('первый')
+  write(r.dir, 'days/day1/public/index.html', '<p>другой день</p>\n')
+  r.commit('второй')
+  const run = units(r.dir, '', base)
+  assert.deepEqual(JSON.parse(run.stdout), ['day1'])
+  rmSync(r.dir, { recursive: true, force: true })
+})
+
+test('без rag/Dockerfile правка корпуса никого не выкатывает — имени мало', () => {
+  const r = repo((dir) => {
+    ragTree(dir)
+    rmSync(join(dir, 'rag/Dockerfile'))
+  })
+  const base = r.commit('первый')
+  write(r.dir, 'README.md', '# проект\n\nновый абзац\n')
+  r.commit('второй')
+  const run = units(r.dir, '', base)
+  assert.deepEqual(JSON.parse(run.stdout), [])
+  rmSync(r.dir, { recursive: true, force: true })
+})

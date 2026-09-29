@@ -25,6 +25,54 @@ MODEL = os.environ.get("RAG_MODEL", "embeddinggemma")
 CORPUS_DIR = Path(os.environ.get("RAG_CORPUS", "corpus"))
 INDEX_DIR = Path(os.environ.get("RAG_INDEX", "/data"))
 BATCH = int(os.environ.get("RAG_BATCH", "16"))
+# Срок на ВЕСЬ проход сборки, а не на вызов. Ноль и меньше — срока нет.
+#
+# Зачем отдельно от срока запроса. У запроса срок есть и был (600 с), но
+# вызовов на стратегию под две сотни: зависший эмбеддер отдавал бы по отказу
+# каждые десять минут, и проход тянулся бы до ~31 часа на стратегию, занимая
+# ядро общей машины (находка `compliance` к PR #278). Потолок на вызов такой
+# проход не ограничивает вовсе — ограничивает только потолок на проход.
+#
+# Откуда 12 часов. Это не замер VPS, а граница: полный проход на локальной
+# связке занял 278 с, на одном ядре VPS ожидаются часы (rag/README.md).
+# Число обязано быть заметно больше честной сборки и заметно меньше суток —
+# первый прогон на VPS и есть замер, который его проверит.
+#
+# Чем платим: проход, прерванный по сроку, теряет векторы текущей стратегии —
+# в том их сохраняет только завершённая стратегия. Поэтому срок не подгоняют
+# впритык к ожидаемому времени сборки.
+BUILD_TIMEOUT = float(os.environ.get("RAG_BUILD_TIMEOUT_SECONDS", "43200"))
+
+# Сколько ждать, пока эмбеддер начнёт отвечать. На первой выкатке `ollama`
+# разворачивает образ в 3,75 ГБ, а эта единица стартует рядом и сразу идёт в
+# /api/tags: без ожидания «эмбеддер не ответил» было бы нормальным исходом
+# первого запуска, и починкой стал бы ручной рестарт. Ожидание входит в срок
+# прохода, а не добавляется к нему.
+OLLAMA_WAIT = float(os.environ.get("RAG_OLLAMA_WAIT_SECONDS", "600"))
+
+
+class BuildTimeout(RuntimeError):
+    """Проход сборки не уложился в отведённый срок."""
+
+
+class Deadline:
+    """Один срок на весь проход. `now` подменяется в тестах."""
+
+    def __init__(self, seconds: float, now=time.monotonic) -> None:
+        self._now = now
+        self.at = now() + seconds if seconds > 0 else None
+
+    def remaining(self) -> float | None:
+        return None if self.at is None else self.at - self._now()
+
+    def check(self, where: str) -> float | None:
+        """Сколько осталось. Срок вышел — исключение ДО следующего вызова."""
+        left = self.remaining()
+        if left is not None and left <= 0:
+            raise BuildTimeout(
+                f"сборка не уложилась в RAG_BUILD_TIMEOUT_SECONDS={BUILD_TIMEOUT:.0f} с: прервана на {where}"
+            )
+        return left
 
 
 def read_chunks(corpus_dir: Path, strategy: str) -> list[chunking.Chunk]:
@@ -60,9 +108,11 @@ def build_strategy(
     embedder: OllamaEmbedder,
     index_dir: Path,
     batch: int = BATCH,
+    deadline: Deadline | None = None,
 ) -> dict:
     """Собрать и сохранить индекс одной стратегии. Возвращает метрики сборки."""
     started = time.monotonic()
+    deadline = deadline if deadline is not None else Deadline(BUILD_TIMEOUT)
     known = {}
     old = VectorIndex.load(index_dir, strategy)
     if old is not None:
@@ -72,7 +122,12 @@ def build_strategy(
     calls_before, reused = embedder.calls, len(chunks) - len(fresh)
     for i in range(0, len(fresh), batch):
         part = fresh[i : i + batch]
-        for chunk, vector in zip(part, embedder.embed([c.embed_text for c in part])):
+        # Проверка ДО вызова, а не после: иначе срок значил бы «столько плюс
+        # ещё один запрос», и потолок на проход не был бы потолком.
+        left = deadline.check(f"стратегия {strategy}, чанк {i} из {len(fresh)}")
+        # Срок вызова не вправе пережить срок прохода — отсюда min.
+        call_timeout = None if left is None else min(embedder.timeout, left)
+        for chunk, vector in zip(part, embedder.embed([c.embed_text for c in part], call_timeout)):
             known[chunk.sha256] = np.asarray(vector, dtype="float32")
 
     vectors = np.asarray([known[c.sha256] for c in chunks], dtype="float32")
@@ -89,12 +144,43 @@ def build_strategy(
     return stats
 
 
+def wait_ready(
+    embedder: OllamaEmbedder,
+    deadline: Deadline,
+    wait: float = OLLAMA_WAIT,
+    sleep=time.sleep,
+    now=time.monotonic,
+) -> None:
+    """Дождаться, пока эмбеддер начнёт отвечать, или отдать его отказ наружу.
+
+    Ожидание ограничено с двух сторон: своим сроком `wait` и общим сроком
+    прохода. Второе важнее: без него зависшая служба превратила бы ожидание
+    в ещё одно место, где проход стоит часами.
+    """
+    until = now() + wait
+    while True:
+        deadline.check("ожидание эмбеддера")
+        try:
+            embedder.tags()
+            return
+        except EmbedError:
+            if now() >= until:
+                raise
+            sleep(3.0)
+
+
 def build_all(
     corpus_dir: Path = CORPUS_DIR,
     index_dir: Path = INDEX_DIR,
     embedder: OllamaEmbedder | None = None,
+    deadline: Deadline | None = None,
+    batch: int = BATCH,
 ) -> list[dict]:
     embedder = embedder or OllamaEmbedder(OLLAMA_URL, MODEL)
+    # Срок один на обе стратегии: он про занятое ядро машины, а стратегий на
+    # этом ядре две подряд. Свой срок у каждой давал бы вдвое больший потолок.
+    deadline = deadline if deadline is not None else Deadline(BUILD_TIMEOUT)
+    wait_ready(embedder, deadline)
     if not embedder.has_model():
         embedder.pull()
     out = []
@@ -102,7 +188,7 @@ def build_all(
         chunks = read_chunks(corpus_dir, strategy)
         if not chunks:
             raise EmbedError(f"корпус {corpus_dir} пуст — индексировать нечего")
-        out.append(build_strategy(strategy, chunks, embedder, index_dir))
+        out.append(build_strategy(strategy, chunks, embedder, index_dir, batch, deadline))
     return out
 
 
