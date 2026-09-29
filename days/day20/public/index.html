@@ -31,7 +31,20 @@
     }
     /* Правый внутренний отступ у колонки со своей прокруткой: иначе она
        срезает кольцо фокуса и ползунок у своего края (причина дня 15). */
-    .col { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+    .col-run { min-height:0; overflow-y:auto; padding-right:var(--s-2); }
+    /* В левой колонке прокручивается ЛОГ, а не колонка целиком: форма стоит
+       последней строкой и с экрана не уходит.
+       Раскладка в п. 2.1 говорит об этом дважды и по-разному — картинка даёт
+       прокрутку логу, а CSS отдаёт её всей колонке. Выбрана картинка, и довод
+       не вкусовой: п. 2.2 называет ровно эту беду причиной, по которой на
+       узком экране логу дан max-height 60dvh — «иначе длинная переписка уводит
+       форму за пределы экрана». На широком экране тем же словам должна
+       соответствовать та же защита, а не противоположная. Замер до правки при
+       1440 и 14 репликах: содержимое колонки 1846 px при видимой высоте
+       836 px, верх кнопки на 1812 px — форма на 944 px ниже кадра. */
+    .col-talk { min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+    .col-talk > * { flex:0 0 auto; }
+    .col-talk .log { flex:1 1 auto; min-height:0; overflow-y:auto; padding-right:var(--s-2); }
   }
 
   /* Разговор. Форма пузырей не используется: иерархия — линией и цветом
@@ -60,6 +73,13 @@
      .entry-again — второстепенная кнопка копии; второго акцента она не
      создаёт, акцент на экране один — «Отправить». */
   .msgs { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+
+  /* Разделитель строки цены переезжает в НАЧАЛО куска, а не остаётся в конце
+     предыдущего. Правило копии рассчитано на строку в ряд; в колонке 480 px
+     строка разваливается на три, и висящая на конце точка читалась как
+     оборванная фраза. Смысл правила тот же, меняется только сторона. */
+  .wire span:not(:last-child)::after { content:none; }
+  .wire span:not(:first-child)::before { content:"·\00a0"; }
   .restored { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); margin:0 0 var(--s-4); max-width:68ch; }
 
   /* Композитор теряет position:sticky копии (перекрытие, раскладка, п. 2.2):
@@ -110,7 +130,7 @@
 </head>
 <body>
 <div class="layout">
-  <section class="col" aria-labelledby="log-h">
+  <section class="col col-talk" aria-labelledby="log-h">
     <h1>Оркестрация инструментов</h1>
     <p class="sub">Вы пишете задание словами; какие инструменты позвать и в каком порядке,
       выбирает модель сама.</p>
@@ -153,7 +173,7 @@
     </form>
   </section>
 
-  <section class="col" aria-labelledby="feed-title">
+  <section class="col col-run" aria-labelledby="feed-title">
     <div class="feed-head">
       <h2 id="feed-title">Как шёл ход</h2>
       <label class="indent"><input type="checkbox" id="indent"> Показать с отступами</label>

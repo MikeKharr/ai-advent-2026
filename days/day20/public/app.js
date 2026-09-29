@@ -35,6 +35,17 @@ const indent = byId('indent')
 const serversList = byId('servers')
 const serversNote = byId('servers-note')
 
+/** Лента пуста, потому что хода в этой вкладке не было. */
+const FEED_NEVER =
+  'Хода ещё не было. Отправьте сообщение — слова модели и вызовы появятся здесь по мере ' +
+  'того, как модель их выбирает.'
+/** Лента пуста, потому что от прошлого хода не осталось следа. Это другое. */
+const FEED_NO_TRACE =
+  'Ход был, но следа от него не осталось: слов модели рядом с этим ответом не записано. ' +
+  'Отправьте сообщение — слова модели и вызовы появятся здесь по мере того, как модель их выбирает.'
+const SERVERS_NEVER = 'Хода ещё не было: называть серверы нечем.'
+const SERVERS_NO_TRACE = 'Какие серверы отвечали в прошлом ходе, не сохранено.'
+
 const RESTORED_WITH_WORDS =
   'Переписка восстановлена с сервера, и слова модели последнего хода — вместе с ней: ' +
   'они лежат рядом с ответом. Сырого JSON-RPC среди них нет — тела вызовов живут в памяти ' +
@@ -56,6 +67,14 @@ const calls = []
 const items = []
 /** Номер круга, о котором говорит строка состояния. 0 — кругов ещё не было. */
 let round = 0
+/**
+ * Переписка восстановлена с сервера, а ход в этой вкладке не запускался.
+ * Пустые состояния ленты привязаны к ЭТОМУ факту, а не к наличию слов: у
+ * ответа агента слов рядом может не быть вовсе (ход оборвался), и тогда лента
+ * пуста, а ход всё-таки был. Строка «Хода ещё не было» рядом со строкой
+ * «переписка восстановлена» — прямая ложь, и её нельзя чинить молчанием.
+ */
+let restoredRun = false
 let stream = null
 
 function setStatus(text, bad = false) {
@@ -63,10 +82,27 @@ function setStatus(text, bad = false) {
   status.classList.toggle('is-bad', bad)
 }
 
+/**
+ * Запертый элемент отдаёт фокус телу документа и сам его не возвращает.
+ * Раскладка (п. 8.6) требует, чтобы после отправки фокус оставался в поле, и
+ * для экрана-переписки это не мелочь: иначе каждое следующее сообщение с
+ * клавиатуры начинается с поиска поля через весь порядок Tab.
+ *
+ * Это НЕ угон фокуса (п. 10.6): страница возвращает то, что забрала сама, и
+ * только если фокус был на том, что она заперла. Если посетитель во время
+ * хода ушёл читать ленту, его позицию никто не трогает.
+ */
+let refocus = false
+
 function lock(on) {
+  if (on) refocus = document.activeElement === input || document.activeElement === send
   input.disabled = on
   send.disabled = on
   clear.disabled = on || log.children.length === 0
+  if (!on && refocus) {
+    refocus = false
+    input.focus()
+  }
 }
 
 function redraw() {
@@ -78,6 +114,7 @@ function redraw() {
     ),
   )
   empty.hidden = items.length > 0
+  empty.textContent = restoredRun ? FEED_NO_TRACE : FEED_NEVER
 }
 
 /** Лента хода целиком — новое сообщение показывает СВОЙ ход, а не прошлый. */
@@ -85,6 +122,7 @@ function resetRun() {
   calls.length = 0
   items.length = 0
   round = 0
+  restoredRun = false
   restored.hidden = true
   restored.textContent = ''
   redraw()
@@ -98,6 +136,10 @@ function resetRun() {
  */
 function showRestored(rounds) {
   for (const words of rounds) items.push({ kind: 'words', value: words })
+  // Флаг ставится ДО перерисовки и НЕ зависит от того, нашлись ли слова:
+  // пустая лента после восстановления — это «следа не осталось», а не
+  // «хода не было», и обе строки пустоты обязаны сказать именно это.
+  restoredRun = true
   restored.hidden = false
   restored.textContent = rounds.length > 0 ? RESTORED_WITH_WORDS : RESTORED_WITHOUT_WORDS
   redraw()
@@ -127,9 +169,9 @@ function showServers() {
   serversNote.textContent =
     seen.length > 0
       ? `Вызовы ушли на ${seen.length} ${seen.length === 1 ? 'сервер' : 'сервера'}.`
-      : items.length > 0
-        ? 'Какие серверы отвечали в прошлом ходе, не сохранено: остались только слова модели.'
-        : 'Хода ещё не было: называть серверы нечем.'
+      : restoredRun
+        ? SERVERS_NO_TRACE
+        : SERVERS_NEVER
 }
 
 function showChat(messages) {

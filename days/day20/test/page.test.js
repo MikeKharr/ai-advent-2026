@@ -320,3 +320,84 @@ test('восстановление ленты не проходит через �
   assert.ok(!body.includes('resetRun'), 'восстановление зовёт очистку ленты — круги стираются сразу после укладки')
   assert.ok(!/items\.length\s*=/.test(body), 'восстановление обнуляет ленту')
 })
+
+// ——— Правки гейта раскладки.
+
+// Пустое состояние обязано называть НАСТОЯЩУЮ причину пустоты. У ответа агента
+// слов рядом может не быть вовсе (ход оборвался), и тогда лента пуста, а ход
+// всё-таки был: строка «Хода ещё не было» стояла бы в одном кадре со строкой
+// «переписка восстановлена», и правая была бы ложью. Поэтому обе строки
+// привязаны к ФАКТУ восстановления, а не к тому, нашлись ли слова.
+test('пустые состояния ленты привязаны к факту восстановления, а не к наличию слов', () => {
+  const app = stripJs(read('app.js'))
+  // Границы среза — по КОДУ, а не по комментариям: `stripJs` комментарии уже
+  // снял, ненайденная граница дала бы срез во весь файл, и проверка стала бы
+  // зелёной на любом коде, где слово встречается хоть где-то.
+  const cut = (from, to) => {
+    const a = app.indexOf(from)
+    const b = app.indexOf(to, a + 1)
+    assert.ok(a !== -1 && b > a, `границы среза не найдены: ${from} … ${to}`)
+    return app.slice(a, b)
+  }
+  const draw = cut('function redraw', 'function resetRun')
+  assert.ok(draw.includes('restoredRun'), 'текст пустой ленты не смотрит на факт восстановления')
+  const servers = cut('function showServers', 'function showChat')
+  assert.ok(servers.includes('restoredRun'), 'подпись серверов не смотрит на факт восстановления')
+  assert.ok(!servers.includes('items.length'), 'подпись серверов всё ещё привязана к наличию слов')
+  // Флаг ставится независимо от того, нашлись ли круги: иначе оборванный ход
+  // снова читался бы как «хода не было».
+  const restore = cut('function showRestored', 'function showChat')
+  const flag = restore.indexOf('restoredRun = true')
+  assert.notEqual(flag, -1, 'факт восстановления нигде не отмечается')
+  assert.ok(!/rounds\.length[^\n]*restoredRun = true/.test(restore), 'факт восстановления зависит от числа кругов')
+})
+
+// Умолчания стоят в разметке, а переключение — в коде. Разойдись они, экран
+// показал бы один текст до первого обновления и другой после, и заметить это
+// было бы нечем.
+test('умолчания пустых состояний в разметке совпадают с текстами в коде', () => {
+  const app = stripJs(read('app.js'))
+  const constant = (name) => {
+    const at = app.indexOf(`const ${name} =`)
+    assert.notEqual(at, -1, `постоянной ${name} нет`)
+    const tail = app.slice(at, app.indexOf('\nconst ', at + 1))
+    return [...tail.matchAll(/'([^']*)'/g)].map((m) => m[1]).join('')
+  }
+  for (const [name, id] of [['FEED_NEVER', 'empty'], ['SERVERS_NEVER', 'servers-note']]) {
+    const at = page.indexOf(`id="${id}"`)
+    assert.notEqual(at, -1, `элемента ${id} на странице нет`)
+    const markup = page.slice(page.lastIndexOf('<', at), page.indexOf('</p>', at))
+    const text = markup.slice(markup.indexOf('>') + 1).replace(/\s+/g, ' ').trim()
+    assert.equal(text, constant(name).replace(/\s+/g, ' ').trim(), `умолчание ${id} разошлось с ${name}`)
+  }
+})
+
+// Запертый элемент отдаёт фокус телу документа и сам его не возвращает. Для
+// экрана-переписки это значит поиск поля заново перед каждым сообщением
+// (раскладка, п. 8.6). Возврат — не угон: страница отдаёт то, что забрала, и
+// только если фокус был на том, что она заперла.
+test('фокус возвращается в поле после отпирания, и только если страница его забрала', () => {
+  const app = stripJs(read('app.js'))
+  const body = app.slice(app.indexOf('function lock(on)'), app.indexOf('function redraw'))
+  assert.match(body, /document\.activeElement/, 'страница не смотрит, был ли фокус на запираемом')
+  assert.match(body, /input\.focus\(\)/, 'фокус в поле не возвращается')
+  // Возврат стоит ПОД условием: безусловный `focus()` при каждом отпирании
+  // уводил бы посетителя из ленты, которую он в этот момент читает.
+  const back = body.indexOf('input.focus()')
+  assert.ok(/if \(!on && refocus\)/.test(body.slice(0, back)), `фокус возвращается безусловно: ${body.slice(0, back).slice(-120)}`)
+})
+
+// На широком экране прокручивается ЛОГ, а не левая колонка целиком: иначе
+// форма уходит за нижний край на седьмой реплике. Раскладка говорит об этом в
+// п. 2.1 дважды и по-разному (картинка против CSS); выбрана картинка, довод —
+// в комментарии у правила и в описании PR.
+test('на широком экране прокручивается лог, а форма остаётся в колонке', () => {
+  const own = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+  const wide = own.slice(own.indexOf('@media (min-width:75rem)'))
+  assert.match(wide, /\.col-talk \.log \{[^}]*overflow-y:auto/, 'лог на широком экране не прокручивается сам')
+  assert.match(wide, /\.col-talk \{[^}]*overflow:hidden/, 'левая колонка прокручивается целиком — форма уйдёт за край')
+  // Правая колонка прокручивается по-прежнему целиком: под лентой там стоят
+  // пояснение и подвал, и отрывать их незачем.
+  assert.match(wide, /\.col-run \{[^}]*overflow-y:auto/, 'правая колонка перестала прокручиваться')
+  assert.ok(page.includes('class="col col-talk"') && page.includes('class="col col-run"'), 'колонки не различены в разметке')
+})
