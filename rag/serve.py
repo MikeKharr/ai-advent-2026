@@ -258,6 +258,17 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
                     return self._nothing_here()
 
                 # 3. Метод не тот.
+                #
+                # `close_connection` здесь по той же причине, что в
+                # `_nothing_here`, и ветвь эта достижима БЕЗ ключа: у записи
+                # `/healthz` окно `open`, проверка ключа выше пропускается, а
+                # `handle /rag/healthz` в `deploy/Caddyfile` метод не
+                # ограничивает. То есть `POST /rag/healthz` без всякого
+                # `Authorization` доходит сюда с непрочитанным телом, и без
+                # этой строки тело разберётся как следующий запрос.
+                # Держит `test_serve.py::SmugglingTest`, два теста на
+                # `/rag/healthz` (находка `reviewer` к PR #282: основание
+                # «обе строки за проверкой ключа» было неверным для этой).
                 if method != route.method:
                     self.close_connection = True
                     return self._send(405, {"ok": False, "code": "method_not_allowed"}, {"allow": route.method})

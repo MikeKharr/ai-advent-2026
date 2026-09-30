@@ -822,6 +822,32 @@ class SmugglingTest(unittest.TestCase):
         self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:400]!r}")
         self.assertNotIn(b'"state"', raw)
 
+    def test_405_на_открытой_ручке_тоже_не_отдаёт_второго_ответа(self):
+        """Ветвь 405 достижима БЕЗ ключа — находка ревьюера к PR #282.
+
+        У записи `/healthz` окно `open` (`serve.py:111`), поэтому проверка
+        ключа на 248 пропускается, и следующей идёт проверка метода на 261.
+        `POST /rag/healthz` без всякого `Authorization` уходит в 405, тело не
+        читается и остаётся в сокете. Путь публичный: `handle /rag/healthz`
+        в `deploy/Caddyfile` метод не ограничивает.
+
+        То есть экспозиция та же, что у закрытой Б1, а не «мелочь за
+        ключом»: два бесключевых случая выше ведут в `_nothing_here`, а эта
+        ветвь не была покрыта ничем.
+        """
+        raw = self.smuggle(b"", path=b"/rag/healthz")
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:400]!r}")
+        self.assertIn(b"HTTP/1.1 405", raw)
+        self.assertNotIn(b'"state"', raw, "протащенный /healthz исполнился")
+
+    def test_405_на_открытой_ручке_и_с_ключом_тоже(self):
+        # Ключ ничего не меняет на открытой ручке — он там и не смотрится.
+        # Отдельным утверждением, чтобы «держит ключ» нельзя было принять за
+        # объяснение зелёного выше.
+        raw = self.smuggle(b"authorization: Bearer " + KEY.encode() + b"\r\n", path=b"/rag/healthz")
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:400]!r}")
+        self.assertNotIn(b'"state"', raw)
+
     def test_стенд_живой_годный_ключ_на_том_же_сокете_отвечает(self):
         # Иначе «пришёл один ответ» выполнялось бы и при мёртвой службе:
         # проверка обязана различать гипотезы.
