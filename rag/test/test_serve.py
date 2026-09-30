@@ -892,12 +892,37 @@ class OneResponsePerConnectionTest(unittest.TestCase):
         + b'{"jsonrpc":"2.0","id":777,"method":"ping"}'
     )
 
-    def exchange(self, method: bytes, path: bytes, auth: bytes) -> bytes:
+    # Третья ось перебора: ЧЕМ обрамлено тело. Две первые оси (путь, метод)
+    # перебирались, а эта была КОНСТАНТОЙ — всегда `content-length`, — и
+    # реализация была завязана ровно на неё. Перебор шёл по осям, где защита
+    # одинакова, и держал неподвижной ту, где она различалась; поэтому дыру
+    # с `transfer-encoding` он и не увидел (находка `compliance` к PR #282).
+    FRAMINGS = ("content-length", "chunked", "двойной content-length", "отрицательный content-length", "без тела")
+
+    def framed(self, framing: str) -> tuple[bytes, bytes]:
+        """Заголовок обрамления и байты тела."""
         body = self.SMUGGLED
+        if framing == "content-length":
+            return b"content-length: " + str(len(body)).encode() + b"\r\n", body
+        if framing == "chunked":
+            # Тело без chunk-обрамления намеренно: так протащенный запрос
+            # встаёт на границу строки и ИСПОЛНЯЕТСЯ, если соединение
+            # поехало, — наблюдаемое последствие, а не только лишний ответ.
+            return b"transfer-encoding: chunked\r\n", body
+        if framing == "двойной content-length":
+            # `headers.get` отдаёт ПЕРВЫЙ: пара `0` и `N` читалась как
+            # «тела нет».
+            return b"content-length: 0\r\ncontent-length: " + str(len(body)).encode() + b"\r\n", body
+        if framing == "отрицательный content-length":
+            # `-5` — годное число, и `int(raw) > 0` давал «тела нет».
+            return b"content-length: -5\r\n", body
+        return b"", b""
+
+    def exchange(self, method: bytes, path: bytes, auth: bytes, framing: str = "content-length") -> bytes:
+        head, body = self.framed(framing)
         return raw_exchange(
             self.url,
-            method + b" " + path + b" HTTP/1.1\r\nHost: x\r\n" + auth
-            + b"content-length: " + str(len(body)).encode() + b"\r\n\r\n" + body,
+            method + b" " + path + b" HTTP/1.1\r\nHost: x\r\n" + auth + head + b"\r\n" + body,
             wait=0.6,
         )
 
@@ -915,15 +940,32 @@ class OneResponsePerConnectionTest(unittest.TestCase):
         for path in paths:
             for method in methods:
                 for label, auth in keys.items():
-                    raw = self.exchange(method, path, auth)
-                    count = raw.count(b"HTTP/1.1 ")
-                    executed = b"777" in raw
-                    if count != 1 or executed:
-                        bad.append(
-                            f"{method.decode()} {path.decode()} ({label}): "
-                            f"ответов={count}, протащенное исполнено={executed}"
-                        )
+                    for framing in self.FRAMINGS:
+                        raw = self.exchange(method, path, auth, framing)
+                        count = raw.count(b"HTTP/1.1 ")
+                        executed = b"777" in raw
+                        if count != 1 or executed:
+                            bad.append(
+                                f"{method.decode()} {path.decode()} ({label}, {framing}): "
+                                f"ответов={count}, протащенное исполнено={executed}"
+                            )
         self.assertEqual(bad, [], "тело запроса разобрано как следующий запрос:\n" + "\n".join(bad))
+
+    def test_перебор_трогает_все_три_обрамления(self):
+        """Ось не должна тихо выродиться в константу — ровно так и вышло.
+
+        Проверка на самого себя: если `framed` однажды начнёт отдавать одно
+        и то же, перебор станет втрое короче и снова перестанет видеть
+        целый класс входов, оставшись зелёным.
+        """
+        heads = {self.framed(f)[0] for f in self.FRAMINGS}
+        self.assertEqual(len(heads), len(self.FRAMINGS), f"обрамления совпали: {heads}")
+        self.assertTrue(any(b"transfer-encoding" in h for h in heads), "chunked выпал из перебора")
+        self.assertTrue(any(h.count(b"content-length") == 2 for h in heads), "двойной content-length выпал")
+        self.assertTrue(any(b"-5" in h for h in heads), "отрицательный content-length выпал")
+        # И тело у «с телом» действительно непустое: иначе перебор гонял бы
+        # пустые запросы и был бы зелен при любом страже.
+        self.assertTrue(all(self.framed(f)[1] for f in self.FRAMINGS if f != "без тела"))
 
     def test_перебор_не_вырожден_годный_запрос_всё_ещё_обслуживается(self):
         # Иначе «везде один ответ» выполнялось бы и при службе, которая
@@ -954,6 +996,21 @@ class OneResponsePerConnectionTest(unittest.TestCase):
         self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:300]!r}")
         self.assertIn(b"HTTP/1.1 400", raw)
         self.assertNotIn(b"777", raw, "протащенный вызов исполнился")
+
+    def test_тело_в_chunked_не_разбирается_как_следующий_запрос(self):
+        """`transfer-engineering`… нет: `transfer-encoding`, и он был дырой.
+
+        `http.server` chunked не разбирает вовсе, поэтому тело остаётся в
+        сокете, а прежний страж смотрел только на `content-length` и его не
+        замечал. Отдельным тестом сверх перебора — потому что именно этот
+        вход отдавал два ответа на **бесключевом** `GET /rag/healthz`, и
+        протащенный `POST /rag` с годным ключом ИСПОЛНЯЛСЯ.
+        """
+        for method, path in ((b"GET", b"/rag/healthz"), (b"POST", b"/rag/healthz"), (b"POST", b"/rag")):
+            raw = self.exchange(method, path, b"", "chunked")
+            self.assertEqual(raw.count(b"HTTP/1.1 "), 1,
+                             f"{method.decode()} {path.decode()}: ответов больше одного: {raw[:250]!r}")
+            self.assertNotIn(b"777", raw, f"{method.decode()} {path.decode()}: протащенный вызов исполнился")
 
     def test_наведённый_отказ_обработчика_соединение_не_рассинхронизирует(self):
         """Четвёртый экземпляр класса — общий `except` в `_dispatch`.

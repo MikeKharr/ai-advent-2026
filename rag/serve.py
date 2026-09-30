@@ -238,12 +238,40 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
 
         # --- порядок --------------------------------------------------------
 
-        def _declared_length(self) -> int:
-            try:
-                return max(int(self.headers.get("content-length") or 0), 0)
-            except ValueError:
-                # Негодный заголовок: считаем, что тело есть, и закрываемся.
-                return 1
+        def _body_declared(self) -> bool:
+            """Есть ли у запроса тело — по RFC 9112, а не по одному заголовку.
+
+            Тело есть тогда и только тогда, когда объявлен
+            `Transfer-Encoding` **или** `Content-Length`. Проверять один
+            `content-length` мало, и это была не придирка, а дыра: `chunked`
+            `http.server` не разбирает вовсе, тело остаётся в сокете, а
+            страж его не замечал — `GET /rag/healthz` с
+            `transfer-encoding: chunked` отдавал два ответа, и протащенный
+            `POST /rag` исполнялся (находка `compliance` к PR #282,
+            воспроизведена).
+
+            Умолчание здесь «тело есть»: непонятный заголовок — повод
+            закрыться, а не повод считать, что читать нечего.
+            """
+            if self.headers.get("transfer-encoding"):
+                return True
+            # `get_all`, а не `get`: при двух заголовках `get` отдаёт ПЕРВЫЙ,
+            # и пара `content-length: 0` + `content-length: N` читалась как
+            # «тела нет», а байты оставались в сокете. Наблюдено: два ответа
+            # и протащенный `POST /rag` исполнен (находка `reviewer`).
+            values = self.headers.get_all("content-length") or []
+            if not values:
+                return False
+            if len(values) > 1:
+                return True
+            raw = values[0].strip()
+            # `isdigit`, а не `int(...) > 0`: `-5` — годное число и давало
+            # «тела нет», а тело при этом было. На Python 3.14 это
+            # воспроизводится, два ответа (у `reviewer` базовый класс
+            # ответил 400 раньше — расхождение сред названо в описании PR).
+            if not raw.isdigit():
+                return True
+            return int(raw) > 0
 
         def _dispatch(self, method: str) -> None:
             self._body_consumed = False
@@ -286,8 +314,11 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
                     self.close_connection = True
             finally:
                 # ОДИН ответ на соединение. Инвариант здесь ровно один и
-                # сформулирован не про ключ, а про тело: **ответ не уходит,
-                # оставив тело запроса невычитанным**. Тело, которое мы не
+                # сформулирован не про ключ и не про заголовок, а про тело:
+                # **ответ не уходит, оставив тело запроса невычитанным**.
+                # Что такое «тело есть» — решает `_body_declared` по RFC, а
+                # не один `content-length`: предикат, уже утверждения, —
+                # ровно та ошибка, которой этот класс держался трижды. Тело, которое мы не
                 # прочитали, остаётся в сокете, и `BaseHTTPRequestHandler`
                 # на следующем круге `handle_one_request` разберёт его как
                 # СЛЕДУЮЩИЙ запрос — то есть отправитель получает второй
@@ -310,7 +341,7 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
                 # то есть ровно то, от чего бережёт потолок тела.
                 # Заголовка `Connection: close` не добавляем: он сделал бы
                 # пустой 404 отличимым от ответа соседних ручек.
-                if not getattr(self, "_body_consumed", False) and self._declared_length() > 0:
+                if not getattr(self, "_body_consumed", False) and self._body_declared():
                     self.close_connection = True
 
         def _key_ok(self) -> bool:
@@ -338,7 +369,19 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
             self._send(200, body)
 
         def _read_body(self) -> bytes:
-            length = int(self.headers.get("content-length") or 0)
+            # `chunked` не разбираем: `http.server` этого не умеет, и чтение
+            # «по content-length» вычитало бы ноль байт, а флаг поставило —
+            # то есть страж решил бы, что тело прочитано, и не закрыл
+            # соединение. Отказ здесь, закрытие — стражем в `finally`.
+            if self.headers.get("transfer-encoding"):
+                raise ValueError("transfer-encoding не поддерживается")
+            values = self.headers.get_all("content-length") or []
+            if len(values) > 1:
+                raise ValueError("несколько content-length")
+            raw = values[0].strip() if values else "0"
+            if not raw.isdigit():
+                raise ValueError("негодный content-length")
+            length = int(raw)
             if length > MAX_BODY:
                 raise ValueError("тело больше 64 КБ")
             # Читаем ровно столько, сколько объявлено, и только после
