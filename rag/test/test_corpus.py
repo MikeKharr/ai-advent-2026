@@ -84,6 +84,61 @@ class CopyTest(unittest.TestCase):
             self.assertEqual(code, 1)
 
 
+class ReadCommitTest(unittest.TestCase):
+    """Граница `read_commit` — долг захода 3 (ADR 2026-09-29-2139, п. 9).
+
+    До этой правки функция отдавала содержимое файла как есть. Значение
+    уходит на ОТКРЫТЫЙ `/rag/healthz` и в каждый результат поиска, и дальше
+    его никто не проверяет — то есть что угодно любой длины, попавшее в
+    `COMMIT` тома или образа, печаталось бы в публичный ответ дословно.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def write(self, text: str) -> str:
+        (self.dir / "COMMIT").write_text(text, encoding="utf-8")
+        return corpus.read_commit(self.dir)
+
+    def test_годная_форма_проходит_как_есть(self):
+        self.assertEqual(self.write("a1b2c3d\n"), "a1b2c3d")
+        self.assertEqual(self.write("0" * 40 + "\n"), "0" * 40)
+
+    def test_нет_файла_это_unknown(self):
+        self.assertEqual(corpus.read_commit(self.dir), "unknown")
+
+    def test_короче_семи_знаков_не_коммит(self):
+        self.assertEqual(self.write("a1b2c3"), "unknown")
+
+    def test_длиннее_сорока_знаков_не_коммит(self):
+        self.assertEqual(self.write("a" * 41), "unknown")
+
+    def test_не_шестнадцатеричное_не_коммит(self):
+        for bad in ("ZZZZZZZZ", "A1B2C3D", "a1b2c3d-dirty", "../../etc/passwd"):
+            self.assertEqual(self.write(bad), "unknown", bad)
+
+    def test_чужой_файл_целиком_в_публичный_ответ_не_уезжает(self):
+        # Ровно та форма, ради которой граница и заводится: в `COMMIT`
+        # оказался не коммит, а содержимое чужого файла — и без границы оно
+        # печаталось бы в публичный ответ дословно и целиком.
+        #
+        # Образец нарочно НЕ похож на настоящий ключ: шаг «Секреты не попали
+        # в репозиторий» (docs-guard.yml) ловит образцы ключей в файлах
+        # репозитория, и первая редакция этого теста его покраснила. Предмет
+        # проверки от этого не меняется — он в длине и в форме, а не в том,
+        # что именно за текст.
+        self.assertEqual(self.write("строка чужого файла, не коммит\n" * 200), "unknown")
+
+    def test_несколько_строк_не_склеиваются_в_годную_форму(self):
+        self.assertEqual(self.write("a1b2c3d\ne4f5a6b\n"), "unknown")
+
+    def test_unknown_от_git_остаётся_unknown(self):
+        # `_commit` пишет ровно это слово, когда `git rev-parse` не сработал.
+        self.assertEqual(self.write("unknown\n"), "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
 

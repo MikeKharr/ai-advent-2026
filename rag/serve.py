@@ -1,23 +1,38 @@
-"""HTTP-поверхность единицы: пока только `/healthz`.
+"""HTTP-поверхность единицы: открытый `/healthz` и `/rag` за ключом.
 
 Контракт единицы в этом проекте — каталог, `Dockerfile` и ответ на
 `/healthz` (шаг «Контейнер поднимается и отвечает на /healthz» в `ci.yml`).
 Сборка индекса идёт в фоне и `/healthz` не роняет: пока индекса нет, он
-честно говорит, на чём стоит. Инструменты MCP — заход 4, здесь их нет.
+честно говорит, на чём стоит.
+
+Порядок в `_dispatch` читается сверху вниз и таков намеренно (ADR
+2026-09-29-2139, п. 1) — это тот же порядок, что у службы дня 16
+(`mcp/src/service.js`):
+
+  1) таблица маршрутов: пути вне её дают пустой 404;
+  2) ключ — всегда и ДО чтения тела; у записи с окном `open` ключа нет;
+  3) метод не тот — 405 (у `/rag` это «не POST»);
+  4) тело с потолком 64 КБ;
+  5) окна лимитера — ДО передачи `tools/call` обработчику RPC;
+  6) и только теперь RPC.
+
+Отказ по ключу и неизвестный путь дают побайтно одинаковый пустой 404 —
+решение владельца по `/mcp` (ADR 2026-09-23-1844, пп. 1–2) перенесено сюда
+без нового обсуждения.
 
 Поле `error` — из закрытого набора причин (`REASONS`), а не текст
-исключения. Заходом 3 ручка становится публичной и без ключа:
-`https://challenge.zpq.ai/rag/healthz` дёргает шаг «Проверка живого сайта»
-в `deploy.yml`, а значит её читает кто угодно. Текст исключения выдавал бы
-`OLLAMA_URL` — внутреннее имя службы и порт, — а при другой ошибке выдал бы
-то, что сформатировал `urllib`: пути, адреса, содержимое ответа. Это не
-секрет, но и не то, что публикуют даром, а главное — набор возможных строк
-там неограничен. Подробность целиком уходит в журнал контейнера, где её
-читает владелец: `docker compose logs rag`.
+исключения. `/rag/healthz` публичен и открыт без ключа: его дёргает шаг
+«Проверка живого сайта» в `deploy.yml`, а значит её читает кто угодно. Текст
+исключения выдавал бы `OLLAMA_URL` — внутреннее имя службы и порт, — а при
+другой ошибке выдал бы то, что сформатировал `urllib`: пути, адреса,
+содержимое ответа. Это не секрет, но и не то, что публикуют даром, а главное
+— набор возможных строк там неограничен. Подробность целиком уходит в журнал
+контейнера, где её читает владелец: `docker compose logs rag`.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sys
@@ -26,7 +41,16 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import limits
+import rpc
+import tools
+
 PORT = int(os.environ.get("PORT", "8086"))
+INDEX_DIR = Path(os.environ.get("RAG_INDEX", "/data"))
+
+# Тело JSON-RPC больше этого не читаем: у наших инструментов три коротких
+# аргумента, и самый длинный из них уже ограничен `tools.MAX_QUERY`.
+MAX_BODY = 64 * 1024
 
 # Закрытый набор причин отказа: ровно эти строки может увидеть посетитель.
 NO_CORPUS = "корпус не смонтирован"
@@ -35,6 +59,8 @@ NO_EMBEDDER = "эмбеддер не ответил"
 TOO_LONG = "сборка не уложилась в срок"
 INTERNAL = "внутренняя ошибка сборки"
 REASONS = (NO_CORPUS, EMPTY_CORPUS, NO_EMBEDDER, TOO_LONG, INTERNAL)
+
+SERVER_INFO = {"name": "project-index", "version": "1"}
 
 
 class Status:
@@ -53,22 +79,356 @@ class Status:
             self._value.update(fields)
 
 
-def make_handler(status: Status):
+# --- таблица маршрутов -------------------------------------------------------
+#
+# Конвенция ADR 2026-09-29-1600 приезжает сюда по существу, а не по букве
+# (ADR 2026-09-29-2139, п. 7): у дней окна называются run/write/read/open, у
+# этой единицы ручек две и окно одно — минута с часом на вызовы инструментов.
+# Общее с днями то, ради чего конвенция и заводилась: ручка объявляет своё
+# окно в таблице, ручки вне таблицы не существует, а исключение обязано
+# нести причину. Запись без окна не загружается — ни в проде, ни в тесте.
+
+LIMITS = ("call", "open")
+
+
+class Route:
+    def __init__(self, method: str, paths: tuple[str, ...], limit: str, handler: str, why: str = "") -> None:
+        self.method = method
+        self.paths = paths
+        self.limit = limit
+        self.handler = handler
+        self.why = why
+
+    def __repr__(self) -> str:
+        return f"{self.method} {self.paths[0]}"
+
+
+ROUTES = (
+    Route(
+        "GET",
+        # Два пути: за Caddy префикс срезан (`uri strip_prefix /rag`), а
+        # изнутри контейнера HEALTHCHECK ходит на `/healthz` напрямую.
+        ("/healthz", "/rag/healthz"),
+        "open",
+        handler="healthz",
+        why="признак живости читает выкатка и HEALTHCHECK образа — до ключа и без него",
+    ),
+    Route("POST", ("/rag",), "call", handler="rpc"),
+)
+
+
+def check_routes(routes=ROUTES) -> None:
+    """Умолчание безопасное отказом старта.
+
+    Запись без окна, с неизвестным окном или `open` без причины — модуль не
+    загружается. Зовётся при загрузке модуля, а не из `main`: иначе тест,
+    импортирующий `serve`, проверял бы не то, что поднимается в проде.
+    """
+    for route in routes:
+        if route.limit not in LIMITS:
+            raise RuntimeError(f"{route}: окно не названо (ожидалось одно из {LIMITS})")
+        if route.limit == "open" and not route.why.strip():
+            raise RuntimeError(f"{route}: исключение без причины")
+        if not route.paths:
+            raise RuntimeError(f"{route}: маршрут без пути")
+
+
+check_routes()
+
+
+def match(path: str, routes=ROUTES) -> Route | None:
+    clean = path.split("?", 1)[0].split("#", 1)[0]
+    clean = clean.rstrip("/") or "/"
+    for route in routes:
+        if clean in route.paths:
+            return route
+    return None
+
+
+def client_ip(headers, remote: str) -> str:
+    """Адрес клиента.
+
+    Сам по себе заголовок ничего не гарантирует: подставить в него что угодно
+    может кто угодно, кто до службы дотянулся. Держит границу вход —
+    `header_up X-Forwarded-For {client_ip}` в блоке `/rag` файла
+    `deploy/Caddyfile` ЗАМЕНЯЕТ заголовок адресом соединения, а мимо входа до
+    службы не достучаться: портов наружу нет и сеть `rag` отдельная.
+    Последний элемент — на случай ещё одного прокси, дописывающего адрес в
+    хвост.
+    """
+    forwarded = headers.get("x-forwarded-for")
+    if forwarded:
+        last = forwarded.split(",")[-1].strip()
+        if last:
+            return last
+    return remote or "unknown"
+
+
+def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: str, log=lambda _e: None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def do_GET(self) -> None:  # noqa: N802 — имя задаёт BaseHTTPRequestHandler
-            if self.path.rstrip("/") not in ("/healthz", "/rag/healthz"):
-                self.send_error(404)
-                return
-            # 200 значит «единица поднялась», а не «индекс готов»: состояние
-            # сборки — в теле. Иначе выкатка ждала бы часы первой сборки.
-            body = json.dumps(status.read(), ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
+        # Все методы — через один диспетчер. Иначе `BaseHTTPRequestHandler`
+        # отвечал бы на DELETE своим 501 с текстом, то есть отличал бы этот
+        # адрес от пустого места ещё до проверки ключа.
+        def do_GET(self):  # noqa: N802 — имя задаёт BaseHTTPRequestHandler
+            self._dispatch("GET")
+
+        def do_POST(self):  # noqa: N802
+            self._dispatch("POST")
+
+        def do_PUT(self):  # noqa: N802
+            self._dispatch("PUT")
+
+        def do_DELETE(self):  # noqa: N802
+            self._dispatch("DELETE")
+
+        def do_PATCH(self):  # noqa: N802
+            self._dispatch("PATCH")
+
+        def do_HEAD(self):  # noqa: N802
+            self._dispatch("HEAD")
+
+        def do_OPTIONS(self):  # noqa: N802
+            self._dispatch("OPTIONS")
+
+        # --- ответы ---------------------------------------------------------
+
+        def _send(self, code: int, payload, extra: dict | None = None) -> None:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
             self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("cache-control", "no-store")
+            for name, value in (extra or {}).items():
+                self.send_header(name, value)
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _nothing_here(self) -> None:
+            """«Здесь ничего нет»: 404, пустое тело, ни `content-type`, ни строчки.
+
+            Одна функция на обе причины — «нет такого пути» и «нет годного
+            ключа» — именно затем, чтобы ответы совпадали побайтно: два
+            разных ответа снова отличали бы эндпоинт от пустого места.
+
+            **Соединение закрывается, и это не гигиена, а замок.** Тело
+            неавторизованного запроса мы намеренно не читаем (потолок тела
+            иначе не был бы потолком), поэтому байты тела остаются в сокете.
+            Без этой строки `BaseHTTPRequestHandler` идёт на следующий круг
+            `handle_one_request` и разбирает их **как следующий запрос** —
+            то есть кто угодно без ключа кладёт в тело
+            `GET /healthz HTTP/1.1…` и получает на том же соединении второй
+            ответ, уже с телом. Caddy переносит тело дословно и держит
+            keep-alive к `rag:8086`, так что рассинхронизированное соединение
+            уходит обратно в пул.
+
+            Само закрытие соединения делает ОДИН страж в `_dispatch`
+            (блок `finally`), а не строка здесь: экземпляров этого класса
+            нашлось три, и точечные строки закрывали их по одному, оставляя
+            класс открытым. Держит `test_serve.py::SmugglingTest` и
+            `OneResponsePerConnectionTest` — сырым сокетом, а не клиентом:
+            предмет в том, сколько ответов приходит на одно соединение, а
+            `http.client` второй ответ просто не прочитал бы.
+            """
+            self.send_response(404)
+            self.send_header("content-length", "0")
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+
+        # --- порядок --------------------------------------------------------
+
+        def _body_declared(self) -> bool:
+            """Есть ли у запроса тело — по RFC 9112, а не по одному заголовку.
+
+            Тело есть тогда и только тогда, когда объявлен
+            `Transfer-Encoding` **или** `Content-Length`. Проверять один
+            `content-length` мало, и это была не придирка, а дыра: `chunked`
+            `http.server` не разбирает вовсе, тело остаётся в сокете, а
+            страж его не замечал — `GET /rag/healthz` с
+            `transfer-encoding: chunked` отдавал два ответа, и протащенный
+            `POST /rag` исполнялся (находка `compliance` к PR #282,
+            воспроизведена).
+
+            Умолчание здесь «тело есть»: непонятный заголовок — повод
+            закрыться, а не повод считать, что читать нечего.
+            """
+            if self.headers.get("transfer-encoding"):
+                return True
+            # `get_all`, а не `get`: при двух заголовках `get` отдаёт ПЕРВЫЙ,
+            # и пара `content-length: 0` + `content-length: N` читалась как
+            # «тела нет», а байты оставались в сокете. Наблюдено: два ответа
+            # и протащенный `POST /rag` исполнен (находка `reviewer`).
+            values = self.headers.get_all("content-length") or []
+            if not values:
+                return False
+            if len(values) > 1:
+                return True
+            raw = values[0].strip()
+            # `isdigit`, а не `int(...) > 0`: `-5` — годное число и давало
+            # «тела нет», а тело при этом было. На Python 3.14 это
+            # воспроизводится, два ответа (у `reviewer` базовый класс
+            # ответил 400 раньше — расхождение сред названо в описании PR).
+            if not raw.isdigit():
+                return True
+            return int(raw) > 0
+
+        def _dispatch(self, method: str) -> None:
+            self._body_consumed = False
+            try:
+                route = match(self.path)
+                # 1. Путь вне таблицы — пустое место.
+                if route is None:
+                    return self._nothing_here()
+
+                # 2. Ключ — всегда и ДО чтения тела.
+                if route.limit != "open" and not self._key_ok():
+                    ip = client_ip(self.headers, self.client_address[0] if self.client_address else "")
+                    count, signal = limiter.note_refusal(ip)
+                    log({"event": "refuse", "path": route.paths[0], "code": "unauthorized"})
+                    # Одна строка за окно на адрес: перебирают. Адреса в
+                    # записи нет и не должно быть — журнал контейнера
+                    # переживает часовое окно (I-10). Сигнал отвечает
+                    # «перебор идёт», а не «кто именно».
+                    if signal:
+                        log({"event": "refusal_burst", "path": route.paths[0], "count": count})
+                    return self._nothing_here()
+
+                # 3. Метод не тот. Ветвь достижима БЕЗ ключа: у записи
+                # `/healthz` окно `open`, проверка ключа выше пропускается,
+                # а `handle /rag/healthz` в `deploy/Caddyfile` метод не
+                # ограничивает. Тело при этом не читается — за соединение
+                # отвечает страж в `finally`.
+                if method != route.method:
+                    return self._send(405, {"ok": False, "code": "method_not_allowed"}, {"allow": route.method})
+
+                if route.handler == "healthz":
+                    return self._healthz()
+                return self._rpc()
+            except Exception as error:  # noqa: BLE001 — служба обязана отвечать, а не падать
+                traceback.print_exc(file=sys.stderr)
+                log({"event": "error", "message": str(error)})
+                try:
+                    self._send(500, {"ok": False, "code": "internal_error"})
+                except Exception:  # noqa: BLE001 — ответ уже начат, добавить нечего
+                    self.close_connection = True
+            finally:
+                # ОДИН ответ на соединение. Инвариант здесь ровно один и
+                # сформулирован не про ключ и не про заголовок, а про тело:
+                # **ответ не уходит, оставив тело запроса невычитанным**.
+                # Что такое «тело есть» — решает `_body_declared` по RFC, а
+                # не один `content-length`: предикат, уже утверждения, —
+                # ровно та ошибка, которой этот класс держался трижды. Тело, которое мы не
+                # прочитали, остаётся в сокете, и `BaseHTTPRequestHandler`
+                # на следующем круге `handle_one_request` разберёт его как
+                # СЛЕДУЮЩИЙ запрос — то есть отправитель получает второй
+                # ответ, а соединение уходит обратно в пул `caddy → rag:8086`
+                # рассинхронизированным.
+                #
+                # Почему страж один и здесь, а не по строке у каждого
+                # ответа. Экземпляров этого класса нашлось три, и все три
+                # разными способами: тело неавторизованного `POST /rag`
+                # (мутацией `compliance`), ветвь 405 на открытой `/healthz`
+                # (чтением `reviewer`), `GET /healthz` с телом (перебором
+                # `compliance`). Общего у них не «стоит ли строка за
+                # проверкой ключа» — этот предикат и подвёл всех троих, — а
+                # «может ли ответ уйти при невычитанном теле». Правильный
+                # предикат проверяется в одном месте и закрывает заодно
+                # ручки, которых ещё нет.
+                #
+                # Соединение закрывается, а не дочитывается: дочитывать
+                # значило бы читать столько, сколько объявил отправитель, —
+                # то есть ровно то, от чего бережёт потолок тела.
+                # Заголовка `Connection: close` не добавляем: он сделал бы
+                # пустой 404 отличимым от ответа соседних ручек.
+                if not getattr(self, "_body_consumed", False) and self._body_declared():
+                    self.close_connection = True
+
+        def _key_ok(self) -> bool:
+            header = self.headers.get("authorization") or ""
+            given = header[7:] if header.startswith("Bearer ") else ""
+            # `hmac.compare_digest`, а не `==`: сравнение по байтам с ранним
+            # выходом отдаёт длину совпавшего префикса временем ответа.
+            return hmac.compare_digest(given.encode("utf-8"), key.encode("utf-8"))
+
+        # --- ручки ----------------------------------------------------------
+
+        def _healthz(self) -> None:
+            # 200 значит «единица поднялась», а не «индекс готов»: состояние
+            # сборки — в теле. Иначе выкатка ждала бы часы первой сборки.
+            #
+            # `index` рядом со `state` намеренно: `state` описывает СБОРКУ, а
+            # `index` — то, что загружено в память и по чему идёт поиск
+            # прямо сейчас (ADR п. 6). Остаток суточного потолка сюда НЕ
+            # идёт — он за ключом, в `project.status`: прохожему он говорил
+            # бы, пользуется ли службой кто-то прямо сейчас (тот же довод,
+            # по которому за ключом спрятана статистика лимитера у службы
+            # дня 16).
+            body = status.read()
+            body["index"] = indexes.state()
+            self._send(200, body)
+
+        def _read_body(self) -> bytes:
+            # `chunked` не разбираем: `http.server` этого не умеет, и чтение
+            # «по content-length» вычитало бы ноль байт, а флаг поставило —
+            # то есть страж решил бы, что тело прочитано, и не закрыл
+            # соединение. Отказ здесь, закрытие — стражем в `finally`.
+            if self.headers.get("transfer-encoding"):
+                raise ValueError("transfer-encoding не поддерживается")
+            values = self.headers.get_all("content-length") or []
+            if len(values) > 1:
+                raise ValueError("несколько content-length")
+            raw = values[0].strip() if values else "0"
+            if not raw.isdigit():
+                raise ValueError("негодный content-length")
+            length = int(raw)
+            if length > MAX_BODY:
+                raise ValueError("тело больше 64 КБ")
+            # Читаем ровно столько, сколько объявлено, и только после
+            # успешного чтения снимаем флаг: страж в `finally` смотрит
+            # именно на него, а не на «мы вроде бы пытались».
+            body = self.rfile.read(length)
+            self._body_consumed = True
+            return body
+
+        def _rpc(self) -> None:
+            # 4. Тело с потолком.
+            try:
+                body = json.loads(self._read_body())
+            except (ValueError, OSError):
+                # Тело сверх потолка не прочитано — соединение закроет страж.
+                return self._send(400, rpc.rpc_error(None, rpc.PARSE_ERROR, "parse error"))
+
+            # 5. Окна лимитера — ДО исполнения: обработчик RPC зовётся ниже
+            # этой строки, и до эмбеддера ничего не доходит.
+            calls = rpc.count_tool_calls(body)
+            if calls > 0:
+                ip = client_ip(self.headers, self.client_address[0] if self.client_address else "")
+                ok, reason_, words = limiter.reserve(ip, calls)
+                if not ok:
+                    log({"event": "refuse", "path": "/rag", "code": "rate_limited", "reason": reason_})
+                    return self._send(429, rpc.rpc_error(rpc.first_id(body), -32002, words))
+
+            # 6. И только теперь RPC.
+            if isinstance(body, list):
+                if not body:
+                    return self._send(400, rpc.rpc_error(None, rpc.INVALID_REQUEST, "empty batch"))
+                answers = [a for a in (handle_one(item) for item in body) if a is not None]
+                if not answers:
+                    return self._accepted()
+                return self._send(200, answers)
+
+            answer = handle_one(body)
+            if answer is None:
+                return self._accepted()
+            return self._send(200, answer)
+
+        def _accepted(self) -> None:
+            """Уведомление — 202 без тела, как велит спецификация."""
+            self.send_response(202)
+            self.send_header("content-length", "0")
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
 
         def log_message(self, *_args) -> None:
             return
@@ -76,8 +436,38 @@ def make_handler(status: Status):
     return Handler
 
 
-def make_server(status: Status, port: int = PORT) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(status))
+def _embedder():
+    import build
+    from embed import OllamaEmbedder
+
+    return OllamaEmbedder(build.OLLAMA_URL, build.MODEL)
+
+
+def make_tools(status: Status, indexes, daily_cap, embedder=None) -> list:
+    return [
+        tools.make_search(indexes, embedder if embedder is not None else _embedder(), daily_cap),
+        tools.make_status(status, indexes, daily_cap),
+    ]
+
+
+def make_server(
+    status: Status,
+    port: int = PORT,
+    indexes=None,
+    limiter=None,
+    daily_cap=None,
+    handle_one=None,
+    key: str = "",
+    log=lambda _e: None,
+) -> ThreadingHTTPServer:
+    indexes = indexes if indexes is not None else tools.Indexes(INDEX_DIR)
+    limiter = limiter if limiter is not None else limits.Limiter()
+    daily_cap = daily_cap if daily_cap is not None else limits.DailyCap(log=log)
+    if handle_one is None:
+        handle_one = rpc.create_rpc(SERVER_INFO, make_tools(status, indexes, daily_cap))
+    return ThreadingHTTPServer(
+        ("0.0.0.0", port), make_handler(status, indexes, limiter, daily_cap, handle_one, key, log)
+    )
 
 
 def reason(err: BaseException) -> str:
@@ -97,7 +487,7 @@ def reason(err: BaseException) -> str:
     return INTERNAL
 
 
-def run_build(status: Status) -> None:
+def run_build(status: Status, indexes) -> None:
     import build
     import corpus
 
@@ -111,15 +501,38 @@ def run_build(status: Status) -> None:
         status.update(state="failed", error=reason(err))
         return
     status.update(state="ready", strategies=stats, error=None)
+    # Перечитать том: до этой строки в памяти лежит то, что нашлось при
+    # старте, то есть индекс ПРОШЛОЙ выкатки. Без неё свежесобранный индекс
+    # не искался бы до перезапуска контейнера.
+    indexes.load()
 
 
 def main() -> int:
+    # Без ключа процесс не стартует. Открыть `/rag` без замка нельзя: за ним
+    # ядро общей машины, и «ключа нет — значит, без ключа» стало бы тихим
+    # отказом защиты, которую этот заход и заводит.
+    key = os.environ.get("RAG_KEY", "").strip()
+    if not key:
+        print("::error::RAG_KEY не задан — служба не поднимается", file=sys.stderr)
+        return 2
+
     status = Status()
+    indexes = tools.Indexes(INDEX_DIR)
+    # Загрузка ДО сборки: в томе может лежать целая пара с прошлой выкатки, и
+    # тогда поиск работает с первой секунды, пока идёт часовая сборка.
+    indexes.load()
+
     if Path(os.environ.get("RAG_CORPUS", "corpus")).is_dir():
-        threading.Thread(target=run_build, args=(status,), daemon=True).start()
+        threading.Thread(target=run_build, args=(status, indexes), daemon=True).start()
     else:
         status.update(state="failed", error=NO_CORPUS)
-    server = make_server(status)
+
+    server = make_server(
+        status,
+        indexes=indexes,
+        key=key,
+        log=lambda e: print(json.dumps(e, ensure_ascii=False), flush=True),
+    )
     print(f"rag слушает :{PORT}", flush=True)
     server.serve_forever()
     return 0
