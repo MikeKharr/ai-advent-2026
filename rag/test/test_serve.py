@@ -862,6 +862,169 @@ class SmugglingTest(unittest.TestCase):
         self.assertIn(b"HTTP/1.1 200", raw)
 
 
+class OneResponsePerConnectionTest(unittest.TestCase):
+    """Перебор `ROUTES` × методы × «с телом»: ровно один ответ на соединение.
+
+    Этот держатель заменяет три точечных, и заменяет намеренно. Экземпляров
+    одного класса нашлось три, и все три разными способами: тело
+    неавторизованного `POST /rag` (мутация `compliance`), ветвь 405 на
+    открытой `/healthz` (чтение `reviewer`), `GET /healthz` с телом
+    (перебор `compliance`). Значит подвёл не глаз, а **предикат**, которым
+    пользовались все трое: «стоит ли строка за проверкой ключа». Правильный
+    предикат другой — **«может ли ответ уйти, пока тело запроса не
+    вычитано»**, — и проверяется он перебором, а не по месту.
+
+    Точечный тест на `_healthz` оставил бы класс открытым в третий раз.
+    Этот перебор ловит и четвёртый экземпляр — у ручки, которой ещё нет:
+    пути берутся из `serve.ROUTES`, а не переписываются сюда.
+
+    В теле каждого запроса лежит ЦЕЛЫЙ `POST /rag` с годным ключом и
+    `id: 777`. Если соединение рассинхронизировано, протащенный вызов не
+    просто получает ответ — он ИСПОЛНЯЕТСЯ, и это видно по `777`.
+    """
+
+    def setUp(self):
+        start_service(self, handle_one=lambda m: {"jsonrpc": "2.0", "id": m.get("id"), "result": {"pong": True}})
+
+    SMUGGLED = (
+        b"POST /rag HTTP/1.1\r\nHost: x\r\nauthorization: Bearer " + KEY.encode()
+        + b"\r\ncontent-type: application/json\r\ncontent-length: 42\r\n\r\n"
+        + b'{"jsonrpc":"2.0","id":777,"method":"ping"}'
+    )
+
+    def exchange(self, method: bytes, path: bytes, auth: bytes) -> bytes:
+        body = self.SMUGGLED
+        return raw_exchange(
+            self.url,
+            method + b" " + path + b" HTTP/1.1\r\nHost: x\r\n" + auth
+            + b"content-length: " + str(len(body)).encode() + b"\r\n\r\n" + body,
+            wait=0.6,
+        )
+
+    def test_ни_одна_пара_маршрут_метод_не_отдаёт_второго_ответа(self):
+        paths = [p.encode() for route in serve.ROUTES for p in route.paths] + [b"/no-such-path"]
+        methods = [b"GET", b"POST", b"PUT", b"DELETE", b"PATCH", b"OPTIONS"]
+        keys = {
+            "годный ключ": b"authorization: Bearer " + KEY.encode() + b"\r\n",
+            "негодный ключ": b"authorization: Bearer wrong-key\r\n",
+            "без ключа": b"",
+        }
+        self.assertGreaterEqual(len(paths), 3, "пути не собрались из ROUTES")
+
+        bad = []
+        for path in paths:
+            for method in methods:
+                for label, auth in keys.items():
+                    raw = self.exchange(method, path, auth)
+                    count = raw.count(b"HTTP/1.1 ")
+                    executed = b"777" in raw
+                    if count != 1 or executed:
+                        bad.append(
+                            f"{method.decode()} {path.decode()} ({label}): "
+                            f"ответов={count}, протащенное исполнено={executed}"
+                        )
+        self.assertEqual(bad, [], "тело запроса разобрано как следующий запрос:\n" + "\n".join(bad))
+
+    def test_перебор_не_вырожден_годный_запрос_всё_ещё_обслуживается(self):
+        # Иначе «везде один ответ» выполнялось бы и при службе, которая
+        # рвёт всякое соединение сразу: перебор обязан различать гипотезы.
+        raw = raw_exchange(self.url, self.SMUGGLED, wait=0.6)
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1)
+        self.assertIn(b"HTTP/1.1 200", raw)
+        self.assertIn(b"777", raw, "законный запрос с тем же телом не обслужился")
+
+    def test_тело_сверх_потолка_соединение_тоже_не_рассинхронизирует(self):
+        """Третий случай того же класса — и он единственный ЗА ключом.
+
+        Тело сверх 64 КБ не читается вовсе (`_read_body` отказывает до
+        чтения), значит остаётся в сокете. Пока это закрывалось точечной
+        строкой, случай числился пунктом «Владельцу» в бэклоге; страж в
+        `finally` закрыл его вместе с остальными, и пункт снят.
+
+        Объявленная длина здесь заведомо больше потолка, а послано сильно
+        меньше: предмет — что служба не читает по объявленному числу.
+        """
+        body = self.SMUGGLED
+        raw = raw_exchange(
+            self.url,
+            b"POST /rag HTTP/1.1\r\nHost: x\r\nauthorization: Bearer " + KEY.encode()
+            + b"\r\ncontent-type: application/json\r\ncontent-length: 99999\r\n\r\n" + body,
+            wait=0.6,
+        )
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:300]!r}")
+        self.assertIn(b"HTTP/1.1 400", raw)
+        self.assertNotIn(b"777", raw, "протащенный вызов исполнился")
+
+    def test_наведённый_отказ_обработчика_соединение_не_рассинхронизирует(self):
+        """Четвёртый экземпляр класса — общий `except` в `_dispatch`.
+
+        Находка `reviewer`, отозвавшего собственное ЧИСТО. Ветвь 500
+        отвечает и тело не читает, и она **бесключевая**: отказ внутри
+        `_healthz` открывает её для `GET /rag/healthz` с телом.
+
+        Держатель отдельный и обязан быть отдельным: перебор `ROUTES` ×
+        методы на ИСПРАВНОЙ службе эту ветвь не задевает вовсе — она
+        открывается, только когда что-то внутри бросает. Предикат в полной
+        форме: любой путь, способный отправить ответ, обязан либо вычитать
+        тело, либо закрыть соединение — **включая общий `except`**.
+        """
+
+        class Exploding:
+            """Индекс, который валится ровно там, где его читает `_healthz`."""
+
+            def state(self):
+                raise RuntimeError("наведённый отказ обработчика")
+
+            def load(self):
+                return []
+
+        stderr, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            start_service(self, indexes=Exploding(),
+                          handle_one=lambda m: {"jsonrpc": "2.0", "id": m.get("id"), "result": {"pong": True}})
+            raw = self.exchange(b"GET", b"/rag/healthz", b"")
+        finally:
+            sys.stderr = stderr
+
+        self.assertIn(b"HTTP/1.1 500", raw, f"ветвь 500 не открылась, проверка вырождена: {raw[:200]!r}")
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1, f"ответов больше одного: {raw[:300]!r}")
+        self.assertNotIn(b"777", raw, "протащенный вызов исполнился на ветви 500")
+
+    def test_запрос_без_тела_соединение_не_рвёт(self):
+        # Страж закрывает соединение только при НЕВЫЧИТАННОМ теле. Рвать
+        # keep-alive там, где тела нет, — цена, которую платить не за что:
+        # `/healthz` дёргают выкатка и HEALTHCHECK, и оба ходят без тела.
+        # Два бесстелесных GET подряд в одно соединение: если keep-alive
+        # цел, придут ДВА ответа. Чтение идёт до конца потока, а не по
+        # одному `recv`: первый `recv` может вернуть одни заголовки, и
+        # проверка «во втором куске есть 200» ловила бы буферизацию, а не
+        # состояние соединения.
+        one = b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n"
+        raw = raw_exchange(self.url, one + one, wait=0.6)
+        self.assertEqual(raw.count(b"HTTP/1.1 200"), 2, f"keep-alive порван там, где тела не было: {raw[:200]!r}")
+
+    def test_законный_запрос_с_телом_соединение_тоже_не_рвёт(self):
+        """Страж закрывает соединение ТОЛЬКО при невычитанном теле.
+
+        Без этого утверждения защита была бы неотличима от «рвать всякое
+        соединение с телом»: мутация, снимающая `self._body_consumed = True`
+        в `_read_body`, переживала весь прогон (мутация S12, поймана своим
+        же перебором и закрыта здесь). Служба при этом оставалась бы
+        «безопасной», но каждый законный вызов инструмента стоил бы нового
+        соединения — цена, которой никто не назначал.
+
+        Два ЗАКОННЫХ `POST /rag` с телом подряд в одно соединение: если
+        флаг на месте, оба обслужены.
+        """
+        call = (
+            b"POST /rag HTTP/1.1\r\nHost: x\r\nauthorization: Bearer " + KEY.encode()
+            + b"\r\ncontent-type: application/json\r\ncontent-length: 42\r\n\r\n"
+            + b'{"jsonrpc":"2.0","id":777,"method":"ping"}'
+        )
+        raw = raw_exchange(self.url, call + call, wait=0.6)
+        self.assertEqual(raw.count(b"HTTP/1.1 200"), 2, f"keep-alive порван у законного запроса с телом: {raw[:300]!r}")
+
+
 class StartupIndexTest(unittest.TestCase):
     """`main` перечитывает том ДО того, как начал отвечать.
 

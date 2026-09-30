@@ -223,13 +223,14 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
             keep-alive к `rag:8086`, так что рассинхронизированное соединение
             уходит обратно в пул.
 
-            Держит `test_serve.py::SmugglingTest` — сырым сокетом, а не
-            клиентом: предмет в том, сколько ответов приходит на одно
-            соединение, а `http.client` второй ответ просто не прочитал бы
-            (находка гейтов Б1 к PR #282; снятие этой строки оставляло весь
-            прогон зелёным).
+            Само закрытие соединения делает ОДИН страж в `_dispatch`
+            (блок `finally`), а не строка здесь: экземпляров этого класса
+            нашлось три, и точечные строки закрывали их по одному, оставляя
+            класс открытым. Держит `test_serve.py::SmugglingTest` и
+            `OneResponsePerConnectionTest` — сырым сокетом, а не клиентом:
+            предмет в том, сколько ответов приходит на одно соединение, а
+            `http.client` второй ответ просто не прочитал бы.
             """
-            self.close_connection = True
             self.send_response(404)
             self.send_header("content-length", "0")
             self.send_header("cache-control", "no-store")
@@ -237,7 +238,15 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
 
         # --- порядок --------------------------------------------------------
 
+        def _declared_length(self) -> int:
+            try:
+                return max(int(self.headers.get("content-length") or 0), 0)
+            except ValueError:
+                # Негодный заголовок: считаем, что тело есть, и закрываемся.
+                return 1
+
         def _dispatch(self, method: str) -> None:
+            self._body_consumed = False
             try:
                 route = match(self.path)
                 # 1. Путь вне таблицы — пустое место.
@@ -257,20 +266,12 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
                         log({"event": "refusal_burst", "path": route.paths[0], "count": count})
                     return self._nothing_here()
 
-                # 3. Метод не тот.
-                #
-                # `close_connection` здесь по той же причине, что в
-                # `_nothing_here`, и ветвь эта достижима БЕЗ ключа: у записи
-                # `/healthz` окно `open`, проверка ключа выше пропускается, а
-                # `handle /rag/healthz` в `deploy/Caddyfile` метод не
-                # ограничивает. То есть `POST /rag/healthz` без всякого
-                # `Authorization` доходит сюда с непрочитанным телом, и без
-                # этой строки тело разберётся как следующий запрос.
-                # Держит `test_serve.py::SmugglingTest`, два теста на
-                # `/rag/healthz` (находка `reviewer` к PR #282: основание
-                # «обе строки за проверкой ключа» было неверным для этой).
+                # 3. Метод не тот. Ветвь достижима БЕЗ ключа: у записи
+                # `/healthz` окно `open`, проверка ключа выше пропускается,
+                # а `handle /rag/healthz` в `deploy/Caddyfile` метод не
+                # ограничивает. Тело при этом не читается — за соединение
+                # отвечает страж в `finally`.
                 if method != route.method:
-                    self.close_connection = True
                     return self._send(405, {"ok": False, "code": "method_not_allowed"}, {"allow": route.method})
 
                 if route.handler == "healthz":
@@ -282,6 +283,34 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
                 try:
                     self._send(500, {"ok": False, "code": "internal_error"})
                 except Exception:  # noqa: BLE001 — ответ уже начат, добавить нечего
+                    self.close_connection = True
+            finally:
+                # ОДИН ответ на соединение. Инвариант здесь ровно один и
+                # сформулирован не про ключ, а про тело: **ответ не уходит,
+                # оставив тело запроса невычитанным**. Тело, которое мы не
+                # прочитали, остаётся в сокете, и `BaseHTTPRequestHandler`
+                # на следующем круге `handle_one_request` разберёт его как
+                # СЛЕДУЮЩИЙ запрос — то есть отправитель получает второй
+                # ответ, а соединение уходит обратно в пул `caddy → rag:8086`
+                # рассинхронизированным.
+                #
+                # Почему страж один и здесь, а не по строке у каждого
+                # ответа. Экземпляров этого класса нашлось три, и все три
+                # разными способами: тело неавторизованного `POST /rag`
+                # (мутацией `compliance`), ветвь 405 на открытой `/healthz`
+                # (чтением `reviewer`), `GET /healthz` с телом (перебором
+                # `compliance`). Общего у них не «стоит ли строка за
+                # проверкой ключа» — этот предикат и подвёл всех троих, — а
+                # «может ли ответ уйти при невычитанном теле». Правильный
+                # предикат проверяется в одном месте и закрывает заодно
+                # ручки, которых ещё нет.
+                #
+                # Соединение закрывается, а не дочитывается: дочитывать
+                # значило бы читать столько, сколько объявил отправитель, —
+                # то есть ровно то, от чего бережёт потолок тела.
+                # Заголовка `Connection: close` не добавляем: он сделал бы
+                # пустой 404 отличимым от ответа соседних ручек.
+                if not getattr(self, "_body_consumed", False) and self._declared_length() > 0:
                     self.close_connection = True
 
         def _key_ok(self) -> bool:
@@ -312,17 +341,19 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
             length = int(self.headers.get("content-length") or 0)
             if length > MAX_BODY:
                 raise ValueError("тело больше 64 КБ")
-            # Читаем ровно столько, сколько объявлено: объявить меньше, чем
-            # послать, значит оставить хвост следующему запросу — поэтому на
-            # любом отказе ниже соединение закрывается.
-            return self.rfile.read(length)
+            # Читаем ровно столько, сколько объявлено, и только после
+            # успешного чтения снимаем флаг: страж в `finally` смотрит
+            # именно на него, а не на «мы вроде бы пытались».
+            body = self.rfile.read(length)
+            self._body_consumed = True
+            return body
 
         def _rpc(self) -> None:
             # 4. Тело с потолком.
             try:
                 body = json.loads(self._read_body())
             except (ValueError, OSError):
-                self.close_connection = True
+                # Тело сверх потолка не прочитано — соединение закроет страж.
                 return self._send(400, rpc.rpc_error(None, rpc.PARSE_ERROR, "parse error"))
 
             # 5. Окна лимитера — ДО исполнения: обработчик RPC зовётся ниже
