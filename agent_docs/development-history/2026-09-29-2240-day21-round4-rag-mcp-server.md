@@ -18,7 +18,8 @@
   чтения тела, побайтно одинаковый пустой 404, лимитер до `tools/call`,
   RPC последним; без `RAG_KEY` процесс не стартует.
 - `deploy/Caddyfile` — `handle /rag` с подменой `X-Forwarded-For`;
-  `deploy/compose.yml` — `rag.env` обязателен, `RAG_DAILY_EMBEDS=500`.
+  `deploy/compose.yml` — `RAG_DAILY_EMBEDS=500`; `rag.env` остался
+  `required: false` (см. ниже — решение владельца).
 - `.mcp.json` в корне с `${RAG_KEY}`; ключа в файле нет.
 - Два долга захода 3: удачный путь `run_build` до `ready` и граница
   `read_commit`.
