@@ -78,7 +78,7 @@ description: /day-cycle — оркестрация полного цикла д�
    выкатка — `caddy validate` и `caddy reload` в `deploy.yml`; ручного
    `restart caddy` для этого не нужно. Канонические серверные команды — точные
    строки без хвостов: allowlist `.claude/settings.json` требует буквального
-   совпадения, и блок ниже — те же шесть строк дословно
+   совпадения, и блок ниже — те же восемь строк дословно
    (`cd zpq-ai/deploy` — проект compose `zpq`: вход, сайт и почта, ADR
    `2026-09-22-1824`). Совпадение блока и allowlist в обе стороны держит
    `test/closed-list.test.js`; строку правят в обоих файлах сразу.
@@ -91,6 +91,8 @@ description: /day-cycle — оркестрация полного цикла д�
    ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd ai-advent-2026/deploy && docker compose exec -T router node admin.js metrics'
    ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd zpq-ai/deploy && docker compose ps'
    ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'cd zpq-ai/deploy && docker compose restart caddy'
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'docker stats --no-stream --format "{{.Name}} {{.MemUsage}} {{.MemPerc}}"'
+   ssh -i ~/.ssh/advent_deploy -o BatchMode=yes advent@challenge.zpq.ai 'grep -E "^(MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree):" /proc/meminfo'
    ```
    <!-- closed-list:end -->
 
@@ -131,6 +133,17 @@ description: /day-cycle — оркестрация полного цикла д�
    `docker compose logs <единица> --tail N` или с `--since …`;
    `docker compose restart caddy`. `restart mail` там не разрешён; правка
    и выкатка `zpq-ai` — из того репозитория.
+   Вне каталога — два чтения памяти машины и ничего больше (ADR
+   `2026-09-30-0022`): `docker stats --no-stream --format "{{.Name}}
+   {{.MemUsage}} {{.MemPerc}}"` — расход всех контейнеров обоих проектов; и
+   `grep -E "^(MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree):"
+   /proc/meminfo` — свободная память и swap хоста. Обе читают счётчики
+   cgroup и файл ядра: состояния не меняют, значений из `deploy/*.env` не
+   печатают, путь в каждой литеральный. Только эти две формы: другой
+   `--format`, флаг `-a`, имя контейнера в строке, другое поле `/proc` —
+   не разрешены; ряд замеров собирается повторением той же строки с
+   ноутбука, а не циклом на сервере. Перезапуск единицы `rag` ради нового
+   прохода сборки в список **не входит**: проход запускает выкатка.
    Расширение списка — ADR, которое принимает владелец.
    **Предмет списка — то, что агент запускает по ssh сам**, сочиняя команду
    по своему усмотрению; шаг `deploy.yml` — не агент, а `main`, и запреты
