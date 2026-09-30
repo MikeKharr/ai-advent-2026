@@ -88,3 +88,25 @@ class TagsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ИмяМоделиСверяетсяЦеликом(unittest.TestCase):
+    """Сравнение до двоеточия делало смену модели молчаливым no-op."""
+
+    def эмбеддер(self, заказ, теги):
+        e = OllamaEmbedder("http://x", заказ)
+        e.tags = lambda: teгi if False else теги
+        return e
+
+    def test_чужой_тег_той_же_модели_не_считается_своим(self):
+        e = self.эмбеддер("embeddinggemma:300m-qat-q4_0", ["embeddinggemma:latest"])
+        self.assertFalse(e.has_model())
+
+    def test_свой_тег_считается_своим(self):
+        e = self.эмбеддер("embeddinggemma:300m-qat-q4_0",
+                          ["embeddinggemma:latest", "embeddinggemma:300m-qat-q4_0"])
+        self.assertTrue(e.has_model())
+
+    def test_имя_без_тега_разворачивается_в_latest(self):
+        self.assertTrue(self.эмбеддер("embeddinggemma", ["embeddinggemma:latest"]).has_model())
+        self.assertFalse(self.эмбеддер("embeddinggemma", ["embeddinggemma:300m-bf16"]).has_model())

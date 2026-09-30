@@ -9,7 +9,14 @@ import corpus
 from embed import EmbedError, OllamaEmbedder
 from test.fakeollama import FakeOllama
 
-ROUTES = {"/api/embed": (200, FakeOllama.deterministic)}
+# Настоящая Ollama в /api/tags всегда отдаёт имя С ТЕГОМ (`имя:latest`).
+# Стенд отдавал без тега, и это прятало дефект: сравнение по имени до
+# двоеточия считало «модель есть» для любого тега той же модели.
+ROUTES = {
+    "/api/embed": (200, FakeOllama.deterministic),
+    "/api/tags": (200, {"models": [{"name": "m:latest"}, {"name": "модель:latest"}]}),
+    "/api/pull": (200, {"status": "success"}),
+}
 
 
 def corpus_tree(root: Path) -> None:
@@ -45,6 +52,34 @@ class IncrementTest(unittest.TestCase):
         embedder = OllamaEmbedder(fake.url, "m")
         chunks = build.read_chunks(self.root, "fixed")
         return build.build_strategy("fixed", chunks, embedder, self.index)
+
+    def build_with(self, fake, модель: str) -> dict:
+        embedder = OllamaEmbedder(fake.url, модель)
+        chunks = build.read_chunks(self.root, "fixed")
+        return build.build_strategy("fixed", chunks, embedder, self.index)
+
+    def test_смена_модели_отменяет_переиспользование(self):
+        """Иначе векторы прежней модели молча подмешиваются к новым.
+
+        Размерность у моделей одна (768 у embeddinggemma и её квантованных
+        вариантов), поэтому смесь не даёт ни ошибки, ни признака — индекс
+        просто становится смесью двух пространств.
+        """
+        with FakeOllama(ROUTES) as fake:
+            первая = self.build_with(fake, "m:latest")
+            self.assertEqual(первая["reused"], 0)
+            другая = self.build_with(fake, "модель:latest")
+            self.assertEqual(другая["reused"], 0, "векторы чужой модели переиспользованы")
+            self.assertEqual(другая["embedded"], другая["count"])
+
+    def test_та_же_модель_переиспользование_сохраняет(self):
+        """Контроль: без него «не переиспользует» выполнялось бы и при
+        сломанном инкременте вообще."""
+        with FakeOllama(ROUTES) as fake:
+            self.build_with(fake, "m:latest")
+            повтор = self.build_with(fake, "m:latest")
+            self.assertEqual(повтор["embedded"], 0)
+            self.assertEqual(повтор["reused"], повтор["count"])
 
     def test_первая_сборка_эмбеддит_все_чанки(self):
         with FakeOllama(ROUTES) as fake:

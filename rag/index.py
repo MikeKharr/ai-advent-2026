@@ -27,13 +27,16 @@ def normalize(vectors: np.ndarray) -> np.ndarray:
 class VectorIndex:
     """Индекс одной стратегии: `<strategy>.faiss` + `<strategy>.meta.json`."""
 
-    def __init__(self, strategy: str, index: faiss.Index, meta: list[dict]) -> None:
+    def __init__(self, strategy: str, index: faiss.Index, meta: list[dict],
+                 model: str = "") -> None:
         self.strategy = strategy
         self.index = index
         self.meta = meta
+        self.model = model
 
     @classmethod
-    def build(cls, strategy: str, meta: list[dict], vectors: np.ndarray) -> "VectorIndex":
+    def build(cls, strategy: str, meta: list[dict], vectors: np.ndarray,
+              model: str = "") -> "VectorIndex":
         if len(meta) != len(vectors):
             raise ValueError(f"метаданных {len(meta)}, векторов {len(vectors)}")
         # Пустой набор отсекается ДО normalize: он берёт длину по оси 1, и
@@ -42,11 +45,11 @@ class VectorIndex:
         # не оттуда и не с тем словом. Через build_all недостижимо: пустой
         # корпус отсекается раньше. Нит reviewer к PR #278, закрыт кодом.
         if len(vectors) == 0:
-            return cls(strategy, faiss.IndexFlatIP(1), [])
+            return cls(strategy, faiss.IndexFlatIP(1), [], model)
         vectors = normalize(vectors)
         index = faiss.IndexFlatIP(vectors.shape[1])
         index.add(vectors)
-        return cls(strategy, index, meta)
+        return cls(strategy, index, meta, model)
 
     @staticmethod
     def paths(directory: Path, strategy: str) -> tuple[Path, Path]:
@@ -59,16 +62,30 @@ class VectorIndex:
         vec_path, meta_path = self.paths(directory, self.strategy)
         faiss.write_index(self.index, str(vec_path))
         meta_path.write_text(
-            json.dumps({"strategy": self.strategy, "chunks": self.meta}, ensure_ascii=False),
+            json.dumps({"strategy": self.strategy, "model": self.model,
+                        "chunks": self.meta}, ensure_ascii=False),
             encoding="utf-8",
         )
 
     @classmethod
-    def load(cls, directory: Path, strategy: str) -> "VectorIndex | None":
+    def load(cls, directory: Path, strategy: str,
+             model: str = "") -> "VectorIndex | None":
+        """Индекс со диска или None, если его нет либо он чужой.
+
+        Чужой — построенный другой моделью. Векторы разных моделей одной
+        размерности (у embeddinggemma и её квантованных вариантов это 768),
+        поэтому подмешивание старых к новым не даёт ни ошибки, ни признака:
+        индекс молча становится смесью двух пространств. Считаем такой
+        индекс отсутствующим — как и разъехавшуюся пару файлов ниже.
+        """
         vec_path, meta_path = cls.paths(Path(directory), strategy)
         if not vec_path.is_file() or not meta_path.is_file():
             return None
-        meta = json.loads(meta_path.read_text(encoding="utf-8")).get("chunks", [])
+        сырое = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = сырое.get("chunks", [])
+        чужая = сырое.get("model", "")
+        if model and чужая != model:
+            return None
         index = faiss.read_index(str(vec_path))
         if index.ntotal != len(meta):
             # Половина пары пережила другую — считаем, что индекса нет, и

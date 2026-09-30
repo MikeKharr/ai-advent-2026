@@ -88,3 +88,37 @@ class StoreTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ИндексПомнитМодель(unittest.TestCase):
+    """Векторы разных моделей одной размерности — смесь не даёт ни ошибки, ни признака."""
+
+    def setUp(self):
+        self.каталог = Path(tempfile.mkdtemp())
+        self.мета = [{"sha256": "a" * 64, "source": "x.md", "section": "x", "text": "t"}]
+        self.векторы = np.asarray([[0.1, 0.2, 0.3]], dtype="float32")
+
+    def test_имя_модели_попадает_в_метаданные(self):
+        VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
+        _, meta_path = VectorIndex.paths(self.каталог, "fixed")
+        self.assertEqual(json.loads(meta_path.read_text(encoding="utf-8"))["model"],
+                         "модель-1")
+
+    def test_индекс_своей_модели_читается(self):
+        VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
+        self.assertIsNotNone(VectorIndex.load(self.каталог, "fixed", "модель-1"))
+
+    def test_индекс_чужой_модели_читается_как_отсутствующий(self):
+        VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
+        self.assertIsNone(VectorIndex.load(self.каталог, "fixed", "модель-2"))
+
+    def test_индекс_без_имени_модели_считается_чужим(self):
+        # Индексы, собранные до этой правки, имени не несут — переиспользовать
+        # их нельзя: какой моделью они собраны, установить нечем.
+        VectorIndex.build("fixed", self.мета, self.векторы).save(self.каталог)
+        self.assertIsNone(VectorIndex.load(self.каталог, "fixed", "модель-1"))
+
+    def test_без_запроса_модели_читается_любой(self):
+        # Совместимость для вызовов, которым модель не важна (поиск по готовому).
+        VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
+        self.assertIsNotNone(VectorIndex.load(self.каталог, "fixed"))

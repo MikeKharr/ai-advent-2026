@@ -55,9 +55,16 @@ class OllamaEmbedder:
         return [m.get("name", "") for m in body.get("models", [])]
 
     def has_model(self) -> bool:
-        # Ollama пишет тег в имени: `embeddinggemma:latest` для `embeddinggemma`.
-        wanted = self.model.split(":", 1)[0]
-        return any(name.split(":", 1)[0] == wanted for name in self.tags())
+        """Есть ли У СЛУЖБЫ именно та модель, что заказана.
+
+        Сравнение с тегом, а не по имени до двоеточия: имя без тега Ollama
+        разворачивает в `:latest`, и при заказе `embeddinggemma:300m-qat-q4_0`
+        уже лежащий `embeddinggemma:latest` выдавал бы «модель есть». Тогда
+        `pull()` не звался бы, новые веса не приезжали, а смена модели
+        проходила бы молча и без последствий.
+        """
+        wanted = self.model if ":" in self.model else f"{self.model}:latest"
+        return wanted in self.tags()
 
     def pull(self) -> None:
         body = self._post("/api/pull", {"model": self.model, "stream": False})
