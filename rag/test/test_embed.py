@@ -65,6 +65,13 @@ class EmbedTest(unittest.TestCase):
         self.assertIn("HTTP 400", текст)
         self.assertIn("input length exceeds the context length", текст,
                       "тело ответа выброшено — причина отказа невосстановима")
+        # Что тело НЕ уходит наружу, держат два теста на `main`, которые этот
+        # PR не трогает: `test_serve.PublicReasonTest` (набор причин закрыт и
+        # каждая в нём) и `test_адрес_эмбеддера_не_попадает_в_ответ_ручки` —
+        # второй держит весь путь `run_build` → `/healthz`, то есть сильнее
+        # прямого вызова `reason`. Свой тест здесь был бы со-расположением, а
+        # не держателем: мутацию `reason` он красит третьим, после них
+        # (находка reviewer и compliance к #287).
 
     def test_длинное_тело_обрезается(self):
         with FakeOllama({"/api/embed": (400, {"error": "я" * 5000})}) as fake:
@@ -72,19 +79,6 @@ class EmbedTest(unittest.TestCase):
                 OllamaEmbedder(fake.url, "m").embed(["а"])
         self.assertLess(len(str(поймано.exception)), 600)
 
-    def test_тело_отказа_не_уходит_в_публичную_причину(self):
-        """Условие compliance: тело живёт в журнале, наружу — закрытый набор.
-
-        Проверка здесь, рядом с тем, что тело в текст исключения ПОПАДАЕТ:
-        два утверждения об одном и том же тексте должны стоять вместе,
-        иначе одно из них переживёт снятие другого.
-        """
-        import serve
-
-        err = EmbedError("/api/embed: HTTP 400 input length exceeds the context length")
-        причина = serve.reason(err)
-        self.assertEqual(причина, serve.NO_EMBEDDER)
-        self.assertNotIn("input length", причина)
 
     def test_ответ_не_json_это_отказ(self):
         with FakeOllama({"/api/embed": (200, b"not json")}) as fake:
