@@ -21,7 +21,9 @@ from embed import EmbedError, OllamaEmbedder
 from index import VectorIndex
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-MODEL = os.environ.get("RAG_MODEL", "embeddinggemma")
+# Умолчание с тегом: без тега Ollama подставит `:latest`, и уже лежащие
+# в томе веса другой квантизации сошли бы за эту модель.
+MODEL = os.environ.get("RAG_MODEL", "embeddinggemma:300m-qat-q4_0")
 CORPUS_DIR = Path(os.environ.get("RAG_CORPUS", "corpus"))
 INDEX_DIR = Path(os.environ.get("RAG_INDEX", "/data"))
 BATCH = int(os.environ.get("RAG_BATCH", "16"))
@@ -140,7 +142,11 @@ def build_strategy(
     started = time.monotonic()
     deadline = deadline if deadline is not None else Deadline(BUILD_TIMEOUT)
     known = {}
-    old = VectorIndex.load(index_dir, strategy)
+    # Модель передаётся в load: индекс, собранный другой моделью, читается как
+    # отсутствующий. Ключ инкремента — только хэш чанка, а векторы разных
+    # моделей одинаковой размерности, поэтому иначе старые подмешались бы к
+    # новым молча, без ошибки и без признака.
+    old = VectorIndex.load(index_dir, strategy, embedder.model)
     if old is not None:
         known = old.vectors_by_sha()
 
@@ -157,7 +163,8 @@ def build_strategy(
             known[chunk.sha256] = np.asarray(vector, dtype="float32")
 
     vectors = np.asarray([known[c.sha256] for c in chunks], dtype="float32")
-    VectorIndex.build(strategy, [c.as_meta() for c in chunks], vectors).save(index_dir)
+    VectorIndex.build(strategy, [c.as_meta() for c in chunks], vectors,
+                      embedder.model).save(index_dir)
     stats = chunk_stats(chunks)
     stats.update(
         strategy=strategy,

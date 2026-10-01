@@ -41,6 +41,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import build
 import limits
 import rpc
 import tools
@@ -266,9 +267,11 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
                 return True
             raw = values[0].strip()
             # `isdigit`, а не `int(...) > 0`: `-5` — годное число и давало
-            # «тела нет», а тело при этом было. На Python 3.14 это
-            # воспроизводится, два ответа (у `reviewer` базовый класс
-            # ответил 400 раньше — расхождение сред названо в описании PR).
+            # «тела нет», а тело при этом было. Воспроизводится обоими
+            # путями — и на открытой ручке без ключа, и на `POST /rag` с
+            # годным. Прежняя запись про «расхождение сред» снята: сред не
+            # расходилось, у `reviewer` замер был неполным — он прочитал
+            # один `recv` и не досчитал ответы.
             if not raw.isdigit():
                 return True
             return int(raw) > 0
@@ -437,7 +440,6 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
 
 
 def _embedder():
-    import build
     from embed import OllamaEmbedder
 
     return OllamaEmbedder(build.OLLAMA_URL, build.MODEL)
@@ -460,7 +462,7 @@ def make_server(
     key: str = "",
     log=lambda _e: None,
 ) -> ThreadingHTTPServer:
-    indexes = indexes if indexes is not None else tools.Indexes(INDEX_DIR)
+    indexes = indexes if indexes is not None else tools.Indexes(INDEX_DIR, build.MODEL)
     limiter = limiter if limiter is not None else limits.Limiter()
     daily_cap = daily_cap if daily_cap is not None else limits.DailyCap(log=log)
     if handle_one is None:
@@ -517,9 +519,11 @@ def main() -> int:
         return 2
 
     status = Status()
-    indexes = tools.Indexes(INDEX_DIR)
+    indexes = tools.Indexes(INDEX_DIR, build.MODEL)
     # Загрузка ДО сборки: в томе может лежать целая пара с прошлой выкатки, и
     # тогда поиск работает с первой секунды, пока идёт часовая сборка.
+    # Но только если она собрана ТОЙ ЖЕ моделью: после смены модели пара
+    # отвергается, и поиска нет до конца пересборки (см. докстринг Indexes).
     indexes.load()
 
     if Path(os.environ.get("RAG_CORPUS", "corpus")).is_dir():

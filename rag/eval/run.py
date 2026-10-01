@@ -26,7 +26,7 @@ def run(index_dir: Path, queries_path: Path, embedder: OllamaEmbedder, k: int = 
     vectors = embedder.embed([q["question"] for q in queries])
     out = {}
     for strategy in ("fixed", "structural"):
-        index = VectorIndex.load(index_dir, strategy)
+        index = VectorIndex.load(index_dir, strategy, embedder.model)
         if index is None:
             out[strategy] = {"error": f"индекса {strategy} нет в {index_dir}"}
             continue

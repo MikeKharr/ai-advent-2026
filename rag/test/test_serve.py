@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sys
+import shutil
 import tempfile
 import threading
 import unittest
@@ -14,6 +15,7 @@ import numpy as np
 
 import limits
 import rpc
+import build
 import serve
 import tools
 from index import VectorIndex
@@ -35,7 +37,7 @@ def start_service(case, key: str = KEY, **over):
     case.addCleanup(tmp.cleanup)
     case.index_dir = Path(tmp.name)
     case.status = over.pop("status", None) or serve.Status()
-    case.indexes = over.pop("indexes", None) or tools.Indexes(case.index_dir)
+    case.indexes = over.pop("indexes", None) or tools.Indexes(case.index_dir, "модель:latest")
     case.limiter = over.pop("limiter", None) or limits.Limiter()
     case.daily_cap = over.pop("daily_cap", None) or limits.DailyCap(case.index_dir / "usage.json", limit=100)
     case.journal = []
@@ -135,7 +137,7 @@ class PublicReasonTest(unittest.TestCase):
         build.build_all = boom
         stderr, sys.stderr = sys.stderr, io.StringIO()
         try:
-            serve.run_build(self.status, tools.Indexes(self.index_dir))
+            serve.run_build(self.status, tools.Indexes(self.index_dir, "модель:latest"))
             self.journal = sys.stderr.getvalue()
         finally:
             sys.stderr = stderr
@@ -498,7 +500,9 @@ class HealthzOpenTest(unittest.TestCase):
         # `state` — про СБОРКУ, `index` — про то, по чему идёт поиск сейчас.
         body = json.loads(request(self.url, "/rag/healthz", method="GET", key=None)[2])
         self.assertEqual(body["state"], "starting")
-        self.assertEqual(body["index"], {"commit": "unknown", "strategies": [], "chunks": {}})
+        self.assertEqual(body["index"],
+                         {"commit": "unknown", "model": "", "strategies": [],
+                          "chunks": {}, "rejected": []})
 
     def test_остаток_суточного_потолка_в_открытую_ручку_не_идёт(self):
         # Он говорил бы прохожему, пользуется ли службой кто-то прямо сейчас.
@@ -585,7 +589,7 @@ class EndToEndTest(unittest.TestCase):
             "chunk_id": "c1", "strategy": "structural", "sha256": "0" * 64, "commit": "a1b2c3d",
             "text": "проверка лимита предшествует вызову API",
         }]
-        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.index_dir)
+        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32"), "модель:latest").save(self.index_dir)
         self.indexes.load()
         self.embed_calls = []
 
@@ -677,7 +681,7 @@ class RunBuildReadyTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
         self.status = serve.Status()
-        self.indexes = tools.Indexes(self.dir)
+        self.indexes = tools.Indexes(self.dir, "модель:latest")
 
     def run_ok(self, stats=None, write_index=True):
         import build
@@ -689,7 +693,7 @@ class RunBuildReadyTest(unittest.TestCase):
                 "strategy": "structural", "sha256": "0" * 64, "commit": "abcdef1",
                 "text": "роли определены в .claude/agents",
             }]
-            VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.dir)
+            VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32"), "модель:latest").save(self.dir)
 
         done = stats if stats is not None else [{"strategy": "structural", "count": 1}]
         with (
@@ -951,7 +955,7 @@ class OneResponsePerConnectionTest(unittest.TestCase):
                             )
         self.assertEqual(bad, [], "тело запроса разобрано как следующий запрос:\n" + "\n".join(bad))
 
-    def test_перебор_трогает_все_три_обрамления(self):
+    def test_перебор_трогает_все_обрамления_а_не_одно(self):
         """Ось не должна тихо выродиться в константу — ровно так и вышло.
 
         Проверка на самого себя: если `framed` однажды начнёт отдавать одно
@@ -1128,7 +1132,8 @@ class StartupIndexTest(unittest.TestCase):
             "strategy": "structural", "sha256": "0" * 64, "commit": commit,
             "text": "роли определены в .claude/agents",
         }]
-        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.dir)
+        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32"),
+                          build.MODEL).save(self.dir)
 
     def test_целая_пара_в_томе_загружена_до_первого_ответа(self):
         self.write_pair()
@@ -1154,3 +1159,76 @@ class StartupIndexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ПроводкаМоделиВПоиск(unittest.TestCase):
+    """`serve` обязан строить Indexes с моделью из окружения, а не с чужой.
+
+    Тесты поиска подставляют индексы параметром, то есть ровно в обход этой
+    проводки — находка reviewer к PR #286.
+    """
+
+    def test_serve_строит_indexes_с_моделью_из_build(self):
+        import ast
+        import pathlib
+
+        исходник = (pathlib.Path(__file__).resolve().parent.parent / "serve.py")
+        дерево = ast.parse(исходник.read_text(encoding="utf-8"))
+        мест = 0
+        for узел in ast.walk(дерево):
+            if not isinstance(узел, ast.Call):
+                continue
+            ф = узел.func
+            if not (isinstance(ф, ast.Attribute) and ф.attr == "Indexes"):
+                continue
+            мест += 1
+            self.assertEqual(len(узел.args), 2,
+                             f"serve.py:{узел.lineno}: Indexes без модели")
+            модель = узел.args[1]
+            self.assertTrue(
+                isinstance(модель, ast.Attribute) and модель.attr == "MODEL",
+                f"serve.py:{узел.lineno}: модель не из build.MODEL")
+        self.assertGreaterEqual(мест, 2, "мест стало меньше — проверка выродилась")
+
+
+class ПроводкаМоделиВЭмбеддерЗапроса(unittest.TestCase):
+    """Шестая проводка: `RAG_MODEL` доезжает до эмбеддера ЗАПРОСА.
+
+    Находка compliance и reviewer к PR #286, названная дважды: все тесты
+    поиска подставляют эмбеддер параметром `embedder=`, то есть ровно в
+    обход `_embedder()`. Поведением это не проверить, не подняв живую
+    Ollama, поэтому проверяется то, что проверяемо: что умолчание берётся
+    из `build`, а не из литерала, и что `make_tools` без эмбеддера идёт
+    именно туда.
+    """
+
+    def test_эмбеддер_запроса_берёт_модель_из_build(self):
+        эмбеддер = serve._embedder()
+        self.assertEqual(эмбеддер.model, build.MODEL)
+        self.assertEqual(эмбеддер.base_url, build.OLLAMA_URL)
+
+    def test_без_параметра_make_tools_зовёт_умолчание(self):
+        # Без этого предыдущий тест проверял бы функцию, которую никто не зовёт,
+        # — ровно та форма, из-за которой этот PR переделывался трижды.
+        звали = []
+        прежний = serve._embedder
+        serve._embedder = lambda: звали.append(1) or прежний()
+        self.addCleanup(setattr, serve, "_embedder", прежний)
+        каталог = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, каталог, True)
+        serve.make_tools(serve.Status(), tools.Indexes(Path("."), build.MODEL),
+                         limits.DailyCap(каталог / "usage.json", 10))
+        self.assertEqual(звали, [1], "make_tools без эмбеддера не позвал умолчание")
+
+    def test_с_параметром_умолчание_не_зовётся(self):
+        # Контроль: иначе первый тест проходил бы и при вызове всегда.
+        звали = []
+        прежний = serve._embedder
+        serve._embedder = lambda: звали.append(1) or прежний()
+        self.addCleanup(setattr, serve, "_embedder", прежний)
+        каталог = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, каталог, True)
+        serve.make_tools(serve.Status(), tools.Indexes(Path("."), build.MODEL),
+                         limits.DailyCap(каталог / "usage.json", 10),
+                         embedder=object())
+        self.assertEqual(звали, [], "умолчание позвано вопреки переданному эмбеддеру")

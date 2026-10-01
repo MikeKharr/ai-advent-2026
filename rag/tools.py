@@ -69,23 +69,45 @@ class Indexes:
     удаться, а в томе лежать целая пара файлов с прошлой выкатки — тогда
     служба ищет по ней и называет её `commit`, отличный от `COMMIT` образа.
 
+    **Цена сверки модели, названная прямо.** Пара из тома подхватывается,
+    только если собрана ТОЙ ЖЕ моделью. При смене модели (ADR 2026-09-30-0957)
+    индекс прошлой выкатки отвергается, и служба остаётся без поиска до конца
+    пересборки — часы; а если проход снова убьют по памяти, то без поиска
+    вовсе. Это выбор защиты вместо доступности: искать по индексу чужой модели
+    нельзя — векторы одной размерности, смесь не даёт ни ошибки, ни признака.
+
     Это НЕ починка дефекта «сборка не возобновляется после единственного
     отказа» (он в agent_docs/backlog.md, решение за владельцем), а то, что
-    делает его последствие переживаемым.
+    делает его последствие переживаемым — пока модель не менялась.
     """
 
-    def __init__(self, index_dir) -> None:
+    def __init__(self, index_dir, model: str) -> None:
         self.index_dir = index_dir
+        self.model = model
+        # Заводится здесь, как и `_loaded`: иначе `/rag/healthz` до первого
+        # `load()` отдавал бы `rejected: []` по заглушке `getattr`, а не по
+        # инварианту (нит reviewer).
+        self._rejected: list[str] = []
         self._loaded: dict[str, VectorIndex] = {}
 
     def load(self) -> list[str]:
         """Перечитать том. Возвращает имена загруженных стратегий."""
         loaded = {}
+        rejected = []
         for strategy in chunking.STRATEGIES:
-            index = VectorIndex.load(self.index_dir, strategy)
+            index = VectorIndex.load(self.index_dir, strategy, self.model)
+            # Любой из двух файлов пары: от разъехавшейся могла остаться только
+            # половина, и она тоже «есть, но не подошла» (нит reviewer).
+            if index is None and any(p.is_file()
+                                     for p in VectorIndex.paths(self.index_dir, strategy)):
+                # Пара в томе ЕСТЬ, но не подошла — чужая модель либо разъехавшиеся
+                # длины. Без этого «отвергнут» неотличим от «тома нет», а именно
+                # это состояние службы сразу после смены модели.
+                rejected.append(strategy)
             if index is not None and index.index.ntotal > 0:
                 loaded[strategy] = index
         self._loaded = loaded
+        self._rejected = sorted(rejected)
         return list(loaded)
 
     def get(self, strategy: str) -> VectorIndex | None:
@@ -107,8 +129,17 @@ class Indexes:
         return "unknown"
 
     def state(self) -> dict:
+        # Модель служащего индекса наружу. Ветвь «разные модели» недостижима:
+        # в `_loaded` попадают только прошедшие сверку с `self.model` — это
+        # заметил reviewer, и прежний комментарий обещал наблюдаемость, которой
+        # в этой схеме быть не может. Полезный сигнал другой: `rejected`.
         return {
             "commit": self.commit(),
+            "model": self.model if self._loaded else "",
+            # Стратегии, чья пара в томе ЕСТЬ, но не подошла. Без этого поля
+            # «индекс отвергнут» неотличимо от «тома нет» — а после смены
+            # модели это ровно то, что увидит владелец на /healthz.
+            "rejected": list(self._rejected),
             "strategies": sorted(self._loaded),
             "chunks": {name: idx.index.ntotal for name, idx in sorted(self._loaded.items())},
         }

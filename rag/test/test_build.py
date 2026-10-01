@@ -9,7 +9,13 @@ import corpus
 from embed import EmbedError, OllamaEmbedder
 from test.fakeollama import FakeOllama
 
-ROUTES = {"/api/embed": (200, FakeOllama.deterministic)}
+# Настоящая Ollama в /api/tags всегда отдаёт имя С ТЕГОМ (`имя:latest`).
+# Стенд отдавал без тега, и это прятало дефект: сравнение по имени до
+# двоеточия считало «модель есть» для любого тега той же модели.
+ROUTES = {
+    "/api/embed": (200, FakeOllama.deterministic),
+    "/api/tags": (200, {"models": [{"name": "m:latest"}, {"name": "модель:latest"}]}),
+}
 
 
 def corpus_tree(root: Path) -> None:
@@ -45,6 +51,34 @@ class IncrementTest(unittest.TestCase):
         embedder = OllamaEmbedder(fake.url, "m")
         chunks = build.read_chunks(self.root, "fixed")
         return build.build_strategy("fixed", chunks, embedder, self.index)
+
+    def build_with(self, fake, модель: str) -> dict:
+        embedder = OllamaEmbedder(fake.url, модель)
+        chunks = build.read_chunks(self.root, "fixed")
+        return build.build_strategy("fixed", chunks, embedder, self.index)
+
+    def test_смена_модели_отменяет_переиспользование(self):
+        """Иначе векторы прежней модели молча подмешиваются к новым.
+
+        Размерность у моделей одна (768 у embeddinggemma и её квантованных
+        вариантов), поэтому смесь не даёт ни ошибки, ни признака — индекс
+        просто становится смесью двух пространств.
+        """
+        with FakeOllama(ROUTES) as fake:
+            первая = self.build_with(fake, "m:latest")
+            self.assertEqual(первая["reused"], 0)
+            другая = self.build_with(fake, "модель:latest")
+            self.assertEqual(другая["reused"], 0, "векторы чужой модели переиспользованы")
+            self.assertEqual(другая["embedded"], другая["count"])
+
+    def test_та_же_модель_переиспользование_сохраняет(self):
+        """Контроль: без него «не переиспользует» выполнялось бы и при
+        сломанном инкременте вообще."""
+        with FakeOllama(ROUTES) as fake:
+            self.build_with(fake, "m:latest")
+            повтор = self.build_with(fake, "m:latest")
+            self.assertEqual(повтор["embedded"], 0)
+            self.assertEqual(повтор["reused"], повтор["count"])
 
     def test_первая_сборка_эмбеддит_все_чанки(self):
         with FakeOllama(ROUTES) as fake:
@@ -163,7 +197,7 @@ class DeadlineTest(unittest.TestCase):
         per_strategy = len(self.chunks)
         self.assertEqual(per_strategy, len(build.read_chunks(self.root, "structural")))
         clock = [0.0]
-        with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель"}]})}) as fake:
+        with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель:latest"}]})}) as fake:
             embedder = self.slow_embedder(fake.url, 600.0, clock)
             # 15 вызовов по 600 с на 20 чанков: первой стратегии хватает, второй нет.
             deadline = build.Deadline(600.0 * 15, now=lambda: clock[0])
@@ -225,7 +259,7 @@ class WaitForEmbedderTest(unittest.TestCase):
     """
 
     def test_ожидание_переживает_первые_отказы_и_доходит_до_стенда(self):
-        with FakeOllama({"/api/tags": (200, {"models": [{"name": "модель"}]})}) as fake:
+        with FakeOllama({"/api/tags": (200, {"models": [{"name": "модель:latest"}]})}) as fake:
             embedder = OllamaEmbedder(fake.url, "модель")
             real, tries = embedder.tags, []
 
@@ -281,7 +315,7 @@ class WaitForEmbedderTest(unittest.TestCase):
             root = Path(tmp) / "corpus"
             (root / "agent_docs").mkdir(parents=True)
             (root / "agent_docs" / "doc.md").write_text("# Док\n\nтело\n", encoding="utf-8")
-            routes = {**ROUTES, "/api/tags": (200, {"models": [{"name": "модель"}]})}
+            routes = {**ROUTES, "/api/tags": (200, {"models": [{"name": "модель:latest"}]})}
             with FakeOllama(routes) as fake:
                 embedder = OllamaEmbedder(fake.url, "модель")
                 real, tries = embedder.tags, []
@@ -316,7 +350,7 @@ class EmptyCorpusTest(unittest.TestCase):
             # Каталог существует и даже не пуст — но ни один файл в корпус не
             # входит, то есть ровно то, чем кончается сбой шага сборки корпуса.
             (root / "не-в-корпусе.bin").write_bytes(b"\x00")
-            with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель"}]})}) as fake:
+            with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель:latest"}]})}) as fake:
                 embedder = OllamaEmbedder(fake.url, "модель")
                 with self.assertRaises(build.EmptyCorpus):
                     build.build_all(root, Path(tmp) / "index", embedder)
