@@ -343,3 +343,18 @@ class ОтвергнутыйИндексВиденСнаружи(unittest.TestCa
         indexes.load()
         self.assertEqual(indexes.state()["strategies"], ["fixed"])
         self.assertEqual(indexes.state()["rejected"], [])
+
+    def test_половина_пары_тоже_попадает_в_rejected(self):
+        """Держатель на `any` из двух файлов пары, а не на `all`.
+
+        Условие в `tools.load` писалось именно про «любой из двух», но
+        проверялось только на целой паре чужой модели — с заменой `any` на
+        `all` весь набор оставался зелёным. Разъехавшаяся пара (остался один
+        файл) — это «есть, но не подошла», а не «тома нет».
+        """
+        (self.dir / "fixed.faiss").unlink()
+        indexes = tools.Indexes(self.dir, "старая")
+        indexes.load()
+        self.assertEqual(indexes.state()["strategies"], [])
+        self.assertEqual(indexes.state()["rejected"], ["fixed"],
+                         "половина пары выглядит как отсутствие тома")

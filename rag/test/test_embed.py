@@ -50,6 +50,35 @@ class EmbedTest(unittest.TestCase):
             with self.assertRaises(EmbedError):
                 OllamaEmbedder(fake.url, "m").embed(["а"])
 
+    def test_тело_отказа_попадает_в_текст_исключения(self):
+        """Иначе `400` от службы выглядит одинаково при любой причине.
+
+        На этом и сорвались два диагноза подряд по стратегии `structural`:
+        код печатал «HTTP 400» и выбрасывал тело, а причину приходилось
+        угадывать по косвенным признакам.
+        """
+        тело = {"error": "input length exceeds the context length"}
+        with FakeOllama({"/api/embed": (400, тело)}) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                OllamaEmbedder(fake.url, "m").embed(["а"])
+        текст = str(поймано.exception)
+        self.assertIn("HTTP 400", текст)
+        self.assertIn("input length exceeds the context length", текст,
+                      "тело ответа выброшено — причина отказа невосстановима")
+        # Что тело НЕ уходит наружу, держат два теста на `main`, которые этот
+        # PR не трогает: `test_serve.PublicReasonTest` (набор причин закрыт и
+        # каждая в нём) и `test_адрес_эмбеддера_не_попадает_в_ответ_ручки` —
+        # второй держит весь путь `run_build` → `/healthz`, то есть сильнее
+        # прямого вызова `reason`. Свой тест здесь был бы со-расположением, а
+        # не держателем: мутацию `reason` он красит третьим, после них
+        # (находка reviewer и compliance к #287).
+
+    def test_длинное_тело_обрезается(self):
+        with FakeOllama({"/api/embed": (400, {"error": "я" * 5000})}) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                OllamaEmbedder(fake.url, "m").embed(["а"])
+        self.assertLess(len(str(поймано.exception)), 600)
+
     def test_ответ_не_json_это_отказ(self):
         with FakeOllama({"/api/embed": (200, b"not json")}) as fake:
             with self.assertRaises(EmbedError):

@@ -16,6 +16,32 @@ class EmbedError(RuntimeError):
     """Эмбеддер не ответил или ответил не тем. Пустой список — не ответ."""
 
 
+BODY_LIMIT = 400
+
+
+def _тело_отказа(err: urllib.error.HTTPError) -> str:
+    """Тело ответа службы — в текст отказа, и значит в журнал.
+
+    Пока его здесь не было, `400` от Ollama выглядел одинаково при любой
+    причине, и два диагноза подряд были поставлены по косвенным признакам
+    и оба оказались неверными (`agent_docs/backlog.md`, запись о `400` на
+    стратегии `structural`).
+
+    Наружу это не выходит: публичная причина берётся из закрытого набора
+    (`rag/serve.py`, `reason`), и тело в неё не попадает ни по какой ветке.
+    Ollama своя, ключей у неё нет, в теле нет ничего секретного; обрезка —
+    не про тайну, а про размер строки в журнале.
+    """
+    try:
+        body = err.read().decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 — тело уже прочитано или оборвано
+        return "(тело не прочитано)"
+    body = " ".join(body.split())
+    if not body:
+        return "(тело пусто)"
+    return body[:BODY_LIMIT] + ("…" if len(body) > BODY_LIMIT else "")
+
+
 class OllamaEmbedder:
     def __init__(self, base_url: str, model: str, timeout: float = 600.0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -36,7 +62,7 @@ class OllamaEmbedder:
             with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as err:
-            raise EmbedError(f"{path}: HTTP {err.code}") from err
+            raise EmbedError(f"{path}: HTTP {err.code} {_тело_отказа(err)}") from err
         except (urllib.error.URLError, OSError, TimeoutError) as err:
             raise EmbedError(f"{path}: нет связи с {self.base_url} ({err})") from err
         except json.JSONDecodeError as err:
