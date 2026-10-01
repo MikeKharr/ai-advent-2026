@@ -133,8 +133,9 @@ class ИндексПомнитМодель(unittest.TestCase):
         self.assertIsNone(VectorIndex.load(self.каталог, "fixed", "модель-1"))
 
     def test_загруженный_индекс_помнит_свою_модель(self):
-        # Модель служащего индекса видна снаружи через project.status —
-        # см. test_tools, состояние несёт поле `model`.
+        # Модель служащего индекса видна снаружи: см.
+        # test_tools.ОтвергнутыйИндексВиденСнаружи — там утверждается, что
+        # `state()["model"]` равно модели загруженного индекса.
         VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
         self.assertEqual(VectorIndex.load(self.каталог, "fixed", "модель-1").model,
                          "модель-1")

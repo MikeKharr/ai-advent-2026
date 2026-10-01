@@ -321,6 +321,23 @@ class ОтвергнутыйИндексВиденСнаружи(unittest.TestCa
         indexes.load()
         self.assertEqual(indexes.state()["rejected"], [])
 
+    def test_модель_загруженного_индекса_едет_наружу(self):
+        """То, ради чего поле заведено, а не просто наличие ключа.
+
+        Находка compliance: мутация `"model": ""` оставляла весь набор зелёным —
+        единственное утверждение про поле касалось ПУСТОГО случая.
+        """
+        indexes = tools.Indexes(self.dir, "старая")
+        indexes.load()
+        self.assertEqual(indexes.state()["model"], "старая")
+
+    def test_без_индекса_модель_пуста(self):
+        # Контроль: без него «модель равна своей» выполнялось бы и при
+        # возврате константы.
+        indexes = tools.Indexes(Path(self.tmp.name) / "нет-такого", "старая")
+        indexes.load()
+        self.assertEqual(indexes.state()["model"], "")
+
     def test_своя_модель_не_попадает_в_rejected(self):
         indexes = tools.Indexes(self.dir, "старая")
         indexes.load()
