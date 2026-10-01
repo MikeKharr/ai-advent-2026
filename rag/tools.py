@@ -74,15 +74,16 @@ class Indexes:
     делает его последствие переживаемым.
     """
 
-    def __init__(self, index_dir) -> None:
+    def __init__(self, index_dir, model: str) -> None:
         self.index_dir = index_dir
+        self.model = model
         self._loaded: dict[str, VectorIndex] = {}
 
     def load(self) -> list[str]:
         """Перечитать том. Возвращает имена загруженных стратегий."""
         loaded = {}
         for strategy in chunking.STRATEGIES:
-            index = VectorIndex.load(self.index_dir, strategy)
+            index = VectorIndex.load(self.index_dir, strategy, self.model)
             if index is not None and index.index.ntotal > 0:
                 loaded[strategy] = index
         self._loaded = loaded

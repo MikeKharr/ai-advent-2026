@@ -28,7 +28,7 @@ class VectorIndex:
     """Индекс одной стратегии: `<strategy>.faiss` + `<strategy>.meta.json`."""
 
     def __init__(self, strategy: str, index: faiss.Index, meta: list[dict],
-                 model: str = "") -> None:
+                 model: str) -> None:
         self.strategy = strategy
         self.index = index
         self.meta = meta
@@ -36,7 +36,7 @@ class VectorIndex:
 
     @classmethod
     def build(cls, strategy: str, meta: list[dict], vectors: np.ndarray,
-              model: str = "") -> "VectorIndex":
+              model: str) -> "VectorIndex":
         if len(meta) != len(vectors):
             raise ValueError(f"метаданных {len(meta)}, векторов {len(vectors)}")
         # Пустой набор отсекается ДО normalize: он берёт длину по оси 1, и
@@ -68,8 +68,7 @@ class VectorIndex:
         )
 
     @classmethod
-    def load(cls, directory: Path, strategy: str,
-             model: str = "") -> "VectorIndex | None":
+    def load(cls, directory: Path, strategy: str, model: str) -> "VectorIndex | None":
         """Индекс со диска или None, если его нет либо он чужой.
 
         Чужой — построенный другой моделью. Векторы разных моделей одной
@@ -77,21 +76,30 @@ class VectorIndex:
         поэтому подмешивание старых к новым не даёт ни ошибки, ни признака:
         индекс молча становится смесью двух пространств. Считаем такой
         индекс отсутствующим — как и разъехавшуюся пару файлов ниже.
+
+        Модель обязательна у ВСЕХ трёх мест загрузки: сборка, поиск и мера.
+        Поиск опаснее сборки: он отвечает пользователю, и индекс прошлой
+        выкатки поднимается ДО новой сборки — то есть без этого аргумента
+        `/rag` часами отвечал бы по чужому индексу.
         """
         vec_path, meta_path = cls.paths(Path(directory), strategy)
         if not vec_path.is_file() or not meta_path.is_file():
             return None
-        сырое = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta = сырое.get("chunks", [])
-        чужая = сырое.get("model", "")
-        if model and чужая != model:
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = raw.get("chunks", [])
+        if raw.get("model", "") != model:
+            # Модель — обязательный аргумент, а не умолчание: пустое умолчание
+            # пропускало любой индекс и дало выжить мутации «проводка снята».
             return None
         index = faiss.read_index(str(vec_path))
         if index.ntotal != len(meta):
             # Половина пары пережила другую — считаем, что индекса нет, и
             # строим заново: молча искать по разъехавшимся спискам нельзя.
             return None
-        return cls(strategy, index, meta)
+        # Модель кладётся в объект: без неё `.model` оставался пустым, и
+        # `project.status` не мог бы показать, какой моделью собран служащий
+        # индекс — то есть смесь пространств осталась бы ненаблюдаемой.
+        return cls(strategy, index, meta, model)
 
     def vectors_by_sha(self) -> dict[str, np.ndarray]:
         """Готовые векторы из тома по `sha256` чанка — вход инкремента."""

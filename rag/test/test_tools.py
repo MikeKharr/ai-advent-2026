@@ -52,7 +52,7 @@ class ToolsCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
-        self.indexes = tools.Indexes(self.dir)
+        self.indexes = tools.Indexes(self.dir, "модель:latest")
         self.embedder = FakeEmbedder()
         self.cap = limits.DailyCap(self.dir / "usage.json", limit=3, today=lambda: "2026-09-30")
         self.status = serve.Status()
@@ -63,7 +63,7 @@ class ToolsCase(unittest.TestCase):
             meta("AGENTS.md", "Роли агентов", "роли определены во фронтматтере", commit, strategy),
         ]
         vectors = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32")
-        VectorIndex.build(strategy, rows, vectors).save(self.dir)
+        VectorIndex.build(strategy, rows, vectors, "модель:latest").save(self.dir)
 
     def search(self, **args):
         tool = tools.make_search(self.indexes, self.embedder, self.cap)
@@ -192,7 +192,7 @@ class SearchResultTest(ToolsCase):
     def test_выдержка_режется_и_рез_назван(self):
         long = "щ" * (tools.MAX_TEXT + 500)
         rows = [meta("a.md", "s", long)]
-        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.dir)
+        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32"), "модель:latest").save(self.dir)
         self.indexes.load()
         result = self.search(query="x")["results"][0]
         self.assertEqual(len(result["text"]), tools.MAX_TEXT)
@@ -201,7 +201,7 @@ class SearchResultTest(ToolsCase):
     def test_весь_ответ_не_больше_потолка(self):
         rows = [meta(f"f{i}.md", "s", "щ" * tools.MAX_TEXT) for i in range(10)]
         vectors = np.asarray([[1.0, 0.0]] * 10, dtype="float32")
-        VectorIndex.build("structural", rows, vectors).save(self.dir)
+        VectorIndex.build("structural", rows, vectors, "модель:latest").save(self.dir)
         self.indexes.load()
         answer = self.search(query="x", limit=10)
         size = len(json.dumps(answer, ensure_ascii=False).encode("utf-8"))

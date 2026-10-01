@@ -15,7 +15,6 @@ from test.fakeollama import FakeOllama
 ROUTES = {
     "/api/embed": (200, FakeOllama.deterministic),
     "/api/tags": (200, {"models": [{"name": "m:latest"}, {"name": "модель:latest"}]}),
-    "/api/pull": (200, {"status": "success"}),
 }
 
 
@@ -198,7 +197,7 @@ class DeadlineTest(unittest.TestCase):
         per_strategy = len(self.chunks)
         self.assertEqual(per_strategy, len(build.read_chunks(self.root, "structural")))
         clock = [0.0]
-        with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель"}]})}) as fake:
+        with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель:latest"}]})}) as fake:
             embedder = self.slow_embedder(fake.url, 600.0, clock)
             # 15 вызовов по 600 с на 20 чанков: первой стратегии хватает, второй нет.
             deadline = build.Deadline(600.0 * 15, now=lambda: clock[0])
@@ -260,7 +259,7 @@ class WaitForEmbedderTest(unittest.TestCase):
     """
 
     def test_ожидание_переживает_первые_отказы_и_доходит_до_стенда(self):
-        with FakeOllama({"/api/tags": (200, {"models": [{"name": "модель"}]})}) as fake:
+        with FakeOllama({"/api/tags": (200, {"models": [{"name": "модель:latest"}]})}) as fake:
             embedder = OllamaEmbedder(fake.url, "модель")
             real, tries = embedder.tags, []
 
@@ -316,7 +315,7 @@ class WaitForEmbedderTest(unittest.TestCase):
             root = Path(tmp) / "corpus"
             (root / "agent_docs").mkdir(parents=True)
             (root / "agent_docs" / "doc.md").write_text("# Док\n\nтело\n", encoding="utf-8")
-            routes = {**ROUTES, "/api/tags": (200, {"models": [{"name": "модель"}]})}
+            routes = {**ROUTES, "/api/tags": (200, {"models": [{"name": "модель:latest"}]})}
             with FakeOllama(routes) as fake:
                 embedder = OllamaEmbedder(fake.url, "модель")
                 real, tries = embedder.tags, []
@@ -351,7 +350,7 @@ class EmptyCorpusTest(unittest.TestCase):
             # Каталог существует и даже не пуст — но ни один файл в корпус не
             # входит, то есть ровно то, чем кончается сбой шага сборки корпуса.
             (root / "не-в-корпусе.bin").write_bytes(b"\x00")
-            with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель"}]})}) as fake:
+            with FakeOllama({**ROUTES, "/api/tags": (200, {"models": [{"name": "модель:latest"}]})}) as fake:
                 embedder = OllamaEmbedder(fake.url, "модель")
                 with self.assertRaises(build.EmptyCorpus):
                     build.build_all(root, Path(tmp) / "index", embedder)

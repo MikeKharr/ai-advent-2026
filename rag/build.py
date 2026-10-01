@@ -21,7 +21,9 @@ from embed import EmbedError, OllamaEmbedder
 from index import VectorIndex
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-MODEL = os.environ.get("RAG_MODEL", "embeddinggemma")
+# Умолчание с тегом: без тега Ollama подставит `:latest`, и уже лежащие
+# в томе веса другой квантизации сошли бы за эту модель.
+MODEL = os.environ.get("RAG_MODEL", "embeddinggemma:300m-qat-q4_0")
 CORPUS_DIR = Path(os.environ.get("RAG_CORPUS", "corpus"))
 INDEX_DIR = Path(os.environ.get("RAG_INDEX", "/data"))
 BATCH = int(os.environ.get("RAG_BATCH", "16"))

@@ -95,7 +95,7 @@ class ИмяМоделиСверяетсяЦеликом(unittest.TestCase):
 
     def эмбеддер(self, заказ, теги):
         e = OllamaEmbedder("http://x", заказ)
-        e.tags = lambda: teгi if False else теги
+        e.tags = lambda: теги
         return e
 
     def test_чужой_тег_той_же_модели_не_считается_своим(self):

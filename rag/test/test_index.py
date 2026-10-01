@@ -16,7 +16,7 @@ VECS = np.asarray([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype="float32")
 
 
 def built() -> VectorIndex:
-    return VectorIndex.build("fixed", META, VECS)
+    return VectorIndex.build("fixed", META, VECS, "модель:latest")
 
 
 class BuildTest(unittest.TestCase):
@@ -35,7 +35,7 @@ class BuildTest(unittest.TestCase):
 
     def test_число_метаданных_обязано_совпасть_с_числом_векторов(self):
         with self.assertRaises(ValueError):
-            VectorIndex.build("fixed", META[:2], VECS)
+            VectorIndex.build("fixed", META[:2], VECS, "модель:latest")
 
     def test_нулевой_вектор_не_даёт_nan(self):
         got = normalize(np.asarray([[0.0, 0.0]], dtype="float32"))
@@ -44,12 +44,12 @@ class BuildTest(unittest.TestCase):
     def test_пустой_плоский_массив_не_падает_на_оси(self):
         # normalize берёт длину по оси 1; на `np.asarray([])` это AxisError,
         # и охранники `if len(vectors)` ниже были мёртвыми (нит reviewer).
-        empty = VectorIndex.build("fixed", [], np.asarray([], dtype="float32"))
+        empty = VectorIndex.build("fixed", [], np.asarray([], dtype="float32"), "модель:latest")
         self.assertEqual(empty.index.ntotal, 0)
         self.assertEqual(empty.search(np.asarray([1.0, 0.0]), 5), [])
 
     def test_поиск_в_пустом_индексе_возвращает_пусто(self):
-        self.assertEqual(VectorIndex.build("fixed", [], np.zeros((0, 2), "float32")).search(np.asarray([1.0, 0.0]), 5), [])
+        self.assertEqual(VectorIndex.build("fixed", [], np.zeros((0, 2), "float32"), "м").search(np.asarray([1.0, 0.0]), 5), [])
 
 
 class StoreTest(unittest.TestCase):
@@ -60,30 +60,30 @@ class StoreTest(unittest.TestCase):
 
     def test_сохранение_и_чтение_дают_тот_же_ответ(self):
         built().save(self.dir)
-        loaded = VectorIndex.load(self.dir, "fixed")
+        loaded = VectorIndex.load(self.dir, "fixed", "модель:latest")
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.search(np.asarray([0.0, 1.0]), 1)[0][1]["source"], "b.md")
 
     def test_векторы_достаются_из_тома_по_sha256(self):
         built().save(self.dir)
-        by_sha = VectorIndex.load(self.dir, "fixed").vectors_by_sha()
+        by_sha = VectorIndex.load(self.dir, "fixed", "модель:latest").vectors_by_sha()
         self.assertEqual(sorted(by_sha), ["aa", "bb", "cc"])
         np.testing.assert_allclose(by_sha["aa"], normalize(VECS)[0], atol=1e-6)
 
     def test_индекса_нет_когда_нет_файлов(self):
-        self.assertIsNone(VectorIndex.load(self.dir, "fixed"))
+        self.assertIsNone(VectorIndex.load(self.dir, "fixed", "модель:latest"))
 
     def test_разъехавшаяся_пара_читается_как_отсутствие_индекса(self):
         built().save(self.dir)
         _, meta_path = VectorIndex.paths(self.dir, "fixed")
         meta_path.write_text(json.dumps({"strategy": "fixed", "chunks": META[:1]}), encoding="utf-8")
-        self.assertIsNone(VectorIndex.load(self.dir, "fixed"))
+        self.assertIsNone(VectorIndex.load(self.dir, "fixed", "модель:latest"))
 
     def test_стратегии_лежат_раздельно(self):
         built().save(self.dir)
-        VectorIndex.build("structural", META[:1], VECS[:1]).save(self.dir)
-        self.assertEqual(VectorIndex.load(self.dir, "fixed").index.ntotal, 3)
-        self.assertEqual(VectorIndex.load(self.dir, "structural").index.ntotal, 1)
+        VectorIndex.build("structural", META[:1], VECS[:1], "модель:latest").save(self.dir)
+        self.assertEqual(VectorIndex.load(self.dir, "fixed", "модель:latest").index.ntotal, 3)
+        self.assertEqual(VectorIndex.load(self.dir, "structural", "модель:latest").index.ntotal, 1)
 
 
 if __name__ == "__main__":
@@ -115,10 +115,45 @@ class ИндексПомнитМодель(unittest.TestCase):
     def test_индекс_без_имени_модели_считается_чужим(self):
         # Индексы, собранные до этой правки, имени не несут — переиспользовать
         # их нельзя: какой моделью они собраны, установить нечем.
-        VectorIndex.build("fixed", self.мета, self.векторы).save(self.каталог)
+        VectorIndex.build("fixed", self.мета, self.векторы, "модель:latest").save(self.каталог)
         self.assertIsNone(VectorIndex.load(self.каталог, "fixed", "модель-1"))
 
-    def test_без_запроса_модели_читается_любой(self):
-        # Совместимость для вызовов, которым модель не важна (поиск по готовому).
+    def test_загруженный_индекс_помнит_свою_модель(self):
+        # Иначе project.status не покажет, какой моделью собран служащий индекс,
+        # и смесь пространств осталась бы ненаблюдаемой.
         VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
-        self.assertIsNotNone(VectorIndex.load(self.каталог, "fixed"))
+        self.assertEqual(VectorIndex.load(self.каталог, "fixed", "модель-1").model,
+                         "модель-1")
+
+
+class МодельОбязательнаВезде(unittest.TestCase):
+    """Держатель на класс, а не на место: проводку проверяли в сборке, и она
+    держалась, а поиск и мера грузили индекс без модели — молча и часами.
+    """
+
+    def test_все_места_загрузки_передают_модель(self):
+        import ast
+        import pathlib
+
+        корень = pathlib.Path(__file__).resolve().parent.parent
+        мест = 0
+        for файл in list(корень.glob("*.py")) + list((корень / "eval").glob("*.py")):
+            дерево = ast.parse(файл.read_text(encoding="utf-8"))
+            for узел in ast.walk(дерево):
+                if not isinstance(узел, ast.Call):
+                    continue
+                ф = узел.func
+                if not (isinstance(ф, ast.Attribute) and ф.attr == "load"
+                        and isinstance(ф.value, ast.Name) and ф.value.id == "VectorIndex"):
+                    continue
+                мест += 1
+                self.assertGreaterEqual(
+                    len(узел.args) + len(узел.keywords), 3,
+                    f"{файл.name}:{узел.lineno} грузит индекс без модели")
+        self.assertGreaterEqual(мест, 3, "мест загрузки стало меньше — проверка выродилась")
+
+    def test_модель_нельзя_не_передать(self):
+        # Умолчание `model: str = ""` пропускало любой индекс и дало выжить
+        # мутации «проводка снята». Аргумент обязателен.
+        with self.assertRaises(TypeError):
+            VectorIndex.load(Path(tempfile.mkdtemp()), "fixed")

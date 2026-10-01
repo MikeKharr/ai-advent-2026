@@ -41,6 +41,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import build
 import limits
 import rpc
 import tools
@@ -439,7 +440,6 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
 
 
 def _embedder():
-    import build
     from embed import OllamaEmbedder
 
     return OllamaEmbedder(build.OLLAMA_URL, build.MODEL)
@@ -462,7 +462,7 @@ def make_server(
     key: str = "",
     log=lambda _e: None,
 ) -> ThreadingHTTPServer:
-    indexes = indexes if indexes is not None else tools.Indexes(INDEX_DIR)
+    indexes = indexes if indexes is not None else tools.Indexes(INDEX_DIR, build.MODEL)
     limiter = limiter if limiter is not None else limits.Limiter()
     daily_cap = daily_cap if daily_cap is not None else limits.DailyCap(log=log)
     if handle_one is None:
@@ -519,7 +519,7 @@ def main() -> int:
         return 2
 
     status = Status()
-    indexes = tools.Indexes(INDEX_DIR)
+    indexes = tools.Indexes(INDEX_DIR, build.MODEL)
     # Загрузка ДО сборки: в томе может лежать целая пара с прошлой выкатки, и
     # тогда поиск работает с первой секунды, пока идёт часовая сборка.
     indexes.load()

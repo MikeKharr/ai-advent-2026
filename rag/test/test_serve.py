@@ -14,6 +14,7 @@ import numpy as np
 
 import limits
 import rpc
+import build
 import serve
 import tools
 from index import VectorIndex
@@ -35,7 +36,7 @@ def start_service(case, key: str = KEY, **over):
     case.addCleanup(tmp.cleanup)
     case.index_dir = Path(tmp.name)
     case.status = over.pop("status", None) or serve.Status()
-    case.indexes = over.pop("indexes", None) or tools.Indexes(case.index_dir)
+    case.indexes = over.pop("indexes", None) or tools.Indexes(case.index_dir, "модель:latest")
     case.limiter = over.pop("limiter", None) or limits.Limiter()
     case.daily_cap = over.pop("daily_cap", None) or limits.DailyCap(case.index_dir / "usage.json", limit=100)
     case.journal = []
@@ -135,7 +136,7 @@ class PublicReasonTest(unittest.TestCase):
         build.build_all = boom
         stderr, sys.stderr = sys.stderr, io.StringIO()
         try:
-            serve.run_build(self.status, tools.Indexes(self.index_dir))
+            serve.run_build(self.status, tools.Indexes(self.index_dir, "модель:latest"))
             self.journal = sys.stderr.getvalue()
         finally:
             sys.stderr = stderr
@@ -585,7 +586,7 @@ class EndToEndTest(unittest.TestCase):
             "chunk_id": "c1", "strategy": "structural", "sha256": "0" * 64, "commit": "a1b2c3d",
             "text": "проверка лимита предшествует вызову API",
         }]
-        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.index_dir)
+        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32"), "модель:latest").save(self.index_dir)
         self.indexes.load()
         self.embed_calls = []
 
@@ -677,7 +678,7 @@ class RunBuildReadyTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
         self.status = serve.Status()
-        self.indexes = tools.Indexes(self.dir)
+        self.indexes = tools.Indexes(self.dir, "модель:latest")
 
     def run_ok(self, stats=None, write_index=True):
         import build
@@ -689,7 +690,7 @@ class RunBuildReadyTest(unittest.TestCase):
                 "strategy": "structural", "sha256": "0" * 64, "commit": "abcdef1",
                 "text": "роли определены в .claude/agents",
             }]
-            VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.dir)
+            VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32"), "модель:latest").save(self.dir)
 
         done = stats if stats is not None else [{"strategy": "structural", "count": 1}]
         with (
@@ -1128,7 +1129,8 @@ class StartupIndexTest(unittest.TestCase):
             "strategy": "structural", "sha256": "0" * 64, "commit": commit,
             "text": "роли определены в .claude/agents",
         }]
-        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32")).save(self.dir)
+        VectorIndex.build("structural", rows, np.asarray([[1.0, 0.0]], dtype="float32"),
+                          build.MODEL).save(self.dir)
 
     def test_целая_пара_в_томе_загружена_до_первого_ответа(self):
         self.write_pair()
