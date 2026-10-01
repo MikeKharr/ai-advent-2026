@@ -1187,3 +1187,42 @@ class ПроводкаМоделиВПоиск(unittest.TestCase):
                 isinstance(модель, ast.Attribute) and модель.attr == "MODEL",
                 f"serve.py:{узел.lineno}: модель не из build.MODEL")
         self.assertGreaterEqual(мест, 2, "мест стало меньше — проверка выродилась")
+
+
+class ПроводкаМоделиВЭмбеддерЗапроса(unittest.TestCase):
+    """Шестая проводка: `RAG_MODEL` доезжает до эмбеддера ЗАПРОСА.
+
+    Находка compliance и reviewer к PR #286, названная дважды: все тесты
+    поиска подставляют эмбеддер параметром `embedder=`, то есть ровно в
+    обход `_embedder()`. Поведением это не проверить, не подняв живую
+    Ollama, поэтому проверяется то, что проверяемо: что умолчание берётся
+    из `build`, а не из литерала, и что `make_tools` без эмбеддера идёт
+    именно туда.
+    """
+
+    def test_эмбеддер_запроса_берёт_модель_из_build(self):
+        эмбеддер = serve._embedder()
+        self.assertEqual(эмбеддер.model, build.MODEL)
+        self.assertEqual(эмбеддер.base_url, build.OLLAMA_URL)
+
+    def test_без_параметра_make_tools_зовёт_умолчание(self):
+        # Без этого предыдущий тест проверял бы функцию, которую никто не зовёт,
+        # — ровно та форма, из-за которой этот PR переделывался трижды.
+        звали = []
+        прежний = serve._embedder
+        serve._embedder = lambda: звали.append(1) or прежний()
+        self.addCleanup(setattr, serve, "_embedder", прежний)
+        serve.make_tools(serve.Status(), tools.Indexes(Path("."), build.MODEL),
+                         limits.DailyCap(Path(tempfile.mkdtemp()) / "usage.json", 10))
+        self.assertEqual(звали, [1], "make_tools без эмбеддера не позвал умолчание")
+
+    def test_с_параметром_умолчание_не_зовётся(self):
+        # Контроль: иначе первый тест проходил бы и при вызове всегда.
+        звали = []
+        прежний = serve._embedder
+        serve._embedder = lambda: звали.append(1) or прежний()
+        self.addCleanup(setattr, serve, "_embedder", прежний)
+        serve.make_tools(serve.Status(), tools.Indexes(Path("."), build.MODEL),
+                         limits.DailyCap(Path(tempfile.mkdtemp()) / "usage.json", 10),
+                         embedder=object())
+        self.assertEqual(звали, [], "умолчание позвано вопреки переданному эмбеддеру")
