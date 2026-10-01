@@ -50,6 +50,42 @@ class EmbedTest(unittest.TestCase):
             with self.assertRaises(EmbedError):
                 OllamaEmbedder(fake.url, "m").embed(["а"])
 
+    def test_тело_отказа_попадает_в_текст_исключения(self):
+        """Иначе `400` от службы выглядит одинаково при любой причине.
+
+        На этом и сорвались два диагноза подряд по стратегии `structural`:
+        код печатал «HTTP 400» и выбрасывал тело, а причину приходилось
+        угадывать по косвенным признакам.
+        """
+        тело = {"error": "input length exceeds the context length"}
+        with FakeOllama({"/api/embed": (400, тело)}) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                OllamaEmbedder(fake.url, "m").embed(["а"])
+        текст = str(поймано.exception)
+        self.assertIn("HTTP 400", текст)
+        self.assertIn("input length exceeds the context length", текст,
+                      "тело ответа выброшено — причина отказа невосстановима")
+
+    def test_длинное_тело_обрезается(self):
+        with FakeOllama({"/api/embed": (400, {"error": "я" * 5000})}) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                OllamaEmbedder(fake.url, "m").embed(["а"])
+        self.assertLess(len(str(поймано.exception)), 600)
+
+    def test_тело_отказа_не_уходит_в_публичную_причину(self):
+        """Условие compliance: тело живёт в журнале, наружу — закрытый набор.
+
+        Проверка здесь, рядом с тем, что тело в текст исключения ПОПАДАЕТ:
+        два утверждения об одном и том же тексте должны стоять вместе,
+        иначе одно из них переживёт снятие другого.
+        """
+        import serve
+
+        err = EmbedError("/api/embed: HTTP 400 input length exceeds the context length")
+        причина = serve.reason(err)
+        self.assertEqual(причина, serve.NO_EMBEDDER)
+        self.assertNotIn("input length", причина)
+
     def test_ответ_не_json_это_отказ(self):
         with FakeOllama({"/api/embed": (200, b"not json")}) as fake:
             with self.assertRaises(EmbedError):
