@@ -161,11 +161,18 @@ class МодельОбязательнаВезде(unittest.TestCase):
                         and isinstance(ф.value, ast.Name) and ф.value.id == "VectorIndex"):
                     continue
                 мест += 1
-                аргументы = узел.args + [к.value for к in узел.keywords]
+                по_имени = {к.arg: к.value for к in узел.keywords}
                 self.assertGreaterEqual(
-                    len(аргументы), 3,
+                    len(узел.args) + len(по_имени), 3,
                     f"{файл.name}:{узел.lineno} грузит индекс без модели")
-                модель = аргументы[-1]
+                # Именно третий позиционный или `model=`, а не последний
+                # аргумент: при `load(d, model=m, strategy=s)` последним была
+                # бы стратегия (нит reviewer).
+                модель = по_имени.get("model") or (
+                    узел.args[2] if len(узел.args) > 2 else None)
+                self.assertIsNotNone(
+                    модель, f"{файл.name}:{узел.lineno}: модель не найдена ни третьим "
+                            "позиционным, ни по имени")
                 # «Аргумент передан» мало: `load(d, s, "")` это проходил бы,
                 # а пустая строка снова пропускает любой индекс.
                 self.assertFalse(

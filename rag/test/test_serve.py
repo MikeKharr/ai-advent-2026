@@ -500,7 +500,8 @@ class HealthzOpenTest(unittest.TestCase):
         body = json.loads(request(self.url, "/rag/healthz", method="GET", key=None)[2])
         self.assertEqual(body["state"], "starting")
         self.assertEqual(body["index"],
-                         {"commit": "unknown", "model": "", "strategies": [], "chunks": {}})
+                         {"commit": "unknown", "model": "", "strategies": [],
+                          "chunks": {}, "rejected": []})
 
     def test_остаток_суточного_потолка_в_открытую_ручку_не_идёт(self):
         # Он говорил бы прохожему, пользуется ли службой кто-то прямо сейчас.

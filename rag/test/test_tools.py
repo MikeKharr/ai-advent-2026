@@ -290,3 +290,39 @@ class StatusToolTest(ToolsCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ОтвергнутыйИндексВиденСнаружи(unittest.TestCase):
+    """«Пара в томе есть, но не подошла» не должно выглядеть как «тома нет».
+
+    После смены модели это ровно то состояние, в котором окажется служба, и
+    без отдельного поля владелец на /healthz увидит пустой индекс без причины.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        мета = [{"source": "x.md", "section": "s", "chunk_id": "c", "sha256": "0" * 64,
+                 "text": "t", "strategy": "fixed"}]
+        VectorIndex.build("fixed", мета, np.asarray([[1.0, 0.0]], dtype="float32"),
+                          "старая").save(self.dir)
+
+    def test_индекс_чужой_модели_попадает_в_rejected(self):
+        indexes = tools.Indexes(self.dir, "новая")
+        indexes.load()
+        self.assertEqual(indexes.state()["strategies"], [])
+        self.assertEqual(indexes.state()["rejected"], ["fixed"],
+                         "отвергнутая пара неотличима от отсутствующей")
+
+    def test_пустой_том_не_даёт_rejected(self):
+        # Контроль: иначе «rejected» выполнялось бы всегда и ничего не значило.
+        indexes = tools.Indexes(Path(self.tmp.name) / "нет-такого", "новая")
+        indexes.load()
+        self.assertEqual(indexes.state()["rejected"], [])
+
+    def test_своя_модель_не_попадает_в_rejected(self):
+        indexes = tools.Indexes(self.dir, "старая")
+        indexes.load()
+        self.assertEqual(indexes.state()["strategies"], ["fixed"])
+        self.assertEqual(indexes.state()["rejected"], [])
