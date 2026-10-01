@@ -10,7 +10,9 @@ import test from "node:test";
 
 const COMPOSE = "deploy/compose.yml";
 const строки = readFileSync(COMPOSE, "utf8").split("\n");
-const строка = строки.find((с) => с.includes("RAG_MODEL="));
+// Комментарий с подстрокой RAG_MODEL= перехватил бы проверку, поэтому
+// берём строку переменной окружения, а не любую упоминающую.
+const строка = строки.find((с) => /^\s*-\s*RAG_MODEL=/.test(с));
 
 test("RAG_MODEL задан", () => {
   assert.ok(строка, `в ${COMPOSE} нет строки RAG_MODEL=`);

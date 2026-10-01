@@ -499,7 +499,8 @@ class HealthzOpenTest(unittest.TestCase):
         # `state` — про СБОРКУ, `index` — про то, по чему идёт поиск сейчас.
         body = json.loads(request(self.url, "/rag/healthz", method="GET", key=None)[2])
         self.assertEqual(body["state"], "starting")
-        self.assertEqual(body["index"], {"commit": "unknown", "strategies": [], "chunks": {}})
+        self.assertEqual(body["index"],
+                         {"commit": "unknown", "model": "", "strategies": [], "chunks": {}})
 
     def test_остаток_суточного_потолка_в_открытую_ручку_не_идёт(self):
         # Он говорил бы прохожему, пользуется ли службой кто-то прямо сейчас.
@@ -1156,3 +1157,33 @@ class StartupIndexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ПроводкаМоделиВПоиск(unittest.TestCase):
+    """`serve` обязан строить Indexes с моделью из окружения, а не с чужой.
+
+    Тесты поиска подставляют индексы параметром, то есть ровно в обход этой
+    проводки — находка reviewer к PR #286.
+    """
+
+    def test_serve_строит_indexes_с_моделью_из_build(self):
+        import ast
+        import pathlib
+
+        исходник = (pathlib.Path(__file__).resolve().parent.parent / "serve.py")
+        дерево = ast.parse(исходник.read_text(encoding="utf-8"))
+        мест = 0
+        for узел in ast.walk(дерево):
+            if not isinstance(узел, ast.Call):
+                continue
+            ф = узел.func
+            if not (isinstance(ф, ast.Attribute) and ф.attr == "Indexes"):
+                continue
+            мест += 1
+            self.assertEqual(len(узел.args), 2,
+                             f"serve.py:{узел.lineno}: Indexes без модели")
+            модель = узел.args[1]
+            self.assertTrue(
+                isinstance(модель, ast.Attribute) and модель.attr == "MODEL",
+                f"serve.py:{узел.lineno}: модель не из build.MODEL")
+        self.assertGreaterEqual(мест, 2, "мест стало меньше — проверка выродилась")

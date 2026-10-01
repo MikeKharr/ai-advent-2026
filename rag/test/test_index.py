@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -76,7 +77,12 @@ class StoreTest(unittest.TestCase):
     def test_разъехавшаяся_пара_читается_как_отсутствие_индекса(self):
         built().save(self.dir)
         _, meta_path = VectorIndex.paths(self.dir, "fixed")
-        meta_path.write_text(json.dumps({"strategy": "fixed", "chunks": META[:1]}), encoding="utf-8")
+        # Поле `model` обязательно: сверка модели стоит ВЫШЕ сверки длин, и без
+        # него тест уходил бы по модельному гейту, не доходя до своей ветви.
+        # Находка compliance к PR #286: держатель был жив на main и умер здесь.
+        meta_path.write_text(
+            json.dumps({"strategy": "fixed", "model": "модель:latest", "chunks": META[:1]}),
+            encoding="utf-8")
         self.assertIsNone(VectorIndex.load(self.dir, "fixed", "модель:latest"))
 
     def test_стратегии_лежат_раздельно(self):
@@ -113,14 +119,22 @@ class ИндексПомнитМодель(unittest.TestCase):
         self.assertIsNone(VectorIndex.load(self.каталог, "fixed", "модель-2"))
 
     def test_индекс_без_имени_модели_считается_чужим(self):
-        # Индексы, собранные до этой правки, имени не несут — переиспользовать
-        # их нельзя: какой моделью они собраны, установить нечем.
-        VectorIndex.build("fixed", self.мета, self.векторы, "модель:latest").save(self.каталог)
+        """Это состояние тома в проде на момент выкатки, а не край.
+
+        Индекс там собран до появления поля `model`, имени не несёт, и какой
+        моделью собран — установить нечем. Прежняя редакция теста строила
+        индекс С моделью и была дублем соседнего: находка reviewer.
+        """
+        VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
+        _, meta_path = VectorIndex.paths(self.каталог, "fixed")
+        сырое = json.loads(meta_path.read_text(encoding="utf-8"))
+        сырое.pop("model")
+        meta_path.write_text(json.dumps(сырое, ensure_ascii=False), encoding="utf-8")
         self.assertIsNone(VectorIndex.load(self.каталог, "fixed", "модель-1"))
 
     def test_загруженный_индекс_помнит_свою_модель(self):
-        # Иначе project.status не покажет, какой моделью собран служащий индекс,
-        # и смесь пространств осталась бы ненаблюдаемой.
+        # Модель служащего индекса видна снаружи через project.status —
+        # см. test_tools, состояние несёт поле `model`.
         VectorIndex.build("fixed", self.мета, self.векторы, "модель-1").save(self.каталог)
         self.assertEqual(VectorIndex.load(self.каталог, "fixed", "модель-1").model,
                          "модель-1")
@@ -147,13 +161,22 @@ class МодельОбязательнаВезде(unittest.TestCase):
                         and isinstance(ф.value, ast.Name) and ф.value.id == "VectorIndex"):
                     continue
                 мест += 1
+                аргументы = узел.args + [к.value for к in узел.keywords]
                 self.assertGreaterEqual(
-                    len(узел.args) + len(узел.keywords), 3,
+                    len(аргументы), 3,
                     f"{файл.name}:{узел.lineno} грузит индекс без модели")
+                модель = аргументы[-1]
+                # «Аргумент передан» мало: `load(d, s, "")` это проходил бы,
+                # а пустая строка снова пропускает любой индекс.
+                self.assertFalse(
+                    isinstance(модель, ast.Constant) and not модель.value,
+                    f"{файл.name}:{узел.lineno} передаёт пустую модель")
         self.assertGreaterEqual(мест, 3, "мест загрузки стало меньше — проверка выродилась")
 
     def test_модель_нельзя_не_передать(self):
         # Умолчание `model: str = ""` пропускало любой индекс и дало выжить
         # мутации «проводка снята». Аргумент обязателен.
+        каталог = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, каталог, True)
         with self.assertRaises(TypeError):
-            VectorIndex.load(Path(tempfile.mkdtemp()), "fixed")
+            VectorIndex.load(каталог, "fixed")

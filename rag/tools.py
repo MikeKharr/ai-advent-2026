@@ -108,8 +108,16 @@ class Indexes:
         return "unknown"
 
     def state(self) -> dict:
+        # Модель служащего индекса наружу: без неё смесь пространств была бы
+        # ненаблюдаемой, а поле `.model` — обоснованным возможностью, которой
+        # нет (находка reviewer к PR #286).
+        модели = sorted({idx.model for idx in self._loaded.values()})
         return {
             "commit": self.commit(),
+            # Пусто, когда индекса нет; строка — когда он один; список — если
+            # стратегии вдруг собраны разными моделями (этого быть не должно,
+            # и тогда это видно снаружи, а не только в журнале).
+            "model": "" if not модели else (модели[0] if len(модели) == 1 else модели),
             "strategies": sorted(self._loaded),
             "chunks": {name: idx.index.ntotal for name, idx in sorted(self._loaded.items())},
         }
