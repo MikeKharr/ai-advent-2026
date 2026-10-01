@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sys
+import shutil
 import tempfile
 import threading
 import unittest
@@ -1213,8 +1214,10 @@ class ПроводкаМоделиВЭмбеддерЗапроса(unittest.Test
         прежний = serve._embedder
         serve._embedder = lambda: звали.append(1) or прежний()
         self.addCleanup(setattr, serve, "_embedder", прежний)
+        каталог = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, каталог, True)
         serve.make_tools(serve.Status(), tools.Indexes(Path("."), build.MODEL),
-                         limits.DailyCap(Path(tempfile.mkdtemp()) / "usage.json", 10))
+                         limits.DailyCap(каталог / "usage.json", 10))
         self.assertEqual(звали, [1], "make_tools без эмбеддера не позвал умолчание")
 
     def test_с_параметром_умолчание_не_зовётся(self):
@@ -1223,7 +1226,9 @@ class ПроводкаМоделиВЭмбеддерЗапроса(unittest.Test
         прежний = serve._embedder
         serve._embedder = lambda: звали.append(1) or прежний()
         self.addCleanup(setattr, serve, "_embedder", прежний)
+        каталог = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, каталог, True)
         serve.make_tools(serve.Status(), tools.Indexes(Path("."), build.MODEL),
-                         limits.DailyCap(Path(tempfile.mkdtemp()) / "usage.json", 10),
+                         limits.DailyCap(каталог / "usage.json", 10),
                          embedder=object())
         self.assertEqual(звали, [], "умолчание позвано вопреки переданному эмбеддеру")

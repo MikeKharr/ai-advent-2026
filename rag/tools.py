@@ -84,23 +84,30 @@ class Indexes:
     def __init__(self, index_dir, model: str) -> None:
         self.index_dir = index_dir
         self.model = model
+        # Заводится здесь, как и `_loaded`: иначе `/rag/healthz` до первого
+        # `load()` отдавал бы `rejected: []` по заглушке `getattr`, а не по
+        # инварианту (нит reviewer).
+        self._rejected: list[str] = []
         self._loaded: dict[str, VectorIndex] = {}
 
     def load(self) -> list[str]:
         """Перечитать том. Возвращает имена загруженных стратегий."""
         loaded = {}
-        отвергнуто = []
+        rejected = []
         for strategy in chunking.STRATEGIES:
             index = VectorIndex.load(self.index_dir, strategy, self.model)
-            if index is None and VectorIndex.paths(self.index_dir, strategy)[0].is_file():
+            # Любой из двух файлов пары: от разъехавшейся могла остаться только
+            # половина, и она тоже «есть, но не подошла» (нит reviewer).
+            if index is None and any(p.is_file()
+                                     for p in VectorIndex.paths(self.index_dir, strategy)):
                 # Пара в томе ЕСТЬ, но не подошла — чужая модель либо разъехавшиеся
                 # длины. Без этого «отвергнут» неотличим от «тома нет», а именно
                 # это состояние службы сразу после смены модели.
-                отвергнуто.append(strategy)
+                rejected.append(strategy)
             if index is not None and index.index.ntotal > 0:
                 loaded[strategy] = index
         self._loaded = loaded
-        self._отвергнуто = sorted(отвергнуто)
+        self._rejected = sorted(rejected)
         return list(loaded)
 
     def get(self, strategy: str) -> VectorIndex | None:
@@ -132,7 +139,7 @@ class Indexes:
             # Стратегии, чья пара в томе ЕСТЬ, но не подошла. Без этого поля
             # «индекс отвергнут» неотличимо от «тома нет» — а после смены
             # модели это ровно то, что увидит владелец на /healthz.
-            "rejected": list(getattr(self, "_отвергнуто", [])),
+            "rejected": list(self._rejected),
             "strategies": sorted(self._loaded),
             "chunks": {name: idx.index.ntotal for name, idx in sorted(self._loaded.items())},
         }
