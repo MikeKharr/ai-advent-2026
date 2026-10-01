@@ -79,7 +79,6 @@ class EmbedTest(unittest.TestCase):
                 OllamaEmbedder(fake.url, "m").embed(["а"])
         self.assertLess(len(str(поймано.exception)), 600)
 
-
     def test_ответ_не_json_это_отказ(self):
         with FakeOllama({"/api/embed": (200, b"not json")}) as fake:
             with self.assertRaises(EmbedError):
