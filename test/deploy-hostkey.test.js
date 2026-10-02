@@ -15,7 +15,7 @@ import { test } from 'node:test'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const WORKFLOW = readFileSync(join(ROOT, '.github/workflows/deploy.yml'), 'utf8')
-const PIN = readFileSync(join(ROOT, 'deploy/known_hosts'), 'utf8')
+const PIN = readFileSync(join(ROOT, 'deploy/host-key.pub'), 'utf8')
 const ADR = readFileSync(join(ROOT, 'agent_docs/adr/2026-10-02-0921-ssh-host-key-pin.md'), 'utf8')
 
 /** Строки шага без комментариев: иначе запрет на `ssh-keyscan` снимался бы
@@ -31,17 +31,36 @@ test('выкатка не выспрашивает ключ хоста у сер
   )
 })
 
-test('ключ хоста берётся из закреплённого файла', () => {
+test('known_hosts собирается из закреплённого ключа и имени из секрета', () => {
+  // Закрепляется КЛЮЧ, а не имя. Первая редакция клала в репозиторий готовую
+  // строку known_hosts с именем `challenge.zpq.ai` — и выкатка упала на живом
+  // прогоне: секрет SSH_HOST этому имени не равен. Имя секретно, в репозитории
+  // его быть не должно, поэтому строка собирается в самом шаге.
+  //
+  // Пишется `$name`, а не `$SSH_HOST`: при порте не 22 ssh ищет запись в форме
+  // `[host]:port`, и запись в простой форме не нашлась бы. Прежняя редакция
+  // писала одно, а искала другое — то же допущение про секрет, что уронило
+  // прод, только про SSH_PORT (находка compliance).
   assert.match(
     CODE,
-    /install -m 600 "\$GITHUB_WORKSPACE\/deploy\/known_hosts" ~\/\.ssh\/known_hosts/,
-    'шаг не кладёт закреплённый файл на место known_hosts',
+    /printf '%s %s\\n' "\$name" "\$\(cat "\$key_file"\)" > ~\/\.ssh\/known_hosts/,
+    'шаг не собирает known_hosts из имени сервера и закреплённого ключа',
   )
   assert.match(
     CODE,
     /ssh-keygen -F "\$name" -f ~\/\.ssh\/known_hosts/,
-    'нет проверки, что запись для сервера в файле есть — промах пина выглядел бы сбоем сети',
+    'нет проверки, что строка собралась — промах подстановки выглядел бы сбоем связи',
   )
+})
+
+test('пропавший закреплённый ключ назван причиной, а не свалён на сервер', () => {
+  // `cat` внутри подстановки не роняет шаг под `bash -e`. Без явной проверки
+  // пропажа файла доезжала бы до `ssh-keygen -F` и печаталась как «строка не
+  // собралась для этого сервера» — указание на секрет при причине в файле.
+  // Это регресс против прежней редакции, где падал сам `install` и печатал
+  // путь (находка reviewer).
+  assert.match(CODE, /if \[ ! -s "\$key_file" \]; then/, 'нет явной проверки, что закреплённый ключ на месте')
+  assert.match(CODE, /::error::нет \$key_file/, 'в сообщении об отказе не назван пропавший файл')
 })
 
 test('сверка ключа у ssh включена явно', () => {
@@ -59,9 +78,8 @@ test('сверка ключа у ssh включена явно', () => {
 test('у job, читающего закреплённый файл, репозиторий есть на диске', () => {
   // Держатель на находке, которая едва не положила прод: в job `deploy`
   // не было ни одного `actions/checkout` — `ssh-keyscan` файлов репозитория
-  // не требовал. Шаг читает $GITHUB_WORKSPACE/deploy/known_hosts, и без
-  // checkout выкатка умирает на `install` с `No such file or directory`,
-  // не дойдя ни до проверки пина, ни до названного ::error::.
+  // не требовал. Шаг читает $GITHUB_WORKSPACE/deploy/host-key.pub, и без
+  // checkout файла на диске нет — падает проверка `-s` с названным путём.
   //
   // Проверка смотрит на ПОРЯДОК внутри того же job, а не на наличие слова
   // `checkout` в файле: в соседних job он есть, и проверка «есть в файле»
@@ -79,26 +97,22 @@ test('у job, читающего закреплённый файл, репози
   const job = nextJob === -1 ? rest : rest.slice(0, nextJob)
 
   const checkout = job.indexOf('uses: actions/checkout')
-  const reads = job.indexOf('$GITHUB_WORKSPACE/deploy/known_hosts')
+  const reads = job.indexOf('$GITHUB_WORKSPACE/deploy/host-key.pub')
   assert.ok(reads !== -1, 'job deploy больше не читает закреплённый файл — проверка устарела')
   assert.ok(checkout !== -1, 'в job deploy нет actions/checkout — выкатка упадёт на install')
   assert.ok(checkout < reads, 'checkout стоит ПОСЛЕ чтения закреплённого файла')
 })
 
-test('закреплённый файл непуст и это запись ключа', () => {
+test('закреплённый файл — ровно один открытый ключ, без имени перед ним', () => {
+  // Якорь `^` здесь несёт ТРЕБОВАНИЕ, а не косметику: любое имя хоста перед
+  // типом ключа привязало бы пин к серверу, который выкаткой не используется
+  // (секрет SSH_HOST не равен имени, которым владелец ходит руками) — и
+  // уронило бы прогон. Отдельной проверки «в файле нет имени» здесь больше
+  // нет: `compliance` замерил, что она строго слабее этой — на чужом имени
+  // она молчала, а эта краснела, — то есть держала не она.
   const lines = PIN.split('\n').filter((l) => l.trim() && !l.startsWith('#'))
-  assert.equal(lines.length, 1, 'в deploy/known_hosts ожидается ровно одна запись')
-  assert.match(lines[0], /^\|1\|[^ ]+ ssh-ed25519 [A-Za-z0-9+/=]+$/, 'запись не похожа на хешированный ключ')
-})
-
-test('закреплённый файл не добавляет ещё одной копии имени хоста', () => {
-  // Это ГИГИЕНА, а не защита, и путать их нельзя. Имя `challenge.zpq.ai` и так
-  // напечатано открытым текстом в README.md, .mcp.json, deploy.yml,
-  // .claude/settings.json и десятке ADR этого публичного репозитория, а соль
-  // хеша лежит в самом файле — проверка догадки стоит один HMAC-SHA1.
-  // Первая редакция этого теста называлась «имя хоста не раскрыто» и продавала
-  // несуществующий контроль (находка compliance к #289).
-  assert.ok(!/zpq|challenge|\.ai\b/.test(PIN), 'в deploy/known_hosts появилась копия имени хоста')
+  assert.equal(lines.length, 1, 'в deploy/host-key.pub ожидается ровно одна строка')
+  assert.match(lines[0], /^ssh-ed25519 [A-Za-z0-9+/=]+$/, 'перед ключом есть лишнее поле — возможно, имя хоста')
 })
 
 test('закреплён именно тот ключ, отпечаток которого назван в ADR', () => {
@@ -110,8 +124,8 @@ test('закреплён именно тот ключ, отпечаток кот
   const line = PIN.split('\n').find((l) => l.trim() && !l.startsWith('#'))
   // Явная проверка до разбора: на пустом файле `find` даёт undefined, и тест
   // падал бы TypeError вместо внятного утверждения (нит compliance).
-  assert.ok(line, 'deploy/known_hosts пуст — закреплять нечего')
-  const blob = line.split(' ')[2]
+  assert.ok(line, 'deploy/host-key.pub пуст — закреплять нечего')
+  const blob = line.split(' ')[1]
   const got = createHash('sha256').update(Buffer.from(blob, 'base64')).digest('base64').replace(/=+$/, '')
   const want = ADR.match(/SHA256:([A-Za-z0-9+/]+)/)
   assert.ok(want, 'в ADR нет отпечатка, который владелец должен сверить')
