@@ -80,6 +80,39 @@ function deltas(data) {
   });
 }
 
+/* Счёт по отдельным вопросам: у кого верный документ выше. Считается из
+   queries[].<стратегия>.rank — тех же рангов, из которых мера берёт MRR@10.
+   null — нет в первой десятке. Вопросы без разбора по одной из стратегий не
+   считаются вовсе. */
+function headToHead(data) {
+  if (!Array.isArray(data.queries)) return null;
+  let s = 0, f = 0, tie = 0, none = 0, n = 0;
+  data.queries.forEach((q) => {
+    if (!q.fixed || !q.structural) return;
+    const a = q.fixed.rank, b = q.structural.rank;
+    n += 1;
+    if (a == null && b == null) { none += 1; tie += 1; return; }
+    if (b != null && (a == null || b < a)) s += 1;
+    else if (a != null && (b == null || a < b)) f += 1;
+    else tie += 1;
+  });
+  return n ? { structural: s, fixed: f, tie: tie, none: none, n: n } : null;
+}
+
+/* Двусторонний знаковый тест: вероятность получить случайно такой или более
+   сильный перекос при равных стратегиях. Ничьи не участвуют. */
+function signTestP(a, b) {
+  const n = a + b;
+  if (n === 0) return 1;
+  const k = Math.max(a, b);
+  let tail = 0, c = 1;            // c = C(n, i), считаем от i = 0
+  for (let i = 0; i <= n; i += 1) {
+    if (i >= k) tail += c;
+    c = c * (n - i) / (i + 1);
+  }
+  return Math.min(1, 2 * tail / Math.pow(2, n));
+}
+
 function verdictText(data, ds) {
   const beyond = ds.filter((x) => x.beyond);
   const total = typeof data.fixed.queries === 'number' ? data.fixed.queries : data.structural.queries;
@@ -93,9 +126,26 @@ function verdictText(data, ds) {
     : fmt(Math.abs(x.d));
   const sameWay = beyond.every((x) => (x.d > 0) === (beyond[0].d > 0));
   if (sameWay) {
-    const winner = data[beyond[0].d > 0 ? 'structural' : 'fixed'].label;
+    // «Направление», а не «лучше»: превышение порога шума говорит, что разница
+    // не нулевая, но не что она доказана. Доказанность отвечает знаковый тест
+    // по отдельным вопросам (находка design-review: страница писала «Лучше» при
+    // p ≈ 0,31, а презентация того же прогона — «не доказан»).
+    const winSide = beyond[0].d > 0 ? 'structural' : 'fixed';
+    const loseSide = winSide === 'structural' ? 'fixed' : 'structural';
+    const winner = data[winSide].label;
     const parts = beyond.map((x, i) => x.m.name + (i === 0 ? ' выше на ' : ' — на ') + amount(x));
-    return 'Лучше ' + quote(winner) + ': ' + parts.join(', ') + '.';
+    let text = 'Направление за ' + quote(winner) + ': ' + parts.join(', ') + '.';
+    const h = headToHead(data);
+    if (!h) return text + ' По отдельным вопросам этот прогон не разбирался.';
+    const w = h[winSide], l = h[loseSide], diverged = w + l;
+    const p = signTestP(w, l);
+    const score = 'по отдельным вопросам ' + quote(winner) + ' впереди в ' + w + ' из ' + diverged +
+      ' разошедшихся, ' + quote(data[loseSide].label) + ' — в ' + l + ', ничьих ' + h.tie;
+    text += p < 0.05
+      ? ' Перевес доказан: ' + score + ' (знаковый тест, p = ' + p.toFixed(2) + ').'
+      : ' Перевес не доказан: ' + score + '. Случайно такой или более сильный расклад ' +
+        'получается с вероятностью ' + p.toFixed(2) + ' (знаковый тест).';
+    return text;
   }
   const parts = beyond.map((x, i) => x.m.name + (i === 0 ? ' выше у ' : ' — у ') +
     quote(data[x.d > 0 ? 'structural' : 'fixed'].label) + ' на ' + amount(x));
@@ -124,7 +174,13 @@ function renderSummary(data) {
       cell.appendChild(el('span', 'diff-word', x.beyond ? 'больше шума' : 'шум'));
     });
     v.className = 'verdict js-only';
-    v.textContent = verdictText(data, ds);
+    // Сколько вопросов не нашла ни одна стратегия — часть ответа «насколько
+    // уверенно», а не подробность для фильтра (находка design-review).
+    const h = headToHead(data);
+    v.textContent = verdictText(data, ds) + (h && h.none
+      ? ' У ' + h.none + ' ' + plural(h.none, 'вопроса', 'вопросов', 'вопросов') + ' из ' + h.n +
+        ' ни одна стратегия не нашла эталон в первой десятке.'
+      : '');
     $('sum-partial').hidden = true;
   } else {
     METRICS.forEach((m) => { $('m-' + m.row + '-diff').textContent = NO_DETAIL; });
@@ -240,6 +296,9 @@ function queryRow(q, data) {
     col.appendChild(el('p', 'q-col-head', label + ' · ранг ' + rankText(side)));
     const first = Array.isArray(side.top) ? side.top[0] : null;
     if (first) {
+      // Ярлык обязателен: без него путь под «ранг нет» читался как эталон
+      // (находка design-review, q02).
+      col.appendChild(el('span', 'lbl', 'Первым нашлось'));
       col.appendChild(el('p', 'q-path', first.source || ''));
       if (first.section) col.appendChild(el('p', 'q-sect', first.section));
       if (first.excerpt) col.appendChild(el('p', 'q-exc', '«' + first.excerpt + '»'));

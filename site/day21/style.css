@@ -110,7 +110,10 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
   .metrics th[scope="col"]:first-child, .metrics th[scope="row"] { width:30%; }
   /* Подпись колонки приходит из данных: одно длинное слово шире колонки
      обязано переноситься, а не выталкивать таблицу. */
-  .metrics th { overflow-wrap:anywhere; }
+  /* Перенос по словам и по слогам, а не посреди слова: на 320 px подпись
+     «По структуре» рвалась «По структу / ре» (находка design-review).
+     anywhere — только страховка для аномально длинной подписи из данных. */
+  .metrics th { overflow-wrap:break-word; hyphens:auto; }
   .metrics th, .metrics td { padding-left:var(--s-1); }
 }
 #metrics-note { margin-top:var(--s-3); }
@@ -190,6 +193,9 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
 }
 .q-sum::-webkit-details-marker { display:none; }
 .q-sum:hover { background:var(--bg); }
+/* Раскрытая строка помечена тем же шагом фона, что наведение: в списке из ста
+   строк шапка раскрытой иначе не связана со своим телом (design-review). */
+.qs details[open] .q-sum { background:var(--bg); }
 .q-sum:focus-visible { outline-offset:-2px; }
 .q-id {
   grid-area:id; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
