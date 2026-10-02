@@ -438,7 +438,7 @@ class ОтказБатчаВсегдаРоняетСборку(unittest.TestCase
     def build(self, fake):
         embedder = OllamaEmbedder(fake.url, "m")
         chunks = build.read_chunks(self.root, "fixed")
-        return build.build_strategy("fixed", chunks, embedder, self.index), embedder
+        return build.build_strategy("fixed", chunks, embedder, self.index)
 
     def test_батч_отказан_по_одному_прошли_все_сборка_всё_равно_падает(self):
         def embed(request):
@@ -456,8 +456,8 @@ class ОтказБатчаВсегдаРоняетСборку(unittest.TestCase
         self.assertFalse(any(self.index.glob("*.faiss")),
                          "индекс сохранён — значит сборка прошла, а не упала")
 
-    def test_без_ответа_службы_переспроса_нет(self):
-        # 503 — служба не отказала по содержимому, а не смогла ответить. Переспрос
+    def test_на_отказе_не_по_содержимому_переспроса_нет(self):
+        # 503 — служба ответила, но не отказом по содержимому входа. Переспрос
         # по одному здесь «назвал» бы первый же невиновный чанк (находка reviewer).
         with FakeOllama({**ROUTES, "/api/embed": (503, {"error": "busy"})}) as fake:
             with self.assertRaises(EmbedError) as поймано:
@@ -465,3 +465,62 @@ class ОтказБатчаВсегдаРоняетСборку(unittest.TestCase
             вызовов = sum(1 for path, _ in fake.requests if path == "/api/embed")
         self.assertEqual(вызовов, 1, "на отказе без ответа по содержимому был переспрос")
         self.assertNotIn("чанк ", str(поймано.exception), "отказ приписан невиновному чанку")
+
+
+class СрокВнутриПереспроса(unittest.TestCase):
+    """Переспрос не вправе уйти за срок прохода: до 16 вызовов по `timeout`.
+
+    `deadline.check` перед каждым одиночным вызовом — новая защита расхода
+    ядра, и без держателя её снятие оставляло зелёным весь набор (находка
+    compliance к #293; тест — его, перенесён и проверен в обе стороны).
+    """
+
+    def test_срок_вышел_на_отказе_батча_переспроса_нет(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "corpus"
+        index = Path(tmp.name) / "index"
+        corpus_tree(root)
+        for i in range(5):
+            (root / "agent_docs" / f"d{i}.md").write_text(
+                f"# Д{i}\n\nтекст {i}\n", encoding="utf-8"
+            )
+        clock = [0.0]
+
+        def embed(request):
+            clock[0] += 20.0  # вызов съел больше, чем оставалось от срока
+            if len(request.get("input", [])) > 1:
+                return 400, {"error": "do embedding request: EOF"}
+            return 200, FakeOllama.deterministic(request)
+
+        with FakeOllama({**ROUTES, "/api/embed": (200, embed)}) as fake:
+            embedder = OllamaEmbedder(fake.url, "m")
+            chunks = build.read_chunks(root, "fixed")
+            deadline = build.Deadline(10.0, now=lambda: clock[0])
+            with self.assertRaises(build.BuildTimeout):
+                build.build_strategy("fixed", chunks, embedder, index, deadline=deadline)
+            вызовов = sum(1 for p, _ in fake.requests if p == "/api/embed")
+        self.assertEqual(вызовов, 1, "переспрос пошёл за срок прохода")
+
+
+class ОдиночныйВиновникНеПереспрашивается(unittest.TestCase):
+    """Батч из одного входа и есть виновник — повторный вызов удвоил бы цену."""
+
+    def test_батч_из_одного_отказан_один_вызов(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "corpus"
+        index = Path(tmp.name) / "index"
+        corpus_tree(root)
+
+        def embed(request):
+            return 400, {"error": "the input length exceeds the context length"}
+
+        with FakeOllama({**ROUTES, "/api/embed": (200, embed)}) as fake:
+            embedder = OllamaEmbedder(fake.url, "m")
+            chunks = build.read_chunks(root, "fixed")[:1]
+            with self.assertRaises(EmbedError) as поймано:
+                build.build_strategy("fixed", chunks, embedder, index, batch=1)
+            вызовов = sum(1 for p, _ in fake.requests if p == "/api/embed")
+        self.assertEqual(вызовов, 1, "одиночный виновник эмбеддился дважды")
+        self.assertIn("чанк ", str(поймано.exception), "одиночный виновник не назван")

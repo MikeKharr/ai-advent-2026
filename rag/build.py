@@ -145,8 +145,13 @@ def embed_part(embedder, part, call_timeout, deadline, strategy: str) -> list:
     зелёным (находка compliance и reviewer к #293). Так цена переспроса — до
     шестнадцати вызовов — платится только когда сборка всё равно падает.
 
-    Переспроса нет, если служба не ответила вовсе (`status is None`: нет
-    связи, срок): тогда первый же одиночный вызов «назвал» бы невиновный чанк.
+    Переспрос — ТОЛЬКО на `400`, то есть когда служба ответила и отказала по
+    содержимому. На любом другом исходе — нет связи и срок (`status is None`),
+    `503` и прочие коды — его нет: служба не сказала, что виноват вход, и
+    первый же одиночный вызов «назвал» бы невиновный чанк.
+
+    Батч из одного входа не переспрашивается вовсе — он и есть виновник, и
+    повторный вызов только удвоил бы цену (находка reviewer к #293).
 
     Публичная причина от этого не меняется — она из закрытого набора
     (`serve.reason`); подробность уходит только в журнал.
@@ -156,6 +161,12 @@ def embed_part(embedder, part, call_timeout, deadline, strategy: str) -> list:
     except EmbedError as err:
         if err.status != 400:
             raise
+        if len(part) == 1:
+            c = part[0]
+            raise EmbedError(
+                f"чанк {c.source} § {c.section!r}, {len(c.embed_text)} знаков: {err}",
+                status=err.status,
+            ) from err
         for c in part:
             left = deadline.check(f"стратегия {strategy}, переспрос чанка {c.source}")
             one_timeout = None if left is None else min(embedder.timeout, left)

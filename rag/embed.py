@@ -16,9 +16,9 @@ class EmbedError(RuntimeError):
     """Эмбеддер не ответил или ответил не тем. Пустой список — не ответ.
 
     `status` — код HTTP, если служба ответила отказом, и `None`, если ответа
-    не было вовсе (нет связи, срок, не-JSON). Разница несущая: переспрос по
-    одному входу имеет смысл только когда служба ответила и отказала, — при
-    обрыве связи он «назвал» бы первый же невиновный чанк.
+    не было вовсе (нет связи, срок, не-JSON). Несущий: сборка переспрашивает
+    батч по одному входу только на `400` — отказе по содержимому. На любом
+    другом коде и на `None` переспрос «назвал» бы невиновный чанк.
     """
 
     def __init__(self, message: str, status: int | None = None) -> None:
@@ -85,7 +85,7 @@ class OllamaEmbedder:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as err:
-            raise EmbedError(f"/api/tags: HTTP {err.code}") from err
+            raise EmbedError(f"/api/tags: HTTP {err.code}", status=err.code) from err
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError) as err:
             raise EmbedError(f"/api/tags: нет связи с {self.base_url} ({err})") from err
         return [m.get("name", "") for m in body.get("models", [])]
