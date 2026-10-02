@@ -66,9 +66,15 @@ test('у job, читающего закреплённый файл, репози
   // Проверка смотрит на ПОРЯДОК внутри того же job, а не на наличие слова
   // `checkout` в файле: в соседних job он есть, и проверка «есть в файле»
   // была бы зелёной при пустом `deploy`.
-  const start = WORKFLOW.indexOf('\n  deploy:')
+  // Срез берётся из CODE, а не из сырого WORKFLOW: иначе закомментированный
+  // `- uses: actions/checkout@v4` оставлял прогон зелёным при job без шага —
+  // проверка ловила удаление строки и не ловила её комментирование. Файл сам
+  // завёл CODE против этой дыры двадцатью строками выше, а здесь я его не
+  // применил (находка reviewer, I-14: мутация «убрать строку» не должна
+  // оставлять прогон зелёным ни в какой форме).
+  const start = CODE.indexOf('\n  deploy:')
   assert.ok(start > 0, 'в deploy.yml не найден job deploy')
-  const rest = WORKFLOW.slice(start + 1)
+  const rest = CODE.slice(start + 1)
   const nextJob = rest.search(/\n {2}[a-z][a-z0-9_-]*:\n/)
   const job = nextJob === -1 ? rest : rest.slice(0, nextJob)
 

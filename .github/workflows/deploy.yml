@@ -135,6 +135,7 @@ jobs:
         with:
           sparse-checkout: deploy
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       # Секреты — через env шага, а не подстановкой в текст run: так их нет
       # в файле скрипта шага и в команде, которую видит shell.
