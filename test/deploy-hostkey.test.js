@@ -44,11 +44,38 @@ test('ключ хоста берётся из закреплённого фай�
 })
 
 test('сверка ключа у ssh включена явно', () => {
+  // Ищем ВНУТРИ вызова ssh, а не по всему файлу: иначе упоминание опции в
+  // комментарии где угодно сходило бы за включённую сверку (нит reviewer).
+  const call = CODE.slice(CODE.indexOf('ssh -p "$SSH_PORT"'))
+  assert.ok(call, 'в deploy.yml не найден вызов ssh')
   assert.match(
-    CODE,
+    call.slice(0, 400),
     /-o StrictHostKeyChecking=yes/,
     'без явной сверки защита держалась бы на отсутствии терминала, а не на решении',
   )
+})
+
+test('у job, читающего закреплённый файл, репозиторий есть на диске', () => {
+  // Держатель на находке, которая едва не положила прод: в job `deploy`
+  // не было ни одного `actions/checkout` — `ssh-keyscan` файлов репозитория
+  // не требовал. Шаг читает $GITHUB_WORKSPACE/deploy/known_hosts, и без
+  // checkout выкатка умирает на `install` с `No such file or directory`,
+  // не дойдя ни до проверки пина, ни до названного ::error::.
+  //
+  // Проверка смотрит на ПОРЯДОК внутри того же job, а не на наличие слова
+  // `checkout` в файле: в соседних job он есть, и проверка «есть в файле»
+  // была бы зелёной при пустом `deploy`.
+  const start = WORKFLOW.indexOf('\n  deploy:')
+  assert.ok(start > 0, 'в deploy.yml не найден job deploy')
+  const rest = WORKFLOW.slice(start + 1)
+  const nextJob = rest.search(/\n {2}[a-z][a-z0-9_-]*:\n/)
+  const job = nextJob === -1 ? rest : rest.slice(0, nextJob)
+
+  const checkout = job.indexOf('uses: actions/checkout')
+  const reads = job.indexOf('$GITHUB_WORKSPACE/deploy/known_hosts')
+  assert.ok(reads !== -1, 'job deploy больше не читает закреплённый файл — проверка устарела')
+  assert.ok(checkout !== -1, 'в job deploy нет actions/checkout — выкатка упадёт на install')
+  assert.ok(checkout < reads, 'checkout стоит ПОСЛЕ чтения закреплённого файла')
 })
 
 test('закреплённый файл непуст и это запись ключа', () => {

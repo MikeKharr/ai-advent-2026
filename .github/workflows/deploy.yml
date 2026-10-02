@@ -125,6 +125,17 @@ jobs:
     timeout-minutes: 10
     environment: production
     steps:
+      # Репозиторий нужен этому job ради ОДНОГО файла — закреплённого ключа
+      # хоста (ADR 2026-10-02-0921). Раньше checkout здесь не было вовсе:
+      # `ssh-keyscan` файлов репозитория не требовал. Без этого шага выкатка
+      # умирает на `install` с `No such file or directory` — то есть ровно той
+      # невнятной ошибкой, которую пин и затевался убрать (находка reviewer).
+      # sparse-checkout: тянем каталог deploy, а не всё дерево.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy
+          sparse-checkout-cone-mode: false
+
       # Секреты — через env шага, а не подстановкой в текст run: так их нет
       # в файле скрипта шага и в команде, которую видит shell.
       - name: Ключ доступа
