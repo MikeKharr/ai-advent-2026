@@ -359,3 +359,205 @@ class EmptyCorpusTest(unittest.TestCase):
 
     def test_это_не_подвид_отказа_эмбеддера(self):
         self.assertFalse(issubclass(build.EmptyCorpus, EmbedError))
+
+
+def window_ollama(limit: int):
+    """Поддельная Ollama, ведущая себя как настоящая по полю `truncate`.
+
+    Вход длиннее `limit` знаков: при `truncate: false` — `400` с тем телом,
+    которое отдаёт настоящая служба; без поля — `200`, молча обрезая вход.
+    Держатель смотрит на ПОВЕДЕНИЕ прохода, а не на текст запроса: снятие
+    `truncate: false` из клиента делает сборку удачной, и тест краснеет.
+    """
+    def embed(request):
+        texts = request.get("input", [])
+        if request.get("truncate") is False and any(len(t) > limit for t in texts):
+            return 400, {"error": "the input length exceeds the context length"}
+        return 200, FakeOllama.deterministic({"input": [t[:limit] for t in texts]})
+
+    # Код 200 в кортеже — заглушка формы маршрута: функция возвращает свой код.
+    return {**ROUTES, "/api/embed": (200, embed)}
+
+
+class ГромкийПорогОкна(unittest.TestCase):
+    """ADR 2026-10-01-1818: вход за окном — отказ с именем чанка, а не обрезка."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "corpus"
+        self.index = Path(self.tmp.name) / "index"
+        corpus_tree(self.root)
+        # Один длинный документ среди коротких: батч соберёт их вместе, и
+        # отказ придёт на весь батч, а не на виноватый вход.
+        (self.root / "agent_docs" / "длинный.md").write_text(
+            "# Длинный\n\n" + "слово " * 400 + "\n", encoding="utf-8"
+        )
+
+    def build(self, fake):
+        embedder = OllamaEmbedder(fake.url, "m")
+        chunks = build.read_chunks(self.root, "fixed")
+        return build.build_strategy("fixed", chunks, embedder, self.index)
+
+    def test_вход_за_окном_роняет_сборку_и_называет_чанк(self):
+        with FakeOllama(window_ollama(limit=200)) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                self.build(fake)
+        текст = str(поймано.exception)
+        self.assertIn("agent_docs/длинный.md", текст,
+                      "отказ не назвал виноватый чанк — на трёх тысячах чанков это бесполезно")
+        self.assertIn("input length exceeds the context length", текст,
+                      "тело ответа службы потеряно по дороге")
+
+    def test_без_длинного_входа_сборка_проходит(self):
+        # Контроль: иначе «падает» выполнялось бы всегда и ничего не значило.
+        with FakeOllama(window_ollama(limit=100000)) as fake:
+            stats = self.build(fake)
+        self.assertGreater(stats["embedded"], 0)
+
+
+class ОтказБатчаВсегдаРоняетСборку(unittest.TestCase):
+    """Решение владельца 2026-10-02 к #293: переспрос — ради имени, не ради продолжения.
+
+    Пока сборка продолжалась на одиночных вызовах, отказ батча при удачных
+    одиночных молча умножал работу общего ядра до ×16, и прогон оставался
+    зелёным (compliance и reviewer к #293 воспроизвели ×14 на 40 чанках).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "corpus"
+        self.index = Path(self.tmp.name) / "index"
+        corpus_tree(self.root)
+        for i in range(5):
+            (self.root / "agent_docs" / f"d{i}.md").write_text(
+                f"# Документ {i}\n\nтекст {i}\n", encoding="utf-8"
+            )
+
+    def build(self, fake):
+        embedder = OllamaEmbedder(fake.url, "m")
+        chunks = build.read_chunks(self.root, "fixed")
+        return build.build_strategy("fixed", chunks, embedder, self.index)
+
+    def test_батч_отказан_по_одному_прошли_все_сборка_всё_равно_падает(self):
+        def embed(request):
+            if len(request.get("input", [])) > 1:
+                return 400, {"error": "do embedding request: EOF"}
+            return 200, FakeOllama.deterministic(request)
+
+        with FakeOllama({**ROUTES, "/api/embed": (200, embed)}) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                self.build(fake)
+        текст = str(поймано.exception)
+        self.assertIn("виноватого входа нет", текст,
+                      "сборка продолжилась на одиночных вызовах — расход умножен молча")
+        self.assertIn("EOF", текст, "тело исходного отказа батча потеряно")
+        self.assertFalse(any(self.index.glob("*.faiss")),
+                         "индекс сохранён — значит сборка прошла, а не упала")
+
+    def test_на_отказе_не_по_содержимому_переспроса_нет(self):
+        # 503 — служба ответила, но не отказом по содержимому входа. Переспрос
+        # по одному здесь «назвал» бы первый же невиновный чанк (находка reviewer).
+        with FakeOllama({**ROUTES, "/api/embed": (503, {"error": "busy"})}) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                self.build(fake)
+            вызовов = sum(1 for path, _ in fake.requests if path == "/api/embed")
+        self.assertEqual(вызовов, 1, "на отказе без ответа по содержимому был переспрос")
+        self.assertNotIn("чанк ", str(поймано.exception), "отказ приписан невиновному чанку")
+
+
+class СрокВнутриПереспроса(unittest.TestCase):
+    """Переспрос не вправе уйти за срок прохода: до 16 вызовов по `timeout`.
+
+    `deadline.check` перед каждым одиночным вызовом — новая защита расхода
+    ядра, и без держателя её снятие оставляло зелёным весь набор (находка
+    compliance к #293; тест — его, перенесён и проверен в обе стороны).
+    """
+
+    def test_срок_вышел_на_отказе_батча_переспроса_нет(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "corpus"
+        index = Path(tmp.name) / "index"
+        corpus_tree(root)
+        for i in range(5):
+            (root / "agent_docs" / f"d{i}.md").write_text(
+                f"# Д{i}\n\nтекст {i}\n", encoding="utf-8"
+            )
+        clock = [0.0]
+
+        def embed(request):
+            clock[0] += 20.0  # вызов съел больше, чем оставалось от срока
+            if len(request.get("input", [])) > 1:
+                return 400, {"error": "do embedding request: EOF"}
+            return 200, FakeOllama.deterministic(request)
+
+        with FakeOllama({**ROUTES, "/api/embed": (200, embed)}) as fake:
+            embedder = OllamaEmbedder(fake.url, "m")
+            chunks = build.read_chunks(root, "fixed")
+            deadline = build.Deadline(10.0, now=lambda: clock[0])
+            with self.assertRaises(build.BuildTimeout):
+                build.build_strategy("fixed", chunks, embedder, index, deadline=deadline)
+            вызовов = sum(1 for p, _ in fake.requests if p == "/api/embed")
+        self.assertEqual(вызовов, 1, "переспрос пошёл за срок прохода")
+
+    def test_срок_проверяется_перед_каждым_одиночным_вызовом(self):
+        """Проверка ВНУТРИ цикла, а не одна перед ним.
+
+        В тесте выше часы двигает вызов батча, и срок исчерпан ещё до входа в
+        цикл — он держит вход в переспрос, а не свойство «перед каждым». Если
+        вынести `deadline.check` из цикла (правдоподобная «оптимизация»: пересчёт
+        в цикле выглядит избыточным), тот тест остаётся зелёным, а переспрос
+        переживает срок прохода на до 16 × `timeout`. Здесь часы двигает
+        одиночный вызов: срок 10 с, по 6 с на одиночный — после второго срок
+        вышел, третьего быть не должно (находка reviewer к #293).
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "corpus"
+        index = Path(tmp.name) / "index"
+        corpus_tree(root)
+        for i in range(5):
+            (root / "agent_docs" / f"d{i}.md").write_text(
+                f"# Д{i}\n\nтекст {i}\n", encoding="utf-8"
+            )
+        clock = [0.0]
+
+        def embed(request):
+            if len(request.get("input", [])) > 1:
+                return 400, {"error": "do embedding request: EOF"}
+            clock[0] += 6.0  # одиночный вызов съедает часть срока
+            return 200, FakeOllama.deterministic(request)
+
+        with FakeOllama({**ROUTES, "/api/embed": (200, embed)}) as fake:
+            embedder = OllamaEmbedder(fake.url, "m")
+            chunks = build.read_chunks(root, "fixed")
+            deadline = build.Deadline(10.0, now=lambda: clock[0])
+            with self.assertRaises(build.BuildTimeout):
+                build.build_strategy("fixed", chunks, embedder, index, deadline=deadline)
+            вызовов = sum(1 for p, _ in fake.requests if p == "/api/embed")
+        self.assertEqual(вызовов, 3, "срок не проверяется перед каждым одиночным вызовом")
+
+
+class ОдиночныйВиновникНеПереспрашивается(unittest.TestCase):
+    """Батч из одного входа и есть виновник — повторный вызов удвоил бы цену."""
+
+    def test_батч_из_одного_отказан_один_вызов(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "corpus"
+        index = Path(tmp.name) / "index"
+        corpus_tree(root)
+
+        def embed(request):
+            return 400, {"error": "the input length exceeds the context length"}
+
+        with FakeOllama({**ROUTES, "/api/embed": (200, embed)}) as fake:
+            embedder = OllamaEmbedder(fake.url, "m")
+            chunks = build.read_chunks(root, "fixed")[:1]
+            with self.assertRaises(EmbedError) as поймано:
+                build.build_strategy("fixed", chunks, embedder, index, batch=1)
+            вызовов = sum(1 for p, _ in fake.requests if p == "/api/embed")
+        self.assertEqual(вызовов, 1, "одиночный виновник эмбеддился дважды")
+        self.assertIn("чанк ", str(поймано.exception), "одиночный виновник не назван")

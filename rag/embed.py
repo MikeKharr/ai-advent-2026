@@ -13,7 +13,17 @@ import urllib.request
 
 
 class EmbedError(RuntimeError):
-    """Эмбеддер не ответил или ответил не тем. Пустой список — не ответ."""
+    """Эмбеддер не ответил или ответил не тем. Пустой список — не ответ.
+
+    `status` — код HTTP, если служба ответила отказом, и `None`, если ответа
+    не было вовсе (нет связи, срок, не-JSON). Несущий: сборка переспрашивает
+    батч по одному входу только на `400` — отказе по содержимому. На любом
+    другом коде и на `None` переспрос «назвал» бы невиновный чанк.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 BODY_LIMIT = 400
@@ -62,7 +72,7 @@ class OllamaEmbedder:
             with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as err:
-            raise EmbedError(f"{path}: HTTP {err.code} {_тело_отказа(err)}") from err
+            raise EmbedError(f"{path}: HTTP {err.code} {_тело_отказа(err)}", status=err.code) from err
         except (urllib.error.URLError, OSError, TimeoutError) as err:
             raise EmbedError(f"{path}: нет связи с {self.base_url} ({err})") from err
         except json.JSONDecodeError as err:
@@ -75,7 +85,7 @@ class OllamaEmbedder:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as err:
-            raise EmbedError(f"/api/tags: HTTP {err.code}") from err
+            raise EmbedError(f"/api/tags: HTTP {err.code}", status=err.code) from err
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError) as err:
             raise EmbedError(f"/api/tags: нет связи с {self.base_url} ({err})") from err
         return [m.get("name", "") for m in body.get("models", [])]
@@ -109,7 +119,15 @@ class OllamaEmbedder:
         if not texts:
             return []
         self.calls += 1
-        body = self._post("/api/embed", {"model": self.model, "input": texts}, timeout=timeout)
+        # `truncate: false` — вход за окном модели даёт отказ, а не тихую
+        # обрезку. Без поля Ollama молча отбрасывает хвост, и чанк эмбеддится
+        # без конца документа: ни ошибки, ни признака в индексе. Запас худшего
+        # чанка до окна — 11 % (ADR 2026-10-01-1818), и корпус растёт.
+        body = self._post(
+            "/api/embed",
+            {"model": self.model, "input": texts, "truncate": False},
+            timeout=timeout,
+        )
         vectors = body.get("embeddings")
         if not isinstance(vectors, list) or len(vectors) != len(texts):
             got = len(vectors) if isinstance(vectors, list) else None

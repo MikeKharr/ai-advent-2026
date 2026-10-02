@@ -13,7 +13,12 @@ class EmbedTest(unittest.TestCase):
             self.assertEqual(got, TWO["embeddings"])
             path, payload = fake.requests[0]
             self.assertEqual(path, "/api/embed")
-            self.assertEqual(payload, {"model": "embeddinggemma", "input": ["а", "б"]})
+            # `truncate: False` — решение ADR 2026-10-01-1818: вход за окном
+            # даёт отказ, а не тихую обрезку. Поведение держит
+            # test_build.ГромкийПорогОкна; здесь — что поле уходит в запрос.
+            self.assertEqual(
+                payload, {"model": "embeddinggemma", "input": ["а", "б"], "truncate": False}
+            )
 
     def test_пустой_список_не_ходит_в_сеть(self):
         with FakeOllama({}) as fake:
