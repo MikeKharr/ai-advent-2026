@@ -502,6 +502,43 @@ class СрокВнутриПереспроса(unittest.TestCase):
             вызовов = sum(1 for p, _ in fake.requests if p == "/api/embed")
         self.assertEqual(вызовов, 1, "переспрос пошёл за срок прохода")
 
+    def test_срок_проверяется_перед_каждым_одиночным_вызовом(self):
+        """Проверка ВНУТРИ цикла, а не одна перед ним.
+
+        В тесте выше часы двигает вызов батча, и срок исчерпан ещё до входа в
+        цикл — он держит вход в переспрос, а не свойство «перед каждым». Если
+        вынести `deadline.check` из цикла (правдоподобная «оптимизация»: пересчёт
+        в цикле выглядит избыточным), тот тест остаётся зелёным, а переспрос
+        переживает срок прохода на до 16 × `timeout`. Здесь часы двигает
+        одиночный вызов: срок 10 с, по 6 с на одиночный — после второго срок
+        вышел, третьего быть не должно (находка reviewer к #293).
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "corpus"
+        index = Path(tmp.name) / "index"
+        corpus_tree(root)
+        for i in range(5):
+            (root / "agent_docs" / f"d{i}.md").write_text(
+                f"# Д{i}\n\nтекст {i}\n", encoding="utf-8"
+            )
+        clock = [0.0]
+
+        def embed(request):
+            if len(request.get("input", [])) > 1:
+                return 400, {"error": "do embedding request: EOF"}
+            clock[0] += 6.0  # одиночный вызов съедает часть срока
+            return 200, FakeOllama.deterministic(request)
+
+        with FakeOllama({**ROUTES, "/api/embed": (200, embed)}) as fake:
+            embedder = OllamaEmbedder(fake.url, "m")
+            chunks = build.read_chunks(root, "fixed")
+            deadline = build.Deadline(10.0, now=lambda: clock[0])
+            with self.assertRaises(build.BuildTimeout):
+                build.build_strategy("fixed", chunks, embedder, index, deadline=deadline)
+            вызовов = sum(1 for p, _ in fake.requests if p == "/api/embed")
+        self.assertEqual(вызовов, 3, "срок не проверяется перед каждым одиночным вызовом")
+
 
 class ОдиночныйВиновникНеПереспрашивается(unittest.TestCase):
     """Батч из одного входа и есть виновник — повторный вызов удвоил бы цену."""
