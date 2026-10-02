@@ -25,10 +25,10 @@ class QueriesTest(unittest.TestCase):
         cls.queries = metrics.load_queries(QUERIES)
         cls.corpus = {str(p) for p in corpus.collect(ROOT)}
 
-    def test_тридцать_вопросов_с_разными_идентификаторами(self):
-        self.assertEqual(len(self.queries), 30)
+    def test_сто_вопросов_с_разными_идентификаторами(self):
+        self.assertEqual(len(self.queries), 100)
         ids = [q["id"] for q in self.queries]
-        self.assertEqual(len(set(ids)), 30)
+        self.assertEqual(len(set(ids)), 100)
 
     def test_у_каждого_вопроса_есть_текст_и_ожидаемые_документы(self):
         for q in self.queries:
@@ -60,3 +60,50 @@ class QueriesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class РазборПоВопросу(unittest.TestCase):
+    """Разбор, который покажет страница итогов, не вправе расходиться с метрикой.
+
+    Таблица по вопросам и сводный MRR@10 считаются из одних и тех же
+    найденных чанков: если ранг в таблице и обратный ранг в MRR разойдутся,
+    страница будет показывать одно, а цифры — другое.
+    """
+
+    def hits(self, sources):
+        return [(1.0 - i / 10, {"source": s, "section": f"§{i}", "text": f"текст {s} номер {i} " * 30})
+                for i, s in enumerate(sources)]
+
+    def test_ранг_первого_верного_документа(self):
+        import eval.run as run
+        q = {"id": "q", "question": "?", "expected": ["нужный.md"]}
+        d = run.detail_for(q, self.hits(["a.md", "b.md", "нужный.md", "нужный.md"]))
+        self.assertEqual(d["rank"], 3)
+
+    def test_нет_в_первых_k_значит_ранга_нет(self):
+        import eval.run as run
+        q = {"id": "q", "question": "?", "expected": ["нужный.md"]}
+        self.assertIsNone(run.detail_for(q, self.hits(["a.md", "b.md"]))["rank"])
+
+    def test_ранг_сходится_с_обратным_рангом_метрики(self):
+        import eval.run as run
+        q = {"id": "q", "question": "?", "expected": ["нужный.md"]}
+        for sources in (["нужный.md"], ["a.md", "нужный.md"], ["a.md", "b.md", "c.md", "нужный.md"], ["a.md"]):
+            d = run.detail_for(q, self.hits(sources))
+            rr = metrics.reciprocal_rank(sources, q["expected"])
+            self.assertEqual(rr, 0.0 if d["rank"] is None else 1 / d["rank"], sources)
+
+    def test_выдержка_обрезана_и_трёх_найденных_хватает(self):
+        import eval.run as run
+        q = {"id": "q", "question": "?", "expected": ["x.md"]}
+        d = run.detail_for(q, self.hits(["a.md", "b.md", "c.md", "d.md", "e.md"]))
+        self.assertEqual(len(d["top"]), 3)
+        self.assertTrue(all(len(t["excerpt"]) <= run.EXCERPT for t in d["top"]))
+
+    def test_статистика_нарезки_тем_же_правилом_что_сборка(self):
+        # Страница и журнал сборки обязаны показывать одну медиану одного индекса:
+        # оба считают len(text), а не длину текста для эмбеддинга.
+        import eval.run as run
+        meta = [{"text": "а" * n} for n in (10, 30, 20, 40)]
+        self.assertEqual(run.chunk_summary(meta), {"chunks": 4, "len_median": 25, "len_max": 40})
+        self.assertEqual(run.chunk_summary([]), {"chunks": 0, "len_median": 0, "len_max": 0})

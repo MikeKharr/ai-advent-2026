@@ -1,35 +1,812 @@
 {
-  "note": "30 вопросов, какие агент задаёт проекту на деле. expected — пути корпуса, phrase — фраза, которая обязана быть в найденном тексте. Присутствие путей и фраз держит rag/test/test_eval.py.",
+  "note": "100 вопросов, какие агент задаёт проекту на деле: q01–q30 — первый набор захода 2, q31–q65 — документация, q66–q100 — код и конфигурация (2026-10-02, роль qa, два экземпляра без пересечения областей). Вопросы перефразированы, а не скопированы из документов: совпадение слов завышало бы меру. expected — пути корпуса, где ответ действительно есть; у q43 и q50 вторые пути добавлены ДО прогона, по содержанию документов, а не по результату. phrase — фраза, которая обязана быть в найденном тексте. Присутствие путей и фраз держит rag/test/test_eval.py.",
   "queries": [
-    {"id": "q01", "question": "какой потолок у результата инструмента в хосте MCP", "expected": ["agents/src/mcp/agent.js"], "phrase": "TOOL_RESULT_LIMIT = 8 * 1024"},
-    {"id": "q02", "question": "где держится инвариант I-4 про порядок лимитера и вызова API", "expected": ["agent_docs/invariants.md"], "phrase": "Проверка лимита предшествует вызову, а не следует за ним"},
-    {"id": "q03", "question": "какие runtime-зависимости разрешены единице mcp", "expected": [".github/workflows/ci.yml"], "phrase": "@modelcontextprotocol/sdk zod"},
-    {"id": "q04", "question": "как в CI проверяется граница runtime-зависимостей", "expected": [".github/workflows/ci.yml"], "phrase": "Граница runtime-зависимостей"},
-    {"id": "q05", "question": "когда агент может смержить PR сам, без владельца", "expected": ["agent_docs/guides/agent-roles.md", "AGENTS.md"], "phrase": null},
-    {"id": "q06", "question": "как читать красный прогон CI и чем отличается наблюдение от догадки", "expected": ["agent_docs/guides/verification.md"], "phrase": null},
-    {"id": "q07", "question": "куда класть временные файлы и отчёты", "expected": ["agent_docs/guides/archiving-and-temp.md"], "phrase": null},
-    {"id": "q08", "question": "что входит в Definition of Done проекта", "expected": ["agent_docs/guides/dod.md"], "phrase": null},
-    {"id": "q09", "question": "как называть событийные документы и почему один файл на итерацию", "expected": ["agent_docs/guides/atomic-documents.md"], "phrase": null},
-    {"id": "q10", "question": "какой формат у журналов служб", "expected": ["agent_docs/guides/logging.md"], "phrase": null},
-    {"id": "q11", "question": "как завести новый день адвента", "expected": ["agent_docs/guides/new-day.md"], "phrase": null},
-    {"id": "q12", "question": "что нужно поставить локально, чтобы работать над проектом", "expected": ["agent_docs/guides/environment-setup.md"], "phrase": null},
-    {"id": "q13", "question": "какой порт в CI поднимает единица mcpnews", "expected": [".github/workflows/ci.yml"], "phrase": "port=8084"},
-    {"id": "q14", "question": "какие сети compose изолированы и чем это проверяется", "expected": [".github/scripts/compose-networks.mjs", "deploy/compose.yml"], "phrase": null},
-    {"id": "q15", "question": "где хранится ключ Anthropic и куда он не попадает", "expected": ["AGENTS.md", "agent_docs/invariants.md"], "phrase": null},
-    {"id": "q16", "question": "какие имена веток и какой формат коммитов приняты", "expected": ["AGENTS.md"], "phrase": "Conventional Commits"},
-    {"id": "q17", "question": "что такое единица и что такое заход в терминах проекта", "expected": ["agent_docs/glossary.md"], "phrase": null},
-    {"id": "q18", "question": "на чём стоит работа сейчас и что дальше", "expected": ["agent_docs/snapshot.md"], "phrase": null},
-    {"id": "q19", "question": "что лежит в бэклоге владельцу", "expected": ["agent_docs/backlog.md"], "phrase": null},
-    {"id": "q20", "question": "как устроены единицы и что общего у их Dockerfile", "expected": ["agent_docs/architecture.md"], "phrase": null},
-    {"id": "q21", "question": "как настроен маршрут /mcp в Caddy", "expected": ["deploy/Caddyfile"], "phrase": null},
-    {"id": "q22", "question": "как выбираются единицы для выкатки по push", "expected": [".github/scripts/deploy-units.sh"], "phrase": null},
-    {"id": "q23", "question": "что проверяет шаг «Секреты не попали в репозиторий»", "expected": [".github/workflows/docs-guard.yml", "test/secrets-step.test.js"], "phrase": null},
-    {"id": "q24", "question": "какая конвенция лимитера проверяется у дней", "expected": ["test/limiter-seam-days.test.js"], "phrase": null},
-    {"id": "q25", "question": "какие провайдеры знает роутер и какие у них возможности", "expected": ["router/config/providers.json"], "phrase": "web_search"},
-    {"id": "q26", "question": "как роутер считает суточный бюджет токенов", "expected": ["router/src/service.js"], "phrase": null},
-    {"id": "q27", "question": "что делает сервер mcpnews и какие у него инструменты", "expected": ["mcpnews/README.md"], "phrase": null},
-    {"id": "q28", "question": "что делает сервер mcpstore", "expected": ["mcpstore/README.md"], "phrase": null},
-    {"id": "q29", "question": "какой шаблон у ADR и какие разделы обязательны", "expected": ["agent_docs/templates/adr.md"], "phrase": null},
-    {"id": "q30", "question": "что не попадает в корпус индекса проекта", "expected": ["rag/README.md"], "phrase": "days/**"}
+    {
+      "id": "q01",
+      "question": "какой потолок у результата инструмента в хосте MCP",
+      "expected": [
+        "agents/src/mcp/agent.js"
+      ],
+      "phrase": "TOOL_RESULT_LIMIT = 8 * 1024"
+    },
+    {
+      "id": "q02",
+      "question": "где держится инвариант I-4 про порядок лимитера и вызова API",
+      "expected": [
+        "agent_docs/invariants.md"
+      ],
+      "phrase": "Проверка лимита предшествует вызову, а не следует за ним"
+    },
+    {
+      "id": "q03",
+      "question": "какие runtime-зависимости разрешены единице mcp",
+      "expected": [
+        ".github/workflows/ci.yml"
+      ],
+      "phrase": "@modelcontextprotocol/sdk zod"
+    },
+    {
+      "id": "q04",
+      "question": "как в CI проверяется граница runtime-зависимостей",
+      "expected": [
+        ".github/workflows/ci.yml"
+      ],
+      "phrase": "Граница runtime-зависимостей"
+    },
+    {
+      "id": "q05",
+      "question": "когда агент может смержить PR сам, без владельца",
+      "expected": [
+        "agent_docs/guides/agent-roles.md",
+        "AGENTS.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q06",
+      "question": "как читать красный прогон CI и чем отличается наблюдение от догадки",
+      "expected": [
+        "agent_docs/guides/verification.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q07",
+      "question": "куда класть временные файлы и отчёты",
+      "expected": [
+        "agent_docs/guides/archiving-and-temp.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q08",
+      "question": "что входит в Definition of Done проекта",
+      "expected": [
+        "agent_docs/guides/dod.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q09",
+      "question": "как называть событийные документы и почему один файл на итерацию",
+      "expected": [
+        "agent_docs/guides/atomic-documents.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q10",
+      "question": "какой формат у журналов служб",
+      "expected": [
+        "agent_docs/guides/logging.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q11",
+      "question": "как завести новый день адвента",
+      "expected": [
+        "agent_docs/guides/new-day.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q12",
+      "question": "что нужно поставить локально, чтобы работать над проектом",
+      "expected": [
+        "agent_docs/guides/environment-setup.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q13",
+      "question": "какой порт в CI поднимает единица mcpnews",
+      "expected": [
+        ".github/workflows/ci.yml"
+      ],
+      "phrase": "port=8084"
+    },
+    {
+      "id": "q14",
+      "question": "какие сети compose изолированы и чем это проверяется",
+      "expected": [
+        ".github/scripts/compose-networks.mjs",
+        "deploy/compose.yml"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q15",
+      "question": "где хранится ключ Anthropic и куда он не попадает",
+      "expected": [
+        "AGENTS.md",
+        "agent_docs/invariants.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q16",
+      "question": "какие имена веток и какой формат коммитов приняты",
+      "expected": [
+        "AGENTS.md"
+      ],
+      "phrase": "Conventional Commits"
+    },
+    {
+      "id": "q17",
+      "question": "что такое единица и что такое заход в терминах проекта",
+      "expected": [
+        "agent_docs/glossary.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q18",
+      "question": "на чём стоит работа сейчас и что дальше",
+      "expected": [
+        "agent_docs/snapshot.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q19",
+      "question": "что лежит в бэклоге владельцу",
+      "expected": [
+        "agent_docs/backlog.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q20",
+      "question": "как устроены единицы и что общего у их Dockerfile",
+      "expected": [
+        "agent_docs/architecture.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q21",
+      "question": "как настроен маршрут /mcp в Caddy",
+      "expected": [
+        "deploy/Caddyfile"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q22",
+      "question": "как выбираются единицы для выкатки по push",
+      "expected": [
+        ".github/scripts/deploy-units.sh"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q23",
+      "question": "что проверяет шаг «Секреты не попали в репозиторий»",
+      "expected": [
+        ".github/workflows/docs-guard.yml",
+        "test/secrets-step.test.js"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q24",
+      "question": "какая конвенция лимитера проверяется у дней",
+      "expected": [
+        "test/limiter-seam-days.test.js"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q25",
+      "question": "какие провайдеры знает роутер и какие у них возможности",
+      "expected": [
+        "router/config/providers.json"
+      ],
+      "phrase": "web_search"
+    },
+    {
+      "id": "q26",
+      "question": "как роутер считает суточный бюджет токенов",
+      "expected": [
+        "router/src/service.js"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q27",
+      "question": "что делает сервер mcpnews и какие у него инструменты",
+      "expected": [
+        "mcpnews/README.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q28",
+      "question": "что делает сервер mcpstore",
+      "expected": [
+        "mcpstore/README.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q29",
+      "question": "какой шаблон у ADR и какие разделы обязательны",
+      "expected": [
+        "agent_docs/templates/adr.md"
+      ],
+      "phrase": null
+    },
+    {
+      "id": "q30",
+      "question": "что не попадает в корпус индекса проекта",
+      "expected": [
+        "rag/README.md"
+      ],
+      "phrase": "days/**"
+    },
+    {
+      "id": "q31",
+      "question": "что должно приехать вместе с новым лимитом или проверкой безопасности в том же PR",
+      "expected": [
+        "agent_docs/invariants.md"
+      ],
+      "phrase": "вводится в том же PR, что тест или шаг CI"
+    },
+    {
+      "id": "q32",
+      "question": "можно ли называть одну и ту же вещь двумя словами в документах и коде",
+      "expected": [
+        "agent_docs/invariants.md"
+      ],
+      "phrase": "Синоним «для красоты» — дефект"
+    },
+    {
+      "id": "q33",
+      "question": "почему указатель для Claude Code сделан копией файла, а не ссылкой на него",
+      "expected": [
+        "README.md"
+      ],
+      "phrase": "symlinks ломаются на Windows"
+    },
+    {
+      "id": "q34",
+      "question": "зачем хранить запись о решении, которое в итоге не приняли",
+      "expected": [
+        "agent_docs/adr/README.md"
+      ],
+      "phrase": "запись сохраняется, чтобы не возвращаться к вопросу"
+    },
+    {
+      "id": "q35",
+      "question": "нужно ли складывать старые записи журнала итераций в архив по месяцам",
+      "expected": [
+        "agent_docs/development-history/README.md"
+      ],
+      "phrase": "реальное время в имени и есть порядок"
+    },
+    {
+      "id": "q36",
+      "question": "сколько видов отклика обязана иметь кнопка, чтобы её приняли",
+      "expected": [
+        "agent_docs/design/corpus.md"
+      ],
+      "phrase": "покой, наведение, нажатие"
+    },
+    {
+      "id": "q37",
+      "question": "что экран обязан показывать, когда данных нет или они пришли не полностью",
+      "expected": [
+        "agent_docs/design/corpus.md"
+      ],
+      "phrase": "Пустое состояние — честный текст о том, почему пусто"
+    },
+    {
+      "id": "q38",
+      "question": "насколько долгой может быть анимация и что анимировать нельзя",
+      "expected": [
+        "agent_docs/design/corpus.md"
+      ],
+      "phrase": "Только на смену состояния, ≤ 120 мс"
+    },
+    {
+      "id": "q39",
+      "question": "какой ширины делать колонку с текстом, чтобы его было удобно читать",
+      "expected": [
+        "agent_docs/design/corpus.md"
+      ],
+      "phrase": "проза ≤ 68ch, вторичный текст ≤ 52ch"
+    },
+    {
+      "id": "q40",
+      "question": "даёт ли разделение на роли гарантию качества или держит что-то другое",
+      "expected": [
+        "agent_docs/guides/agent-roles.md"
+      ],
+      "phrase": "потому что они падают закрыто"
+    },
+    {
+      "id": "q41",
+      "question": "кому отдавать работу после того, как блокирующие замечания исправлены",
+      "expected": [
+        "agent_docs/guides/agent-roles.md"
+      ],
+      "phrase": "возвращает работу тому же ревьюеру"
+    },
+    {
+      "id": "q42",
+      "question": "что происходит с роутером, если переменная окружения не задана или конфиг битый",
+      "expected": [
+        "agent_docs/operations.md"
+      ],
+      "phrase": "роутер не стартует наполовину"
+    },
+    {
+      "id": "q43",
+      "question": "что приложение получит в ответ, когда его суточные деньги закончились",
+      "expected": [
+        "agent_docs/operations.md",
+        "router/src/service.js"
+      ],
+      "phrase": "429 `budget_exceeded` с `resetAt`"
+    },
+    {
+      "id": "q44",
+      "question": "куда смотреть, если запросы перестали доходить до одного из провайдеров",
+      "expected": [
+        "agent_docs/operations.md"
+      ],
+      "phrase": "предохранитель (три неудачи подряд, 60 с)"
+    },
+    {
+      "id": "q45",
+      "question": "почему мы не считаем длину входа своей арифметикой, а ловим отказ от службы",
+      "expected": [
+        "agent_docs/adr/2026-10-01-1818-loud-token-ceiling.md"
+      ],
+      "phrase": "Порог не считается нами — его применяет служба"
+    },
+    {
+      "id": "q46",
+      "question": "что именно лежит в репозитории для сверки сервера при подключении по ssh",
+      "expected": [
+        "agent_docs/adr/2026-10-02-0921-ssh-host-key-pin.md"
+      ],
+      "phrase": "имя приходит из секрета в момент сборки"
+    },
+    {
+      "id": "q47",
+      "question": "отчего сборка индекса валилась только на одной из двух стратегий нарезки",
+      "expected": [
+        "agent_docs/adr/2026-10-02-1519-ollama-ceiling-4g.md"
+      ],
+      "phrase": "Раннер llama.cpp убит сигналом 9"
+    },
+    {
+      "id": "q48",
+      "question": "откуда взялась цифра потолка памяти, если расход на сервере никто не измерял",
+      "expected": [
+        "agent_docs/adr/2026-10-02-1519-ollama-ceiling-4g.md"
+      ],
+      "phrase": "Число выведено, а не замерено"
+    },
+    {
+      "id": "q49",
+      "question": "чем опасно сменить модель эмбеддингов, не тронув ключ инкремента",
+      "expected": [
+        "agent_docs/adr/2026-09-30-0957-rag-quantized-embedder.md"
+      ],
+      "phrase": "старые bf16-векторы подмешались бы к новым"
+    },
+    {
+      "id": "q50",
+      "question": "почему агенту нельзя попасть внутрь работающего контейнера на сервере",
+      "expected": [
+        "agent_docs/adr/2026-09-11-1230-ssh-server-access-norm.md",
+        "agent_docs/adr/2026-09-22-1301-server-command-list-scope.md"
+      ],
+      "phrase": "любой `exec` в контейнеры прода — без исключений"
+    },
+    {
+      "id": "q51",
+      "question": "как убедиться, что строка в env-файле на сервере есть, и не раскрыть её значение",
+      "expected": [
+        "agent_docs/adr/2026-09-11-1230-ssh-server-access-norm.md"
+      ],
+      "phrase": "проверки имён без значений"
+    },
+    {
+      "id": "q52",
+      "question": "что при сокращении проектного документа режется последним и почему",
+      "expected": [
+        "agent_docs/adr/2026-09-19-1252-architect-decisions-not-encyclopedias.md"
+      ],
+      "phrase": "последствия дважды спасали работу и режутся последними"
+    },
+    {
+      "id": "q53",
+      "question": "на какой объём ориентироваться, когда пишешь решение по архитектуре",
+      "expected": [
+        "agent_docs/adr/2026-09-19-1252-architect-decisions-not-encyclopedias.md"
+      ],
+      "phrase": "150–250 строк — цель для ADR"
+    },
+    {
+      "id": "q54",
+      "question": "достаточно ли низкой оценки автоматического сканера, чтобы поставить чужой скилл",
+      "expected": [
+        "agent_docs/adr/2026-09-08-0205-skill-install-security-gate.md"
+      ],
+      "phrase": "обе линии обязательны в обе стороны"
+    },
+    {
+      "id": "q55",
+      "question": "чем ограничен размер очереди задач и что именно считается при проверке",
+      "expected": [
+        "agent_docs/adr/2026-09-29-1533-backlog-limit-by-open-items.md"
+      ],
+      "phrase": "предел **300 открытых пунктов**"
+    },
+    {
+      "id": "q56",
+      "question": "что мешает работе планировщика стартовать дважды за один и тот же срок",
+      "expected": [
+        "agent_docs/adr/2026-09-28-1323-cadence-15min-slot-is-the-due-time.md"
+      ],
+      "phrase": "ключ слота — последний наступивший срок"
+    },
+    {
+      "id": "q57",
+      "question": "почему запрос без годного ключа получает ответ как от несуществующего адреса",
+      "expected": [
+        "agent_docs/adr/2026-09-23-1844-mcp-endpoint-answers-404.md"
+      ],
+      "phrase": "«нет такого пути» и «нет годного ключа» совпадают"
+    },
+    {
+      "id": "q58",
+      "question": "когда исполнение команды внутри прод-контейнера считается стороной main, а не руками агента",
+      "expected": [
+        "agent_docs/adr/2026-09-22-1301-server-command-list-scope.md"
+      ],
+      "phrase": "команда — литерал в ревьюируемом файле"
+    },
+    {
+      "id": "q59",
+      "question": "почему поддельный сервис, написанный автором страницы, ничего не доказывает",
+      "expected": [
+        "agent_docs/development-history/2026-09-22-0442-day13-iteration-lessons.md"
+      ],
+      "phrase": "не является проверкой контракта"
+    },
+    {
+      "id": "q60",
+      "question": "тест падает на мутации, а дефект всё равно уехал дальше — в чём была ошибка",
+      "expected": [
+        "agent_docs/development-history/2026-09-22-1419-withheld-exits-and-gate-lessons.md"
+      ],
+      "phrase": "ломался **порядок событий**"
+    },
+    {
+      "id": "q61",
+      "question": "из-за чего экран состояния у девяти приложений показывал, что агент недоступен",
+      "expected": [
+        "agent_docs/development-history/2026-09-29-1404-agents-describe-regression.md"
+      ],
+      "phrase": "метода не было — ручка отвечала 500"
+    },
+    {
+      "id": "q62",
+      "question": "какой объём работы над видимой частью приложения агент не может взять сам",
+      "expected": [
+        "AGENTS.md"
+      ],
+      "phrase": "больше 40 минут — только по решению владельца"
+    },
+    {
+      "id": "q63",
+      "question": "работа встала и дальше нужен человек — что делать вместо ожидания",
+      "expected": [
+        "AGENTS.md"
+      ],
+      "phrase": "Молчание неотличимо от продолжающейся работы"
+    },
+    {
+      "id": "q64",
+      "question": "что теряется, когда часть системы переносят в другой репозиторий",
+      "expected": [
+        "agent_docs/guides/verification.md"
+      ],
+      "phrase": "Защита исчезла не решением, а умолчанием"
+    },
+    {
+      "id": "q65",
+      "question": "чем приложение расплачивается перед роутером, если ключей провайдеров у него нет",
+      "expected": [
+        "agent_docs/day5-flow.md"
+      ],
+      "phrase": "он предъявляет роутеру ключ приложения"
+    },
+    {
+      "id": "q66",
+      "question": "сколько подряд неудачных ответов провайдера нужно, чтобы роутер перестал к нему ходить, и насколько",
+      "expected": [
+        "router/src/health.js"
+      ],
+      "phrase": "const FAILURES_TO_OPEN = 3"
+    },
+    {
+      "id": "q67",
+      "question": "насколько большое тело запроса роутер согласен прочитать, прежде чем оборвать",
+      "expected": [
+        "router/src/service.js"
+      ],
+      "phrase": "const MAX_BODY = 512 * 1024"
+    },
+    {
+      "id": "q68",
+      "question": "за какие неудачные попытки с провайдером платить не нужно и как они попадают в учёт",
+      "expected": [
+        "router/src/service.js"
+      ],
+      "phrase": "new Set(['unreachable', 'busy', 'rejected', 'server_error'])"
+    },
+    {
+      "id": "q69",
+      "question": "почему после перезапуска службы израсходованное за сутки не начинает считаться с нуля",
+      "expected": [
+        "router/src/ledger.js"
+      ],
+      "phrase": "перезапуск роутера не обнуляет лимиты"
+    },
+    {
+      "id": "q70",
+      "question": "сколько разных провайдеров роутер пробует на один запрос, прежде чем сдаться",
+      "expected": [
+        "router/src/router.js"
+      ],
+      "phrase": "const MAX_CALLS = 2"
+    },
+    {
+      "id": "q71",
+      "question": "что происходит с уже начатым обращением к модели, если посетитель закрыл страницу",
+      "expected": [
+        "router/src/router.js"
+      ],
+      "phrase": "const CLIENT_GONE = 'клиент разорвал соединение'"
+    },
+    {
+      "id": "q72",
+      "question": "какой суточный потолок в деньгах у приложения, из которого работают агенты",
+      "expected": [
+        "router/config/apps.json"
+      ],
+      "phrase": "\"dailyCostUsd\": 10"
+    },
+    {
+      "id": "q73",
+      "question": "для какой задачи провайдер обязан уметь искать в интернете, иначе его не допустят",
+      "expected": [
+        "router/config/classes.json"
+      ],
+      "phrase": "\"requires\": [\"text_generation\", \"web_search\"]"
+    },
+    {
+      "id": "q74",
+      "question": "почему к локальной модели на машине идут родным протоколом, а не через слой совместимости",
+      "expected": [
+        "router/src/adapters/ollama.js"
+      ],
+      "phrase": "только родной отдаёт метрики (load_duration,"
+    },
+    {
+      "id": "q75",
+      "question": "как понимается остаток у поставщика, если вместо времени сброса он прислал что-то вроде «2m52.8s»",
+      "expected": [
+        "router/src/adapters/quota.js"
+      ],
+      "phrase": "const UNIT_MS = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }"
+    },
+    {
+      "id": "q76",
+      "question": "что проверяется у провайдера до выбора и почему нехватка умения — отказ, а не замена на попроще",
+      "expected": [
+        "router/src/config.js"
+      ],
+      "phrase": "Фильтр возможностей: статичен, несоответствие — отказ, не понижение."
+    },
+    {
+      "id": "q77",
+      "question": "какие два окна по адресу стоят у публичной службы инструментов и какой они длины",
+      "expected": [
+        "mcp/src/limits.js"
+      ],
+      "phrase": "const HOUR = 60 * 60_000"
+    },
+    {
+      "id": "q78",
+      "question": "почему отметки о неудачных попытках входа перестают накапливаться после какого-то числа",
+      "expected": [
+        "mcp/src/limits.js"
+      ],
+      "phrase": "Дальше порога отметки НЕ копятся"
+    },
+    {
+      "id": "q79",
+      "question": "со скольких промахов по ключу с одного адреса за час в журнал уходит сигнал о переборе",
+      "expected": [
+        "mcp/src/env.js"
+      ],
+      "phrase": "REFUSAL_SIGNAL_PER_HOUR: 60"
+    },
+    {
+      "id": "q80",
+      "question": "что получает клиент, когда предъявил негодный ключ, и почему ровно то же, что на чужой путь",
+      "expected": [
+        "mcp/src/service.js"
+      ],
+      "phrase": "пустое тело, ни `content-type`, ни строчки"
+    },
+    {
+      "id": "q81",
+      "question": "почему переадресацию от внешнего поставщика данных считают ошибкой, а не идут по ней",
+      "expected": [
+        "mcp/src/net.js"
+      ],
+      "phrase": "`redirect: 'error'` — не перестраховка"
+    },
+    {
+      "id": "q82",
+      "question": "сколько файлов разом согласно держать хранилище цепочки и что бывает, когда оно полно",
+      "expected": [
+        "mcpstore/src/store.js"
+      ],
+      "phrase": "export const MAX_FILES = 200"
+    },
+    {
+      "id": "q83",
+      "question": "почему у хранилища потолок тела запроса вчетверо больше потолка самого файла",
+      "expected": [
+        "mcpstore/src/service.js"
+      ],
+      "phrase": "export const STORE_MAX_BODY = 256 * 1024"
+    },
+    {
+      "id": "q84",
+      "question": "до какой длины обрезается выжимка новостей и почему её делает код, а не модель",
+      "expected": [
+        "mcpnews/src/tools.js"
+      ],
+      "phrase": "export const SUMMARY_LIMIT = 2000"
+    },
+    {
+      "id": "q85",
+      "question": "как инструмент сервера получает имя, которое видит модель, и почему обратный разбор идёт не по строке",
+      "expected": [
+        "agents/src/mcp/tool-names.js"
+      ],
+      "phrase": "имя сервера с двумя подчёркиваниями подряд сломало бы"
+    },
+    {
+      "id": "q86",
+      "question": "что будет, если у сервера инструментов не задана переменная с адресом — упадёт старт или нет",
+      "expected": [
+        "agents/src/mcp/servers.js"
+      ],
+      "phrase": "в реестр не попадает: недоступный сервер"
+    },
+    {
+      "id": "q87",
+      "question": "сколько хост готов вычитать из ответа сервера инструментов и почему это не равно потолку показа",
+      "expected": [
+        "agents/src/mcp/client.js"
+      ],
+      "phrase": "export const RESPONSE_LIMIT = 256 * 1024"
+    },
+    {
+      "id": "q88",
+      "question": "короткий ключ управления — это ослабленная защита или выключенная поверхность",
+      "expected": [
+        "agents/src/env.js",
+        "agents/src/control/key.js"
+      ],
+      "phrase": "export const CONTROL_KEY_MIN_CHARS = 32"
+    },
+    {
+      "id": "q89",
+      "question": "почему счёт суточных запусков по расписанию держат на диске, а не в памяти процесса",
+      "expected": [
+        "agents/src/jobs/store.js"
+      ],
+      "phrase": "Счётчик в памяти обнулялся бы каждой выкаткой"
+    },
+    {
+      "id": "q90",
+      "question": "как часто срабатывает ночная цепочка и сколько запусков в сутки ей вообще позволено",
+      "expected": [
+        "agents/config/jobs.json"
+      ],
+      "phrase": "\"maxRunsPerDay\": 96"
+    },
+    {
+      "id": "q91",
+      "question": "почему отпечаток сервера лежит в репозитории, а не спрашивается у него на каждой выкатке",
+      "expected": [
+        ".github/workflows/deploy.yml"
+      ],
+      "phrase": "Ключ хоста ЗАКРЕПЛЁН в репозитории"
+    },
+    {
+      "id": "q92",
+      "question": "как выкатка понимает, что настройки входа изменились и их надо перечитать на живом процессе",
+      "expected": [
+        ".github/workflows/deploy.yml"
+      ],
+      "phrase": "caddyfile_now=$(sha256sum Caddyfile | cut -d' ' -f1)"
+    },
+    {
+      "id": "q93",
+      "question": "сколько памяти отдано службе эмбеддингов на машине и откуда взялось это число",
+      "expected": [
+        "deploy/compose.yml"
+      ],
+      "phrase": "Потолок 4096 МиБ — ADR 2026-10-02-1519"
+    },
+    {
+      "id": "q94",
+      "question": "сколько раз в сутки вообще можно посчитать вектор запроса, прежде чем поиск остановится",
+      "expected": [
+        "deploy/compose.yml"
+      ],
+      "phrase": "RAG_DAILY_EMBEDS=500"
+    },
+    {
+      "id": "q95",
+      "question": "как вход узнаёт настоящий адрес посетителя, если перед ним стоит ещё один прокси",
+      "expected": [
+        "deploy/Caddyfile"
+      ],
+      "phrase": "trusted_proxies static private_ranges"
+    },
+    {
+      "id": "q96",
+      "question": "как собирается таблица сроков для контейнера времени, если в его образе нет ни разборщика JSON, ни node",
+      "expected": [
+        "deploy/cron/crontab.sh"
+      ],
+      "phrase": "в образе alpine нет ни jq, ни node"
+    },
+    {
+      "id": "q97",
+      "question": "куда ещё, кроме сервера, обязан попасть ключ входа в индекс, иначе сигнал о переборе врёт",
+      "expected": [
+        "deploy/put-rag-key.sh"
+      ],
+      "phrase": "refusal_burst срабатывает на 20 отказах с адреса за час"
+    },
+    {
+      "id": "q98",
+      "question": "почему у потолков памяти сверяется точное число, а не просто их наличие",
+      "expected": [
+        ".github/scripts/compose-limits.mjs"
+      ],
+      "phrase": "Сверка точным значением, а не «не больше»"
+    },
+    {
+      "id": "q99",
+      "question": "почему публичный адрес поиска и требование ключа обязаны приезжать одним изменением",
+      "expected": [
+        "test/rag-route-lock.test.js"
+      ],
+      "phrase": "публичной ручки без ключа не должно существовать ни минуты"
+    },
+    {
+      "id": "q100",
+      "question": "откуда берётся генератор витрины схемы проекта и где записана его закреплённая версия",
+      "expected": [
+        "atlas/README.md"
+      ],
+      "phrase": "`.github/scripts/atlas-tool.sh` (`TOOL_TAG`,"
+    }
   ]
 }
