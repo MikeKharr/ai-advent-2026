@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка и тексты — agent_docs/design/2026-10-02-1950-day21-rag-results.md.
+     Пути к своим файлам относительные, <base> нет; ссылка на лендинг — от корня.
+     Ни одного числа прогона литералом: всё из results.json, вердикт считает app.js. -->
+<title>День 21: две стратегии нарезки — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+<noscript><style>.js-only { display: none !important; }</style></noscript>
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <p class="back"><a href="/">← AI Advent 2026</a></p>
+    <h1>День 21: две стратегии нарезки</h1>
+    <p class="lede">Поиск по этому проекту на эмбеддингах: документация и код нарезаны двумя способами, по одному набору вопросов измерено, какой находит нужное надёжнее.</p>
+  </header>
+
+  <noscript><p class="status msg">Таблицу сравнения строит скрипт, а он отключён. Данные прогона — файл <a href="results.json">results.json</a> рядом с этой страницей, числа и выводы — в <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-10-01-1820-day21-round5-quantized-and-text-precision.md">записи истории проекта</a>.</p></noscript>
+
+  <main>
+    <section aria-labelledby="sum-h">
+      <div class="sec-head"><h2 id="sum-h">Итог</h2></div>
+      <div class="panel sum">
+        <p class="verdict js-only" id="verdict" role="status">Читаю результаты прогона…</p>
+        <table class="metrics" id="metrics" hidden>
+          <caption class="vh">Три метрики по двум стратегиям нарезки и разница между ними</caption>
+          <thead>
+            <tr>
+              <th scope="col">Метрика</th>
+              <th scope="col" class="num" id="m-fixed"></th>
+              <th scope="col" class="num" id="m-structural"></th>
+              <th scope="col" class="num">Разница</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Recall@5</th>
+              <td class="num" id="m-recall-fixed"></td>
+              <td class="num" id="m-recall-structural"></td>
+              <td class="num" id="m-recall-diff"></td>
+            </tr>
+            <tr>
+              <th scope="row">MRR@10</th>
+              <td class="num" id="m-mrr-fixed"></td>
+              <td class="num" id="m-mrr-structural"></td>
+              <td class="num" id="m-mrr-diff"></td>
+            </tr>
+            <tr>
+              <th scope="row">Фраза-ответ в первом чанке</th>
+              <td class="num" id="m-phrase-fixed"></td>
+              <td class="num" id="m-phrase-structural"></td>
+              <td class="num" id="m-phrase-diff"></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="aside" id="metrics-note" hidden></p>
+        <p class="status partial" id="sum-partial" hidden></p>
+        <ul class="limits">
+          <li>Вопросы написаны людьми этого проекта и отражают их привычки, а не запросы всех будущих клиентов.</li>
+          <li>Разница в один-два вопроса из <span class="num" id="limit-total">набора</span> — шум, а не превосходство.</li>
+          <li>Мерено на локальной модели эмбеддингов, а не на том, что работает в проде.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section aria-labelledby="task-h">
+      <div class="sec-head"><h2 id="task-h">Задание и корпус</h2></div>
+      <blockquote class="task">
+        <p><strong>Индексация документов.</strong> Возьмите набор документов: README / статьи / код / pdf → текст; минимум 20–30 страниц текста суммарно (или эквивалент в коде).</p>
+        <p>Реализуйте пайплайн индексации: разбиение на чанки (chunking); генерация эмбеддингов; сохранение индекса (FAISS / SQLite / JSON).</p>
+        <p><strong>Усиление:</strong> добавьте метаданные к каждому чанку (source, title/file, section, chunk_id); сделайте минимум 2 стратегии chunking и сравните их — по фиксированному размеру и по структуре (заголовки/разделы/файлы).</p>
+        <p><strong>Результат:</strong> локальный индекс документов с эмбеддингами + метаданные + сравнение 2 стратегий chunking.</p>
+      </blockquote>
+      <p class="prose">В индекс взят сам проект: документация <code>agent_docs</code>, <code>AGENTS.md</code>, <code>README.md</code> единиц и код живых единиц — <span id="corpus-files">читаю результаты прогона…</span></p>
+      <p class="note">Не взяты сданные дни, чужие скиллы и зависимости: сданные дни не поддерживаются, искать в них нечего.</p>
+      <p class="prose">Индекс — FAISS <code>IndexFlatIP</code>: точный полный перебор по косинусу. На три с небольшим тысячи фрагментов приближённый поиск не нужен — перебор занимает миллисекунды.</p>
+    </section>
+
+    <section aria-labelledby="strat-h">
+      <div class="sec-head"><h2 id="strat-h">Две стратегии</h2></div>
+      <p class="status msg js-only" id="strat-status" role="status">Читаю результаты прогона…</p>
+      <div class="strats" id="strats"></div>
+    </section>
+
+    <section aria-labelledby="q-h">
+      <div class="sec-head"><h2 id="q-h">Сто вопросов по одному</h2><p class="aside" id="q-count" role="status"></p></div>
+      <div class="filter" id="filter" hidden>
+        <p class="filter-label" id="filter-label">Показать</p>
+        <div class="chips" id="chips" role="group" aria-labelledby="filter-label"></div>
+      </div>
+      <p class="status msg js-only" id="q-status" role="status">Читаю результаты прогона…</p>
+      <div class="q-head" id="q-headbar" aria-hidden="true" hidden>
+        <span>№</span><span>Вопрос</span><span class="num" id="hb-fixed"></span><span class="num" id="hb-structural"></span><span>Расхождение</span><span></span>
+      </div>
+      <ul class="qs" id="qs" role="list"></ul>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p class="num" id="run-line"></p>
+    <p>Мера и индекс — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/rag/README.md">rag/README.md</a>, решение дня — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-29-1352-day21-rag-index-and-project-search-mcp.md">ADR 2026-09-29-1352</a>, как это шло — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-10-01-1820-day21-round5-quantized-and-text-precision.md">запись истории</a>, исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</p>
+  </footer>
+</div>
+</body>
+</html>
