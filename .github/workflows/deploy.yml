@@ -125,6 +125,18 @@ jobs:
     timeout-minutes: 10
     environment: production
     steps:
+      # Репозиторий нужен этому job ради ОДНОГО файла — закреплённого ключа
+      # хоста (ADR 2026-10-02-0921). Раньше checkout здесь не было вовсе:
+      # `ssh-keyscan` файлов репозитория не требовал. Без этого шага выкатка
+      # умирает на `install` с `No such file or directory` — то есть ровно той
+      # невнятной ошибкой, которую пин и затевался убрать (находка reviewer).
+      # sparse-checkout: тянем каталог deploy, а не всё дерево.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       # Секреты — через env шага, а не подстановкой в текст run: так их нет
       # в файле скрипта шага и в команде, которую видит shell.
       - name: Ключ доступа
@@ -136,7 +148,24 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # Ключ хоста ЗАКРЕПЛЁН в репозитории, а не выспрашивается у сервера.
+          # Было `ssh-keyscan >> known_hosts` на каждом прогоне: оно принимало
+          # любой предъявленный ключ, поэтому смену ключа 2026-10-02 выкатка не
+          # заметила — её поймал только ноутбук владельца. Подмену она не
+          # заметила бы ровно так же.
+          # Запись хеширована (`ssh-keygen -H`), но СЕКРЕТНОСТИ это не даёт и
+          # секретом имя хоста не делает: соль лежит в том же файле, а само имя
+          # и так напечатано открытым текстом в README.md, .mcp.json, этом же
+          # файле ниже, .claude/settings.json и десятке ADR. Хеширование здесь
+          # гигиена — файл не добавляет ещё одной копии имени и не выглядит
+          # готовым списком хостов. Подробности в ADR 2026-10-02-0921.
+          install -m 600 "$GITHUB_WORKSPACE/deploy/known_hosts" ~/.ssh/known_hosts
+          name="$SSH_HOST"
+          [ "$SSH_PORT" = "22" ] || name="[$SSH_HOST]:$SSH_PORT"
+          if ! ssh-keygen -F "$name" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error::в deploy/known_hosts нет записи для этого сервера — обновите пин по ADR 2026-10-02-0921-ssh-host-key-pin"
+            exit 1
+          fi
 
       - name: Выкатка
         env:
@@ -150,7 +179,11 @@ jobs:
           # поэтому список — строго ["имя",…] с именами [a-z0-9]+.
           re='^\[("[a-z0-9]+"(,"[a-z0-9]+")*)?\]$'
           [[ $DAYS =~ $re ]] || { echo "::error::список единиц не прошёл белый список"; exit 1; }
+          # Сверка ключа обязательна и названа явно: умолчание `ask` в неинтер-
+          # активном прогоне тоже отказало бы, но тогда защита держалась бы на
+          # отсутствии терминала, а не на решении.
           ssh -p "$SSH_PORT" \
+              -o StrictHostKeyChecking=yes \
               "$SSH_USER@$SSH_HOST" \
               "DAYS='$DAYS' SHA='$SHA' bash -s" <<'REMOTE'
           set -euo pipefail
