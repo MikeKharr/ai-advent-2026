@@ -54,6 +54,7 @@ test('ровный счёт по вопросам при средних в од�
   const text = say(synth({ s: 15, f: 15, t: 70 }))
   assert.doesNotMatch(text, /Перевес доказан/)
   assert.match(text, /счёт ровный: 15 : 15/)
+  assert.doesNotMatch(text, /разные стороны/)
 })
 
 test('доказанный перевес достижим и называется доказанным', () => {
