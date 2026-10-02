@@ -107,3 +107,49 @@ class РазборПоВопросу(unittest.TestCase):
         meta = [{"text": "а" * n} for n in (10, 30, 20, 40)]
         self.assertEqual(run.chunk_summary(meta), {"chunks": 4, "len_median": 25, "len_max": 40})
         self.assertEqual(run.chunk_summary([]), {"chunks": 0, "len_median": 0, "len_max": 0})
+
+
+class ПолныйПрогонСРазбором(unittest.TestCase):
+    """Шапка и поля, которые читает страница итогов дня 21, держатся прогоном.
+
+    Без этого выкинутый из вывода `commit` или `label` оставлял зелёным весь
+    набор (находка reviewer к #294), а страница при этом теряла бы подвал или
+    подписи стратегий молча.
+    """
+
+    def test_прогон_с_разбором_несёт_шапку_и_поля_страницы(self):
+        import json
+        import tempfile
+
+        import numpy as np
+
+        import eval.run as run
+        from embed import OllamaEmbedder
+        from index import VectorIndex
+        from test.fakeollama import FakeOllama
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            texts = ["первый раздел про лимиты", "второй раздел про выкатку"]
+            vecs = FakeOllama.deterministic({"input": texts})["embeddings"]
+            for strategy in run.STRATEGIES:
+                meta = [{"source": f"d{i}.md", "section": f"§{i}", "text": t,
+                         "commit": "abcdef1234", "strategy": strategy}
+                        for i, t in enumerate(texts)]
+                VectorIndex.build(strategy, meta, np.asarray(vecs, dtype="float32"), "m").save(tmp)
+            qpath = tmp / "q.json"
+            qpath.write_text(json.dumps({"queries": [
+                {"id": "q1", "question": texts[0], "expected": ["d0.md"]},
+            ]}, ensure_ascii=False), encoding="utf-8")
+            with FakeOllama({"/api/embed": (200, FakeOllama.deterministic)}) as fake:
+                out = run.run(tmp, qpath, OllamaEmbedder(fake.url, "m"), detail=True)
+
+        self.assertEqual(out["commit"], "abcdef1")
+        self.assertEqual(out["model"], "m")
+        self.assertEqual(out["corpus"], {"files": 2})
+        self.assertRegex(out["generated"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        for strategy in run.STRATEGIES:
+            for key in ("label", "about", "chunks", "len_median", "len_max", "recall@5", "mrr@10"):
+                self.assertIn(key, out[strategy], f"{strategy}.{key}")
+        self.assertEqual([q["id"] for q in out["queries"]], ["q1"])
+        self.assertEqual(out["queries"][0]["fixed"]["rank"], 1)
