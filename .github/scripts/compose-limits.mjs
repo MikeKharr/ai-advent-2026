@@ -28,6 +28,15 @@ import { pathToFileURL } from 'node:url'
 
 export const COMPOSE = 'deploy/compose.yml'
 
+/**
+ * Откуда числа — в каждом сообщении об отказе. Человек при красном прогоне
+ * читает именно его: одна ссылка на ADR 2026-09-29-1639 приписывала бы ему
+ * `mem_limit: 4g`, которого в нём нет (там `2g`), и толкала бы «починить»
+ * compose обратно (находка compliance к #292).
+ */
+export const SOURCE =
+  'ADR 2026-09-29-1639, п. 4; mem_limit у ollama — ADR 2026-10-02-1519'
+
 /** Служба → её потолки, дословно так, как они записаны в compose.yml. */
 export const LIMITS = {
   ollama: { mem_limit: '4g', cpus: '1.0', oom_score_adj: '500' },
@@ -80,7 +89,7 @@ export function problems(text) {
     const actual = services.get(name)
     for (const [key, value] of Object.entries(expected)) {
       if (actual[key] === undefined) {
-        found.push(`у службы ${name} нет ключа ${key}: — ADR 2026-09-29-1639, п. 4 требует ${key}: ${value}`)
+        found.push(`у службы ${name} нет ключа ${key}: — решением принято ${key}: ${value} (${SOURCE})`)
       } else if (actual[key] !== value) {
         found.push(`у службы ${name} ${key}: ${actual[key]}, а решением принято ${value}`)
       }
@@ -93,7 +102,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const found = problems(readFileSync(join(process.cwd(), COMPOSE), 'utf8'))
   for (const problem of found) console.log(`::error file=${COMPOSE}::${problem}`)
   if (found.length) {
-    console.log('::error::потолки новых служб разошлись с решением — ADR 2026-09-29-1639, п. 4')
+    console.log(`::error::потолки новых служб разошлись с решением — ${SOURCE}`)
     process.exit(1)
   }
   for (const [name, expected] of Object.entries(LIMITS)) {
