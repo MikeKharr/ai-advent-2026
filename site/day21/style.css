@@ -1,0 +1,282 @@
+/* Итог дня 21. Токены — agent_docs/design/corpus.md, блок токенов скопирован
+   из site/style.css значение-в-значение. Раскладка —
+   agent_docs/design/2026-10-02-1950-day21-rag-results.md.
+   Значение вне шкалы — дефект, а не нюанс. */
+
+:root {
+  color-scheme: light dark;
+  --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+  --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+  --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-lg:1.125rem; --t-xl:1.5rem;
+  --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+  --line:#e6e6e3; --line-ctl:#8f8f8a;
+  --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+  --overlay:rgb(23 23 26 / .5);
+  --r-sm:6px; --r-md:10px; --r-full:999px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+    --line:#2a2a30; --line-ctl:#6a6a73;
+    --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+    --overlay:rgb(0 0 0 / .6);
+  }
+}
+
+* { box-sizing:border-box; }
+/* Собственный display перебивает [hidden] из таблицы браузера. */
+[hidden] { display:none !important; }
+
+body {
+  margin:0; background:var(--bg); color:var(--fg);
+  font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* Пять состояний у каждого интерактивного элемента: покой, наведение,
+   нажатие, :focus-visible, [disabled]. Акцент на экране один — это кольцо. */
+:where(a, button, summary):focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+a { color:inherit; }
+a:hover { background:var(--surface); }
+a:active, button:active, summary:active { position:relative; top:1px; }
+button { font:inherit; cursor:pointer; }
+button[disabled] { opacity:.5; cursor:default; }
+.num { font-variant-numeric:tabular-nums; }
+code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:var(--t-xs); }
+/* Видимо скрыто: остаётся в дереве доступности, в отличие от display:none. */
+.vh {
+  position:absolute; width:1px; height:1px; overflow:hidden;
+  clip-path:inset(50%); white-space:nowrap;
+}
+
+/* ── Страница ────────────────────────────────────────────────────────── */
+.page {
+  max-width:60rem; margin-inline:auto;
+  padding-block:var(--s-6); padding-inline:var(--s-4);
+}
+@media (min-width:36rem) {
+  .page { padding-block:var(--s-7); padding-inline:var(--s-5); }
+}
+.head { margin-bottom:var(--s-7); }
+.back { margin:0 0 var(--s-2); font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+h1 {
+  font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; font-weight:600;
+  margin:0;
+}
+.lede { margin:var(--s-2) 0 0; color:var(--fg-mut); max-width:68ch; }
+main > section + section { margin-top:var(--s-7); }
+noscript { display:block; margin-bottom:var(--s-5); }
+
+.sec-head {
+  display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between;
+  gap:var(--s-2) var(--s-3); margin-bottom:var(--s-4);
+}
+h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
+.aside {
+  margin:0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+  font-variant-numeric:tabular-nums;
+}
+.prose { margin:0; max-width:68ch; }
+.note {
+  margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+  max-width:52ch;
+}
+.prose + .prose, .note + .prose { margin-top:var(--s-4); }
+/* Ошибка и пустой прогон — обычное сообщение, не авария: --fg, не --danger. */
+.status { margin:0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+.status.msg { font-size:var(--t-md); line-height:1.6; color:var(--fg); max-width:68ch; }
+.panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); }
+
+/* ── Итог ────────────────────────────────────────────────────────────── */
+.sum { padding:var(--s-4); }
+.verdict { margin:0; font-size:var(--t-lg); line-height:1.4; max-width:68ch; }
+.verdict + * { margin-top:var(--s-4); }
+.metrics {
+  width:100%; border-collapse:collapse; table-layout:fixed;
+  font-size:var(--t-sm); line-height:1.5;
+}
+.metrics th, .metrics td {
+  padding:var(--s-2) 0 var(--s-2) var(--s-2); text-align:right; vertical-align:baseline;
+}
+.metrics th[scope="col"]:first-child, .metrics th[scope="row"] {
+  text-align:left; font-weight:600; width:40%; padding-right:var(--s-3);
+}
+.metrics thead th { color:var(--fg-mut); font-weight:600; border-bottom:1px solid var(--line); }
+.metrics tbody tr + tr th, .metrics tbody tr + tr td { border-top:1px solid var(--line); }
+.metrics .diff-word { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+/* Ниже 36rem на три числовые колонки остаётся ~50px: --t-sm в них не влезает
+   вместе с зазором, поэтому таблица (и только она) уходит на --t-xs. */
+@media (max-width:35.999rem) {
+  .metrics { font-size:var(--t-xs); line-height:1.4; }
+  .metrics th[scope="col"]:first-child, .metrics th[scope="row"] { width:30%; }
+  /* Подпись колонки приходит из данных: одно длинное слово шире колонки
+     обязано переноситься, а не выталкивать таблицу. */
+  /* Перенос по словам и по слогам, а не посреди слова: на 320 px подпись
+     «По структуре» рвалась «По структу / ре» (находка design-review).
+     anywhere — только страховка для аномально длинной подписи из данных. */
+  .metrics th { overflow-wrap:break-word; hyphens:auto; }
+  .metrics th, .metrics td { padding-left:var(--s-1); }
+}
+#metrics-note { margin-top:var(--s-3); }
+#sum-partial { margin-top:var(--s-3); }
+.limits {
+  margin:var(--s-4) 0 0; padding-left:var(--s-5);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch;
+}
+.limits li + li { margin-top:var(--s-1); }
+
+/* ── Задание и корпус ────────────────────────────────────────────────── */
+.task {
+  margin:0 0 var(--s-4); padding-inline-start:var(--s-4);
+  border-inline-start:3px solid var(--line); max-width:68ch;
+}
+.task p { margin:0; }
+.task p + p { margin-top:var(--s-3); }
+
+/* ── Две стратегии ───────────────────────────────────────────────────── */
+.strats { display:grid; gap:var(--s-4); }
+.strats:empty { display:none; }
+@media (min-width:48rem) { .strats { grid-template-columns:1fr 1fr; } }
+.strat { padding:var(--s-4); }
+.strat h3 { margin:0; font-size:var(--t-md); line-height:1.6; font-weight:600; }
+.strat-about {
+  margin:var(--s-2) 0 var(--s-4); font-size:var(--t-sm); line-height:1.5;
+  color:var(--fg-mut); max-width:52ch;
+}
+.strat-stats {
+  display:grid; grid-template-columns:1fr auto; row-gap:var(--s-1); column-gap:var(--s-3);
+  margin:0; padding-top:var(--s-4); border-top:1px solid var(--line);
+}
+.strat-stats dt {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut); align-self:baseline;
+}
+.strat-stats dd {
+  margin:0; text-align:right; font-size:var(--t-sm); line-height:1.5;
+  font-variant-numeric:tabular-nums;
+}
+
+/* ── Сто вопросов по одному ──────────────────────────────────────────── */
+.filter { margin-bottom:var(--s-4); }
+.filter-label {
+  margin:0 0 var(--s-2); font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--fg-mut);
+}
+.chips { display:flex; flex-wrap:wrap; gap:var(--s-2); }
+.chip {
+  display:inline-flex; align-items:baseline; gap:var(--s-1);
+  padding:var(--s-2) var(--s-3); font-size:var(--t-sm); line-height:1.5;
+  background:var(--surface); color:var(--fg);
+  border:1px solid var(--line-ctl); border-radius:var(--r-full);
+  font-variant-numeric:tabular-nums;
+  transition:background-color 120ms;
+}
+.chip:hover { background:var(--bg); }
+.chip[aria-pressed="true"] { background:var(--fg); color:var(--surface); border-color:var(--fg); }
+.chip[aria-pressed="true"]:hover { background:var(--fg-mut); border-color:var(--fg-mut); }
+
+/* Полоса ярлыков колонок — дубль ярлыков внутри строк, только с 48rem. */
+.q-head { display:none; }
+.qs {
+  list-style:none; margin:0; padding:0;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  overflow:hidden;
+}
+.qs:empty { display:none; }
+.qs li + li { border-top:1px solid var(--line); }
+.q-sum {
+  display:grid; grid-template-columns:minmax(0,1fr) auto;
+  grid-template-areas:"id mark" "text text" "ranks ranks" "tag tag";
+  gap:var(--s-2) var(--s-3); align-items:baseline;
+  padding:var(--s-3) var(--s-4);
+  list-style:none; cursor:pointer;
+  transition:background-color 120ms;
+}
+.q-sum::-webkit-details-marker { display:none; }
+.q-sum:hover { background:var(--bg); }
+/* Раскрытая строка помечена тем же шагом фона, что наведение: в списке из ста
+   строк шапка раскрытой иначе не связана со своим телом (design-review). */
+.qs details[open] .q-sum { background:var(--bg); }
+.q-sum:focus-visible { outline-offset:-2px; }
+.q-id {
+  grid-area:id; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  font-variant-numeric:tabular-nums;
+}
+.q-text { grid-area:text; overflow-wrap:anywhere; }
+.ranks { grid-area:ranks; display:flex; flex-wrap:wrap; gap:var(--s-2) var(--s-4); }
+.rank { display:inline-flex; align-items:baseline; gap:var(--s-2); }
+.rank-label {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut);
+}
+.rank-val { font-size:var(--t-sm); line-height:1.5; font-variant-numeric:tabular-nums; }
+.q-tag { grid-area:tag; }
+.q-tag > span {
+  display:inline-block; padding:0 var(--s-2);
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  border:1px solid var(--line-ctl); border-radius:var(--r-full);
+  white-space:nowrap;
+}
+.q-mark { grid-area:mark; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+.q-mark::before { content:"+"; }
+details[open] .q-mark::before { content:"−"; }
+
+.q-body { padding:var(--s-3) var(--s-4) var(--s-4); }
+.q-exp { margin:0 0 var(--s-4); font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+.lbl {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut);
+}
+.q-cols { display:grid; gap:var(--s-4); }
+@media (min-width:48rem) { .q-cols { grid-template-columns:1fr 1fr; } }
+.q-col p { margin:0; }
+.q-col-head { font-size:var(--t-sm); line-height:1.5; font-weight:600; }
+.q-path, .q-sect {
+  margin-top:var(--s-1) !important;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); overflow-wrap:anywhere;
+}
+.q-exc {
+  margin-top:var(--s-2) !important; font-size:var(--t-sm); line-height:1.5;
+  max-width:52ch; overflow-wrap:anywhere;
+}
+.q-phrase {
+  margin-top:var(--s-2) !important; font-size:var(--t-sm); line-height:1.5;
+  color:var(--fg-mut); max-width:52ch;
+}
+
+@media (min-width:48rem) {
+  .q-head {
+    display:grid; position:sticky; top:0; z-index:1;
+    grid-template-columns:2.5rem minmax(0,1fr) 7rem 7rem 6rem 1.25rem;
+    gap:var(--s-3); padding:var(--s-2) var(--s-4);
+    background:var(--bg); border-bottom:1px solid var(--line);
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--fg-mut);
+  }
+  .q-head .num, .q-head span:nth-child(5) { text-align:right; }
+  .q-sum {
+    grid-template-columns:2.5rem minmax(0,1fr) 7rem 7rem 6rem 1.25rem;
+    grid-template-areas:none;
+  }
+  .q-sum > *, .q-sum .rank { grid-area:auto; }
+  .ranks { display:contents; }
+  .rank { justify-content:flex-end; }
+  .rank-label {
+    position:absolute; width:1px; height:1px; overflow:hidden;
+    clip-path:inset(50%); white-space:nowrap;
+  }
+  .q-tag { text-align:right; }
+}
+
+/* ── Подвал ──────────────────────────────────────────────────────────── */
+.foot {
+  margin-top:var(--s-7); border-top:1px solid var(--line); padding-top:var(--s-4);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+}
+.foot p { margin:0; max-width:52ch; }
+.foot p + p { margin-top:var(--s-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .chip, .q-sum { transition:none; }
+}
