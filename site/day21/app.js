@@ -10,14 +10,9 @@ const EMPTY_MSG = 'Прогон меры ещё не сделан. Числа п
   'прогона на собранном индексе.';
 const NO_DETAIL = 'нет данных';
 
-/* Порядок на экране — fixed, затем structural (как в данных и в ADR). */
-const SIDES = ['fixed', 'structural'];
-const METRICS = [
-  { row: 'recall', key: 'recall@5', name: 'Recall@5', basis: 'queries', kind: 'abs' },
-  { row: 'mrr', key: 'mrr@10', name: 'MRR@10', basis: 'queries', kind: 'abs' },
-  { row: 'phrase', key: 'phrase_in_first_chunk', name: 'фраза-ответ в первом чанке',
-    basis: 'phrase_queries', kind: 'points' },
-];
+/* Вердикт и его счёт — в verdict.js (подключён раньше), чтобы у них был тест. */
+const { SIDES, METRICS, plural, fmt, quote, deltas, verdictText, noneText } =
+  globalThis.DAY21_VERDICT;
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -27,18 +22,7 @@ const el = (tag, cls, text) => {
   return n;
 };
 
-/* Склонение после числа: 1 файл, 2 файла, 5 файлов. */
-function plural(n, one, few, many) {
-  const a = Math.abs(n) % 100, b = a % 10;
-  if (a > 10 && a < 20) return many;
-  if (b === 1) return one;
-  if (b > 1 && b < 5) return few;
-  return many;
-}
-/* Четыре знака — как в самих данных; выравнивание колонки важнее краткости. */
-const fmt = (v) => v.toFixed(4);
 const fmtDiff = (d) => (d < 0 ? '−' : '+') + Math.abs(d).toFixed(4);
-const quote = (label) => '«' + label.charAt(0).toLowerCase() + label.slice(1) + '»';
 
 function fmtRun(iso) {
   const d = new Date(iso);
@@ -65,93 +49,6 @@ function showMessage(text) {
   $('corpus-files').textContent = 'число файлов будет после прогона';
 }
 
-/* ── Вердикт ──────────────────────────────────────────────────────────── */
-
-function deltas(data) {
-  const basis = (name) => {
-    const a = data.fixed && data.fixed[name], b = data.structural && data.structural[name];
-    return typeof a === 'number' ? a : b;
-  };
-  return METRICS.map((m) => {
-    const d = data.structural[m.key] - data.fixed[m.key];
-    const total = basis(m.basis);
-    const noise = 2 / total;
-    return { m: m, d: d, noise: noise, beyond: Math.abs(d) > noise };
-  });
-}
-
-/* Счёт по отдельным вопросам: у кого верный документ выше. Считается из
-   queries[].<стратегия>.rank — тех же рангов, из которых мера берёт MRR@10.
-   null — нет в первой десятке. Вопросы без разбора по одной из стратегий не
-   считаются вовсе. */
-function headToHead(data) {
-  if (!Array.isArray(data.queries)) return null;
-  let s = 0, f = 0, tie = 0, none = 0, n = 0;
-  data.queries.forEach((q) => {
-    if (!q.fixed || !q.structural) return;
-    const a = q.fixed.rank, b = q.structural.rank;
-    n += 1;
-    if (a == null && b == null) { none += 1; tie += 1; return; }
-    if (b != null && (a == null || b < a)) s += 1;
-    else if (a != null && (b == null || a < b)) f += 1;
-    else tie += 1;
-  });
-  return n ? { structural: s, fixed: f, tie: tie, none: none, n: n } : null;
-}
-
-/* Двусторонний знаковый тест: вероятность получить случайно такой или более
-   сильный перекос при равных стратегиях. Ничьи не участвуют. */
-function signTestP(a, b) {
-  const n = a + b;
-  if (n === 0) return 1;
-  const k = Math.max(a, b);
-  let tail = 0, c = 1;            // c = C(n, i), считаем от i = 0
-  for (let i = 0; i <= n; i += 1) {
-    if (i >= k) tail += c;
-    c = c * (n - i) / (i + 1);
-  }
-  return Math.min(1, 2 * tail / Math.pow(2, n));
-}
-
-function verdictText(data, ds) {
-  const beyond = ds.filter((x) => x.beyond);
-  const total = typeof data.fixed.queries === 'number' ? data.fixed.queries : data.structural.queries;
-  if (beyond.length === 0) {
-    return 'Стратегии неразличимы: разница по всем трём метрикам не больше двух вопросов из ' +
-      total + '.';
-  }
-  const amount = (x) => x.m.kind === 'points'
-    ? (() => { const p = Math.round(Math.abs(x.d) * 100);
-        return p + ' ' + plural(p, 'пункт', 'пункта', 'пунктов'); })()
-    : fmt(Math.abs(x.d));
-  const sameWay = beyond.every((x) => (x.d > 0) === (beyond[0].d > 0));
-  if (sameWay) {
-    // «Направление», а не «лучше»: превышение порога шума говорит, что разница
-    // не нулевая, но не что она доказана. Доказанность отвечает знаковый тест
-    // по отдельным вопросам (находка design-review: страница писала «Лучше» при
-    // p ≈ 0,31, а презентация того же прогона — «не доказан»).
-    const winSide = beyond[0].d > 0 ? 'structural' : 'fixed';
-    const loseSide = winSide === 'structural' ? 'fixed' : 'structural';
-    const winner = data[winSide].label;
-    const parts = beyond.map((x, i) => x.m.name + (i === 0 ? ' выше на ' : ' — на ') + amount(x));
-    let text = 'Направление за ' + quote(winner) + ': ' + parts.join(', ') + '.';
-    const h = headToHead(data);
-    if (!h) return text + ' По отдельным вопросам этот прогон не разбирался.';
-    const w = h[winSide], l = h[loseSide], diverged = w + l;
-    const p = signTestP(w, l);
-    const score = 'по отдельным вопросам ' + quote(winner) + ' впереди в ' + w + ' из ' + diverged +
-      ' разошедшихся, ' + quote(data[loseSide].label) + ' — в ' + l + ', ничьих ' + h.tie;
-    text += p < 0.05
-      ? ' Перевес доказан: ' + score + ' (знаковый тест, p = ' + p.toFixed(2) + ').'
-      : ' Перевес не доказан: ' + score + '. Случайно такой или более сильный расклад ' +
-        'получается с вероятностью ' + p.toFixed(2) + ' (знаковый тест).';
-    return text;
-  }
-  const parts = beyond.map((x, i) => x.m.name + (i === 0 ? ' выше у ' : ' — у ') +
-    quote(data[x.d > 0 ? 'structural' : 'fixed'].label) + ' на ' + amount(x));
-  return 'Метрики расходятся: ' + parts.join(', ') + '. Одной лучшей стратегии числа не дают.';
-}
-
 /* ── Итог ─────────────────────────────────────────────────────────────── */
 
 function renderSummary(data) {
@@ -174,13 +71,7 @@ function renderSummary(data) {
       cell.appendChild(el('span', 'diff-word', x.beyond ? 'больше шума' : 'шум'));
     });
     v.className = 'verdict js-only';
-    // Сколько вопросов не нашла ни одна стратегия — часть ответа «насколько
-    // уверенно», а не подробность для фильтра (находка design-review).
-    const h = headToHead(data);
-    v.textContent = verdictText(data, ds) + (h && h.none
-      ? ' У ' + h.none + ' ' + plural(h.none, 'вопроса', 'вопросов', 'вопросов') + ' из ' + h.n +
-        ' ни одна стратегия не нашла эталон в первой десятке.'
-      : '');
+    v.textContent = verdictText(data, ds) + noneText(data);
     $('sum-partial').hidden = true;
   } else {
     METRICS.forEach((m) => { $('m-' + m.row + '-diff').textContent = NO_DETAIL; });
