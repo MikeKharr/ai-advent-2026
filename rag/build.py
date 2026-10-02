@@ -131,16 +131,22 @@ def chunk_stats(chunks: list[chunking.Chunk]) -> dict:
 
 
 def embed_part(embedder, part, call_timeout, deadline, strategy: str) -> list:
-    """Векторы батча; при отказе — виноватый чанк назван по имени.
+    """Векторы батча; при отказе службы — сборка падает, назвав виновника.
 
     Служба отвечает на батч целиком: один вход за окном или один, на котором
     умер раннер, — и `400` приходит на все шестнадцать, не говоря, на какой.
-    На корпусе из трёх тысяч чанков такое сообщение бесполезно, поэтому батч
-    переспрашивается по одному входу, и отказ называет файл, раздел и длину.
+    На корпусе из трёх тысяч чанков такое сообщение бесполезно, поэтому на
+    `400` батч переспрашивается по одному входу — ТОЛЬКО ради имени.
 
-    Цена — до шестнадцати лишних вызовов, и только на пути, где сборка всё
-    равно падает. Если по одному все прошли, отказ батча был не про вход, и
-    векторы годятся: они те же, что вернул бы удачный батч.
+    **Сборка падает в любом случае** (решение владельца 2026-10-02). Если по
+    одному все прошли, отказ был не про вход, а про запрос целиком — и это
+    тоже называется прямо. Продолжать сборку на одиночных вызовах нельзя: это
+    молча умножало бы работу общего ядра до ×16, и прогон оставался бы
+    зелёным (находка compliance и reviewer к #293). Так цена переспроса — до
+    шестнадцати вызовов — платится только когда сборка всё равно падает.
+
+    Переспроса нет, если служба не ответила вовсе (`status is None`: нет
+    связи, срок): тогда первый же одиночный вызов «назвал» бы невиновный чанк.
 
     Публичная причина от этого не меняется — она из закрытого набора
     (`serve.reason`); подробность уходит только в журнал.
@@ -148,17 +154,23 @@ def embed_part(embedder, part, call_timeout, deadline, strategy: str) -> list:
     try:
         return embedder.embed([c.embed_text for c in part], call_timeout)
     except EmbedError as err:
-        if len(part) == 1:
-            c = part[0]
-            raise EmbedError(
-                f"чанк {c.source} § {c.section!r}, {len(c.embed_text)} знаков: {err}"
-            ) from err
-        out = []
+        if err.status != 400:
+            raise
         for c in part:
             left = deadline.check(f"стратегия {strategy}, переспрос чанка {c.source}")
             one_timeout = None if left is None else min(embedder.timeout, left)
-            out.extend(embed_part(embedder, [c], one_timeout, deadline, strategy))
-        return out
+            try:
+                embedder.embed([c.embed_text], one_timeout)
+            except EmbedError as one:
+                raise EmbedError(
+                    f"чанк {c.source} § {c.section!r}, {len(c.embed_text)} знаков: {one}",
+                    status=one.status,
+                ) from one
+        raise EmbedError(
+            f"батч из {len(part)} отказан, а по одному прошли все — виноватого "
+            f"входа нет, отказ про запрос целиком: {err}",
+            status=err.status,
+        ) from err
 
 
 def build_strategy(
