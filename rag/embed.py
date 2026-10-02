@@ -109,7 +109,15 @@ class OllamaEmbedder:
         if not texts:
             return []
         self.calls += 1
-        body = self._post("/api/embed", {"model": self.model, "input": texts}, timeout=timeout)
+        # `truncate: false` — вход за окном модели даёт отказ, а не тихую
+        # обрезку. Без поля Ollama молча отбрасывает хвост, и чанк эмбеддится
+        # без конца документа: ни ошибки, ни признака в индексе. Запас худшего
+        # чанка до окна — 11 % (ADR 2026-10-01-1818), и корпус растёт.
+        body = self._post(
+            "/api/embed",
+            {"model": self.model, "input": texts, "truncate": False},
+            timeout=timeout,
+        )
         vectors = body.get("embeddings")
         if not isinstance(vectors, list) or len(vectors) != len(texts):
             got = len(vectors) if isinstance(vectors, list) else None

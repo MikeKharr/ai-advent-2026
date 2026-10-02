@@ -25,6 +25,11 @@ class FakeOllama:
                 status, payload = outer.routes.get(self.path, (404, {"error": "no route"}))
                 if callable(payload):
                     payload = payload(request or {})
+                    # Маршрут вправе решить и код ответа по телу запроса:
+                    # настоящая Ollama отдаёт 400 или 200 в зависимости от
+                    # длины входа и поля `truncate`.
+                    if isinstance(payload, tuple):
+                        status, payload = payload
                 body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("content-type", "application/json")

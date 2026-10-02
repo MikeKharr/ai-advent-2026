@@ -359,3 +359,58 @@ class EmptyCorpusTest(unittest.TestCase):
 
     def test_это_не_подвид_отказа_эмбеддера(self):
         self.assertFalse(issubclass(build.EmptyCorpus, EmbedError))
+
+
+
+def window_ollama(limit: int):
+    """Поддельная Ollama, ведущая себя как настоящая по полю `truncate`.
+
+    Вход длиннее `limit` знаков: при `truncate: false` — `400` с тем телом,
+    которое отдаёт настоящая служба; без поля — `200`, молча обрезая вход.
+    Держатель смотрит на ПОВЕДЕНИЕ прохода, а не на текст запроса: снятие
+    `truncate: false` из клиента делает сборку удачной, и тест краснеет.
+    """
+    def embed(request):
+        texts = request.get("input", [])
+        if request.get("truncate") is False and any(len(t) > limit for t in texts):
+            return 400, {"error": "the input length exceeds the context length"}
+        return 200, FakeOllama.deterministic({"input": [t[:limit] for t in texts]})
+
+    return {**ROUTES, "/api/embed": (200, embed)}
+
+
+class ГромкийПорогОкна(unittest.TestCase):
+    """ADR 2026-10-01-1818: вход за окном — отказ с именем чанка, а не обрезка."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "corpus"
+        self.index = Path(self.tmp.name) / "index"
+        corpus_tree(self.root)
+        # Один длинный документ среди коротких: батч соберёт их вместе, и
+        # отказ придёт на весь батч, а не на виноватый вход.
+        (self.root / "agent_docs" / "длинный.md").write_text(
+            "# Длинный\n\n" + "слово " * 400 + "\n", encoding="utf-8"
+        )
+
+    def build(self, fake):
+        embedder = OllamaEmbedder(fake.url, "m")
+        chunks = build.read_chunks(self.root, "fixed")
+        return build.build_strategy("fixed", chunks, embedder, self.index)
+
+    def test_вход_за_окном_роняет_сборку_и_называет_чанк(self):
+        with FakeOllama(window_ollama(limit=200)) as fake:
+            with self.assertRaises(EmbedError) as поймано:
+                self.build(fake)
+        текст = str(поймано.exception)
+        self.assertIn("agent_docs/длинный.md", текст,
+                      "отказ не назвал виноватый чанк — на трёх тысячах чанков это бесполезно")
+        self.assertIn("input length exceeds the context length", текст,
+                      "тело ответа службы потеряно по дороге")
+
+    def test_без_длинного_входа_сборка_проходит(self):
+        # Контроль: иначе «падает» выполнялось бы всегда и ничего не значило.
+        with FakeOllama(window_ollama(limit=100000)) as fake:
+            stats = self.build(fake)
+        self.assertGreater(stats["embedded"], 0)

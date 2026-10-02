@@ -130,6 +130,37 @@ def chunk_stats(chunks: list[chunking.Chunk]) -> dict:
     }
 
 
+def embed_part(embedder, part, call_timeout, deadline, strategy: str) -> list:
+    """Векторы батча; при отказе — виноватый чанк назван по имени.
+
+    Служба отвечает на батч целиком: один вход за окном или один, на котором
+    умер раннер, — и `400` приходит на все шестнадцать, не говоря, на какой.
+    На корпусе из трёх тысяч чанков такое сообщение бесполезно, поэтому батч
+    переспрашивается по одному входу, и отказ называет файл, раздел и длину.
+
+    Цена — до шестнадцати лишних вызовов, и только на пути, где сборка всё
+    равно падает. Если по одному все прошли, отказ батча был не про вход, и
+    векторы годятся: они те же, что вернул бы удачный батч.
+
+    Публичная причина от этого не меняется — она из закрытого набора
+    (`serve.reason`); подробность уходит только в журнал.
+    """
+    try:
+        return embedder.embed([c.embed_text for c in part], call_timeout)
+    except EmbedError as err:
+        if len(part) == 1:
+            c = part[0]
+            raise EmbedError(
+                f"чанк {c.source} § {c.section!r}, {len(c.embed_text)} знаков: {err}"
+            ) from err
+        out = []
+        for c in part:
+            left = deadline.check(f"стратегия {strategy}, переспрос чанка {c.source}")
+            one_timeout = None if left is None else min(embedder.timeout, left)
+            out.extend(embed_part(embedder, [c], one_timeout, deadline, strategy))
+        return out
+
+
 def build_strategy(
     strategy: str,
     chunks: list[chunking.Chunk],
@@ -159,7 +190,8 @@ def build_strategy(
         left = deadline.check(f"стратегия {strategy}, чанк {i} из {len(fresh)}")
         # Срок вызова не вправе пережить срок прохода — отсюда min.
         call_timeout = None if left is None else min(embedder.timeout, left)
-        for chunk, vector in zip(part, embedder.embed([c.embed_text for c in part], call_timeout)):
+        vectors_part = embed_part(embedder, part, call_timeout, deadline, strategy)
+        for chunk, vector in zip(part, vectors_part):
             known[chunk.sha256] = np.asarray(vector, dtype="float32")
 
     vectors = np.asarray([known[c.sha256] for c in chunks], dtype="float32")
