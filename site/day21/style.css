@@ -156,6 +156,8 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
 }
 
 /* ── Сто вопросов по одному ──────────────────────────────────────────── */
+/* Пояснение, что значат числа в строке: стоит до фильтра и до списка. */
+.q-explain { margin-bottom:var(--s-4); }
 .filter { margin-bottom:var(--s-4); }
 .filter-label {
   margin:0 0 var(--s-2); font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
@@ -222,12 +224,30 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
 details[open] .q-mark::before { content:"−"; }
 
 .q-body { padding:var(--s-3) var(--s-4) var(--s-4); }
-.q-exp { margin:0 0 var(--s-4); font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+/* Ссылка стоит на --surface панели списка, поэтому её наведение — шаг к --bg,
+   а не общее правило a:hover (там --surface, на --surface не видно). */
+.q-body a:hover { background:var(--bg); }
+.q-exp { margin:0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+/* Верный ответ и подтверждение — основной текст: это то, что проверяет читатель. */
+.q-ans { margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; max-width:52ch; }
+.q-ev { margin-top:var(--s-3); }
+.q-ev-text {
+  margin:var(--s-1) 0 0; font-size:var(--t-sm); line-height:1.5;
+  max-width:52ch; overflow-wrap:anywhere;
+}
+.q-ev-src {
+  margin:var(--s-1) 0 0;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); overflow-wrap:anywhere;
+}
 .lbl {
   font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
   color:var(--fg-mut);
 }
-.q-cols { display:grid; gap:var(--s-4); }
+/* Ярлыки в раскрытом теле стоят отдельной строкой: иначе «ВЕРНЫЙ ОТВЕТ» липнет
+   к тексту, а «ВЕРНЫЙ ДОКУМЕНТ» переносится — ряд ярлыков получается рваным. */
+.q-body .lbl { display:block; }
+.q-cols { display:grid; gap:var(--s-4); margin-top:var(--s-4); }
 @media (min-width:48rem) { .q-cols { grid-template-columns:1fr 1fr; } }
 .q-col p { margin:0; }
 .q-col-head { font-size:var(--t-sm); line-height:1.5; font-weight:600; }

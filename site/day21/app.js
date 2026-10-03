@@ -22,6 +22,21 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+/* Ссылка на файл в репозитории: «верный документ» — это файл, который поиск
+   должен был поставить первым, и его надо иметь возможность открыть. */
+const REPO = 'https://github.com/MikeKharr/ai-advent-2026/blob/main/';
+function fileLink(path) {
+  const a = el('a', 'q-file');
+  a.href = REPO + path.split('/').map(encodeURIComponent).join('/');
+  a.appendChild(el('code', null, path));
+  return a;
+}
+
+/* Ярлык стратегии в строке вопроса говорит, что за число стоит рядом: без
+   слова «место» числа 1…10 читались как что угодно (замечание владельца). */
+const lowerLabel = (label) => label.charAt(0).toLowerCase() + label.slice(1);
+const placeLabel = (label) => 'Место · ' + lowerLabel(label);
+
 const fmtDiff = (d) => (d < 0 ? '−' : '+') + Math.abs(d).toFixed(4);
 
 function fmtRun(iso) {
@@ -135,6 +150,12 @@ function tagOf(q) {
   return '';
 }
 
+/* Словами: «место 4» либо «верного документа в первой десятке нет». */
+function placeWords(side) {
+  if (!side) return NO_DETAIL;
+  return side.rank === null ? 'верного документа в первой десятке нет' : 'место ' + side.rank;
+}
+
 function rankText(side) {
   if (!side) return NO_DETAIL;
   return side.rank === null ? 'нет' : String(side.rank);
@@ -149,7 +170,7 @@ function queryRow(q, data) {
   const ranks = el('span', 'ranks');
   SIDES.forEach((s) => {
     const r = el('span', 'rank');
-    r.appendChild(el('span', 'rank-label', (data[s] && data[s].label) || s));
+    r.appendChild(el('span', 'rank-label', placeLabel((data[s] && data[s].label) || s)));
     r.appendChild(el('span', 'rank-val', rankText(q[s])));
     ranks.appendChild(r);
   });
@@ -164,15 +185,36 @@ function queryRow(q, data) {
   det.appendChild(sum);
 
   const body = el('div', 'q-body');
-  const exp = el('p', 'q-exp');
-  exp.appendChild(el('span', 'lbl', 'Эталонный документ'));
-  exp.appendChild(document.createTextNode(' '));
   const paths = Array.isArray(q.expected) ? q.expected : [];
-  paths.forEach((path, i) => {
-    if (i) exp.appendChild(document.createTextNode(', '));
-    exp.appendChild(el('code', null, path));
-  });
-  body.appendChild(exp);
+  if (paths.length) {
+    const exp = el('p', 'q-exp');
+    exp.appendChild(el('span', 'lbl', 'Верный документ'));
+    exp.appendChild(document.createTextNode(' '));
+    paths.forEach((path, i) => {
+      if (i) exp.appendChild(document.createTextNode(', '));
+      exp.appendChild(fileLink(path));
+    });
+    body.appendChild(exp);
+  }
+  /* Ответа и подтверждения у вопроса может не быть: тогда раздела нет вовсе —
+     подставлять заглушку нельзя (I-8). */
+  if (typeof q.answer === 'string' && q.answer) {
+    const ans = el('p', 'q-ans');
+    ans.appendChild(el('span', 'lbl', 'Верный ответ'));
+    ans.appendChild(document.createTextNode(' ' + q.answer));
+    body.appendChild(ans);
+  }
+  if (typeof q.evidence === 'string' && q.evidence) {
+    const ev = el('div', 'q-ev');
+    ev.appendChild(el('span', 'lbl', 'Подтверждение из документа'));
+    ev.appendChild(el('p', 'q-ev-text', '«' + q.evidence + '»'));
+    if (typeof q.evidence_source === 'string' && q.evidence_source) {
+      const src = el('p', 'q-ev-src');
+      src.appendChild(fileLink(q.evidence_source));
+      ev.appendChild(src);
+    }
+    body.appendChild(ev);
+  }
 
   const cols = el('div', 'q-cols');
   SIDES.forEach((s) => {
@@ -184,7 +226,9 @@ function queryRow(q, data) {
       cols.appendChild(col);
       return;
     }
-    col.appendChild(el('p', 'q-col-head', label + ' · ранг ' + rankText(side)));
+    /* «место», а не «ранг»: одно слово на всю страницу — в сводке, в полосе
+       заголовков и здесь (замечание владельца «что означают цифры?»). */
+    col.appendChild(el('p', 'q-col-head', label + ' · ' + placeWords(side)));
     const first = Array.isArray(side.top) ? side.top[0] : null;
     if (first) {
       // Ярлык обязателен: без него путь под «ранг нет» читался как эталон
@@ -206,6 +250,16 @@ function queryRow(q, data) {
   return li;
 }
 
+function exampleText(list, data) {
+  const differs = (q) => q.fixed && q.structural && q.fixed.rank !== q.structural.rank;
+  const pick = list.find((q) => differs(q) && q.fixed.rank !== null && q.structural.rank !== null) ||
+    list.find(differs);
+  if (!pick) return '';
+  const parts = SIDES.map((s) =>
+    lowerLabel((data[s] && data[s].label) || s) + ' — ' + placeWords(pick[s]));
+  return ' Например, у вопроса ' + (pick.id || '') + ': ' + parts.join(', ') + '.';
+}
+
 const FILTERS = [
   { id: 'all', text: 'Все', keep: () => true },
   { id: 'diverged', text: 'Разошлись', keep: (q) => tagOf(q) === 'разошлись' },
@@ -222,8 +276,9 @@ function renderQueries(data) {
   const rows = list.map((q) => ({ q: q, node: queryRow(q, data) }));
   const ul = $('qs');
   rows.forEach((r) => ul.appendChild(r.node));
+  $('q-example').textContent = exampleText(list, data);
   $('q-headbar').hidden = false;
-  SIDES.forEach((s) => { $('hb-' + s).textContent = (data[s] && data[s].label) || s; });
+  SIDES.forEach((s) => { $('hb-' + s).textContent = placeLabel((data[s] && data[s].label) || s); });
   $('q-status').hidden = true;
 
   const chips = $('chips');
