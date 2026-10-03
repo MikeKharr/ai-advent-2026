@@ -153,3 +153,34 @@ class ПолныйПрогонСРазбором(unittest.TestCase):
                 self.assertIn(key, out[strategy], f"{strategy}.{key}")
         self.assertEqual([q["id"] for q in out["queries"]], ["q1"])
         self.assertEqual(out["queries"][0]["fixed"]["rank"], 1)
+
+
+class ЭталонныеОтветы(unittest.TestCase):
+    """Ответ на странице итогов обязан опираться на верный документ дословно.
+
+    Без этой сверки «верный ответ на основании документа» был бы пересказом,
+    который никто не проверял: страница показывала бы как факт то, чего в
+    документе может не быть.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.queries = metrics.load_queries(QUERIES)
+
+    def test_у_каждого_вопроса_есть_ответ_и_цитата(self):
+        missing = [q["id"] for q in self.queries
+                   if not (q.get("answer") and q.get("evidence") and q.get("evidence_source"))]
+        self.assertEqual(missing, [])
+
+    def test_цитата_взята_из_верного_документа(self):
+        wrong = [(q["id"], q["evidence_source"]) for q in self.queries
+                 if q.get("evidence_source") not in q["expected"]]
+        self.assertEqual(wrong, [], "цитата взята не из эталонного документа")
+
+    def test_цитата_дословно_есть_в_документе(self):
+        missing = []
+        for q in self.queries:
+            text = (ROOT / q["evidence_source"]).read_text(encoding="utf-8", errors="replace")
+            if metrics._norm(q["evidence"]) not in metrics._norm(text):
+                missing.append((q["id"], q["evidence"][:60]))
+        self.assertEqual(missing, [])

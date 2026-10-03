@@ -88,8 +88,13 @@ def run(index_dir: Path, queries_path: Path, embedder: OllamaEmbedder,
     out = {}
     sources: set[str] = set()
     commits: set[str] = set()
+    # answer/evidence/evidence_source — эталонный ответ и дословная цитата из
+    # верного документа, которая его подтверждает. Мера их не считает: они для
+    # страницы итогов, чтобы читатель видел, что именно искал поиск.
     per_query = {q["id"]: {"id": q["id"], "question": q["question"], "expected": q["expected"],
-                           "phrase": q.get("phrase")} for q in queries}
+                           "phrase": q.get("phrase"), "answer": q.get("answer"),
+                           "evidence": q.get("evidence"),
+                           "evidence_source": q.get("evidence_source")} for q in queries}
     for strategy in STRATEGIES:
         index = VectorIndex.load(index_dir, strategy, embedder.model)
         if index is None:
