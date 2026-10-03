@@ -208,7 +208,11 @@ function queryRow(q, data) {
     const ev = el('div', 'q-ev');
     ev.appendChild(el('span', 'lbl', 'Подтверждение из документа'));
     ev.appendChild(el('p', 'q-ev-text', '«' + q.evidence + '»'));
-    if (typeof q.evidence_source === 'string' && q.evidence_source) {
+    /* Ссылка на источник цитаты нужна, только когда он не очевиден: при
+       единственном верном документе это он же, и вторая такая же ссылка —
+       шум (находка reviewer). */
+    const sameAsOnly = paths.length === 1 && paths[0] === q.evidence_source;
+    if (typeof q.evidence_source === 'string' && q.evidence_source && !sameAsOnly) {
       const src = el('p', 'q-ev-src');
       src.appendChild(fileLink(q.evidence_source));
       ev.appendChild(src);
@@ -231,8 +235,8 @@ function queryRow(q, data) {
     col.appendChild(el('p', 'q-col-head', label + ' · ' + placeWords(side)));
     const first = Array.isArray(side.top) ? side.top[0] : null;
     if (first) {
-      // Ярлык обязателен: без него путь под «ранг нет» читался как эталон
-      // (находка design-review, q02).
+      // Ярлык обязателен: без него путь под «верного документа нет…» читался
+      // как сам верный документ (находка design-review, q02).
       col.appendChild(el('span', 'lbl', 'Первым нашлось'));
       col.appendChild(el('p', 'q-path', first.source || ''));
       if (first.section) col.appendChild(el('p', 'q-sect', first.section));
@@ -252,12 +256,14 @@ function queryRow(q, data) {
 
 function exampleText(list, data) {
   const differs = (q) => q.fixed && q.structural && q.fixed.rank !== q.structural.rank;
-  const pick = list.find((q) => differs(q) && q.fixed.rank !== null && q.structural.rank !== null) ||
-    list.find(differs);
+  const named = (q) => differs(q) && typeof q.id === 'string' && q.id;
+  const pick = list.find((q) => named(q) && q.fixed.rank !== null && q.structural.rank !== null) ||
+    list.find(named);
+  /* Без идентификатора примера нет: «у вопроса : …» — не предложение. */
   if (!pick) return '';
   const parts = SIDES.map((s) =>
     lowerLabel((data[s] && data[s].label) || s) + ' — ' + placeWords(pick[s]));
-  return ' Например, у вопроса ' + (pick.id || '') + ': ' + parts.join(', ') + '.';
+  return ' Например, у вопроса ' + pick.id + ': ' + parts.join(', ') + '.';
 }
 
 const FILTERS = [
@@ -276,6 +282,12 @@ function renderQueries(data) {
   const rows = list.map((q) => ({ q: q, node: queryRow(q, data) }));
   const ul = $('qs');
   rows.forEach((r) => ul.appendChild(r.node));
+  /* Почему Recall@5 не равен доле вопросов с местом не дальше пятого: часть
+     вопросов несёт больше одного верного документа. Число — из данных. */
+  const multi = list.filter((q) => Array.isArray(q.expected) && q.expected.length > 1).length;
+  $('q-multi').textContent = multi
+    ? ' Вопросов с несколькими верными документами здесь ' + multi + ' из ' + list.length + '.'
+    : ' В этом прогоне у каждого вопроса верный документ один.';
   $('q-example').textContent = exampleText(list, data);
   $('q-headbar').hidden = false;
   SIDES.forEach((s) => { $('hb-' + s).textContent = placeLabel((data[s] && data[s].label) || s); });
