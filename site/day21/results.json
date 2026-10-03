@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-02T19:59:14Z",
+  "generated": "2026-10-03T03:51:28Z",
   "commit": "4de2d6e",
   "model": "embeddinggemma:300m-qat-q4_0",
   "corpus": {
@@ -37,6 +37,9 @@
         "agents/src/mcp/agent.js"
       ],
       "phrase": "TOOL_RESULT_LIMIT = 8 * 1024",
+      "answer": "Результат любого инструмента, который хост MCP отдаёт модели, обрезан до 8 КБ (8 * 1024 байт). Меряется именно в байтах, к обрезанному тексту приписывается пометка «[результат обрезан хостом]», и в ответе появляется предупреждение.",
+      "evidence": "export const TOOL_RESULT_LIMIT = 8 * 1024",
+      "evidence_source": "agents/src/mcp/agent.js",
       "fixed": {
         "rank": 5,
         "phrase_in_first": false,
@@ -93,6 +96,9 @@
         "agent_docs/invariants.md"
       ],
       "phrase": "Проверка лимита предшествует вызову, а не следует за ним",
+      "answer": "Инвариант I-4 записан в agent_docs/invariants.md, в разделе «Расход средств». Он требует, чтобы ни один запрос не доходил до API, не пройдя сначала rate limit и суточный лимит.",
+      "evidence": "Ни один запрос не может вызвать API без прохождения rate limit и суточного лимита. Проверка лимита предшествует вызову, а не следует за ним.",
+      "evidence_source": "agent_docs/invariants.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -149,6 +155,9 @@
         ".github/workflows/ci.yml"
       ],
       "phrase": "@modelcontextprotocol/sdk zod",
+      "answer": "Единице mcp разрешены ровно два npm-пакета: @modelcontextprotocol/sdk и zod. Всё остальное для неё запрещено, а версии обязаны быть точными, без ^ и ~.",
+      "evidence": "mcp/npm) echo '@modelcontextprotocol/sdk zod' ;;",
+      "evidence_source": ".github/workflows/ci.yml",
       "fixed": {
         "rank": 3,
         "phrase_in_first": false,
@@ -205,6 +214,9 @@
         ".github/workflows/ci.yml"
       ],
       "phrase": "Граница runtime-зависимостей",
+      "answer": "Шаг «Граница runtime-зависимостей» находит в дереве все package.json и requirements.txt и сверяет каждую объявленную зависимость с картой «единица + реестр → разрешённые пакеты». Имя вне карты, неточная версия или манифест другой формы (pyproject.toml, setup.py и прочие) красят прогон; если манифестов не нашлось вовсе, шаг тоже падает.",
+      "evidence": "runtime-зависимость ${name} вне карты единицы ${unit} для реестра npm (разрешено: ${allowed:-ничего})",
+      "evidence_source": ".github/workflows/ci.yml",
       "fixed": {
         "rank": 6,
         "phrase_in_first": true,
@@ -262,6 +274,9 @@
         "AGENTS.md"
       ],
       "phrase": null,
+      "answer": "Агент сливает PR сам, когда есть консенсус гейтов его класса на текущем head sha: одобрение reviewer, отсутствие вето compliance, вердикт ГОТОВО от design-review при изменении UI. Плюс все проверки зелёные и очередь выкатки пуста. Это касается и защищённых путей; за владельцем остаются принятие ADR, новые секреты на сервере и откат прода.",
+      "evidence": "Консенсус — явный вердикт каждого гейта класса на текущем head sha:",
+      "evidence_source": "agent_docs/guides/agent-roles.md",
       "fixed": {
         "rank": 3,
         "phrase_in_first": null,
@@ -318,6 +333,9 @@
         "agent_docs/guides/verification.md"
       ],
       "phrase": null,
+      "answer": "Красный прогон читают по тому, какой шаг упал. Красной пробой (шаг, который и есть предмет проверки) опровергается версия автора; красный шаг до пробы — подготовка стенда — может быть просто гонкой готовности и версию не опровергает. Зелёный прогон после правки самого стенда не доказывает ничего, пока не показано, что стенд всё ещё способен покраснеть.",
+      "evidence": "Разница между «инструмент сломан» и «инструмент сообщает правду о системе» —",
+      "evidence_source": "agent_docs/guides/verification.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -374,6 +392,9 @@
         "agent_docs/guides/archiving-and-temp.md"
       ],
       "phrase": null,
+      "answer": "Все временные артефакты и отчёты складывают в каталог temp/ в корне репозитория и очищают его по окончании задачи; при необходимости новые временные файлы вносят в .gitignore.",
+      "evidence": "Все временные артефакты складывать в `temp/` в корне репозитория.",
+      "evidence_source": "agent_docs/guides/archiving-and-temp.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -430,6 +451,9 @@
         "agent_docs/guides/dod.md"
       ],
       "phrase": null,
+      "answer": "Минимальный DoD: результат соответствует задаче, каждое изменение прослеживается к запросу, ни один инвариант не нарушен, snapshot.md обновлён, тесты проходят, документация обновлена (для нетривиальных изменений — запись в development-history). Сверх этого есть добавки по типу задачи: новая фича, изменения UI, багфикс, рефакторинг, документация и изменения, влияющие на ключ или расход.",
+      "evidence": "- [ ] Каждое изменение прослеживается к исходному запросу (нет «попутных улучшений»)",
+      "evidence_source": "agent_docs/guides/dod.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -486,6 +510,9 @@
         "agent_docs/guides/atomic-documents.md"
       ],
       "phrase": null,
+      "answer": "Событийные документы называют YYYY-MM-DD-HHMM-short-title.md, где дата и время — реальный момент создания по UTC (date -u), а slug — латиницей в kebab-case. Один файл на одно событие нужен потому, что записи независимы и добавляются параллельно: так новые записи не конфликтуют со старыми, не нужна сквозная нумерация и общий индекс.",
+      "evidence": "Правило для событийных документов: одно событие — один файл.",
+      "evidence_source": "agent_docs/guides/atomic-documents.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -542,6 +569,9 @@
         "agent_docs/guides/logging.md"
       ],
       "phrase": null,
+      "answer": "Журнал пишется в Markdown: один лог на один запуск, в папке logs/run-%timestamp%/_log.md, одна запись — одно событие с временем и уровнем INFO/WARN/ERROR. Логи старше трёх дней удаляются, тексты запросов убираются под <details>, а значение ключа Anthropic, заголовок x-api-key и полное тело запроса не логируются никогда.",
+      "evidence": "Одна запись = одно событие; указывать время и уровень (INFO/WARN/ERROR).",
+      "evidence_source": "agent_docs/guides/logging.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": null,
@@ -598,6 +628,9 @@
         "agent_docs/guides/new-day.md"
       ],
       "phrase": null,
+      "answer": "Нужны четыре шага: каталог days/dayN/ с Dockerfile (приложение слушает 8080 и отвечает 200 на /healthz), две строки в deploy/Caddyfile (redir и handle_path на dayN:8080), сервис по образцу day1 в deploy/compose.yml и ссылка на лендинге site/index.html. Секреты заводить не нужно — ключ и лимиты лежат в общем deploy/secrets.env; имя каталога обязано совпадать во всех этих местах.",
+      "evidence": "Имя каталога задаёт всё остальное и должно совпадать везде: `days/day2/` → сервис `day2`",
+      "evidence_source": "agent_docs/guides/new-day.md",
       "fixed": {
         "rank": 2,
         "phrase_in_first": null,
@@ -654,6 +687,9 @@
         "agent_docs/guides/environment-setup.md"
       ],
       "phrase": null,
+      "answer": "Нужен Node 22 или новее; runtime-зависимостей у проекта нет, поэтому npm install для работы приложения не требуется. Дополнительно настраивается видимость .env (.vscode/settings.json, .cursorignore, .gitignore, .env.example), а из инструментов разработчика ставится skillspector — он нужен только для гейта установки сторонних скиллов.",
+      "evidence": "- Node 22 или новее. Проверить: `node --version`.",
+      "evidence_source": "agent_docs/guides/environment-setup.md",
       "fixed": {
         "rank": 3,
         "phrase_in_first": null,
@@ -710,6 +746,9 @@
         ".github/workflows/ci.yml"
       ],
       "phrase": "port=8084",
+      "answer": "В CI единица mcpnews поднимается на порту 8084 (каталог mcpnews). У соседей свои порты: router — 8081, agents — 8082, mcp — 8083, mcpstore — 8085, rag — 8086, у дней — 8080.",
+      "evidence": "mcpnews) echo \"dir=mcpnews\" >> \"$GITHUB_OUTPUT\"; echo \"port=8084\" >> \"$GITHUB_OUTPUT\" ;;",
+      "evidence_source": ".github/workflows/ci.yml",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -767,6 +806,9 @@
         "deploy/compose.yml"
       ],
       "phrase": null,
+      "answer": "Изолированы четыре сети compose: mcp (caddy, mcp, day16, agents), cron (только контейнер времени и agents), rag (только caddy, rag и ollama) и tools (только серверы mcpnews, mcpstore и agents). Держит это не комментарий, а страж .github/scripts/compose-networks.mjs: он читает структуру deploy/compose.yml и краснеет, когда в сеть войдёт лишний или исчезнет нужная связь.",
+      "evidence": "Проверяется структура файла, а не намерение в комментарии. Служба без",
+      "evidence_source": ".github/scripts/compose-networks.mjs",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -824,6 +866,9 @@
         "agent_docs/invariants.md"
       ],
       "phrase": null,
+      "answer": "Ключ Anthropic живёт только в двух местах: в .env (на сервере — deploy/secrets.env) и в GitHub Secrets. В репозиторий, в клиентский JS, в HTML, в ответы API, в логи, в сообщения об ошибках, в чат, в issue, в PR и во внешние сервисы он не попадает; других хранилищ нет.",
+      "evidence": "Секреты не коммитить никогда. Ключ API живёт только в `.env` на сервере и в GitHub Secrets.",
+      "evidence_source": "AGENTS.md",
       "fixed": {
         "rank": 2,
         "phrase_in_first": null,
@@ -880,6 +925,9 @@
         "AGENTS.md"
       ],
       "phrase": "Conventional Commits",
+      "answer": "Ветки называются feat/<slug>, fix/<slug>, docs/<slug>, chore/<slug>. Коммиты — по Conventional Commits: feat:, fix:, docs:, chore:, test:, refactor:. В main только через PR, прямой push запрещён, одна задача — один PR.",
+      "evidence": "Коммиты — Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`.",
+      "evidence_source": "AGENTS.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -936,6 +984,9 @@
         "agent_docs/glossary.md"
       ],
       "phrase": null,
+      "answer": "Глоссарий — таблица специфичных для проекта терминов, но статей «единица» и «заход» в нём нет, так что на этот вопрос он прямо не отвечает. Определены там, например, сфера, дайджест, атомарный документ, класс задачи, ярус, шов, агент, запуск, снимок и держатель.",
+      "evidence": "Специфичные для проекта термины, аббревиатуры, кодовые названия. Помогает агенту правильно интерпретировать задачи и переписку.",
+      "evidence_source": "agent_docs/glossary.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -992,6 +1043,9 @@
         "agent_docs/snapshot.md"
       ],
       "phrase": null,
+      "answer": "Снимок говорит: в проде работают дни 1–11, 13–16 и 18–20, роутер, сервис агентов, служба mcp, два сервера MCP и планировщик; свежая работа — единица rag (индекс проекта дня 21). Дальше упирается в действие владельца: день 21 не поднимется в проде, пока он не выполнит bash deploy/put-rag-key.sh, после чего нужна первая полная сборка индекса на VPS и живая проверка /rag.",
+      "evidence": "**День 21 в проде — от владельца одно действие: `bash deploy/put-rag-key.sh`.**",
+      "evidence_source": "agent_docs/snapshot.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": null,
@@ -1048,6 +1102,9 @@
         "agent_docs/backlog.md"
       ],
       "phrase": null,
+      "answer": "В бэклоге пункты, помеченные «Владельцу», — находки гейтов, которые агенты сами в работу не берут: например, что /api/chat дня 7 не проходит лимитер, что суточные счётчики дней дают до 400 вызовов при одном ключе приложения роутера, что sessions.clear не сжимает базу, дефекты UI сданных дней 8–9, расхождение потолка тела mcpstore с ADR и дыра в шаге про реестр пакетов. Каждый такой пункт обязан заканчиваться меткой «проверено ДАТА: ЧЕМ», иначе он читается как несверенный.",
+      "evidence": "Пункт «Владельцу» заканчивается меткой «проверено ДАТА: ЧЕМ» — файлом со строкой,",
+      "evidence_source": "agent_docs/backlog.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": null,
@@ -1104,6 +1161,9 @@
         "agent_docs/architecture.md"
       ],
       "phrase": null,
+      "answer": "Устройство такое: одно задание или сервис — один каталог верхнего уровня — один контейнер, и единицы намеренно изолированы по стеку, отказу и деплою (days/dayN, router, agents, mcp, mcpnews, mcpstore, rag, atlas, site). Про Dockerfile документ говорит лишь, что он лежит в каталоге единицы; общих требований к содержимому Dockerfile здесь не описано — ответ на эту половину вопроса в документе отсутствует.",
+      "evidence": "Монорепозиторий: одно задание челленджа — один каталог `days/dayN/` — один контейнер.",
+      "evidence_source": "agent_docs/architecture.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": null,
@@ -1160,6 +1220,9 @@
         "deploy/Caddyfile"
       ],
       "phrase": null,
+      "answer": "Маршрут сделан двумя блоками без редиректа: handle /mcp проксирует запрос на mcp:8083 как есть, и адрес эндпоинта — ровно /mcp, без завершающего слэша. Редиректа как у дней тут нет намеренно: на 301 клиент повторил бы запрос методом GET и потерял тело JSON-RPC. Отдельный handle /mcp/healthz срезает префикс и открыт без ключа — его дёргает проверка живого сайта при выкатке.",
+      "evidence": "адрес эндпоинта — ровно /mcp, без завершающего слэша",
+      "evidence_source": "deploy/Caddyfile",
       "fixed": {
         "rank": 7,
         "phrase_in_first": null,
@@ -1216,6 +1279,9 @@
         ".github/scripts/deploy-units.sh"
       ],
       "phrase": null,
+      "answer": "Выкатываются только единицы, изменённые между head последней успешной выкатки и текущим head: скрипт берёт diff и отбирает каталоги с Dockerfile, плюс по отдельным регуляркам добавляет atlas и rag, когда затронуты их входы. Если успешных выкаток ещё не было — выкатываются все единицы; если указан ввод day, выкатывается ровно эта единица. База, не являющаяся предком head, — ошибка: это откат, а откат делает владелец.",
+      "evidence": "base — head sha последней успешной выкатки по push. Выкатываются единицы,",
+      "evidence_source": ".github/scripts/deploy-units.sh",
       "fixed": {
         "rank": 4,
         "phrase_in_first": null,
@@ -1273,6 +1339,9 @@
         "test/secrets-step.test.js"
       ],
       "phrase": null,
+      "answer": "Шаг ищет по всему репозиторию строки, похожие на настоящие секреты: ключи Anthropic (sk-ant-…), приватные ключи, ключи Groq (gsk_…) и токены GitHub (ghp_/gho_/ghu_/ghs_/ghr_ и github_pat_). Найдено — шаг падает и печатает только имена файлов, чтобы сама строка с ключом не ушла в публичный журнал Actions; если grep вернул код 2 и выше, шаг тоже падает — значит проверка не выполнилась.",
+      "evidence": "Код grep: 0 — найдено, 1 — чисто, 2 и выше — проверка не выполнилась.",
+      "evidence_source": ".github/workflows/docs-guard.yml",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -1329,6 +1398,9 @@
         "test/limiter-seam-days.test.js"
       ],
       "phrase": null,
+      "answer": "У дней с 20-го проверяется конвенция шва лимитера: в каталоге дня есть свой test/limiter-seam.test.js, server.js экспортирует непустую таблицу routes, у каждой ручки названо окно (run, write, read или open), а ручка с окном open обязана нести причину исключения. Тест держит именно конвенцию, а не правду о том, что слот занимается до обработчика.",
+      "evidence": "диспетчер отдаёт таблицу ручек, и у каждой названо окно",
+      "evidence_source": "test/limiter-seam-days.test.js",
       "fixed": {
         "rank": 2,
         "phrase_in_first": null,
@@ -1385,6 +1457,9 @@
         "router/config/providers.json"
       ],
       "phrase": "web_search",
+      "answer": "В продовой конфигурации девять провайдеров: ollama mac-qwen3 на ноутбуке владельца (ярус self-hosted), anthropic-haiku, классификатор groq-prompt-guard, groq-gpt-oss-20b, groq-qwen3.6-27b и четыре модели Kimi. Возможности у них разные: web_search есть только у anthropic-haiku (у него же tools и json_schema), у моделей Groq и Kimi — text_generation (у части с json_schema), а у groq-prompt-guard единственная возможность prompt_guard, поэтому генеративные классы к нему не уходят.",
+      "evidence": "\"capabilities\": [\"text_generation\", \"json_schema\", \"web_search\", \"tools\"],",
+      "evidence_source": "router/config/providers.json",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -1441,6 +1516,9 @@
         "router/src/service.js"
       ],
       "phrase": null,
+      "answer": "Роутер держит суточный остаток как разницу между лимитом приложения dailyTokens и уже израсходованным за сутки по журналу, и так же считает деньги по dailyCostUsd. Проверка идёт до вызова по оценке запроса (вход плюс потолок выхода на каждый возможный вызов): не помещается в остаток — отказ. Резервирования нет, поэтому параллельные запросы одного приложения могут превысить лимит на размер одного запроса.",
+      "evidence": "tokens: l.dailyTokens ? Math.max(0, l.dailyTokens - s.tokens) : null,",
+      "evidence_source": "router/src/service.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": null,
@@ -1497,6 +1575,9 @@
         "mcpnews/README.md"
       ],
       "phrase": null,
+      "answer": "mcpnews — сервер MCP единицы дней 19–20 с двумя инструментами, news.search и news.summarize, поверх Hacker News через Algolia; протокол JSON-RPC ревизии 2025-11-25 без SDK. Зависимостей у него нет, наружу он не публикуется (ни порта, ни маршрута в Caddyfile) и живёт в закрытой сети tools, куда ходит только сервис агентов; поэтому у него нет ни ключа к моделям, ни лимитера.",
+      "evidence": "Единица дней 19–20: инструменты `news.search` и `news.summarize` поверх",
+      "evidence_source": "mcpnews/README.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -1553,6 +1634,9 @@
         "mcpstore/README.md"
       ],
       "phrase": null,
+      "answer": "mcpstore — сервер MCP единицы дней 19–20 с инструментами file.save, file.read и file.list поверх SQLite (из-за node:sqlite ему нужен Node 24). На нём стоит смысл дня 19: цепочка сохраняет выжимку и читает обратно, и sha256 с обеих сторон должны совпасть, поэтому file.read на пропавший файл отвечает {found: false} без isError. Потолки: файл 64 КБ, 200 файлов, срок хранения 30 часов; наружу не публикуется, живёт в закрытой сети tools.",
+      "evidence": "Единица дней 19–20: инструменты `file.save`, `file.read` и `file.list` поверх",
+      "evidence_source": "mcpstore/README.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": null,
@@ -1609,6 +1693,9 @@
         "agent_docs/templates/adr.md"
       ],
       "phrase": null,
+      "answer": "Шаблон ADR — файл с H1 вида «[YYYY-MM-DD HH:MM] Название решения» (имя берётся из date -u) и разделами: Статус, Контекст, Решение, Обоснование, Последствия, Связанные записи, Альтернативы рассмотрены. Обязательность отдельно отмечена только у раздела «Ручные шаги и проверки» — он требуется у ADR о переезде; про остальные шаблон говорит просто как про свои разделы.",
+      "evidence": "Принято / Предложено / Отклонено / Устарело / Заменяет ...",
+      "evidence_source": "agent_docs/templates/adr.md",
       "fixed": {
         "rank": 6,
         "phrase_in_first": null,
@@ -1665,6 +1752,9 @@
         "rag/README.md"
       ],
       "phrase": "days/**",
+      "answer": "В корпус индекса не берут days/** (сданные дни не поддерживаются — правило владельца), .agents/skills/**, node_modules, atlas/dist, temp/, каталоги */test/** единиц (корневой test/ при этом берётся целиком), а также package-lock.json и skills-lock.json.",
+      "evidence": "Не берём: `days/**` (сданные дни не поддерживаются — правило владельца",
+      "evidence_source": "rag/README.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -1721,6 +1811,9 @@
         "agent_docs/invariants.md"
       ],
       "phrase": "вводится в том же PR, что тест или шаг CI",
+      "answer": "Вместе с правилом безопасности или расхода — лимитом, проверкой в коде, строкой конфигурации — в том же PR обязан приехать держатель: тест или шаг CI, который краснеет, если держащую строку снять. Это инвариант I-14; защита без держателя считается багом, а не долгом.",
+      "evidence": "вводится в том же PR, что тест или шаг CI, который краснеет при снятии держащей строки",
+      "evidence_source": "agent_docs/invariants.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -1777,6 +1870,9 @@
         "agent_docs/invariants.md"
       ],
       "phrase": "Синоним «для красоты» — дефект",
+      "answer": "Нельзя: по инварианту I-13 предмет, уже названный в проекте, называется тем же словом — в документах, в сообщениях владельцу и в комментариях кода. Новое понятие вводят только когда старого нет, один раз, с определением и записью в глоссарий. Синоним «для красоты» считается дефектом: владелец вынужден спрашивать, о чём речь, и теряется связь документа с разговором.",
+      "evidence": "Синоним «для красоты» — дефект: владелец вынужден спрашивать, о чём речь",
+      "evidence_source": "agent_docs/invariants.md",
       "fixed": {
         "rank": 3,
         "phrase_in_first": false,
@@ -1833,6 +1929,9 @@
         "README.md"
       ],
       "phrase": "symlinks ломаются на Windows",
+      "answer": "Потому что symlink ненадёжен за пределами macOS и Linux: он ломается на Windows, в git archive и при распаковке zip. Поэтому CLAUDE.md — обычный stub-файл, указывающий на AGENTS.md, а не ссылка на него.",
+      "evidence": "symlinks ломаются на Windows, в `git archive` и при zip-extract",
+      "evidence_source": "README.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -1889,6 +1988,9 @@
         "agent_docs/adr/README.md"
       ],
       "phrase": "запись сохраняется, чтобы не возвращаться к вопросу",
+      "answer": "Чтобы не возвращаться к вопросу заново: ADR со статусом «Отклонено» сохраняется как запись о том, что вариант рассматривали и не приняли. Иначе отвергнутое решение всплывало бы снова, уже без памяти о причинах отказа.",
+      "evidence": "**Отклонено** — рассмотрено и не принято; запись сохраняется, чтобы не возвращаться к вопросу.",
+      "evidence_source": "agent_docs/adr/README.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -1945,6 +2047,9 @@
         "agent_docs/development-history/README.md"
       ],
       "phrase": "реальное время в имени и есть порядок",
+      "answer": "Нет. Старые записи журнала итераций не ротируют и не архивируют по возрасту: реальное время в имени файла и есть порядок, а старые записи не создают конфликтов при добавлении новых.",
+      "evidence": "Не ротировать и не архивировать старые записи: реальное время в имени и есть порядок.",
+      "evidence_source": "agent_docs/development-history/README.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2001,6 +2106,9 @@
         "agent_docs/design/corpus.md"
       ],
       "phrase": "покой, наведение, нажатие",
+      "answer": "Пять, без исключений: покой, наведение, нажатие, :focus-visible и [disabled]. Правило одинаково для всех интерактивных элементов, не только для полей ввода; наведение без фокуса считается дефектом доступности, потому что клавиатура остаётся без обратной связи.",
+      "evidence": "У каждого — **пять** состояний, без исключений: покой, наведение, нажатие,",
+      "evidence_source": "agent_docs/design/corpus.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2057,6 +2165,9 @@
         "agent_docs/design/corpus.md"
       ],
       "phrase": "Пустое состояние — честный текст о том, почему пусто",
+      "answer": "Экран обязан определять четыре состояния контента, иначе он не готов: пусто, загрузка, ошибка и частичный результат. Пустое состояние — это честный текст о том, почему пусто, а не пустая область.",
+      "evidence": "Каждый экран определяет **четыре**, иначе он не готов: пусто, загрузка, ошибка,",
+      "evidence_source": "agent_docs/design/corpus.md",
       "fixed": {
         "rank": 2,
         "phrase_in_first": false,
@@ -2113,6 +2224,9 @@
         "agent_docs/design/corpus.md"
       ],
       "phrase": "Только на смену состояния, ≤ 120 мс",
+      "answer": "Анимация допускается только на смену состояния и не дольше 120 мс, причём полностью отключается при prefers-reduced-motion: reduce. Появление контента не анимируется; наведение меняет фон, а не размеры, нажатие — сдвиг не больше 1px.",
+      "evidence": "Только на смену состояния, ≤ 120 мс, и полностью отключается в",
+      "evidence_source": "agent_docs/design/corpus.md",
       "fixed": {
         "rank": 6,
         "phrase_in_first": false,
@@ -2169,6 +2283,9 @@
         "agent_docs/design/corpus.md"
       ],
       "phrase": "проза ≤ 68ch, вторичный текст ≤ 52ch",
+      "answer": "Полоса чтения ограничена шириной строки: проза — не больше 68 символов (68ch), вторичный текст — не больше 52ch.",
+      "evidence": "Полоса чтения: проза ≤ 68ch, вторичный текст ≤ 52ch.",
+      "evidence_source": "agent_docs/design/corpus.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2225,6 +2342,9 @@
         "agent_docs/guides/agent-roles.md"
       ],
       "phrase": "потому что они падают закрыто",
+      "answer": "Гарантии не даёт: разделение на роли — дисциплина. У нескольких агентов бывает общее слепое пятно, а ревьюер не поймает то, что ему не сказали искать. Реально держат механические контроли — CI, негативные тесты, branch protection, docs-guard, — потому что они падают закрыто; роли дают лучшие черновики и более ранние возражения.",
+      "evidence": "Реально держат **механические** контроли — CI, негативные тесты, branch protection, docs-guard, — потому что они падают закрыто.",
+      "evidence_source": "agent_docs/guides/agent-roles.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -2281,6 +2401,9 @@
         "agent_docs/guides/agent-roles.md"
       ],
       "phrase": "возвращает работу тому же ревьюеру",
+      "answer": "Тому же экземпляру ревьюера, который выдал блокирующие находки: автор возвращает работу ему через SendMessage. Контекст у него сохранён, поэтому перепроверяется исправленное, а не всё заново.",
+      "evidence": "автор возвращает работу тому же ревьюеру через SendMessage: контекст у",
+      "evidence_source": "agent_docs/guides/agent-roles.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2337,6 +2460,9 @@
         "agent_docs/operations.md"
       ],
       "phrase": "роутер не стартует наполовину",
+      "answer": "Роутер просто не запускается: битая конфигурация или отсутствующая переменная окружения дают крах на старте с текстом причины в логе (docker compose logs router). Это задумано — роутер не стартует наполовину.",
+      "evidence": "в логе (`docker compose logs router`). Это задумано: роутер не стартует наполовину.",
+      "evidence_source": "agent_docs/operations.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": false,
@@ -2394,6 +2520,9 @@
         "router/src/service.js"
       ],
       "phrase": "429 `budget_exceeded` с `resetAt`",
+      "answer": "Приложение получает отказ 429 с кодом budget_exceeded, причиной в message и временем сброса resetAt (полночь UTC), а провайдер при этом не вызывается. Отказ приходит и раньше нуля: лимит сверяется с остатком заранее, по оценке запроса, поэтому большой запрос отвергается, когда он не помещается в остаток.",
+      "evidence": "429 `budget_exceeded` с `resetAt`",
+      "evidence_source": "agent_docs/operations.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": false,
@@ -2450,6 +2579,9 @@
         "agent_docs/operations.md"
       ],
       "phrase": "предохранитель (три неудачи подряд, 60 с)",
+      "answer": "Смотреть журнал роутера (docker compose logs --tail 200 router), где каждое обращение, пропуск и отказ пишутся строкой JSON с provider, outcome и reason, и ручку /v1/metrics: если у провайдера растёт skipped, причина видна в поле health — отрицательный кэш после транспортной неудачи, разомкнутый предохранитель (три неудачи подряд, 60 с), busyUntil после 429 или исчерпанная ёмкость хоста.",
+      "evidence": "отрицательный кэш (транспорт), предохранитель (три неудачи подряд, 60 с),",
+      "evidence_source": "agent_docs/operations.md",
       "fixed": {
         "rank": 3,
         "phrase_in_first": false,
@@ -2506,6 +2638,9 @@
         "agent_docs/adr/2026-10-01-1818-loud-token-ceiling.md"
       ],
       "phrase": "Порог не считается нами — его применяет служба",
+      "answer": "Потому что отказ от службы совпадает с настоящим окном модели по построению, а собственный счёт токенов — нет: на этом же предмете наша арифметика уже трижды оказалась неверной (запас считали в знаках, а не в токенах). Поэтому вызов идёт с truncate: false, и при 400 проход переспрашивает батч по одному входу, чтобы назвать виноватый чанк.",
+      "evidence": "Порог не считается нами — его применяет служба. Это сильнее собственного",
+      "evidence_source": "agent_docs/adr/2026-10-01-1818-loud-token-ceiling.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2562,6 +2697,9 @@
         "agent_docs/adr/2026-10-02-0921-ssh-host-key-pin.md"
       ],
       "phrase": "имя приходит из секрета в момент сборки",
+      "answer": "В репозитории лежит файл deploy/host-key.pub с одной строкой ssh-ed25519 AAAA… — только открытый ключ хоста, без имени сервера. Имя подставляется из секрета SSH_HOST в момент сборки строки known_hosts, а ssh вызывается с StrictHostKeyChecking=yes вместо прежнего ssh-keyscan. Имени в файле нет намеренно: сервер выкатки — не та машина, на которую владелец ходит руками.",
+      "evidence": "строку `ssh-ed25519 AAAA…` без имени, имя приходит из секрета в момент сборки",
+      "evidence_source": "agent_docs/adr/2026-10-02-0921-ssh-host-key-pin.md",
       "fixed": {
         "rank": 2,
         "phrase_in_first": false,
@@ -2618,6 +2756,9 @@
         "agent_docs/adr/2026-10-02-1519-ollama-ceiling-4g.md"
       ],
       "phrase": "Раннер llama.cpp убит сигналом 9",
+      "answer": "Дело было не в окне модели, а в памяти контейнера: раннер llama.cpp убивал cgroup-OOM (сигнал 9) на худшем чанке стратегии structural — 1843 токена при потолке ollama 2048 МиБ, после чего ollama отдавала HTTP 400. У стратегии fixed худший чанк всего 1083 токена, поэтому она в этот предел не упиралась и проходила.",
+      "evidence": "Раннер llama.cpp убит сигналом 9 — cgroup-OOM, — на входе **ровно 1843",
+      "evidence_source": "agent_docs/adr/2026-10-02-1519-ollama-ceiling-4g.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2674,6 +2815,9 @@
         "agent_docs/adr/2026-10-02-1519-ollama-ceiling-4g.md"
       ],
       "phrase": "Число выведено, а не замерено",
+      "answer": "Цифра 4096 МиБ выведена, а не замерена, и это сказано прямо. Известно только, что на 1843 токенах нужно больше 2048 МиБ; измерить RSS на сервере нечем (docker stats не в закрытом списке, exec в контейнеры прода запрещён). 4096 — вдвое выше потолка, на котором упало, и арифметика опирается на то, что VPS расширен до 8 ГБ, а ollama 4096 плюс rag 512 оставляют около 1900 МиБ запаса. Проверит число только живая сборка.",
+      "evidence": "**Число выведено, а не замерено — и это названо прямо.**",
+      "evidence_source": "agent_docs/adr/2026-10-02-1519-ollama-ceiling-4g.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -2730,6 +2874,9 @@
         "agent_docs/adr/2026-09-30-0957-rag-quantized-embedder.md"
       ],
       "phrase": "старые bf16-векторы подмешались бы к новым",
+      "answer": "Ключ инкремента — только sha256 чанка, модели в нём нет, и имя модели не писалось в метаданные индекса. Векторы обеих моделей 768-мерные, поэтому старые векторы прежней модели подмешались бы к новым молча: ни ошибки, ни признака. Поэтому имя модели записывается в метаданные, и индекс с другой моделью читается как отсутствующий.",
+      "evidence": "старые bf16-векторы подмешались бы к новым **молча**",
+      "evidence_source": "agent_docs/adr/2026-09-30-0957-rag-quantized-embedder.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2787,6 +2934,9 @@
         "agent_docs/adr/2026-09-22-1301-server-command-list-scope.md"
       ],
       "phrase": "любой `exec` в контейнеры прода — без исключений",
+      "answer": "Потому что exec — это произвольный код внутри контейнера, где лежат ключи провайдеров. Агенту разрешён закрытый список команд на сервере (ps, logs, restart caddy, проверки имён переменных), а любой exec в контейнеры прода запрещён без исключений: проверку расхода роутера этим способом делает только владелец.",
+      "evidence": "любой `exec` в контейнеры прода — без исключений.",
+      "evidence_source": "agent_docs/adr/2026-09-11-1230-ssh-server-access-norm.md",
       "fixed": {
         "rank": 5,
         "phrase_in_first": true,
@@ -2843,6 +2993,9 @@
         "agent_docs/adr/2026-09-11-1230-ssh-server-access-norm.md"
       ],
       "phrase": "проверки имён без значений",
+      "answer": "Разрешено проверять только наличие имени переменной, не её значение: посчитать строки с нужным именем или вывести одни имена (`grep -c '^NAME=' файл`, `grep -o '^[A-Z_]*=' файл`). Всё, что печатает само значение из deploy/*.env — cat, sed, grep со выводом строки, docker compose config, docker inspect — запрещено.",
+      "evidence": "- проверки имён без значений: `grep -c '^NAME=' <файл>`,",
+      "evidence_source": "agent_docs/adr/2026-09-11-1230-ssh-server-access-norm.md",
       "fixed": {
         "rank": 8,
         "phrase_in_first": false,
@@ -2899,6 +3052,9 @@
         "agent_docs/adr/2026-09-19-1252-architect-decisions-not-encyclopedias.md"
       ],
       "phrase": "последствия дважды спасали работу и режутся последними",
+      "answer": "Последним режется раздел «Последствия»: сокращать можно разбор вариантов, но не честность о цене решения. Причина прямая — отрицательные последствия дважды спасали работу.",
+      "evidence": "последствия дважды спасали работу и режутся последними.",
+      "evidence_source": "agent_docs/adr/2026-09-19-1252-architect-decisions-not-encyclopedias.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -2955,6 +3111,9 @@
         "agent_docs/adr/2026-09-19-1252-architect-decisions-not-encyclopedias.md"
       ],
       "phrase": "150–250 строк — цель для ADR",
+      "answer": "Ориентир для ADR роли architect — 150–250 строк, и это цель, а не предел: больше можно по необходимости, но тогда объём должен приходиться на разбор путей, а не на пересказ других документов.",
+      "evidence": "Ориентир, не предел: 150–250 строк — цель для ADR роли `architect`, а не",
+      "evidence_source": "agent_docs/adr/2026-09-19-1252-architect-decisions-not-encyclopedias.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -3011,6 +3170,9 @@
         "agent_docs/adr/2026-09-08-0205-skill-install-security-gate.md"
       ],
       "phrase": "обе линии обязательны в обе стороны",
+      "answer": "Нет. Счёт сканера — не вердикт: обязательны обе линии проверки, статический скан и семантическое ревью источника. Низкий счёт не отменяет чтения источника, а высокий можно объяснить чтением источника.",
+      "evidence": "Score — не вердикт: обе линии обязательны в обе стороны (низкий счёт не",
+      "evidence_source": "agent_docs/adr/2026-09-08-0205-skill-install-security-gate.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -3067,6 +3229,9 @@
         "agent_docs/adr/2026-09-29-1533-backlog-limit-by-open-items.md"
       ],
       "phrase": "предел **300 открытых пунктов**",
+      "answer": "У agent_docs/backlog.md предел — 300 открытых пунктов, а не строк. Открытым пунктом считается строка, начинающаяся с «- [ ]»; строки файла при этой проверке не считаются вовсе.",
+      "evidence": "2. `agent_docs/backlog.md` — предел **300 открытых пунктов**: открытый пункт —",
+      "evidence_source": "agent_docs/adr/2026-09-29-1533-backlog-limit-by-open-items.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -3123,6 +3288,9 @@
         "agent_docs/adr/2026-09-28-1323-cadence-15min-slot-is-the-due-time.md"
       ],
       "phrase": "ключ слота — последний наступивший срок",
+      "answer": "Слот: второй старт на тот же срок получает отказ 409 slot_taken. Ключом слота служит последний наступивший срок расписания (ISO-строка), поэтому правило читается «один старт на срок» при любой каденции — для «*/15» слот пятнадцатиминутный, для «0 */6» шестичасовой.",
+      "evidence": "2. **`409 slot_taken` остаётся, ключ слота — последний наступивший срок",
+      "evidence_source": "agent_docs/adr/2026-09-28-1323-cadence-15min-slot-is-the-due-time.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": false,
@@ -3179,6 +3347,9 @@
         "agent_docs/adr/2026-09-23-1844-mcp-endpoint-answers-404.md"
       ],
       "phrase": "«нет такого пути» и «нет годного ключа» совпадают",
+      "answer": "Чтобы прохожий не узнал, что за адресом что-то живёт и что не хватает именно ключа. Ответ «нет такого пути» и «нет годного ключа» даёт одна и та же функция и они совпадают побайтно: две отдельные ветки со временем разошлись бы деталью, а деталь снова отличала бы эндпоинт от пустого места.",
+      "evidence": "«нет такого пути» и «нет годного ключа» совпадают",
+      "evidence_source": "agent_docs/adr/2026-09-23-1844-mcp-endpoint-answers-404.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -3235,6 +3406,9 @@
         "agent_docs/adr/2026-09-22-1301-server-command-list-scope.md"
       ],
       "phrase": "команда — литерал в ревьюируемом файле",
+      "answer": "Только при всех четырёх условиях сразу: команда — литерал в ревьюируемом файле без подстановок, достижима лишь мержем в main с гейтами класса A, не печатает значений из deploy/*.env и секретов и не является универсальной лазейкой (exec … sh -c, node -e и подобное запрещены везде).",
+      "evidence": "1. команда — литерал в ревьюируемом файле, без подстановок в ней самой",
+      "evidence_source": "agent_docs/adr/2026-09-22-1301-server-command-list-scope.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -3291,6 +3465,9 @@
         "agent_docs/development-history/2026-09-22-0442-day13-iteration-lessons.md"
       ],
       "phrase": "не является проверкой контракта",
+      "answer": "Потому что заглушка повторяет не поведение настоящей стороны, а ожидания автора страницы: на дне 13 она клала поля туда, куда смотрела страница, и дефект пережил три гейта, 43 теста и 12 мутаций. Контракт проверяет только живой прогон против настоящей стороны или образцы настоящих ответов, зафиксированные отдельно от обеих реализаций.",
+      "evidence": "потребителя, не является проверкой контракта. Проверка контракта — либо живой",
+      "evidence_source": "agent_docs/development-history/2026-09-22-0442-day13-iteration-lessons.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -3347,6 +3524,9 @@
         "agent_docs/development-history/2026-09-22-1419-withheld-exits-and-gate-lessons.md"
       ],
       "phrase": "ломался **порядок событий**",
+      "answer": "Тест исполнял правило с заранее подставленным состоянием, а ломался порядок событий: событие «успешно» приходило раньше признака неотданного ответа, и первый вызов уже объявлял «готово». Мутация доказывает, что правило читают, и ничего не говорит о том, в каком состоянии его зовут — временны́е ошибки ловит стенд с настоящим потоком или глаз на живом экране.",
+      "evidence": "**правило** с подставленным состоянием; ломался **порядок событий**: событие",
+      "evidence_source": "agent_docs/development-history/2026-09-22-1419-withheld-exits-and-gate-lessons.md",
       "fixed": {
         "rank": 3,
         "phrase_in_first": true,
@@ -3403,6 +3583,9 @@
         "agent_docs/development-history/2026-09-29-1404-agents-describe-regression.md"
       ],
       "phrase": "метода не было — ручка отвечала 500",
+      "answer": "Ручка GET /v1/agents зовёт describe() у всех агентов реестра одним Promise.all, а у двух новых исполнителей (mcp-agent и pipeline-agent) этого метода не было — ручка отвечала 500. Экран состояния девяти дней из-за этого отдавал 503 «Агент недоступен».",
+      "evidence": "с PR #237, метода не было — ручка отвечала 500 с записью в журнале",
+      "evidence_source": "agent_docs/development-history/2026-09-29-1404-agents-describe-regression.md",
       "fixed": {
         "rank": 1,
         "phrase_in_first": false,
@@ -3459,6 +3642,9 @@
         "AGENTS.md"
       ],
       "phrase": "больше 40 минут — только по решению владельца",
+      "answer": "Задачу, меняющую опыт посетителя (экран, тексты, поведение, доступность), с оценкой реализации больше 40 минут — такую берут только по решению владельца. Оценивает оркестратор до запуска, по полному объёму и без дробления.",
+      "evidence": "с оценкой реализации больше 40 минут — только по решению владельца",
+      "evidence_source": "AGENTS.md",
       "fixed": {
         "rank": 5,
         "phrase_in_first": false,
@@ -3515,6 +3701,9 @@
         "AGENTS.md"
       ],
       "phrase": "Молчание неотличимо от продолжающейся работы",
+      "answer": "Надо отправить владельцу пуш-уведомление, а не ждать молча: молчание неотличимо от продолжающейся работы, и владелец теряет часы, считая, что агент работает. Текст — одной строкой и начинается с того, что от владельца нужно.",
+      "evidence": "а не ждёт молча. Молчание неотличимо от продолжающейся работы",
+      "evidence_source": "AGENTS.md",
       "fixed": {
         "rank": 2,
         "phrase_in_first": false,
@@ -3571,6 +3760,9 @@
         "agent_docs/guides/verification.md"
       ],
       "phrase": "Защита исчезла не решением, а умолчанием",
+      "answer": "Теряется не только артефакт, но и список того, что его защищало: ручные шаги, проверки, стоячие условия. На переезде Caddy новая выкатка унесла файловый монтаж, но не процедуру перезапуска — защита исчезла не решением, а умолчанием, и это стоило около двух часов и двух красных прогонов.",
+      "evidence": "Защита исчезла не решением, а умолчанием.",
+      "evidence_source": "agent_docs/guides/verification.md",
       "fixed": {
         "rank": 2,
         "phrase_in_first": false,
@@ -3627,6 +3819,9 @@
         "agent_docs/day5-flow.md"
       ],
       "phrase": "он предъявляет роутеру ключ приложения",
+      "answer": "Ключей к моделям у приложения нет — роутеру он предъявляет свой ключ приложения. Секреты провайдеров, журнал расхода и суточные лимиты держит роутер, поэтому наружу к Anthropic и Groq ходит только он.",
+      "evidence": "Ключей к моделям у дня нет: он предъявляет роутеру ключ приложения, а роутер",
+      "evidence_source": "agent_docs/day5-flow.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -3683,6 +3878,9 @@
         "router/src/health.js"
       ],
       "phrase": "const FAILURES_TO_OPEN = 3",
+      "answer": "Трёх неудач подряд достаточно, чтобы предохранитель открылся, и тогда провайдер пропускается минуту (60 000 мс). Весь счёт ведётся в памяти процесса роутера.",
+      "evidence": "const FAILURES_TO_OPEN = 3",
+      "evidence_source": "router/src/health.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -3739,6 +3937,9 @@
         "router/src/service.js"
       ],
       "phrase": "const MAX_BODY = 512 * 1024",
+      "answer": "До 512 КБ. Как только накопленное тело превышает этот потолок, чтение прерывается с ошибкой «тело больше 512 КБ», а соединение закрывается.",
+      "evidence": "const MAX_BODY = 512 * 1024",
+      "evidence_source": "router/src/service.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -3795,6 +3996,9 @@
         "router/src/service.js"
       ],
       "phrase": "new Set(['unreachable', 'busy', 'rejected', 'server_error'])",
+      "answer": "Платить не нужно за попытки, где до генерации дело не дошло: недоступный транспорт, 429 «занят», отказ 4xx и ошибка 5xx (включая 529 overloaded). Такая попытка всё равно записывается в книгу расхода, но с нулём и на входе, и на выходе.",
+      "evidence": "export const NOT_REACHED = new Set(['unreachable', 'busy', 'rejected', 'server_error'])",
+      "evidence_source": "router/src/service.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -3851,6 +4055,9 @@
         "router/src/ledger.js"
       ],
       "phrase": "перезапуск роутера не обнуляет лимиты",
+      "answer": "Потому что журнал расхода пишется на диск только дозаписью (JSONL), и суточные с месячными суммами восстанавливаются из него при старте. Поэтому перезапуск роутера лимиты не обнуляет.",
+      "evidence": "// поэтому перезапуск роутера не обнуляет лимиты.",
+      "evidence_source": "router/src/ledger.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -3907,6 +4114,9 @@
         "router/src/router.js"
       ],
       "phrase": "const MAX_CALLS = 2",
+      "answer": "Не больше двух: основной выбор и один фолбэк. Если провайдер назван в запросе явно, попытка всего одна.",
+      "evidence": "// первого — отказ, второго — фолбэк не более одного раза, третьего — пропуск.",
+      "evidence_source": "router/src/router.js",
       "fixed": {
         "rank": 1,
         "phrase_in_first": false,
@@ -3963,6 +4173,9 @@
         "router/src/router.js"
       ],
       "phrase": "const CLIENT_GONE = 'клиент разорвал соединение'",
+      "answer": "Обращение прерывается на месте: вызывающий ушёл, отвечать некому, поэтому вызов к провайдеру обрывается, а исход помечается как «клиент разорвал соединение».",
+      "evidence": "// Обрыв клиента: вызывающий ушёл, отвечать некому — вызов к провайдеру",
+      "evidence_source": "router/src/router.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4019,6 +4232,9 @@
         "router/config/apps.json"
       ],
       "phrase": "\"dailyCostUsd\": 10",
+      "answer": "У приложения agents суточный потолок — 10 долларов (и 10 млн токенов в сутки). Для сравнения, у day5 рядом стоит потолок 2 доллара.",
+      "evidence": "        \"dailyCostUsd\": 10",
+      "evidence_source": "router/config/apps.json",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4075,6 +4291,9 @@
         "router/config/classes.json"
       ],
       "phrase": "\"requires\": [\"text_generation\", \"web_search\"]",
+      "answer": "Для класса rank_news: провайдер обязан уметь и генерацию текста, и web_search, иначе он не проходит фильтр возможностей. Класс к тому же допускает только ярус cloud-frontier и прямо запрещает self-hosted.",
+      "evidence": "\"requires\": [\"text_generation\", \"web_search\"],",
+      "evidence_source": "router/config/classes.json",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4131,6 +4350,9 @@
         "router/src/adapters/ollama.js"
       ],
       "phrase": "только родной отдаёт метрики (load_duration,",
+      "answer": "Потому что только родной API Ollama (/api/generate) отдаёт метрики вроде load_duration и eval_count и принимает параметр think; слой совместимости с OpenAI этого не даёт.",
+      "evidence": "// совместимости с OpenAI: только родной отдаёт метрики (load_duration,",
+      "evidence_source": "router/src/adapters/ollama.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4187,6 +4409,9 @@
         "router/src/adapters/quota.js"
       ],
       "phrase": "const UNIT_MS = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }",
+      "answer": "Такая строка читается как длительность до сброса: число с единицей (ms, s, m, h) переводится в миллисекунды и складывается, и сброс считается от текущего момента. Длительность разбирается раньше даты, чтобы «60» не прочиталось как год, а окно сверху ограничено часом — большее значение считается мусором.",
+      "evidence": "const UNIT_MS = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }",
+      "evidence_source": "router/src/adapters/quota.js",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -4243,6 +4468,9 @@
         "router/src/config.js"
       ],
       "phrase": "Фильтр возможностей: статичен, несоответствие — отказ, не понижение.",
+      "answer": "До выбора у провайдера сверяются возможности, требуемые классом задачи, поддержка нужного уровня размышлений, допустимость класса данных и юрисдикция. Фильтр статичен: если умения не хватает, это отказ с названной причиной, а не замена на модель попроще.",
+      "evidence": "/** Фильтр возможностей: статичен, несоответствие — отказ, не понижение. */",
+      "evidence_source": "router/src/config.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4299,6 +4527,9 @@
         "mcp/src/limits.js"
       ],
       "phrase": "const HOUR = 60 * 60_000",
+      "answer": "Два окна на адрес: минутное и часовое. Порог каждого задаётся настройками службы (RATE_LIMIT_PER_MIN и RATE_LIMIT_PER_HOUR), а суточного денежного счётчика здесь нет — платных вызовов эта служба не делает. Сами числа порогов в этом файле не записаны.",
+      "evidence": "// Лимитер службы MCP: два окна на адрес, минута и час. Образец —",
+      "evidence_source": "mcp/src/limits.js",
       "fixed": {
         "rank": 1,
         "phrase_in_first": false,
@@ -4355,6 +4586,9 @@
         "mcp/src/limits.js"
       ],
       "phrase": "Дальше порога отметки НЕ копятся",
+      "answer": "Потому что дальше порога отметки не копятся намеренно (вето compliance по PR #220): на вопрос «набралось ли столько за час» ответ уже дан, а хранение делало бы цену одного отказа линейной по накопленному — то есть квадратичный поток на публичном пути без ключа, которым один адрес вывел бы службу из строя для держателей годного ключа.",
+      "evidence": "// Дальше порога отметки НЕ копятся (вето `compliance` по PR #220): вопрос",
+      "evidence_source": "mcp/src/limits.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4411,6 +4645,9 @@
         "mcp/src/env.js"
       ],
       "phrase": "REFUSAL_SIGNAL_PER_HOUR: 60",
+      "answer": "С шестидесяти: столько отказов по ключу с одного адреса за час — и в журнал уходит одна строка «кто-то перебирает». Это порог наблюдения, а не блокировка: законный клиент ошибается ключом единицы раз, шестьдесят промахов за час законной жизнью не объясняются.",
+      "evidence": "REFUSAL_SIGNAL_PER_HOUR: 60,",
+      "evidence_source": "mcp/src/env.js",
       "fixed": {
         "rank": 7,
         "phrase_in_first": false,
@@ -4467,6 +4704,9 @@
         "mcp/src/service.js"
       ],
       "phrase": "пустое тело, ни `content-type`, ни строчки",
+      "answer": "Код 404 и пустое тело — ни content-type, ни строчки содержания. Ровно то же отдаётся на чужой путь, потому что обе причины обслуживает одна функция: два разных ответа снова отличали бы эндпоинт от пустого места, поэтому они совпадают побайтно и тест сверяет их целиком.",
+      "evidence": "«Здесь ничего нет»: код 404, пустое тело, ни `content-type`, ни строчки",
+      "evidence_source": "mcp/src/service.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4523,6 +4763,9 @@
         "mcp/src/net.js"
       ],
       "phrase": "`redirect: 'error'` — не перестраховка",
+      "answer": "Потому что переезд домена не должен молча увести запрос на хост, которого нет в коде. Это не перестраховка: на пробе один из кандидатов (api.frankfurter.app) действительно ответил 301.",
+      "evidence": "// `redirect: 'error'` — не перестраховка: на пробе архитектора один из",
+      "evidence_source": "mcp/src/net.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4579,6 +4822,9 @@
         "mcpstore/src/store.js"
       ],
       "phrase": "export const MAX_FILES = 200",
+      "answer": "Двести файлов (при 64 КБ на файл и сроке хранения 30 часов). Когда предел достигнут, новый файл получает честный отказ «хранилище заполнено»: вытеснения нет намеренно — молча терять чужой файл хуже, чем отказать. Перезапись уже существующего имени под предел не попадает.",
+      "evidence": "export const MAX_FILES = 200",
+      "evidence_source": "mcpstore/src/store.js",
       "fixed": {
         "rank": 5,
         "phrase_in_first": false,
@@ -4635,6 +4881,9 @@
         "mcpstore/src/service.js"
       ],
       "phrase": "export const STORE_MAX_BODY = 256 * 1024",
+      "answer": "Потому что файл едет внутри JSON, а экранирование раздувает тело: даже файл из одной латиницы предельного размера даёт 65 659 байт при потолке 65 536, то есть при равных потолках предельный файл не прошёл бы никогда. Четырёхкратный запас (256 КБ) рассчитан на реальный текст — удвоение знаков при экранировании даёт 128 КБ и укладывается вдвое.",
+      "evidence": "export const STORE_MAX_BODY = 256 * 1024",
+      "evidence_source": "mcpstore/src/service.js",
       "fixed": {
         "rank": 7,
         "phrase_in_first": false,
@@ -4691,6 +4940,9 @@
         "mcpnews/src/tools.js"
       ],
       "phrase": "export const SUMMARY_LIMIT = 2000",
+      "answer": "До 2000 знаков; всё, что длиннее, обрезается и помечается признаком обрезки. Выжимку делает код, а не модель, намеренно: без сети, ключа и случайности те же входные данные дают тот же текст и тот же sha256, и только поэтому сверка sha256 с прочитанным из хранилища что-то значит.",
+      "evidence": "Детерминированная выжимка списка новостей: заголовки по убыванию очков, до 2000 знаков, sha256 текста. Модель не вызывается, сети не требует.",
+      "evidence_source": "mcpnews/src/tools.js",
       "fixed": {
         "rank": 8,
         "phrase_in_first": false,
@@ -4747,6 +4999,9 @@
         "agents/src/mcp/tool-names.js"
       ],
       "phrase": "имя сервера с двумя подчёркиваниями подряд сломало бы",
+      "answer": "Модели инструмент показывается как «<сервер>__<имя с точками через подчёркивание>», потому что роутер не пропускает точку в имени и у двух серверов имена могут совпасть. Обратно имя разбирается по индексу таблицы, а не разбором строки: имя сервера с двумя подчёркиваниями подряд сломало бы разбор молча, а индекс на такое имя просто не найдёт записи.",
+      "evidence": "// разбору строки: имя сервера с двумя подчёркиваниями подряд сломало бы",
+      "evidence_source": "agents/src/mcp/tool-names.js",
       "fixed": {
         "rank": 1,
         "phrase_in_first": true,
@@ -4803,6 +5058,9 @@
         "agents/src/mcp/servers.js"
       ],
       "phrase": "в реестр не попадает: недоступный сервер",
+      "answer": "Старт не упадёт: сервер без переменной с адресом просто не попадает в реестр — недоступный сервер считается штатным состоянием. При этом его имя остаётся в списке объявленных, чтобы «сервера нет в реестре» не означало «забыли строку в compose».",
+      "evidence": "которого переменной адреса нет, в реестр не попадает: недоступный сервер —",
+      "evidence_source": "agents/src/mcp/servers.js",
       "fixed": {
         "rank": 7,
         "phrase_in_first": false,
@@ -4859,6 +5117,9 @@
         "agents/src/mcp/client.js"
       ],
       "phrase": "export const RESPONSE_LIMIT = 256 * 1024",
+      "answer": "До 256 КБ, причём ответ читается потоком и обрывается на превышении — иначе бесконечный ответ съел бы память процесса agents, где живут и диалоги, и планировщик. Потолок показа в трейсе вчетверо меньше (64 КБ) специально, чтобы обрезка в трейсе и отказ по размеру не совпадали и были различимы.",
+      "evidence": "export const RESPONSE_LIMIT = 256 * 1024",
+      "evidence_source": "agents/src/mcp/client.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -4916,6 +5177,9 @@
         "agents/src/control/key.js"
       ],
       "phrase": "export const CONTROL_KEY_MIN_CHARS = 32",
+      "answer": "Выключенная поверхность. Ключ порождается 32 случайными байтами в base64 (44 знака), поэтому всё короче 32 знаков — не ослабленный ключ, а обрезанная при переносе строка или опечатка, и поверхность управления в таком случае отключается целиком.",
+      "evidence": "export const CONTROL_KEY_MIN_CHARS = 32",
+      "evidence_source": "agents/src/env.js",
       "fixed": {
         "rank": 1,
         "phrase_in_first": false,
@@ -4972,6 +5236,9 @@
         "agents/src/jobs/store.js"
       ],
       "phrase": "Счётчик в памяти обнулялся бы каждой выкаткой",
+      "answer": "Потому что счёт стартов за сутки — денежная защита. В памяти он обнулялся бы каждой выкаткой, и суточный потолок перестал бы что-либо значить ровно тогда, когда выкаток много. Поэтому и счётчик, и сами сводки лежат на томе, в отдельном файле jobs.db.",
+      "evidence": "// денежная защита. Счётчик в памяти обнулялся бы каждой выкаткой, и потолок",
+      "evidence_source": "agents/src/jobs/store.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5023,32 +5290,35 @@
     },
     {
       "id": "q90",
-      "question": "как часто срабатывает ночная цепочка и сколько запусков в сутки ей вообще позволено",
+      "question": "как часто по расписанию срабатывает цепочка инструментов MCP и сколько запусков в сутки ей вообще позволено",
       "expected": [
         "agents/config/jobs.json"
       ],
       "phrase": "\"maxRunsPerDay\": 96",
+      "answer": "Работа digest идёт по расписанию «*/15 * * * *» — каждые пятнадцать минут по UTC, и ей разрешено не больше 96 запусков в сутки. Потолок равен числу сроков намеренно.",
+      "evidence": "\"maxRunsPerDay\": 96,",
+      "evidence_source": "agents/config/jobs.json",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
         "top": [
           {
-            "source": "agents/README.md",
+            "source": "agent_docs/development-history/2026-09-28-0737-days18-20-design-notes.md",
             "section": "",
-            "score": 0.4431,
-            "excerpt": "овые слоты и суточный счётчик стартов в jobs.db на томе; счётчик и слоты — свои таблицы, уборка ленты сводок их не касается ``` ## Переменные окружения | Имя | Умолчание | Смысл | |---|---|---| | `AGENT_KEY` | — | ключ сервиса, обязателен; "
+            "score": 0.6023,
+            "excerpt": "# [2026-09-28 07:37] Дни 18–20: разбор восьми вопросов владельца, спайки и арифметика Файл: `agent_docs/development-history/2026-09-28-0737-days18-20-design-notes.md` Подложка к ADR `2026-09-28-0736-days18-20-mcp-host-scheduler-orchestratio"
           },
           {
-            "source": "agent_docs/adr/2026-09-28-1302-translate-both-ends-mcptranslate.md",
+            "source": "agent_docs/development-history/2026-09-29-0719-day16-server-and-agent-server-selection.md",
             "section": "",
-            "score": 0.4394,
-            "excerpt": "не просил. - **Без своего счётчика:** учёт поставщика не наблюдаем снаружи (429 после ~90 знаков), локальное число лгало бы увереннее, чем честное «неизвестно». ## Последствия ### Чего это стоит - **5000 знаков в сутки на всю установку** — "
+            "score": 0.5911,
+            "excerpt": "не зависит: `TOOL_RESULT_LIMIT` — 8 КиБ на результат, и ответы инструментов дня 16 до него не достают. На практике третий сервер средний расход круга снижает. ## Один лимитер службы — что это стоит Окна службы поадресные (`mcp/src/limits.js"
           },
           {
-            "source": "agent_docs/adr/2026-09-21-1747-day13-run-state-machine-pause.md",
+            "source": "agent_docs/adr/2026-09-28-0736-days18-20-mcp-host-scheduler-orchestration.md",
             "section": "",
-            "score": 0.4388,
-            "excerpt": ",0083), предел 3 | | ×21–26 худшего, ×70–90 умолчания | ×195–210 умолчания | | День адреса, 50 запусков, предел 1 / 2 / 3 | | $3,5 / $6,1 / $8,8 (со сжатием до $10,6) | $8,4 / $16 / $23,5 (до $25) | Что «32 000 и 50» означают вместе с цикло"
+            "score": 0.5808,
+            "excerpt": "файлы дня 19 — 30 часов, запуски дня 18 — последние 50 (п. 7, п. 10). Данных посетителей с адресом нет нигде. 6. Каденция сводки дня 18 — раз в 6 часов, не больше 6 запусков в сутки. ## Решение 1. **Хост — в `agents/`: `src/mcp/client.js` ("
           }
         ]
       },
@@ -5057,22 +5327,22 @@
         "phrase_in_first": false,
         "top": [
           {
-            "source": "agent_docs/design/2026-09-21-1852-staged-run-layout.md",
-            "section": "День 13: машина состояний запуска — раскладка до кода › 7. Настройки: две модели и предел кругов › 7.1. Окно настроек — порядок полей",
-            "score": 0.4299,
-            "excerpt": "Тело окна дня 11 (день 11, п. 3) с тремя правками, остальное без изменений: **«Стратегия памяти»** → **«Рабочая модель»** → **«Проверяющая модель»** → **«Предел кругов проверки»** → «Размер контекста» → «Порог сжатия» → «Последние реплики ("
+            "source": "agent_docs/architecture.md",
+            "section": "Архитектура › Ключевые компоненты › Четвёртая единица: служба MCP",
+            "score": 0.6013,
+            "excerpt": "`mcp/` (ADR `2026-09-23-1227`) — сервер Model Context Protocol на официальном `@modelcontextprotocol/sdk`, транспорт Streamable HTTP без сессий. Публичный адрес `https://challenge.zpq.ai/mcp`, вход по заголовку `Authorization` с ключом `MCP"
           },
           {
-            "source": "agent_docs/adr/2026-09-28-1302-translate-both-ends-mcptranslate.md",
-            "section": "[2026-09-28 13:02] Перевод на обоих концах цепочки дня 19: единица `mcptranslate` поверх MyMemory › Последствия › Чего это стоит",
-            "score": 0.4201,
-            "excerpt": "- **5000 знаков в сутки на всю установку** — квота анонимная, на адрес VPS; ~330 знаков за прогон при `limit` 5 → порядка 15 прогонов в сутки, из них 6 забирает планировщик. Остатка не видно: узнаём по 429. - **При исчерпании день 19 перест"
+            "source": "agent_docs/development-history/2026-09-28-0737-days18-20-design-notes.md",
+            "section": "[2026-09-28 07:37] Дни 18–20: разбор восьми вопросов владельца, спайки и арифметика › Задание",
+            "score": 0.5843,
+            "excerpt": "Владелец, 2026-09-28, три дня одним проходом, дни 1–16 в проде без изменений. Дословно: - **День 18.** MCP-инструмент с отложенным или периодическим выполнением: сохраняет данные (JSON/SQLite), выполняется по расписанию, возвращает агрегиро"
           },
           {
-            "source": "agent_docs/adr/2026-09-29-1600-limiter-in-day-dispatcher.md",
-            "section": "[2026-09-29 16:00] Лимитер в диспетчере дня: каждая ручка объявляет окно, исключения — в той же таблице › Развилки владельцу",
-            "score": 0.4171,
-            "excerpt": "1. **Какие дни трогать** (правило 2026-09-08: сданные дни не дорабатываются без явного указания; день 20 сдан 2026-09-29): (а) только день 21 — разрешения не нужно, закрывает **0 из 12**; (б) + день 20 — образец, с которого копируется день "
+            "source": "agent_docs/operations.md",
+            "section": "Эксплуатация › Сервис MCP и день 16",
+            "score": 0.5736,
+            "excerpt": "Служба `mcp` (`mcp/`, ADR `2026-09-23-1227`) — четвёртая единица верхнего уровня: сервер Model Context Protocol на официальном SDK, порт 8083, публичный адрес `https://challenge.zpq.ai/mcp`. Транспорт Streamable HTTP без сессий, ответ одним"
           }
         ]
       }
@@ -5084,6 +5354,9 @@
         ".github/workflows/deploy.yml"
       ],
       "phrase": "Ключ хоста ЗАКРЕПЛЁН в репозитории",
+      "answer": "Потому что прежний ssh-keyscan на каждом прогоне принимал любой предъявленный ключ: смену ключа 2026-10-02 выкатка не заметила — её поймал только ноутбук владельца, и подмену она не заметила бы точно так же. Закрепляется именно ключ, а имя хоста подставляется из секрета при сборке строки known_hosts.",
+      "evidence": "# Ключ хоста ЗАКРЕПЛЁН в репозитории, а не выспрашивается у сервера.",
+      "evidence_source": ".github/workflows/deploy.yml",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5140,6 +5413,9 @@
         ".github/workflows/deploy.yml"
       ],
       "phrase": "caddyfile_now=$(sha256sum Caddyfile | cut -d' ' -f1)",
+      "answer": "Выкатка считает sha256 файла Caddyfile и сравнивает его с запомненной на сервере суммой последней применённой конфигурации. Если они разошлись, конфигурация сначала проверяется через caddy validate в том же контейнере, а затем перечитывается caddy reload с повторами — reload идёт после up -d, который возвращается по старту, а не по готовности.",
+      "evidence": "caddyfile_now=$(sha256sum Caddyfile | cut -d' ' -f1)",
+      "evidence_source": ".github/workflows/deploy.yml",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5196,6 +5472,9 @@
         "deploy/compose.yml"
       ],
       "phrase": "Потолок 4096 МиБ — ADR 2026-10-02-1519",
+      "answer": "Службе ollama отдано 4096 МиБ (mem_limit: 4g). Число выведено, а не замерено: на прежних 2048 МиБ раннер llama.cpp убивало по OOM на худшем чанке, поэтому взяли вдвое больше потолка, на котором упало; решение — ADR 2026-10-02-1519.",
+      "evidence": "# Потолок 4096 МиБ — ADR 2026-10-02-1519, правит п. 4 ADR 2026-09-29-1639.",
+      "evidence_source": "deploy/compose.yml",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5252,6 +5531,9 @@
         "deploy/compose.yml"
       ],
       "phrase": "RAG_DAILY_EMBEDS=500",
+      "answer": "Пятьсот раз в сутки (сутки по UTC, счёт в /data/usage.json). Число не измерено, взято как начальное, и промах в меньшую сторону останавливает поиск до полуночи UTC — но видно это в отказе инструмента, а не молча.",
+      "evidence": "- RAG_DAILY_EMBEDS=500",
+      "evidence_source": "deploy/compose.yml",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5308,6 +5590,9 @@
         "deploy/Caddyfile"
       ],
       "phrase": "trusted_proxies static private_ranges",
+      "answer": "Строкой trusted_proxies static private_ranges: вход доверяет единственному стоящему перед ним прокси на частном адресе docker-сети и берёт адрес посетителя из присланного им X-Forwarded-For. Без неё Caddy считал бы прокси обычным клиентом и подставлял бы адрес контейнера входа — лимитеры всех дней схлопнулись бы на один адрес.",
+      "evidence": "trusted_proxies static private_ranges",
+      "evidence_source": "deploy/Caddyfile",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5364,6 +5649,9 @@
         "deploy/cron/crontab.sh"
       ],
       "phrase": "в образе alpine нет ни jq, ни node",
+      "answer": "Таблицу собирает скрипт на старте контейнера времени, разбирая jobs.json построчно, а не JSON-разбором — в образе alpine нет ни jq, ни node. Время в таблице — UTC, а «работ не найдено» или непонятый знак дают отказ со своим текстом, а не пустой вывод: дыра здесь была бы тихой, таблица без строки означала бы снятое расписание.",
+      "evidence": "# Разбор строчный, а не JSON-разбором: в образе alpine нет ни jq, ни node.",
+      "evidence_source": "deploy/cron/crontab.sh",
       "fixed": {
         "rank": 9,
         "phrase_in_first": false,
@@ -5420,6 +5708,9 @@
         "deploy/put-rag-key.sh"
       ],
       "phrase": "refusal_burst срабатывает на 20 отказах с адреса за час",
+      "answer": "То же значение обязано попасть в окружение ноутбука владельца — туда, откуда его видит Claude Code, потому что .mcp.json подставляет ${RAG_KEY} из окружения процесса. Без переменной каждая сессия шлёт на публичный /rag строку шаблона, служба считает это отказом по ключу, а сигнал refusal_burst (20 отказов с адреса за час) приходил бы от своего же ноутбука и перестал бы что-либо значить.",
+      "evidence": "# refusal_burst срабатывает на 20 отказах с адреса за час — единственный",
+      "evidence_source": "deploy/put-rag-key.sh",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5476,6 +5767,9 @@
         ".github/scripts/compose-limits.mjs"
       ],
       "phrase": "Сверка точным значением, а не «не больше»",
+      "answer": "Потому что проверка одного наличия была бы зелёной и на бессмысленном потолке: «mem_limit: 8g» формально потолок есть, а общей машине от него ни холодно ни жарко — это вся её память. Страж сверяет ровно те значения, которыми принято решение, чтобы число не уехало молча: менять его можно, но новым решением и PR класса A.",
+      "evidence": "// Сверка точным значением, а не «не больше»: `mem_limit: 8g` формально",
+      "evidence_source": ".github/scripts/compose-limits.mjs",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5532,6 +5826,9 @@
         "test/rag-route-lock.test.js"
       ],
       "phrase": "публичной ручки без ключа не должно существовать ни минуты",
+      "answer": "Потому что за этим адресом ядро общей машины, и публичной ручки без ключа не должно существовать ни минуты — поэтому маршрут и замок приезжают одним изменением. Дальше это держать нечем: снять env_file, открыть окно ручки, убрать header_up или отказ старта без ключа — правки на одну строку, каждая из которых оставляет compose рабочим, а прод с открытой ручкой.",
+      "evidence": "// публичной ручки без ключа не должно существовать ни минуты. Заход 4",
+      "evidence_source": "test/rag-route-lock.test.js",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
@@ -5588,6 +5885,9 @@
         "atlas/README.md"
       ],
       "phrase": "`.github/scripts/atlas-tool.sh` (`TOOL_TAG`,",
+      "answer": "Код генератора живёт в отдельном репозитории MikeKharr/project-atlas и приходит сюда клоном на закреплённом теге. Версия записана в одном месте — .github/scripts/atlas-tool.sh, в переменных TOOL_TAG и TOOL_SHA; её смена — PR класса A.",
+      "evidence": "записана в одном месте — `.github/scripts/atlas-tool.sh` (`TOOL_TAG`,",
+      "evidence_source": "atlas/README.md",
       "fixed": {
         "rank": null,
         "phrase_in_first": false,
