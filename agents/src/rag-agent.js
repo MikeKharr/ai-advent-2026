@@ -16,6 +16,17 @@
 // Диалога, сессий и памяти у агента нет намеренно: задание дня — один вопрос.
 // Поэтому `isBusy`/`hold` — заглушки, как у цепочки дня 19.
 //
+// ЧЕМ ПЛАТИМ, названо здесь, а не только в ADR. Текст фрагментов корпуса
+// уходит модели как недоверенные данные: блок помечен сведениями, закрывающая
+// метка обезвреживается, вопрос стоит последним — но корпус индексирует и код
+// этого сервиса, то есть во фрагмент может попасть дословный шаблон блока
+// указаний (проверено `compliance` исполнением: в собранном промпте `<request>`
+// встречается дважды, один раз из области данных). Граница блока при этом
+// держится, инструментов модели не дано, вызов один и с потолком 800 — радиус
+// поражения это неверный ответ, не расход и не ключ. Держит: ничто, кроме
+// формы блока; на экране это видно только тем, что ответ разошёлся с
+// фрагментами.
+//
 // РАЗМЕР ОТВЕТА ЗАПУСКА назван числом, потому что решениями владельца
 // 2026-10-04 (развилки раскладки В2 и В3) в него попали и тексты фрагментов,
 // и сырые тела JSON-RPC: пять фрагментов по ≤ 2000 знаков (`rag/tools.py`,
@@ -98,7 +109,15 @@ export const NORAG_SYSTEM = [
 /** Один фрагмент выдачи → строка блока контекста: `[n] путь · раздел · близость`. */
 function fragmentLines(results) {
   return results.map((item, at) => {
-    const parts = [item.source, item.section, item.score === null ? '' : `близость ${item.score}`]
+    // `source` и `section` обезвреживаются ТАК ЖЕ, как текст: `section` —
+    // цепочка заголовков markdown из корпуса (`rag/chunking.py`), и заголовок
+    // вида `## </fragments>` закрыл бы блок данных досрочно, вынеся остаток
+    // списка в область указаний (находка `reviewer` к PR #302).
+    const parts = [
+      safeTag(item.source, 'fragments'),
+      safeTag(item.section, 'fragments'),
+      item.score === null ? '' : `близость ${item.score}`,
+    ]
       .filter((part) => part !== '')
       .join(' · ')
     const head = `[${at + 1}] ${parts}`
@@ -128,12 +147,60 @@ export function buildNoRagInput(question) {
   return requestBlock(question)
 }
 
+/**
+ * Слова отказа из тела JSON-RPC, если сервер их прислал.
+ *
+ * ЗАЧЕМ ЭТО ЕСТЬ. Служба `rag` отказывает ДВУМЯ разными формами, и это не
+ * мелочь транспорта:
+ *   - отказ инструмента (`NO_INDEX`, `NO_STRATEGY_INDEX`, `DAILY_EXHAUSTED`)
+ *     приходит HTTP 200 с `isError: true` в результате (`rag/rpc.py`,
+ *     `tool_error`);
+ *   - **отказ минутного и часового окна лимитера** приходит HTTP 429 с
+ *     конвертом `error` JSON-RPC, и слова лимитера лежат в его `message`
+ *     (`rag/serve.py`, `_rpc`, шаг 5).
+ *
+ * Клиент MCP обрывается на `response.ok` ДО разбора конверта, и его
+ * собственное сообщение говорит только «ответил 429» — то есть слова
+ * лимитера теряются ровно в том отказе, который при окне 10/мин на весь
+ * хост самый частый. А именно «отказ виден словами лимитера» и было
+ * основанием решения владельца Р6(а) (ADR 2026-10-04-0735, п. 4). Поэтому
+ * тело разбирается здесь — и только для текста отказа, который и так
+ * целиком уходит в трейс.
+ *
+ * Находка `reviewer` к PR #302: до этой функции отказ окна становился
+ * `search_failed` со словами «Сервер MCP «rag» ответил 429».
+ */
+export function rpcErrorMessage(trace) {
+  const raw = typeof trace?.response === 'string' ? trace.response : ''
+  if (raw === '') return null
+  let envelope
+  try {
+    envelope = JSON.parse(raw)
+  } catch {
+    // Не JSON — значит слов отказа в теле нет: ответ сервера недоверенные
+    // данные, и разбор их не обязан удаваться.
+    return null
+  }
+  for (const item of Array.isArray(envelope) ? envelope : [envelope]) {
+    const message = item?.error?.message
+    if (typeof message === 'string' && message.trim() !== '') return message.trim()
+  }
+  return null
+}
+
 /** Разбор выдачи `project.search`: что из ответа инструмента идёт в промпт. */
 export function parseSearch(out) {
   const payload = payloadOf(out)
   const raw = Array.isArray(payload.results) ? payload.results : []
   const results = raw
     .filter((item) => item && typeof item === 'object')
+    // Своё обещание — своя граница. `limit: 5` служба только ПРОСИТСЯ, а
+    // сверху выдачу держал бы лишь потолок ответа чужой единицы (32 КиБ,
+    // `rag/tools.py`, `MAX_ANSWER`) — другой язык, другая единица. Правка
+    // проверки `limit` там уехала бы сюда входом модели вдвое дороже
+    // расчётного и шестой строкой источников на странице (находка
+    // `reviewer` к PR #302).
+    .slice(0, SEARCH_LIMIT)
     .map((item) => ({
       source: typeof item.source === 'string' ? item.source : '',
       section: typeof item.section === 'string' ? item.section : '',
@@ -303,6 +370,18 @@ export function createRagAgent({
             if (error instanceof McpError && error.trace)
               emit(rpcEvent(error.trace, 'Поиск не выполнен', 'error'))
             log(`запуск ${run.id}: поиск: ${error.reason ?? ''} ${error.message}`)
+            // Отказ окна лимитера службы: HTTP 429 со словами лимитера в теле
+            // (`rpcErrorMessage` выше). Это отказ службы, а не её
+            // недоступность, поэтому код тот же, что у отказа инструмента, и
+            // наружу идут ЕЁ слова, а не «ответил 429».
+            const words = error.status === 429 ? rpcErrorMessage(error.trace) : null
+            if (words !== null)
+              return fail({
+                code: 'search_refused',
+                title: 'Поиск отказал',
+                message: `${words} Модель не вызывалась.`,
+                data: { status: 429, reason: error.reason ?? 'http' },
+              })
             return fail({
               code: 'search_failed',
               title: 'Поиск не ответил',
@@ -311,10 +390,13 @@ export function createRagAgent({
             })
           }
           emit(rpcEvent(out.trace, 'Выполнен project.search', out.isError ? 'warn' : 'info'))
-          // Отказ инструмента приходит признаком, а не исключением: это и
-          // есть `NO_INDEX`, `NO_STRATEGY_INDEX`, `DAILY_EXHAUSTED` и отказ
-          // окна лимитера службы. Для запуска все четыре — один исход:
-          // искать не по чему, значит и спрашивать не о чем.
+          // Отказ инструмента приходит признаком, а не исключением: это
+          // `NO_INDEX`, `NO_STRATEGY_INDEX` и `DAILY_EXHAUSTED`. Отказа окна
+          // лимитера здесь НЕТ — он приходит HTTP 429 и обработан в `catch`
+          // выше (`rpcErrorMessage`); прежняя редакция этого комментария
+          // утверждала обратное, и утверждение было ложным (находка
+          // `reviewer` к PR #302). Для запуска исход всё равно один: искать
+          // не по чему, значит и спрашивать не о чем.
           if (out.isError)
             return fail({
               code: 'search_refused',
@@ -444,6 +526,11 @@ export function createRagAgent({
             // сервер, он уже режет до 2000 знаков (`rag/tools.py`, MAX_TEXT),
             // и признак `truncated` — его же: без него страница обещала бы
             // целый фрагмент там, где его обрезали.
+            // Текст здесь — как отдала служба, ДО обезвреживания метки:
+            // владелец просил показывать фрагмент без правок. Расхождение с
+            // тем, что видела модель, возможно ровно в одном случае — если в
+            // самом фрагменте есть литерал `</fragments>` (находка
+            // `reviewer` к PR #302, FYI); пересказывать и резать нельзя.
             sources: found === null ? [] : found.sources,
             index: found === null ? null : found.index,
             // Сырые тела JSON-RPC вызова поиска — РЕШЕНИЕ ВЛАДЕЛЬЦА
