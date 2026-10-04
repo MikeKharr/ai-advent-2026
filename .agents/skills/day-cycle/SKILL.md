@@ -120,7 +120,14 @@ description: /day-cycle — оркестрация полного цикла д�
    `2026-09-23-1227`, п. 4). Только это имя, только эти два файла, значение
    не печатается: `MCP_KEY` в `router.env`, `agents.env` или ином `dayN.env`,
    чтение значения и повторное порождение поверх существующего `mcp.env`
-   (`set -C` от этого и стоит) — запрещены; расход и метрики роутера (ADR
+   (`set -C` от этого и стоит) — запрещены; копия существующего `RAG_KEY` из
+   `rag.env` в `agents.env` тем же порядком, что `MCP_KEY` выше: существующий
+   файл — `umask 077; grep '^RAG_KEY=' rag.env >> agents.env`; новый файл —
+   `set -C; umask 077; grep '^RAG_KEY=' rag.env > agents.env; chmod 600
+   agents.env`; проверка `grep -o '^[A-Z_]*=' agents.env` (ADR
+   `2026-10-04-0735`). Только это имя, только эти два файла, значение не
+   печатается; `RAG_KEY` в `router.env`, `dayN.env` или ином файле —
+   запрещён; расход и метрики роутера (ADR
    `2026-09-16-0907`): `docker compose exec -T router node admin.js spend` и
    `docker compose exec -T router node admin.js metrics` — дословно. Всё
    остальное запрещено: `docker compose exec` — запрещённая форма, из неё
