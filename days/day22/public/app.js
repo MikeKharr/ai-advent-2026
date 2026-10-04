@@ -35,7 +35,7 @@ import {
   ANSWER_BLANK,
   ANSWER_CUT,
   answerMeta,
-  DAY_LIMIT_NOTE,
+  dayLimitNote,
   failure,
   formatScore,
   fragmentSummary,
@@ -80,6 +80,9 @@ const node = (tag, className, text) => {
   if (text !== undefined) el.textContent = text
   return el
 }
+
+/** Статус запуска словом. Чего в карте нет — показывается как пришло. */
+const STATUS_WORD = { failed: 'не удался', cancelled: 'отменён' }
 
 /** Строка состояния: цвет и слово несут один смысл (п. 8.1, корпус). */
 function setStatus(text, bad = false) {
@@ -146,13 +149,21 @@ function showStepsPlaceholder(text) {
  * `#answer-empty.hidden === false`). Пустое состояние возвращается только
  * туда, где запуска не было: на загрузку страницы.
  */
-function resetRun({ starting = false } = {}) {
+function resetRun({ starting = false, mode = null } = {}) {
   events = []
   fragmentsFound = null
   errorData = null
   answerEmpty.hidden = starting
   answerBox.replaceChildren()
-  showSrcsPlaceholder(starting ? SRCS_SEARCHING : SRCS_NEVER)
+  // РЕЖИМ ОБЯЗАТЕЛЕН, когда запуск начинается. Поиска в режиме без RAG нет
+  // вовсе, и строка «Ищу фрагменты…» висела бы весь запуск, объявляя
+  // пройденным шаг, которого в этом режиме не бывает, — в той самой секции,
+  // которая и есть предмет сравнения дня (находка `reviewer` к PR #303).
+  // Прежняя редакция ставила её без учёта режима, и до конца запуска строку
+  // не переписывал никто.
+  showSrcsPlaceholder(
+    !starting ? SRCS_NEVER : mode === 'norag' ? SRCS_NORAG : SRCS_SEARCHING,
+  )
   showStepsPlaceholder(starting ? STEPS_RUNNING : STEPS_NEVER)
 }
 
@@ -411,7 +422,9 @@ function onEnd(raw) {
 let refocus = false
 
 document.addEventListener('focusin', (event) => {
-  if (input.disabled && event.target !== input && event.target !== send) refocus = false
+  // Ветви про кнопку здесь нет: на время запуска она заперта и фокус получить
+  // не может, то есть условие было бы мёртвым (находка `reviewer` к PR #303).
+  if (input.disabled && event.target !== input) refocus = false
 })
 
 function lock(on) {
@@ -482,28 +495,23 @@ form.addEventListener('submit', async (event) => {
     // Сообщение сервера не пересказывается: в нём единственное достоверное
     // число суточного предела.
     setStatus(`${json?.error ?? `Сервер ответил ${answer.status}.`}${retry}`, true)
-    // Отказов 429 у дня ТРИ (`limits.js`): суточный потолок, минутное окно и
-    // часовое. Строку про суточный предел ставим только там, где он и
-    // исчерпан, — различитель уже приходит в ответе: у потолка
-    // `retryAfterSec` равен `null`, у обоих окон это число секунд.
-    //
-    // Прежняя редакция ставила её на ЛЮБОЙ 429, и экран противоречил сам
-    // себе: в строке состояния «слишком часто», а под ней «суточный предел
-    // исчерпан» при `callsToday` 1 из 3 (находка `design-review` к PR #303,
-    // замер на `RATE_LIMIT_PER_MIN=1`). У окон блок ответа не трогаем вовсе:
-    // достоверные слова уже стоят в строке состояния, и второй раз их
-    // пересказывать незачем.
-    if (answer.status === 429 && json?.retryAfterSec === null) {
+    // Какую строку ставить под отказом 429 — решает `dayLimitNote`, и решает
+    // она одна: у правила «не называть суточный предел исчерпанным, когда он
+    // не исчерпан» должен быть держатель, который исполняется. Условие,
+    // стоявшее здесь в коде страницы, снималось мутацией молча — все 315
+    // тестов оставались зелёными (находка `compliance` к PR #303).
+    const limitNote = dayLimitNote(answer.status, json?.retryAfterSec)
+    if (limitNote !== null) {
       answerEmpty.hidden = true
       const box = node('div', 'notice')
-      box.append(node('p', undefined, DAY_LIMIT_NOTE))
+      box.append(node('p', undefined, limitNote))
       answerBox.replaceChildren(box)
     }
     return
   }
   // Запуск принят — только теперь пульт очищается. При отказе на экране
   // остаётся ровно то, что было: запуска не начиналось.
-  resetRun({ starting: true })
+  resetRun({ starting: true, mode })
   setStatus(mode === 'rag' ? STATUS.searching : STATUS.sent)
   subscribe(json.runId)
 })
@@ -514,9 +522,6 @@ input.addEventListener('keydown', (event) => {
 })
 
 // ——— итоги десяти вопросов (п. 9) ———
-
-/** Статус запуска словом. Чего в карте нет — показывается как пришло. */
-const STATUS_WORD = { failed: 'не удался', cancelled: 'отменён' }
 
 const EVAL_NEVER =
   'Прогон 10 вопросов ещё не сделан. Числа появятся после первого прогона на проде.'
