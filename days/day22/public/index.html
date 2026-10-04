@@ -197,6 +197,12 @@
     font-variant-numeric:tabular-nums; min-width:5rem;
   }
 
+  /* Фраза вывода — проза, и полоса чтения ей нужна: класс `wrap` полосой не
+     является, это `min-width:0` для сетки. Замер design-review к PR #304:
+     98.4ch при 1440 без этого правила, тогда как соседние абзацы секции
+     (`#eval-limits`, `.q-line.is-main`) полосу имеют. */
+  #sum-verdict { margin:0; max-width:68ch; }
+
   .qs { list-style:none; margin:0; padding:0; }
   .q { border-top:1px solid var(--line); min-width:0; }
   .q > summary {
@@ -205,8 +211,14 @@
     transition:background-color 120ms;
   }
   @media (min-width:48rem) {
-    .q > summary { grid-template-columns:3rem minmax(0,1fr) 7rem 7rem; gap:var(--s-3); align-items:baseline; }
+    .q > summary { grid-template-columns:3rem minmax(0,1fr) 7rem 7rem auto; gap:var(--s-3); align-items:baseline; }
   }
+  /* Маркер раскрытия — те же правила `.mark`, что у свёрток пульта: знак
+     `+` → `−` по `[open]`, `aria-hidden` стоит в разметке. Своей колонкой
+     (`auto` пятой), а не перестановкой сетки: порядок на экране остаётся
+     порядком разметки. Размер и цвет — вторичные, как у `.q-id`: маркер не
+     содержание строки. */
+  .q > summary .mark { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
   .q > summary::-webkit-details-marker { display:none; }
   .q > summary:hover { background:var(--bg); }
   .q[open] > summary { background:var(--bg); }

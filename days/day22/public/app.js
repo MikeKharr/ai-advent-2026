@@ -567,6 +567,12 @@ function renderQuestion(q) {
     cell.append(node('span', undefined, verdictWord(q[name])))
     summary.append(cell)
   }
+  // Маркер раскрытия: без него десять раскрываемых строк ничем не показывают,
+  // что раскрываются (находка design-review к PR #304; п. 9.4). Состояние
+  // сообщает сам `details`, поэтому знак скрыт от доступности.
+  const mark = node('span', 'mark')
+  mark.setAttribute('aria-hidden', 'true')
+  summary.append(mark)
   details.append(summary)
 
   const body = node('div', 'q-body')
