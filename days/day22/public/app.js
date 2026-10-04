@@ -157,6 +157,20 @@ function rpcBox(id, label, raw, { broken = false, request = false } = {}) {
   caption.id = id
   const parts = [caption]
   const missing = raw === null || raw === ''
+
+  // ВЫЗОВ ОБОРВАЛСЯ: ответа не пришло вовсе. Это единственное место ленты с
+  // `--danger`, и цвет даёт правило самой копии дня 16
+  // (`.entry[data-kind="fail"] .entry-note`) — а значит, строка обязана быть
+  // `.entry-note`, а не `pre.rpc.is-empty`: тот окрашен `--fg-mut`, то есть
+  // обрыв вызова читался бы как «служба ответила пустым». Замер в живом
+  // Chrome: до правки цвет строки был rgb(155,155,163) вместо rgb(242,184,181)
+  // в тёмной теме. Рамки тела здесь нет намеренно — заменять нечего, байтов не
+  // было (раскладка, п. 10).
+  if (missing && broken) {
+    parts.push(node('p', 'entry-note', RPC_BROKEN))
+    return parts
+  }
+
   let shown = raw
   if (!missing) {
     const cut = clipBody(raw)
@@ -164,7 +178,7 @@ function rpcBox(id, label, raw, { broken = false, request = false } = {}) {
     else if (!reindent(raw).ok) parts.push(node('p', 'entry-note', partialNotes.notJson))
     shown = cut.text
   }
-  const box = node('pre', `rpc${missing ? ' is-empty' : ''}${request ? ' is-req' : ''}`, missing ? (broken ? RPC_BROKEN : RPC_EMPTY) : shown)
+  const box = node('pre', `rpc${missing ? ' is-empty' : ''}${request ? ' is-req' : ''}`, missing ? RPC_EMPTY : shown)
   box.tabIndex = 0
   box.setAttribute('role', 'region')
   box.setAttribute('aria-labelledby', id)
@@ -524,21 +538,33 @@ function showEval(parsed) {
   evalBox.hidden = false
 
   // Четыре числа на режим. Все — из файла; ни одно не стоит в разметке.
+  // Каждая клетка подписана дважды — заголовком строки и заголовком столбца,
+  // поэтому `th` со `scope`, а не «сетка из span»: иначе колонку «без RAG»
+  // с клавиатуры и на слух не опознать.
   const sum = byId('sum')
-  const head = [node('span', 'sum-head', ''), node('span', 'sum-head is-val', 'с RAG'), node('span', 'sum-head is-val', 'без RAG')]
-  const rows = [
+  const headRow = node('tr')
+  headRow.append(node('td', undefined, ''))
+  for (const label of ['с RAG', 'без RAG']) {
+    const th = node('th', undefined, label)
+    th.scope = 'col'
+    headRow.append(th)
+  }
+  const thead = node('thead')
+  thead.append(headRow)
+  const tbody = node('tbody')
+  for (const [label, key] of [
     ['верно и по источнику', 'correct'],
     ['частично', 'partial'],
     ['неверно или выдумано', 'wrong'],
     ['отказ «ответа нет»', 'refused'],
-  ]
-  const cells = []
-  for (const [label, key] of rows) {
-    cells.push(node('dt', undefined, label))
-    cells.push(node('dd', undefined, String(t.counts.rag[key])))
-    cells.push(node('dd', undefined, String(t.counts.norag[key])))
+  ]) {
+    const tr = node('tr')
+    const th = node('th', undefined, label)
+    th.scope = 'row'
+    tr.append(th, node('td', undefined, String(t.counts.rag[key])), node('td', undefined, String(t.counts.norag[key])))
+    tbody.append(tr)
   }
-  sum.replaceChildren(...head, ...cells)
+  sum.replaceChildren(thead, tbody)
 
   const partial = byId('sum-partial')
   const note = partialNote(t)

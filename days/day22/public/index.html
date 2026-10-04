@@ -23,6 +23,12 @@
      десяти вопросов — --s-7 (п. 2.1). */
   .sec { margin:0 0 var(--s-5); }
   .sec > * + * { margin-top:var(--s-4); }
+  /* Заголовок секции свой отступ уже несёт (`h2 { margin:0 0 var(--s-2) }` в
+     копии), и правило выше добавляло бы к нему второй. Бюджет первого экрана
+     (раскладка, п. 2.3) считает между `h2 ВОПРОС` и полем ровно `--s-2`, и
+     замер показал, почему это не придирка: лишние 16 px уводили низ
+     переключателя режима на 586 px при кадре 568, то есть за первый экран. */
+  .sec > h2 + * { margin-top:0; }
   .sec-gap { margin-top:var(--s-7); }
   .wrap { min-width:0; }
 
@@ -161,15 +167,17 @@
   .steps .trimmed { margin:var(--s-2) 0 0; }
 
   /* ——— Итоги десяти вопросов (п. 9) ——— */
-  .sum { display:grid; grid-template-columns:minmax(0,1fr) 5rem 5rem; gap:var(--s-2) var(--s-3); margin:0; }
-  .sum dt { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); min-width:0; }
-  .sum dd {
-    margin:0; font-size:var(--t-sm); line-height:1.5; text-align:right;
-    font-variant-numeric:tabular-nums;
+  .sum { border-collapse:collapse; margin:0; }
+  .sum th, .sum td { padding:var(--s-1) var(--s-3) var(--s-1) 0; text-align:left; font-weight:400; }
+  .sum thead th {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); text-align:right;
   }
-  .sum-head { font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
-              letter-spacing:.06em; color:var(--fg-mut); }
-  .sum-head.is-val { text-align:right; }
+  .sum tbody th { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+  .sum td {
+    font-size:var(--t-sm); line-height:1.5; text-align:right;
+    font-variant-numeric:tabular-nums; min-width:5rem;
+  }
 
   .qs { list-style:none; margin:0; padding:0; }
   .q { border-top:1px solid var(--line); min-width:0; }
@@ -346,7 +354,11 @@
     <h2 id="eval-h">Итоги 10 контрольных вопросов</h2>
     <div id="eval-state"></div>
     <div id="eval" hidden>
-      <dl class="sum" id="sum"></dl>
+      <!-- Сводка — настоящая таблица: четыре строки на два режима, у каждой
+           клетки есть и заголовок строки, и заголовок столбца. Запрет таблиц
+           из раскладки (п. 9.4) относится к СПИСКУ ВОПРОСОВ, где на режим по
+           девять полей, а не к этим восьми числам. -->
+      <table class="sum" id="sum"></table>
       <p class="empty" id="sum-partial" hidden></p>
       <p id="sum-verdict" class="wrap"></p>
       <!-- Границы метода — ВНУТРИ секции, до списка вопросов и без раскрытия
