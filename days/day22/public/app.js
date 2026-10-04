@@ -34,6 +34,7 @@ import { clipBody, partialNotes, reindent } from './rpc.js'
 import {
   ANSWER_BLANK,
   ANSWER_CUT,
+  ANSWER_TORN,
   answerMeta,
   dayLimitNote,
   failure,
@@ -56,6 +57,7 @@ import {
   sourceUrl,
   STATUS,
   steps,
+  tornSrcsNote,
 } from './run.js'
 
 const byId = (id) => document.getElementById(id)
@@ -125,6 +127,11 @@ const STEPS_RUNNING =
 let events = []
 let stream = null
 let fragmentsFound = null
+/**
+ * Режим ЭТОГО запуска, а не текущее положение радиокнопки: к обрыву потока
+ * кнопки уже отперты, и читать их значило бы спросить про другой запуск.
+ */
+let runMode = null
 /** Данные последнего события стадии `error`: в нём статус 429 от службы поиска. */
 let errorData = null
 
@@ -152,6 +159,7 @@ function showStepsPlaceholder(text) {
 function resetRun({ starting = false, mode = null } = {}) {
   events = []
   fragmentsFound = null
+  runMode = starting ? mode : null
   errorData = null
   answerEmpty.hidden = starting
   answerBox.replaceChildren()
@@ -459,6 +467,22 @@ function subscribe(runId) {
     const shown = stepsList.children.length
     if (shown === 0) showStepsPlaceholder('Поток событий оборвался. Показано записей: 0.')
     else stepsNote.append(node('p', 'entry-note', `Поток событий оборвался. Показано записей: ${shown}.`))
+    // ВСЕ ТРИ секции обязаны сказать про обрыв, а не только лента.
+    //
+    // Прежняя редакция переписывала лишь строку состояния и примечание ленты:
+    // «Источники» оставались на `SRCS_SEARCHING` навсегда, объявляя идущим
+    // поиск, которого уже нет, а блок «Ответ» был пустой областью высотой
+    // 0 px — три утверждения на одном экране, два против третьего
+    // (блокирующая `design-review` к PR #303). Тот же дефект в этом файле
+    // закрыт дважды: для режима без RAG — в `resetRun`, для отказа запуска —
+    // вызовом `showSrcsPlaceholder(SRCS_FAILED)` в `showFailure`; ветвь
+    // обрыва осталась без него.
+    //
+    // Режим без RAG не трогаем: `resetRun` поставил там `SRCS_NORAG`, и обрыв
+    // этого не меняет — поиска в этом режиме не было, и обрываться ему нечем.
+    const tornNote = tornSrcsNote(runMode, fragmentsFound)
+    if (tornNote !== null) showSrcsPlaceholder(tornNote)
+    answerBox.replaceChildren(node('p', 'empty', ANSWER_TORN))
   }
 }
 

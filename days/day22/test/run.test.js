@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   ANSWER_BLANK,
+  ANSWER_TORN,
   answerMeta,
   DAY_LIMIT_NOTE,
   dayLimitNote,
@@ -23,9 +24,12 @@ import {
   repoUrl,
   shortSearchNote,
   sourceUrl,
+  SRCS_TORN_AFTER,
+  SRCS_TORN_BEFORE,
   STATUS,
   steps,
   strategyWord,
+  tornSrcsNote,
 } from '../public/run.js'
 
 const COMMIT = '57a5cd7aa11bb22cc33dd44ee55ff6677889900a'
@@ -287,6 +291,39 @@ test('суточный предел называется исчерпанным 
   for (const sec of [60, 1800, 3599, 1]) assert.equal(dayLimitNote(429, sec), null, `окно на ${sec} с`)
   // Ноль — тоже число, то есть окно, а не потолок.
   assert.equal(dayLimitNote(429, 0), null, 'ноль секунд принят за потолок')
+})
+
+/**
+ * Обрыв потока: ни одна секция не остаётся с утверждением, которое обрыв
+ * сделал ложным.
+ *
+ * Блокирующая `design-review` к PR #303: «Источники» оставались на «Ищу
+ * фрагменты…» навсегда — настоящее время рядом с красной строкой о том, что
+ * запуск кончился, — а блок «Ответ» был пустой областью высотой 0 px.
+ * Правило вынесено сюда и держится ИСПОЛНЕНИЕМ: в прошлом круге того же PR
+ * `compliance` показал, что правило, оставленное в обработчике, обходится не
+ * тронув ни одной проверенной строки.
+ */
+test('при обрыве потока секция источников не обещает идущий поиск', () => {
+  // Поиск успел доложиться и не успел — РАЗНЫЕ случаи, и они не сливаются.
+  assert.equal(tornSrcsNote('rag', 5), SRCS_TORN_AFTER, 'доложившийся поиск назван недоложившимся')
+  assert.equal(tornSrcsNote('rag', 0), SRCS_TORN_AFTER, 'ноль фрагментов — тоже доклад')
+  assert.equal(tornSrcsNote('rag', null), SRCS_TORN_BEFORE, 'недоложившийся поиск назван доложившимся')
+  assert.notEqual(SRCS_TORN_AFTER, SRCS_TORN_BEFORE, 'два случая одними словами')
+  // Ни один из них не ставит поиск в настоящее время.
+  for (const text of [SRCS_TORN_AFTER, SRCS_TORN_BEFORE])
+    assert.ok(!/Ищу/.test(text), `обещает идущий поиск: ${text}`)
+  // Режим без RAG не трогаем: там стоит SRCS_NORAG, и обрыв этого не меняет.
+  for (const mode of ['norag', null, undefined, 'что-то третье'])
+    assert.equal(tornSrcsNote(mode, 5), null, `режим ${mode} переписан`)
+})
+
+test('при обрыве потока блок ответа говорит словами и молчит про деньги', () => {
+  assert.ok(ANSWER_TORN.length > 0, 'пустое место на месте главного предмета экрана (I-8)')
+  assert.match(ANSWER_TORN, /оборвался/)
+  // Был ли вызов модели оплачен, с оборванного потока не видно.
+  for (const word of ['денег', 'бесплатн', 'не стоил', 'потрачен'])
+    assert.ok(!ANSWER_TORN.includes(word), `утверждает про расход: ${word}`)
 })
 
 test('при деградации страница молчит про причину, а не угадывает её', () => {
