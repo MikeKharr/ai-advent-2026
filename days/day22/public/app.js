@@ -25,6 +25,7 @@ import {
   NOT_RUN,
   parseEval,
   partialNote,
+  SUM_ROWS,
   tally,
   limitsText,
   verdict,
@@ -566,6 +567,12 @@ function renderQuestion(q) {
     cell.append(node('span', undefined, verdictWord(q[name])))
     summary.append(cell)
   }
+  // Маркер раскрытия: без него десять раскрываемых строк ничем не показывают,
+  // что раскрываются (находка design-review к PR #304; п. 9.4). Состояние
+  // сообщает сам `details`, поэтому знак скрыт от доступности.
+  const mark = node('span', 'mark')
+  mark.setAttribute('aria-hidden', 'true')
+  summary.append(mark)
   details.append(summary)
 
   const body = node('div', 'q-body')
@@ -653,12 +660,10 @@ function showEval(parsed) {
   const thead = node('thead')
   thead.append(headRow)
   const tbody = node('tbody')
-  for (const [label, key] of [
-    ['верно и по источнику', 'correct'],
-    ['частично', 'partial'],
-    ['неверно или выдумано', 'wrong'],
-    ['отказ «ответа нет»', 'refused'],
-  ]) {
+  // Ярлыки строк приходят из `evalview.js`, а не стоят здесь: критерий 30
+  // запрещает называть вердикт 0 выдумыванием, и запрет держится исполнением
+  // по тому файлу, где стоит и фраза вывода.
+  for (const [label, key] of SUM_ROWS) {
     const tr = node('tr')
     const th = node('th', undefined, label)
     th.scope = 'row'
