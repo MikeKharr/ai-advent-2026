@@ -307,6 +307,29 @@ test('слова «выдумано» в исполняемом тексте с�
   assert.match(report.judge.rubric, INVENTED, 'рубрика судьи в eval.json переписана')
 })
 
+// Маркер раскрытия и полоса чтения — обе находки `design-review` к PR #304.
+// Держателя у них до неё не было: раскладка проверяется на живой странице, а
+// ревью — не CI, и снятие знака прошло бы молча.
+test('у каждой свёртки есть знак раскрытия, а у фразы вывода — полоса чтения', () => {
+  const app = stripJs(read('app.js'))
+  // Счёт, а не наличие: свёрток на странице три (протокол вызова, текст
+  // фрагмента, строка вопроса), и знак обязан быть у каждой. Наличие хотя бы
+  // одного `.mark` было зелено и при снятом знаке у строки вопроса — это и
+  // случилось в PR 3.
+  const summaries = [...app.matchAll(/node\('summary'\)/g)].length
+  const marks = [...app.matchAll(/node\('span', 'mark'\)/g)].length
+  assert.equal(summaries, 3, 'свёрток на странице не три — проверено не то')
+  assert.equal(marks, summaries, `свёрток ${summaries}, знаков раскрытия ${marks}`)
+  // Знак — не содержание строки: состояние сообщает сам `details`.
+  assert.equal([...app.matchAll(/mark\.setAttribute\('aria-hidden', 'true'\)/g)].length, marks)
+  // Своя колонка у маркера строки вопроса: сетка сводки — пять колонок, пятая
+  // под знак. Без неё знак встал бы поверх вердикта.
+  assert.match(own, /\.q > summary \{[\s\S]*?grid-template-columns:3rem minmax\(0,1fr\) 7rem 7rem auto/)
+
+  // Проза ≤ 68ch (корпус). Класс `wrap` полосой не является — это `min-width:0`.
+  assert.match(own, /#sum-verdict \{[^}]*max-width:68ch/, 'у фразы вывода нет полосы чтения')
+})
+
 test('ключей и секретов в клиентском коде нет (I-1)', () => {
   for (const name of ['AGENT_KEY', 'RAG_KEY', 'MCP_KEY', 'ANTHROPIC_API_KEY', 'Bearer', 'authorization', 'Authorization'])
     assert.ok(!code.includes(name), `${name} в клиентском коде`)
