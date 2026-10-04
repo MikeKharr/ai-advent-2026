@@ -206,19 +206,31 @@
   .qs { list-style:none; margin:0; padding:0; }
   .q { border-top:1px solid var(--line); min-width:0; }
   .q > summary {
+    position:relative;
     display:grid; grid-template-columns:1fr; gap:var(--s-1);
     list-style:none; cursor:pointer; padding:var(--s-3) var(--s-2);
     transition:background-color 120ms;
   }
   @media (min-width:48rem) {
-    .q > summary { grid-template-columns:3rem minmax(0,1fr) 7rem 7rem auto; gap:var(--s-3); align-items:baseline; }
+    .q > summary { grid-template-columns:3rem minmax(0,1fr) 7rem 7rem 2rem; gap:var(--s-3); align-items:baseline; }
   }
   /* Маркер раскрытия — те же правила `.mark`, что у свёрток пульта: знак
-     `+` → `−` по `[open]`, `aria-hidden` стоит в разметке. Своей колонкой
-     (`auto` пятой), а не перестановкой сетки: порядок на экране остаётся
-     порядком разметки. Размер и цвет — вторичные, как у `.q-id`: маркер не
-     содержание строки. */
-  .q > summary .mark { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+     `+` → `−` по `[open]`, `aria-hidden` стоит в разметке. Размер и цвет —
+     вторичные, как у `.q-id`: маркер не содержание строки.
+
+     Место у него разное, и это не прихоть. На широком экране он занимает
+     пятую колонку сетки — своей колонкой, а не перестановкой: порядок на
+     экране остаётся порядком разметки. На узком сетка однополосная, и
+     колонки у знака нет: в потоке он встал бы отдельной строкой под
+     вердиктами, оторванный от всего (замер при 320). Поэтому там он
+     вынимается из потока в верхний правый угол строки — к номеру вопроса,
+     где маркер и ищут. Порядка чтения это не меняет: знак `aria-hidden`,
+     состояние сообщает сам `details`. */
+  .q > summary .mark {
+    position:absolute; top:var(--s-3); right:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  @media (min-width:48rem) { .q > summary .mark { position:static; } }
   .q > summary::-webkit-details-marker { display:none; }
   .q > summary:hover { background:var(--bg); }
   .q[open] > summary { background:var(--bg); }
@@ -265,7 +277,9 @@
   .colhead { display:none; }
   @media (min-width:48rem) {
     .colhead {
-      display:grid; grid-template-columns:3rem minmax(0,1fr) 7rem 7rem; gap:var(--s-3);
+      /* Пятая колонка — под знак раскрытия строки: без неё заголовки колонок
+         разъезжаются с вердиктами на ширину знака. */
+      display:grid; grid-template-columns:3rem minmax(0,1fr) 7rem 7rem 2rem; gap:var(--s-3);
       padding:0 var(--s-2) var(--s-2);
     }
   }

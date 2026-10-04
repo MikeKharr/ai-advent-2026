@@ -324,7 +324,10 @@ test('у каждой свёртки есть знак раскрытия, а у
   assert.equal([...app.matchAll(/mark\.setAttribute\('aria-hidden', 'true'\)/g)].length, marks)
   // Своя колонка у маркера строки вопроса: сетка сводки — пять колонок, пятая
   // под знак. Без неё знак встал бы поверх вердикта.
-  assert.match(own, /\.q > summary \{[\s\S]*?grid-template-columns:3rem minmax\(0,1fr\) 7rem 7rem auto/)
+  assert.match(own, /\.q > summary \{[\s\S]*?grid-template-columns:3rem minmax\(0,1fr\) 7rem 7rem 2rem/)
+  // Полоса заголовков считает колонки по той же сетке: без пятой колонки «с
+  // RAG» и «без RAG» разъезжаются с вердиктами на ширину знака.
+  assert.match(own, /\.colhead \{[\s\S]*?grid-template-columns:3rem minmax\(0,1fr\) 7rem 7rem 2rem/)
 
   // Проза ≤ 68ch (корпус). Класс `wrap` полосой не является — это `min-width:0`.
   assert.match(own, /#sum-verdict \{[^}]*max-width:68ch/, 'у фразы вывода нет полосы чтения')
