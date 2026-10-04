@@ -210,7 +210,7 @@ test('сервер без адреса выпадает из списка аге
   const { servers, skipped } = loadServers(RAW_SERVERS, { MCP_NEWS_URL: 'http://n/mcp' })
   assert.deepEqual(
     skipped.map((s) => s.name),
-    ['mcpstore', 'day16'],
+    ['mcpstore', 'day16', 'rag'],
   )
   assert.deepEqual([...pickServers(servers, registry.get('mcp-agent').servers).keys()], ['mcpnews'])
 })

@@ -10,6 +10,7 @@ import { createLayeredAgent, LAYERED_AGENT_ID } from './layered.js'
 import { createMcpAgent, MCP_AGENT_ID } from './mcp/agent.js'
 import { createPipelineAgent, PIPELINE_AGENT_ID } from './mcp/pipeline-agent.js'
 import { STAGED15_MAX_TOKENS } from './params.js'
+import { createRagAgent, RAG_AGENT_ID } from './rag-agent.js'
 import {
   createStagedAgent,
   INVARIANT_AGENT_ID,
@@ -20,8 +21,8 @@ import {
 
 /**
  * Реестр агентов → исполнители: аналитик новостей, слои памяти, машина
- * состояний, она же с инвариантами профиля, цикл с инструментами MCP и
- * цепочка без модели.
+ * состояний, она же с инвариантами профиля, цикл с инструментами MCP,
+ * цепочка без модели и конвейер поиска по проекту (день 22).
  */
 export function createAgents({
   registry,
@@ -50,7 +51,9 @@ export function createAgents({
     else if (entry.modelless) {
       log({ event: 'agent_skipped', agent: entry.id, reason: 'исполнителя для агента без модели нет' })
       continue
-    } else if (entry.id === MCP_AGENT_ID)
+    } else if (entry.id === RAG_AGENT_ID)
+      agent = createRagAgent({ agent: entry, servers, runs, env, log })
+    else if (entry.id === MCP_AGENT_ID)
       agent = createMcpAgent({ agent: entry, servers, runs, sessions, env, log })
     else if (entry.id === LAYERED_AGENT_ID)
       agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
