@@ -266,6 +266,11 @@ test('режим без RAG: к службе поиска не ушло ниче
   assert.equal(snapshot.result.index, null)
   assert.equal(snapshot.result.rpc, null)
   assert.equal(snapshot.result.refused, false)
+  // Событий стадии `rpc` в этом режиме нет вовсе: вызова не было (п. 18.3).
+  assert.deepEqual(
+    snapshot.events.filter((e) => e.stage === 'rpc'),
+    [],
+  )
 })
 
 test('ключ RAG_KEY не попадает ни в ответ запуска, ни в события — а служба его получает', async () => {
@@ -284,9 +289,22 @@ test('ключ RAG_KEY не попадает ни в ответ запуска, 
   // (включая сырые тела JSON-RPC), ни в событиях ленты.
   assert.ok(!JSON.stringify(snapshot.result).includes(KEY), 'ключ в ответе запуска')
   assert.ok(!JSON.stringify(snapshot.events).includes(KEY), 'ключ в событиях запуска')
-  // И отдельно — что проверять было что: тела в ответе и в ленте есть.
+  // Ни адреса службы, ни имени переменной ключа там тоже нет: в событие и в
+  // ответ идёт тело JSON-RPC, а не то, куда и чем сходили (раскладка дня 22,
+  // п. 18.3).
+  for (const text of [JSON.stringify(snapshot.result), JSON.stringify(snapshot.events)]) {
+    assert.ok(!text.includes(rag.url), 'адрес службы ушёл наружу')
+    assert.ok(!text.includes('RAG_KEY'), 'имя переменной ключа ушло наружу')
+    assert.ok(!text.toLowerCase().includes('authorization'), 'заголовок авторизации ушёл наружу')
+  }
+  // И отдельно — что проверять было что: тела в ответе и в ленте есть, и
+  // вызов поиска ушёл в ленту ИМЕННО стадией `rpc` контракта `runs.js` — той
+  // же, что у дней 18–20 (решение владельца В3).
   assert.ok(snapshot.result.rpc.request.includes('project.search'))
-  assert.ok(snapshot.events.some((e) => e.stage === 'rpc' && e.data.response.includes('results')))
+  const rpcEvents = snapshot.events.filter((e) => e.stage === 'rpc')
+  assert.equal(rpcEvents.length, 1)
+  assert.ok(rpcEvents[0].data.request.includes('project.search'))
+  assert.ok(rpcEvents[0].data.response.includes('results'))
 })
 
 test('фраза отказа строгого промпта приезжает признаком, а не подстрокой для страницы', async () => {
