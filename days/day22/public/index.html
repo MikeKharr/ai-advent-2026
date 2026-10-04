@@ -74,7 +74,21 @@
   .mode input { margin:0; accent-color:var(--acc); }
   .mode input:active { transform:translateY(1px); }
   .mode input[disabled] { cursor:default; }
+  /* Запертая радиокнопка не отвечает мыши и подписью: иначе во время платного
+     запуска подпись светлеет и обещает выбор, которого не примут. Тот же
+     случай у поля закрыт правилом `#cmd[disabled]:hover` в копии дня 16, а у
+     `.mode` своей оговорки не было (находка `design-review` к PR #303). */
+  .mode:has(input[disabled]) { cursor:default; }
+  .mode:has(input[disabled]):hover { color:var(--fg-mut); }
   .mode span { overflow-wrap:anywhere; }
+
+  /* Запертая кнопка не светлеет под мышью. Причина — вес селекторов: правило
+     `.send:hover { opacity:.9 }` копии (0,2,0) перебивает её же `[disabled] {
+     opacity:.5 }` (0,1,0), и единственный акцентный элемент экрана во время
+     платного запуска выглядел ЯРЧЕ, чем в покое (замер `design-review` к
+     PR #303: 0.9 под мышью против 0.5 без неё). Копия дня 16 не правится —
+     перекрытие живёт здесь. `cursor` там уже верный.*/
+  .send[disabled]:hover { opacity:.5; }
 
   .submit-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-3); margin-top:var(--s-4); }
   .submit-row .hint { margin:0; }
@@ -88,6 +102,10 @@
     white-space:pre-wrap; overflow-wrap:anywhere;
   }
   .empty + .empty { margin-top:var(--s-3); }
+  /* Файл итогов не прочитан. П. 10 просит для этого случая `--fg`: это
+     отсутствие файла, а не авария, — но и не полушёпот, поэтому не `--fg-mut`
+     пустых состояний и не `--danger`. */
+  .unread { margin:0; max-width:68ch; font-size:var(--t-sm); line-height:1.5; color:var(--fg); }
   .notice p { margin:0; }
   .notice p + p { margin-top:var(--s-2); }
   /* Слова чужой единицы: своего потолка длины у них нет, и на короткую строку

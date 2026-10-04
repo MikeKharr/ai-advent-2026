@@ -114,6 +114,9 @@ const SRCS_SEARCHING = 'Ищу фрагменты…'
 const SRCS_FAILED = 'Поиск отказал — что именно, сказано выше в ответе.'
 const STEPS_NEVER =
   'Запуска ещё не было. Шаги появятся здесь по мере того, как конвейер их проходит.'
+/** Запуск принят, первого события ещё нет. Те же слова, что в пустоте (п. 10). */
+const STEPS_RUNNING =
+  'Шаги появятся здесь по мере того, как конвейер их проходит.'
 
 /** Состояние пульта между запусками. Нигде не сохраняется. */
 let events = []
@@ -133,14 +136,24 @@ function showStepsPlaceholder(text) {
   stepsNote.replaceChildren(node('p', 'empty', text))
 }
 
-function resetRun() {
+/**
+ * Пульт к началу запуска.
+ *
+ * `starting` — запуск УЖЕ принят сервисом, и состояние блока «Ответ» здесь
+ * «загрузка», а не «пусто»: три абзаца «Вопроса ещё не было…» рядом со строкой
+ * «Спрашиваю модель…» противоречили бы друг другу (п. 10; находка
+ * `design-review` к PR #303 — замер через 400 мс после отправки показывал
+ * `#answer-empty.hidden === false`). Пустое состояние возвращается только
+ * туда, где запуска не было: на загрузку страницы.
+ */
+function resetRun({ starting = false } = {}) {
   events = []
   fragmentsFound = null
   errorData = null
-  answerEmpty.hidden = false
+  answerEmpty.hidden = starting
   answerBox.replaceChildren()
-  showSrcsPlaceholder(SRCS_NEVER)
-  showStepsPlaceholder(STEPS_NEVER)
+  showSrcsPlaceholder(starting ? SRCS_SEARCHING : SRCS_NEVER)
+  showStepsPlaceholder(starting ? STEPS_RUNNING : STEPS_NEVER)
 }
 
 // ——— лента конвейера (п. 7) ———
@@ -372,13 +385,44 @@ function onEnd(raw) {
     return
   }
   showFailure(end?.error)
-  setStatus(`Запуск завершился со статусом «${end?.status ?? 'неизвестно'}».`, true)
+  // Слово статуса — по-русски: «failed» на русском экране читается как
+  // техническая утечка (находка `design-review` к PR #303). Неизвестный
+  // статус показывается как пришёл: выдумывать ему перевод нельзя.
+  setStatus(`Запуск ${STATUS_WORD[end?.status] ?? `завершился со статусом «${end?.status ?? 'неизвестно'}»`}.`, true)
 }
 
+/**
+ * Фокус был на том, что страница сейчас запрёт. Считается ПРИ ЗАПИРАНИИ:
+ * позже этого уже не узнать — браузер снимает фокус с запертого элемента, и
+ * `activeElement` становится `body`.
+ *
+ * Приём и его условия — дня 20 (`days/day20/public/app.js`), и здесь он нужен
+ * по той же причине: без возврата фокуса каждый следующий вопрос с клавиатуры
+ * начинается с поиска поля через весь порядок `Tab` (находка `design-review`
+ * к PR #303: после отправки `activeElement` оставался `body`, и следующий
+ * `Tab` попадал на радиокнопку, мимо поля — критерий 21 и п. 13.6).
+ *
+ * УГОНОМ ФОКУСА это не становится, и держат это два условия, оба обязательны:
+ * возвращаем только тому, у кого забрали (`refocus`), и только если фокус до
+ * сих пор лежит там, куда его уронило запирание (`activeElement === body`).
+ * Ушёл посетитель за время запуска в тело протокола или на ссылку — флаг
+ * гасится событием `focusin`, в момент ухода, пока узел ещё жив.
+ */
+let refocus = false
+
+document.addEventListener('focusin', (event) => {
+  if (input.disabled && event.target !== input && event.target !== send) refocus = false
+})
+
 function lock(on) {
+  if (on) refocus = document.activeElement === input || document.activeElement === send
   input.disabled = on
   send.disabled = on
   for (const radio of radios) radio.disabled = on
+  if (!on && refocus) {
+    refocus = false
+    if (document.activeElement === document.body) input.focus()
+  }
 }
 
 function subscribe(runId) {
@@ -438,7 +482,18 @@ form.addEventListener('submit', async (event) => {
     // Сообщение сервера не пересказывается: в нём единственное достоверное
     // число суточного предела.
     setStatus(`${json?.error ?? `Сервер ответил ${answer.status}.`}${retry}`, true)
-    if (answer.status === 429) {
+    // Отказов 429 у дня ТРИ (`limits.js`): суточный потолок, минутное окно и
+    // часовое. Строку про суточный предел ставим только там, где он и
+    // исчерпан, — различитель уже приходит в ответе: у потолка
+    // `retryAfterSec` равен `null`, у обоих окон это число секунд.
+    //
+    // Прежняя редакция ставила её на ЛЮБОЙ 429, и экран противоречил сам
+    // себе: в строке состояния «слишком часто», а под ней «суточный предел
+    // исчерпан» при `callsToday` 1 из 3 (находка `design-review` к PR #303,
+    // замер на `RATE_LIMIT_PER_MIN=1`). У окон блок ответа не трогаем вовсе:
+    // достоверные слова уже стоят в строке состояния, и второй раз их
+    // пересказывать незачем.
+    if (answer.status === 429 && json?.retryAfterSec === null) {
       answerEmpty.hidden = true
       const box = node('div', 'notice')
       box.append(node('p', undefined, DAY_LIMIT_NOTE))
@@ -448,7 +503,7 @@ form.addEventListener('submit', async (event) => {
   }
   // Запуск принят — только теперь пульт очищается. При отказе на экране
   // остаётся ровно то, что было: запуска не начиналось.
-  resetRun()
+  resetRun({ starting: true })
   setStatus(mode === 'rag' ? STATUS.searching : STATUS.sent)
   subscribe(json.runId)
 })
@@ -459,6 +514,9 @@ input.addEventListener('keydown', (event) => {
 })
 
 // ——— итоги десяти вопросов (п. 9) ———
+
+/** Статус запуска словом. Чего в карте нет — показывается как пришло. */
+const STATUS_WORD = { failed: 'не удался', cancelled: 'отменён' }
 
 const EVAL_NEVER =
   'Прогон 10 вопросов ещё не сделан. Числа появятся после первого прогона на проде.'
@@ -618,14 +676,24 @@ function showEval(parsed) {
   byId('qs').replaceChildren(...parsed.questions.map(renderQuestion))
 }
 
+/** Итоги читаются — сказано словами, а не пустой областью (п. 10). */
+const EVAL_LOADING = 'Читаю результаты прогона…'
+
 async function loadEval() {
   let raw
+  // Строка ставится ДО запроса: иначе на месте секции стоит пустая область,
+  // пока файл читается (находка `design-review` к PR #303, замер при
+  // придушенной сети). Живым регионом она не делается — живой регион на
+  // экране один, и это строка состояния пульта (п. 13.3).
+  evalState.replaceChildren(node('p', 'empty', EVAL_LOADING))
   try {
     const answer = await fetch('eval.json')
     if (!answer.ok) throw new Error(String(answer.status))
     raw = await answer.json()
   } catch {
-    evalState.replaceChildren(node('p', 'empty', EVAL_UNREAD))
+    // Цвет `--fg`, а не вторичный: п. 10 просит именно его — это отсутствие
+    // файла, а не авария, поэтому и не `--danger`, но и не полушёпот.
+    evalState.replaceChildren(node('p', 'unread', EVAL_UNREAD))
     return
   }
   showEval(parseEval(raw))

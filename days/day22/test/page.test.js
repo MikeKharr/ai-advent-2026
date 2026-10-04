@@ -49,8 +49,27 @@ const code = scripts.map((f) => stripJs(read(f))).join('\n')
 const raw = scripts.map((f) => read(f)).join('\n')
 const full = read('index.html')
 const page = stripHtml(full)
-/** Свой блок правил страницы, без копии дня 16 (она в style.css). */
-const own = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+/**
+ * Свой блок правил страницы, без копии дня 16 (она в style.css) и БЕЗ
+ * комментариев.
+ *
+ * Снятие комментариев здесь обязательно по той же причине, что и в скриптах:
+ * в них правила названы словами — «не `--danger`», «PR #303», — и проверка по
+ * сырому тексту прочла бы их как объявление цвета и как шестнадцатеричный
+ * литерал, то есть покраснела бы на верном коде. Само снятие проверяется
+ * тестом ниже.
+ */
+const stripCss = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '')
+const ownRaw = page.slice(page.indexOf('<style>'), page.indexOf('</style>'))
+const own = stripCss(ownRaw)
+
+test('снятие комментариев в блоке правил не съело сами правила', () => {
+  assert.ok(own.includes('.src-grid'), 'из блока правил пропал CSS')
+  assert.ok(own.includes('grid-template-columns'), 'из блока правил пропал CSS')
+  // А комментарии — съело: в них правила названы словами.
+  assert.equal(own.includes('--danger'), false)
+  assert.equal(ownRaw.includes('--danger'), true, 'в исходнике слово есть — значит, сняли именно комментарий')
+})
 
 test('снятие комментариев не съело код — иначе все запреты ниже зелены впустую', () => {
   assert.ok(scripts.length >= 4, `модулей страницы найдено ${scripts.length}`)
@@ -73,9 +92,33 @@ test('разметка строкой не подставляется: пред�
   assert.ok(code.includes('textContent'), 'текстом — кладётся')
 })
 
-test('позиция чтения принадлежит посетителю: автопрокрутки и угона фокуса нет', () => {
-  for (const name of ['scrollIntoView', 'scrollTo(', 'scrollTop', '.focus()'])
+test('позиция чтения принадлежит посетителю: автопрокрутки нет', () => {
+  for (const name of ['scrollIntoView', 'scrollTo(', 'scrollTop'])
     assert.ok(!code.includes(name), `${name} на странице`)
+})
+
+/**
+ * Фокус ВОЗВРАЩАЕТСЯ тому, у кого его забрало запирание, и только ему.
+ *
+ * Критерий 21 требует, чтобы после отправки фокус был в поле, а п. 13.6 —
+ * чтобы угона фокуса не было: это одно и то же требование с двух сторон, и
+ * безусловный `input.focus()` нарушал бы вторую половину. Поэтому проверяется
+ * не отсутствие `focus()`, а наличие ОБОИХ условий вокруг него.
+ *
+ * Находка `design-review` к PR #303: прежняя редакция не возвращала фокус
+ * вовсе, и после отправки `activeElement` оставался `body`.
+ */
+test('фокус возвращается в поле только из body и только если его там забрали', () => {
+  const app = stripJs(read('app.js'))
+  const calls = [...app.matchAll(/\.focus\(\)/g)]
+  assert.equal(calls.length, 1, `вызовов focus() ${calls.length}, а должен быть один`)
+  // Условие «фокус до сих пор там, куда его уронило запирание».
+  assert.match(app, /document\.activeElement === document\.body\) input\.focus\(\)/)
+  // Условие «забрали именно у него»: флаг считается при запирании…
+  assert.match(app, /if \(on\) refocus = document\.activeElement === input \|\| document\.activeElement === send/)
+  // …и гасится, когда посетитель ушёл сам, пока запуск идёт.
+  assert.match(app, /focusin/)
+  assert.match(app, /refocus = false/)
 })
 
 test('у каждого поля ввода есть подпись, связанная с ним', () => {
