@@ -158,8 +158,19 @@ export function checkReport(report, questions) {
       continue
     }
     const source = questions.find((x) => x.id === q.id)
+    // ВСЕ ПЯТЬ ПОЛЕЙ НАБОРА, а не два. `public/eval.json` — вторая копия
+    // `eval/questions.json`, и ровно её читает экран: выверенный ответ,
+    // ключевую фразу и путь источника посетитель видит ИЗ НЕЁ. Пока сверялись
+    // только `set` и `question`, копии успели разъехаться внутри самой ветки
+    // PR 3 (`expect` m02 на `e3e26d2`), и это закрыли руками, а не гейтом —
+    // находка `reviewer` к PR #304. Равенство здесь, а не в тесте одном:
+    // `--check` запускают после судейства, и разъезд обязан валить и его.
     if (q.set !== source.set) problems.push(`${q.id}: часть набора разошлась с questions.json`)
     if (q.question !== source.question) problems.push(`${q.id}: текст вопроса разошёлся`)
+    if (q.expect !== source.expect) problems.push(`${q.id}: выверенный ответ разошёлся с questions.json`)
+    if (q.key !== source.key) problems.push(`${q.id}: ключевая фраза разошлась с questions.json`)
+    if (JSON.stringify(q.sources) !== JSON.stringify(source.sources))
+      problems.push(`${q.id}: источники разошлись с questions.json`)
     for (const mode of MODES) {
       const m = q.modes?.[mode]
       if (m === undefined) continue
@@ -177,13 +188,21 @@ export function checkReport(report, questions) {
   return problems
 }
 
-/** Сколько вердиктов ещё не стоит. Нужно ровно для того, чтобы сказать это вслух. */
+/**
+ * Сколько вердиктов ещё не стоит — и это ЧИСЛО, на котором `--check` падает.
+ *
+ * Отказ фразой строгого промпта здесь НЕ СЧИТАЕТСЯ: у него `verdict: null`
+ * законен — отказ занимает место вердикта, а не ждёт его (п. 9.1), и рубрика
+ * 0/1/2 его не описывает. Иначе базовая строка «вердиктов без судьи» была бы
+ * ненулевой всегда, забытый вердикт стал бы просто другой цифрой в ней, и
+ * падать `--check` было бы не на чем — находка `reviewer` к PR #304.
+ */
 export function pendingVerdicts(report) {
   let pending = 0
   for (const q of Array.isArray(report?.questions) ? report.questions : [])
     for (const mode of MODES) {
       const m = q.modes?.[mode]
-      if (m !== undefined && m.verdict === null) pending += 1
+      if (m !== undefined && m.verdict === null && m.refused !== true) pending += 1
     }
   return pending
 }

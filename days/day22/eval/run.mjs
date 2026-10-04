@@ -216,10 +216,13 @@ export async function main({
     const report = JSON.parse(readFileSync(out, 'utf8'))
     const problems = checkReport(report, questions)
     for (const problem of problems) log(`форма: ${problem}`)
+    // Потерянный вердикт ВАЛИТ сверку, а не остаётся строчкой в выводе: ровно
+    // для этого `--check` и заведён (см. шапку `checkReport`). Законный `null`
+    // у отказа ошибкой не считается — его `pendingVerdicts` не берёт.
     const pending = pendingVerdicts(report)
     if (pending > 0) log(`вердиктов без судьи: ${pending}`)
     if (report.judge?.name === null) log('имя судьи не вписано (judge.name)')
-    return problems.length === 0 ? 0 : 1
+    return problems.length === 0 && pending === 0 ? 0 : 1
   }
 
   // Готовый файл не затирается молча: повтор прогона — это ещё $0,14 и ещё 10
