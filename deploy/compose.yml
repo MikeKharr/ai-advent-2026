@@ -50,6 +50,7 @@ services:
       - day18
       - day19
       - day20
+      - day22
       - mcp
       - rag
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
@@ -397,6 +398,27 @@ services:
       - "8080"
     env_file:
       - path: ./day20.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # День 22 (ADR 2026-10-04-0735). Пульт: ходит только к сервису агентов за
+  # AGENT_KEY. Ключа RAG_KEY у него НЕТ и ключа networks: тоже — сеть по
+  # умолчанию, как у всех дней: до службы `rag` дню не дотянуться, поиск за
+  # него зовёт `agents` (страж .github/scripts/compose-networks.mjs красит
+  # день, попавший в сеть rag или mcp напрямую).
+  day22:
+    image: ghcr.io/mikekharr/advent-day22:${DAY22_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day22.env
         required: false
     environment:
       - NODE_ENV=production
