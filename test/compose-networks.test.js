@@ -49,12 +49,13 @@ test('разбор видит сети там, где они есть, и их �
   // Ключа networks нет — значит сеть по умолчанию, вместе с secrets.env.
   assert.equal(services.get('router'), null)
   // Контейнер времени и серверы MCP — каждый только в своей сети; agents в
-  // трёх: по default к нему приходят дни 6–15, по cron — тик расписания, по
-  // tools он сам ходит в серверы инструментов.
+  // пяти: по default к нему приходят дни 6–15, по cron — тик расписания, по
+  // tools он сам ходит в серверы инструментов, по mcp — в службу дня 16, по
+  // rag — в индекс проекта (ADR 2026-10-04-0735, п. 1).
   assert.deepEqual(services.get('cron'), ['cron'])
   assert.deepEqual(services.get('mcpnews'), ['tools'])
   assert.deepEqual(services.get('mcpstore'), ['tools'])
-  assert.deepEqual(services.get('agents'), ['default', 'cron', 'tools', 'mcp'])
+  assert.deepEqual(services.get('agents'), ['default', 'cron', 'tools', 'mcp', 'rag'])
 })
 
 test('приманка: у mcp убрали ключ networks — он оказался в сети по умолчанию', () => {
@@ -87,7 +88,11 @@ test('приманка: у дня 16 убрали ключ networks — он в 
 // связь и связь, расширенная не туда.
 test('приманка: у agents убрали сеть mcp — служба дня 16 стала недостижима', () => {
   const decoy = inService(TEXT, 'agents', / {6}mcp:\n/, '')
-  assert.deepEqual(parseServices(decoy).get('agents'), ['default', 'cron', 'tools'], 'приманка не собралась')
+  assert.deepEqual(
+    parseServices(decoy).get('agents'),
+    ['default', 'cron', 'tools', 'rag'],
+    'приманка не собралась',
+  )
   assert.match(problems(decoy).join('\n'), /служба agents обязана быть в сети mcp/)
 })
 
@@ -150,7 +155,11 @@ test('приманка: router пустили в сеть cron', () => {
 
 test('приманка: у agents убрали сеть cron — тик перестал доходить, но молча', () => {
   const decoy = inService(TEXT, 'agents', / {6}cron:\n/, '')
-  assert.deepEqual(parseServices(decoy).get('agents'), ['default', 'tools', 'mcp'], 'приманка не собралась')
+  assert.deepEqual(
+    parseServices(decoy).get('agents'),
+    ['default', 'tools', 'mcp', 'rag'],
+    'приманка не собралась',
+  )
   // Нарушения изоляции тут нет — и это честный предел стража: он держит, куда
   // cron НЕ может, а не то, что тик доходит. Второе держит первый тик в проде
   // («Стенд ≠ прод» в описании PR), и притворяться, что это проверено здесь,
@@ -211,10 +220,21 @@ test('приманка: ollama добавили в сеть по умолчан�
   assert.match(problems(decoy).join('\n'), /служба ollama должна быть только в сети rag/)
 })
 
-test('приманка: agents пустили в сеть rag — хост инструментов получил эмбеддер', () => {
-  const decoy = inService(TEXT, 'agents', / {6}mcp:\n/, '      mcp:\n      rag:\n')
-  assert.ok(parseServices(decoy).get('agents').includes('rag'), 'приманка не собралась')
-  assert.match(problems(decoy).join('\n'), /служба agents в сети rag/)
+// До дня 22 здесь стояло ПРОТИВОПОЛОЖНОЕ: `agents` в сети `rag` был
+// нарушением. Решение принято (ADR 2026-10-04-0735, п. 1) — проверка
+// развёрнута, а не снята: теперь краснеет пропажа связи. Названная цена
+// решения в том же ADR: из `agents` разрешается имя `ollama`, то есть единица
+// с деревом npm дотягивается до эмбеддера напрямую, минуя ключ и потолки
+// службы `rag`. Страж этого больше не держит и держать не может — держат
+// только ключ и лимитер самой службы.
+test('приманка: у agents убрали сеть rag — поиск дня 22 стал недостижим', () => {
+  const decoy = inService(TEXT, 'agents', / {6}rag:\n/, '')
+  assert.deepEqual(
+    parseServices(decoy).get('agents'),
+    ['default', 'cron', 'tools', 'mcp'],
+    'приманка не собралась',
+  )
+  assert.match(problems(decoy).join('\n'), /служба agents обязана быть в сети rag/)
 })
 
 test('приманка: day20 пустили в сеть rag напрямую', () => {

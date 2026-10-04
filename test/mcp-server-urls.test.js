@@ -171,3 +171,43 @@ test('сервис агентов знает адрес службы MCP дня 
     `${COMPOSE}: у службы agents есть ${entry.urlEnv}, но сети mcp нет — имя не разрешится`,
   )
 })
+
+// Служба индекса проекта — четвёртый сервер хоста (ADR 2026-10-04-0735, п. 1),
+// её зовёт агент дня 22. Собирается тем же способом «из источников», но оба
+// источника здесь на Python: порт — умолчание `PORT` в `rag/serve.py`, путь —
+// маршрут `Route("POST", ("/rag",), …)` там же. Без адреса `loadServers`
+// положил бы `rag` в `skipped` МОЛЧА, и день 22 говорил бы «поиск
+// недоступен» при живом контейнере и зелёной выкатке.
+//
+// Ключ RAG_KEY здесь не проверяется и проверяться не может: он секрет, живёт
+// в agents.env на сервере и в compose.yml его нет. Его отсутствие — не
+// скрытый отказ: без ключа служба отвечает хосту как на несуществующий путь,
+// поиск отказывает, и модель при этом не вызывается.
+test('сервис агентов знает адрес службы индекса проекта', () => {
+  const entry = registry.find((s) => s.name === 'rag')
+  assert.ok(entry, `${REGISTRY}: запись rag пропала — проверку не о чем вести`)
+
+  const serve = read('rag/serve.py')
+  const port = /^PORT = int\(os\.environ\.get\("PORT", "(\d+)"\)\)$/m.exec(serve)
+  assert.ok(port, 'rag/serve.py: не найден порт по умолчанию — ожидаемый адрес собрать не из чего')
+  const route = /Route\("POST", \("([^"]+)",\), "call"/.exec(serve)
+  assert.ok(route, 'rag/serve.py: не найден маршрут вызова — ожидаемый адрес собрать не из чего')
+  const expected = `http://rag:${port[1]}${route[1]}`
+
+  assert.ok(
+    services.get('rag').expose.includes(port[1]),
+    `${COMPOSE}: служба rag слушает ${port[1]} (rag/serve.py), но expose его не объявляет`,
+  )
+  assert.equal(
+    env.get(entry.urlEnv),
+    expected,
+    `${COMPOSE}: у службы agents нет ${entry.urlEnv}=${expected}; без него loadServers положит rag в skipped молча, и день 22 скажет «поиск недоступен» при зелёной выкатке`,
+  )
+  // Адрес без сети — обещание без пути. Саму сеть держит страж
+  // .github/scripts/compose-networks.mjs (правило `joined`); здесь проверяется
+  // ровно то, что эти два решения не разъехались.
+  assert.ok(
+    services.get('agents').networks.includes('rag'),
+    `${COMPOSE}: у службы agents есть ${entry.urlEnv}, но сети rag нет — имя не разрешится`,
+  )
+})
