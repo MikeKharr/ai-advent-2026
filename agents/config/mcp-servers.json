@@ -15,6 +15,12 @@
       "title": "Служба MCP дня 16",
       "urlEnv": "MCP_DAY16_URL",
       "keyEnv": "MCP_KEY"
+    },
+    {
+      "name": "rag",
+      "title": "Индекс проекта",
+      "urlEnv": "MCP_RAG_URL",
+      "keyEnv": "RAG_KEY"
     }
   ]
 }
