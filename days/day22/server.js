@@ -215,10 +215,34 @@ const TYPES = {
   '.json': 'application/json; charset=utf-8',
 }
 
-async function serveStatic(url, res) {
-  const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
+/**
+ * Путь запроса → путь файла внутри `public`, либо `null`, если он выводит за
+ * пределы каталога.
+ *
+ * ВЫНЕСЕНО РАДИ ДЕРЖАТЕЛЯ, и причина названа замером. Через HTTP эта проверка
+ * недостижима: `new URL` нормализует `..` ДО неё — `/../server.js` приходит в
+ * `dispatch` как `/server.js`, `/public/../../x.js` как `/x.js` (проверено
+ * исполнением, `node -e` с `new URL`). Поэтому мутация «убрать проверку»
+ * оставляла прогон зелёным даже с сырым сокетом, и тест через HTTP держателем
+ * не был (находка `reviewer` к PR #303, уточнена этим замером). Отдельная
+ * функция даёт проверке держателя: тест зовёт её с путём, который
+ * нормализатор URL уже не тронет.
+ *
+ * Чем проверка остаётся полезной при недостижимости снаружи: она держит
+ * границу для всякого будущего вызова с путём не из `new URL` — например, если
+ * однажды появится percent-декодирование (сегодня его нет, и `/..%2fserver.js`
+ * остаётся литералом имени файла).
+ */
+export function resolveStatic(pathname) {
+  const rel = pathname === '/' ? 'index.html' : pathname.slice(1)
   const file = normalize(join(PUBLIC, rel))
-  if (file !== PUBLIC && !file.startsWith(PUBLIC + sep)) {
+  if (file !== PUBLIC && !file.startsWith(PUBLIC + sep)) return null
+  return file
+}
+
+async function serveStatic(url, res) {
+  const file = resolveStatic(url.pathname)
+  if (file === null) {
     res.writeHead(403)
     return res.end()
   }

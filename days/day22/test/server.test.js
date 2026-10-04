@@ -9,6 +9,8 @@
 
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import { connect } from 'node:net'
+import { sep } from 'node:path'
 import { after, before, test } from 'node:test'
 
 const KEY = 'agent-key-secret-day22-do-not-leak'
@@ -52,7 +54,7 @@ process.env.RATE_LIMIT_READS_PER_HOUR = '1000'
 // значение через лимитер напрямую (limits.test.js).
 process.env.MAX_DAILY_CALLS = '1000'
 
-const { env, MAX_QUESTION, server } = await import('../server.js')
+const { env, MAX_QUESTION, resolveStatic, server } = await import('../server.js')
 let base = ''
 let ip = 0
 /** Свой адрес каждому запросу: окна на адрес не должны мешать проверке ручек. */
@@ -91,9 +93,58 @@ test('модули страницы отдаются как javascript — ин�
   }
 })
 
-test('за пределы public не выйти', async () => {
-  const res = await fetch(`${base}/../server.js`, { headers: head(), redirect: 'manual' })
-  assert.ok([403, 404].includes(res.status), `получено ${res.status}`)
+/**
+ * Выход за пределы `public` — СЫРЫМ СОКЕТОМ, а не через `fetch`.
+ *
+ * Находка `reviewer` к PR #303: с `fetch` этот тест был зелёным и при
+ * вырезанной защите — клиент нормализует `..` ДО отправки, и до сервера
+ * `/../server.js` не доходит вовсе. Проверка, зелёная на сломанном коде,
+ * держателем не является, поэтому путь пишется в запрос буквально.
+ */
+function rawGet(path) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(server.address().port, '127.0.0.1', () => {
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`)
+    })
+    let data = ''
+    socket.setEncoding('utf8')
+    socket.on('data', (chunk) => (data += chunk))
+    socket.on('end', () => resolve(data))
+    socket.on('error', reject)
+  })
+}
+
+test('чужой файл не отдаётся: путь с .. уходит в запрос буквально', async () => {
+  for (const path of ['/../server.js', '/../env.js', '/..%2fserver.js', '/public/../../server.js']) {
+    const raw = await rawGet(path)
+    const status = Number(raw.slice(9, 12))
+    assert.ok([400, 403, 404].includes(status), `${path}: получено ${status}`)
+    // Улика различает гипотезы: не только код, но и отсутствие содержимого
+    // файла. Код 404 сервер отдал бы и прочитав чужой файл не до конца.
+    assert.ok(!raw.includes('createLimiter'), `${path}: тело сервера утекло в ответ`)
+    assert.ok(!raw.includes('AGENT_KEY'), `${path}: имя ключа утекло в ответ`)
+  }
+})
+
+/**
+ * Граница каталога — ПРЯМЫМ вызовом, и это единственный способ дать ей
+ * держателя.
+ *
+ * Замер, из которого это следует (`node -e` с `new URL`): `/../server.js`
+ * приходит в `dispatch` уже как `/server.js`, `/public/../../x.js` — как
+ * `/x.js`. То есть через HTTP до проверки `..` не доходит вовсе, и мутация
+ * «убрать проверку» оставляла прогон зелёным даже с сырым сокетом. Тест выше
+ * держит наблюдаемое свойство (чужой файл не отдаётся), а этот — саму
+ * проверку, которую он держать не может.
+ */
+test('resolveStatic отбивает выход за public, минуя нормализатор URL', () => {
+  const inside = resolveStatic('/app.js')
+  assert.ok(inside !== null && inside.endsWith(`public${sep}app.js`), String(inside))
+  assert.ok(resolveStatic('/') !== null, 'корень обязан отдавать index.html')
+  // Пути, которые `new URL` до этой функции не донесёт, — зовём напрямую.
+  for (const path of ['/../server.js', '/../../etc/passwd', '/a/../../env.js', '/..']) {
+    assert.equal(resolveStatic(path), null, `${path} не отбит`)
+  }
 })
 
 test('/healthz отвечает и не раскрывает ключ (I-1)', async () => {
@@ -225,9 +276,15 @@ test('ключ не появляется ни в одном ответе сер�
 })
 
 // Файла итогов на момент этого PR нет: его пишет прогон (PR 3 дня 22).
-// Проверяется не его содержимое, а то, что отсутствие — честное 404, на
-// котором страница говорит словами, а не падает.
-test('итогов прогона ещё нет: отсутствие файла — 404, а не 500', async () => {
+//
+// Находка `reviewer` к PR #303: прежняя форма принимала «200 или 404», то есть
+// не держала ничего и после PR 3 продолжала бы не держать. Держимое свойство
+// здесь одно и верно в обоих мирах: отсутствие файла НЕ валит сервер, а
+// страница на таком ответе говорит словами (её сторона — page.test.js и живая
+// проверка). Поэтому проверяется отсутствие 5xx, и это сказано в имени.
+test('отсутствующий файл итогов сервер не валит: ответ не 5xx', async () => {
   const res = await fetch(`${base}/eval.json`, { headers: head() })
-  assert.ok([200, 404].includes(res.status), `получено ${res.status}`)
+  assert.ok(res.status < 500, `получено ${res.status}`)
+  // И тип отдаётся верный, когда файл всё-таки появится (PR 3).
+  if (res.status === 200) assert.match(res.headers.get('content-type'), /application\/json/)
 })

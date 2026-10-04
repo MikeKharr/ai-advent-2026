@@ -32,6 +32,7 @@ import {
 } from './evalview.js'
 import { clipBody, partialNotes, reindent } from './rpc.js'
 import {
+  ANSWER_BLANK,
   ANSWER_CUT,
   answerMeta,
   DAY_LIMIT_NOTE,
@@ -41,11 +42,13 @@ import {
   fragmentTextNote,
   FRAGMENT_EMPTY,
   indexMeta,
+  isBlank,
   MAX_QUESTION,
   MODE_WORD,
   NORAG_NOTE,
   parseResult,
   REFUSED_NOTE,
+  repoUrl,
   RPC_ABSENT,
   RPC_BROKEN,
   RPC_EMPTY,
@@ -243,7 +246,10 @@ function showAnswer(result) {
   const parts = []
   const meta = answerMeta(result)
   if (meta) parts.push(node('p', 'entry-meta', meta))
-  parts.push(node('p', 'answer', result.answer))
+  // Пустой ответ при удачном запуске — не пустое место, а сказанная словами
+  // пустота: строка меры остаётся, потому что токены потратились.
+  if (isBlank(result.answer)) parts.push(node('p', 'empty', ANSWER_BLANK))
+  else parts.push(node('p', 'answer', result.answer))
   // Отказ промпта показывается ТЕМ ЖЕ цветом и размером: модель ответила,
   // вызов состоялся, деньги потрачены, граница поиска показана (п. 5.3).
   // Распознавать фразу страница не обязана — признак пришёл полем.
@@ -488,10 +494,18 @@ function renderQuestion(q) {
     srcBlock.append(node('p', 'lbl', 'ИСТОЧНИК'))
     for (const path of q.sources) {
       const p = node('p', 'q-src')
-      const a = node('a', undefined, path)
-      a.href = `https://github.com/MikeKharr/ai-advent-2026/blob/main/${path}`
-      a.rel = 'noreferrer'
-      p.append(a)
+      // Адрес строит `repoUrl`, а не шаблонная строка: путь из файла — такие
+      // же недоверенные данные, как путь из выдачи поиска, и кодируется так же
+      // (находка `reviewer` к PR #303).
+      const href = repoUrl(path)
+      if (href === null) {
+        p.textContent = path
+      } else {
+        const a = node('a', undefined, path)
+        a.href = href
+        a.rel = 'noreferrer'
+        p.append(a)
+      }
       srcBlock.append(p)
     }
     body.append(srcBlock)

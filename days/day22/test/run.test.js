@@ -7,15 +7,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  ANSWER_BLANK,
   answerMeta,
   failure,
   formatScore,
   fragmentSummary,
   fragmentTextNote,
   indexMeta,
+  isBlank,
   MAX_QUESTION,
   parseResult,
   plural,
+  repoUrl,
   shortSearchNote,
   sourceUrl,
   STATUS,
@@ -245,6 +248,40 @@ test('отказ после вызова модели не врёт, что де
 test('слов у отказа нет — поля words нет, а не пустая строка на экране', () => {
   assert.equal(failure({ code: 'internal', message: '', paidNothing: true }).words, null)
   assert.equal(failure(undefined).words, null)
+})
+
+test('про деньги не утверждается ничего, когда сервер о них не сказал', () => {
+  // Находка `compliance` и `reviewer` к PR #303: прежняя редакция считала
+  // отсутствие поля за «денег не стоил», то есть утверждала про расход там,
+  // где не знала ничего. Исходов три, и третий назван словами.
+  const unknown = failure({ code: 'internal', message: 'внутренняя ошибка' })
+  assert.equal(unknown.paidNothing, null, 'неизвестное выдано за известное')
+  assert.match(unknown.lead, /сервер не сказал/)
+  assert.ok(!/денег не стоил/.test(unknown.lead), 'страница всё-таки утверждает про деньги')
+  assert.equal(failure(undefined).paidNothing, null)
+  // А когда сказал — утверждается ровно сказанное.
+  assert.match(failure({ code: 'x', paidNothing: true }).lead, /денег не стоил/)
+  assert.match(failure({ code: 'x', paidNothing: false }).lead, /стоил денег/)
+})
+
+test('путь из файла итогов кодируется так же, как путь из выдачи поиска', () => {
+  assert.equal(repoUrl('agent_docs/guides/dod.md'), `${'https://github.com/MikeKharr/ai-advent-2026/blob'}/main/agent_docs/guides/dod.md`)
+  assert.equal(repoUrl(''), null)
+  assert.equal(repoUrl(null), null)
+  // Две соседние ветви одного показа не расходятся: один и тот же путь даёт
+  // одинаково закодированный хвост.
+  const odd = 'a b/c?d#e.md'
+  assert.equal(repoUrl(odd).split('/main/')[1], sourceUrl(odd, COMMIT).split(`/${COMMIT}/`)[1])
+  assert.ok(!repoUrl(odd).includes('?') && !repoUrl(odd).includes('#'))
+})
+
+test('пустой и пробельный ответ при удачном запуске — один случай', () => {
+  // Пустое место на месте главного предмета экрана — та же заглушка, что «—»
+  // (I-8), только невидимая. Пробельный ответ считается тем же случаем:
+  // «\n  \n» даёт не состояние, а пустую полосу.
+  for (const text of ['', '   ', '\n  \n', undefined, null, 42]) assert.equal(isBlank(text), true, JSON.stringify(text))
+  for (const text of ['ответ', ' а ', 'В найденных фрагментах ответа нет']) assert.equal(isBlank(text), false, text)
+  assert.match(ANSWER_BLANK, /Вызов при этом состоялся/, 'не сказано, что деньги потрачены')
 })
 
 test('строка состояния называет число фрагментов из события, а не из разметки', () => {

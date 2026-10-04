@@ -122,10 +122,24 @@ export function indexMeta(result) {
  * Коммита нет — ссылки нет: путь останется текстом, а не поведёт в никуда.
  */
 const REPO = 'https://github.com/MikeKharr/ai-advent-2026/blob'
+/** Путь — недоверенные данные, и он уезжает в адрес: кодируется посегментно. */
+const encodePath = (path) => path.split('/').map(encodeURIComponent).join('/')
+
 export function sourceUrl(path, commit) {
   if (typeof path !== 'string' || path === '') return null
   if (typeof commit !== 'string' || !/^[0-9a-f]{7,40}$/.test(commit)) return null
-  return `${REPO}/${commit}/${path.split('/').map(encodeURIComponent).join('/')}`
+  return `${REPO}/${commit}/${encodePath(path)}`
+}
+
+/**
+ * Ссылка на файл в `main` — для путей из файла итогов: коммита индекса у них
+ * нет, они названы эталоном (ADR, п. 5). Кодирование здесь ТО ЖЕ, что у
+ * `sourceUrl`: две соседние ветви одного показа расходились без причины
+ * (находка `reviewer` к PR #303).
+ */
+export function repoUrl(path) {
+  if (typeof path !== 'string' || path === '') return null
+  return `${REPO}/main/${encodePath(path)}`
 }
 
 /** Близость — три знака после запятой (п. 6.3). Не измерено — строки нет. */
@@ -305,7 +319,14 @@ export const STATUS = {
 export function failure(error, { status = null } = {}) {
   const code = typeof error?.code === 'string' ? error.code : ''
   const message = str(error?.message)
-  const paidNothing = error?.paidNothing !== false
+  // ТРИ состояния, а не два: «денег не стоил», «стоил» и «неизвестно».
+  // Прежняя редакция писала `error?.paidNothing !== false`, то есть отсутствие
+  // поля превращала в утверждение «вызов не состоялся, денег не стоил» —
+  // страница говорила про деньги там, где не знала ничего (находка
+  // `compliance` к PR #303). Сегодня путь почти недостижим (`runs.js` всегда
+  // кладёт `error`, а `fail()` агента всегда ставит поле), но «почти» — не
+  // основание утверждать за посетителя, сколько он потратил.
+  const paidNothing = typeof error?.paidNothing === 'boolean' ? error.paidNothing : null
 
   if (code === 'search_refused' && status === 429)
     return {
@@ -331,11 +352,19 @@ export function failure(error, { status = null } = {}) {
         'задать в режиме без RAG — но сверить ответ будет нечем.',
       paidNothing,
     }
+  // Отказ не из поиска: три исхода, и третий — «неизвестно». Молчать про
+  // деньги там, где их могли потратить, нельзя; утверждать, что не потратили,
+  // не зная этого, — тоже.
+  const LEAD = {
+    free: 'Запуск не состоялся. Вызов модели не случился — вопрос денег не стоил.',
+    paid: 'Запуск не довёл дело до конца, и вызов модели при этом состоялся: вопрос стоил денег.',
+    unknown:
+      'Запуск не состоялся. Был ли вызов модели оплачен, сервер не сказал — ' +
+      'поэтому и страница этого не утверждает.',
+  }
   return {
     kind: 'other',
-    lead: paidNothing
-      ? 'Запуск не состоялся. Вызов модели не случился — вопрос денег не стоил.'
-      : 'Запуск не довёл дело до конца, и вызов модели при этом состоялся: вопрос стоил денег.',
+    lead: paidNothing === null ? LEAD.unknown : paidNothing ? LEAD.free : LEAD.paid,
     words: message || null,
     paidNothing,
   }
@@ -351,3 +380,14 @@ export const REFUSED_NOTE =
 
 /** Ответ оборвался потолком токенов (п. 10, частичный результат). */
 export const ANSWER_CUT = 'Ответ оборван: показано то, что успело прийти.'
+
+/**
+ * Запуск удался, а текста в ответе нет. Пустое место на месте главного
+ * предмета экрана — то же самое, что заглушка (I-8): страница говорит прямо,
+ * что показывать нечего, и оставляет строку меры — токены-то потратились.
+ *
+ * Пробельный ответ — тот же случай: `"\n  \n"` даёт не состояние, а пустую
+ * полосу (приём дня 20, `isSilent`).
+ */
+export const ANSWER_BLANK = 'Модель вернула пустой ответ: показывать нечего. Вызов при этом состоялся.'
+export const isBlank = (text) => typeof text !== 'string' || text.trim() === ''
