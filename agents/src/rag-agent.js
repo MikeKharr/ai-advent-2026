@@ -154,7 +154,7 @@ export function buildNoRagInput(question) {
  * мелочь транспорта:
  *   - отказ инструмента (`NO_INDEX`, `NO_STRATEGY_INDEX`, `DAILY_EXHAUSTED`)
  *     приходит HTTP 200 с `isError: true` в результате (`rag/rpc.py`,
- *     `tool_error`);
+ *     `tool_failure`);
  *   - **отказ минутного и часового окна лимитера** приходит HTTP 429 с
  *     конвертом `error` JSON-RPC, и слова лимитера лежат в его `message`
  *     (`rag/serve.py`, `_rpc`, шаг 5).
@@ -375,6 +375,13 @@ export function createRagAgent({
             // недоступность, поэтому код тот же, что у отказа инструмента, и
             // наружу идут ЕЁ слова, а не «ответил 429».
             const words = error.status === 429 ? rpcErrorMessage(error.trace) : null
+            // Своего потолка длины у этой строки нет, и число названо, а не
+            // подразумевается: сверху её держит обрезка тела трейса — 64 КБ
+            // (`TRACE_BODY_LIMIT`, `mcp/client.js`). Сегодня это два литерала
+            // по 30 знаков (`rag/limits.py`, `reserve`), то есть запас втрое
+            // тысячекратный; но текст здесь — из чужой единицы, и страница
+            // обязана рисовать его текстом, а не разметкой (находка
+            // `reviewer` к PR #302, п. 3).
             if (words !== null)
               return fail({
                 code: 'search_refused',

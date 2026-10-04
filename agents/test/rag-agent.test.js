@@ -180,7 +180,7 @@ test('режим с RAG: поиск сходил, пять фрагментов 
 
 test('отказ поиска — отказ запуска БЕЗ вызова модели', async () => {
   // `isError` службы: так приходят NO_INDEX, NO_STRATEGY_INDEX и
-  // DAILY_EXHAUSTED (`rag/rpc.py`, `tool_error`). Отказ окна лимитера
+  // DAILY_EXHAUSTED (`rag/rpc.py`, `tool_failure`). Отказ окна лимитера
   // приходит ИНАЧЕ — HTTP 429, у него свой тест ниже.
   const rag = await fakeRag({
     answer: () => ({ isError: true, content: [{ type: 'text', text: 'индекса нет: сборка не завершилась' }] }),
