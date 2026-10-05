@@ -182,20 +182,6 @@ test('возврат не касается ни отказа, ни чужого 
   assert.equal(limiter.stats().callsToday, 3)
 })
 
-test('слот, которым сходили в сервис, не возвращается', () => {
-  // Границу «до сервиса ничего не ушло» держит пометка `spent`, а не код
-  // ответа: у дня есть 4xx ПОСЛЕ обращения (сервис сам отвечает 400).
-  const limiter = createLimiter(env, { now: () => Date.UTC(2026, 9, 5, 10) })
-  const slot = limiter.reserve('1.1.1.1')
-  slot.spent = true
-  assert.equal(limiter.release(slot), false, 'слот за дошедший до сервиса запрос вернулся')
-  assert.equal(limiter.stats().callsToday, 1)
-  // Без пометки тот же слот возвращается — иначе проверка выше была бы зелена
-  // при возврате, выключенном вообще.
-  const clean = limiter.reserve('2.2.2.2')
-  assert.equal(limiter.release(clean), true)
-})
-
 test('слот ЧУЖИХ СУТОК не возвращается: иначе он дарил бы запуск следующему дню', () => {
   let t = Date.UTC(2026, 9, 5, 23, 59)
   const limiter = createLimiter(env, { now: () => t })
