@@ -32,6 +32,7 @@ import {
   VERIFY_REMARKS_CHARS,
 } from './llm.js'
 import { recall } from './memory.js'
+import { RetrieveFailure } from './rag/retrieve.js'
 import { registryPrompts } from './prompts.js'
 import {
   inputBudgetFor,
@@ -202,8 +203,16 @@ export function createStagedAgent({
    * флагом у места вызова это не стало (предел назван в ADR 2026-09-22-0827).
    */
   prompts = registryPrompts,
-  /** Таблица этапов: шесть у дней 13 и 14, семь у дня 15 (ADR, п. 4). */
+  /** Таблица этапов: шесть у дней 13 и 14, семь у дня 15 (ADR, п. 4), восемь у дня 25. */
   stages = STAGES,
+  /**
+   * Шов дня 25 (ADR 2026-10-05-0544, п. 3): объект `createRagChat` из
+   * `rag/chat.js` или `null`. Он один знает про поиск по корпусу, схему
+   * ответа и состояние задачи; машина зовёт его методы и ни в одном месте не
+   * спрашивает, какой это день. У дней 13–15 он `null`, и каждое место ниже —
+   * `if (rag)`.
+   */
+  rag = null,
   /**
    * Потолок ответа: 2048 у дней 13 и 14, 32 000 у дня 15 (ADR, п. 5). Одно
    * число на вход запуска, настройки и поле страницы.
@@ -415,6 +424,25 @@ export function createStagedAgent({
             rule: stage.rule,
           }
         }),
+        // Шестой правимый промпт дня 25 (ADR 2026-10-05-0544, п. 3.4).
+        // Отдельным полем, а не строкой таблицы этапов: у этапа пополнения
+        // два вызова, а `promptId` этапа — один, и объявлять `stage.task`
+        // промптом ЭТАПА значило бы врать окну «Об агенте» о том, какой текст
+        // уйдёт вызовом пополнения. Страница правит его той же ручкой
+        // `PUT /v1/profiles/:id/prompts/:promptId`: идентификатор — в списке
+        // `PROFILE_PROMPT_IDS`.
+        ...(rag
+          ? {
+              extraPrompts: [
+                {
+                  promptId: rag.taskPromptId,
+                  prompt: rag.taskPrompt,
+                  stageId: 'replenish',
+                  rule: 'второй вызов этапа пополнения: прежнее состояние задачи и последняя пара реплик — новое состояние целиком',
+                },
+              ],
+            }
+          : {}),
         // Инварианты профиля дня 14: их потолки и промпт формулировщика.
         // Страница не хранит эти числа сама — как и предел кругов.
         ...(inv
@@ -494,6 +522,15 @@ export function createStagedAgent({
         // 2026-09-23-0646, п. 4). У дней 13 и 14 этапа нет, и поле — `null`.
         prepared: null,
         withheld: null,
+        // День 25 (ADR 2026-10-05-0544, п. 3). `retrieved` — выдача этапа
+        // «Поиск» круга, `read` — разобранный ответ по схеме, `task` —
+        // состояние задачи на начало хода, `taskStored` — записалось ли новое.
+        retrieved: null,
+        read: null,
+        task: rag ? rag.loadTask(sessionId) : null,
+        taskStored: false,
+        transcript: [],
+        rebuild: null,
       }
       const tree = strategy !== null
       let nextParent = tree
@@ -856,9 +893,10 @@ export function createStagedAgent({
 
         const invariantsBlock =
           inv && ctx.invariants.length > 0 ? inv.block(ctx.invariants) : null
-        const build = (transcript) =>
+        const build = (transcript, extraBlocks = []) =>
           policy.assemble({
             invariantsBlock,
+            extraBlocks,
             rules: ctx.rules,
             topic: ctx.topic,
             summaryText: recalled.summaryText,
@@ -904,6 +942,12 @@ export function createStagedAgent({
 
         ctx.assembled = assembled
         ctx.needed = needed
+        // Чем день 25 дособерёт запрос на «Подготовке промпта»: тем же
+        // `build`, с тем же (уже подрезанным под потолок) составом реплик.
+        // Второй сборки блоков памяти не будет — иначе фрагменты считались бы
+        // под один потолок, а уходили с другим.
+        ctx.transcript = transcript
+        ctx.rebuild = (extraBlocks) => build(transcript, extraBlocks)
         ctx.context = {
           ...recalled.context,
           used: transcript.reduce((sum, m) => sum + m.tokens, 0),
@@ -941,6 +985,122 @@ export function createStagedAgent({
       }
 
       /**
+       * Восьмой этап — «Поиск» дня 25 (ADR 2026-10-05-0544, п. 3.2).
+       *
+       * ПОРЯДОК ЗДЕСЬ — ПРЕДМЕТ (I-4). Этап стоит ДО «Подготовки промпта» и
+       * «Вызова модели», а внутри него первым идёт ПОИСК, и только потом
+       * переписывание (порядок держит `retrieve.js`). Отказ поиска — отказ
+       * ХОДА, не оплативший ни одного вызова модели: без фрагментов ответа у
+       * дня 25 не бывает, и обещание «источники всегда» держится этим, а не
+       * просьбой в промпте.
+       *
+       * Переписывание ВСЕГДА (решение владельца Р6(б)) и видит цель задачи:
+       * `ctx.task` прочитан на входе хода, до первого этапа.
+       */
+      const retrieveStage = async () => {
+        // ВОРОТА КРУГА (находки `reviewer` Б1 и `compliance` Б1 к PR #317).
+        // Возврат с «Проверки» идёт на «Сборку», и без этих ворот каждый
+        // лишний круг платил бы ещё переписывание, ещё реранкер и ещё ДВА
+        // эмбеддинга — то есть ход стоил бы `4×кругов + 2` вызова и
+        // `2×кругов` эмбеддингов вместо принятых владельцем 6–7 и двух
+        // (ADR 2026-10-05-0544, п. 4). Эмбеддинги идут в суточные 500 службы
+        // `rag`, и счётчик общий с днём 22 — то есть перерасход тут не
+        // бумажный.
+        //
+        // Переиспользовать можно именно потому, что вход отбора от круга НЕ
+        // зависит: переписывание видит реплику посетителя, состояние задачи и
+        // прошлые ходы, а замечания проверки в него не входят ни одним полем.
+        // Обещание контракта при этом целое: `prepare` берёт `ctx.retrieved`
+        // на каждом круге, поэтому у круга свои блоки и своя строка
+        // `run_prompts`.
+        if (ctx.retrieved !== null) {
+          emit({
+            stage: 'planning',
+            title: `Поиск не повторяется: круг ${ctx.round}`,
+            detail:
+              `фрагменты круга 1 идут в промпт как есть — ${ctx.retrieved.kept.length} из ` +
+              `${ctx.retrieved.candidates.length}; ни переписывания, ни реранкера, ни эмбеддинга этот круг не стоит`,
+            data: {
+              round: ctx.round,
+              reused: true,
+              kept: ctx.retrieved.kept.length,
+              rewritten: ctx.retrieved.rewritten,
+            },
+          })
+          return { done: true, skipped: true }
+        }
+        let selection
+        try {
+          selection = await rag.search({
+            question: params.prompt,
+            state: ctx.task.state,
+            history: ctx.transcript,
+            params,
+            emit,
+            now,
+            runId: run.id,
+          })
+        } catch (error) {
+          if (!(error instanceof RetrieveFailure)) throw error
+          // Оплачен ли отказ, знает только он сам: отказ поиска не оплачен
+          // ничем, отказ реранкера оплачен вызовом. Но вызов мог быть оплачен
+          // и ДО этапа — сжатием истории на «Сборке», — и тогда хвост «Модель
+          // не вызывалась» в словах отказа поиска становится ложью в сторону
+          // «вам ничего не стоило» (находка `compliance` Б2 к PR #317; та же,
+          // что `reviewer` сделал к PR #311 про второй поиск). Поэтому у
+          // оплаченного хода берётся `reason` — та же причина без хвоста, —
+          // и к ней своя честная строка.
+          const paid = error.fields.paid === true || ctx.summaryPaid
+          const reason = error.fields.reason
+          fail({
+            code: error.fields.code,
+            title: error.fields.title,
+            message:
+              paid && typeof reason === 'string' && reason !== ''
+                ? // Точка ставится, только если причина ею не кончается: слова
+                  // приходят из чужой единицы (`rag/limits.py`, `rag/tools.py`)
+                  // и бывают и с точкой, и без (находка `reviewer`).
+                  `${reason.replace(/[.\s]+$/, '')}. ` +
+                  'Ответа не будет, но вызовы этого хода, сделанные до поиска, уже оплачены.'
+                : error.fields.message,
+            paid,
+          })
+          return { failed: true }
+        }
+        ctx.retrieved = selection
+        // Переписывание и реранкер — два вызова, и они оплачены независимо от
+        // того, чем кончится ход. Поэтому дальше ни один отказ не вправе
+        // сказать `paidNothing: true`.
+        ctx.summaryPaid = true
+        emit({
+          stage: 'planning',
+          title:
+            selection.kept.length === 0
+              ? 'Ни один фрагмент к реплике не отнесён'
+              : `В промпт хода идут ${selection.kept.length} фрагментов`,
+          detail:
+            (selection.rewritten === null
+              ? 'переписывание не дало нового запроса'
+              : `переписанный запрос: «${selection.rewritten}»`) +
+            `; индекс ${selection.index.commit ?? 'неизвестного коммита'}`,
+          data: {
+            rewritten: selection.rewritten,
+            kept: selection.kept.length,
+            candidates: selection.candidates.length,
+            index: selection.index,
+            sources: selection.kept.map(({ n, source, section, score, relevance }) => ({
+              n,
+              source,
+              section,
+              score,
+              relevance,
+            })),
+          },
+        })
+        return { done: true }
+      }
+
+      /**
        * Седьмой этап дня 15 — «Подготовка промпта» (ADR 2026-09-23-0646,
        * п. 4). Вызова модели у него нет: он складывает из собранных блоков
        * итоговый запрос ровно в том виде, в каком тот уйдёт роутеру — два
@@ -954,6 +1114,28 @@ export function createStagedAgent({
        * видно рядом.
        */
       const prepareStage = () => {
+        // День 25: блоки фрагментов и состояния задачи складываются сюда, в
+        // итоговый запрос (ADR 2026-10-05-0544, п. 3.3). Пересборка — тем же
+        // `build`, что на «Сборке», поэтому порядок блоков и подрезка реплик
+        // остаются её решением, а не повторяются здесь.
+        if (rag && ctx.retrieved !== null) {
+          const extra = rag.blocks({ selection: ctx.retrieved, state: ctx.task.state })
+          ctx.assembled = ctx.rebuild(extra)
+          ctx.needed = estimateTokens(system) + estimateTokens(ctx.assembled.input)
+          // Потолок проверяется ПОСЛЕ добавления фрагментов и ДО вызова
+          // модели: иначе запрос с фрагментами уходил бы сверх потолка,
+          // проверенного без них.
+          if (ctx.needed > ctx.budget.cap) {
+            fail({
+              code: 'budget_too_small',
+              title: 'Не хватает предела модели',
+              message:
+                `Запрос с найденными фрагментами занимает ${ctx.needed} токенов, а потолок этапа ` +
+                `сейчас ${ctx.budget.cap}. Уменьшите размер контекста или выберите другую модель.`,
+            })
+            return { failed: true }
+          }
+        }
         const input = ctx.assembled.input
         const tokens = estimateTokens(system) + estimateTokens(input)
         // Отпечаток — по паре целиком: промпт тот же, а контекст круга
@@ -1026,12 +1208,21 @@ export function createStagedAgent({
             temperature: params.temperature === 1 ? null : params.temperature,
             stopSequences: params.stopSequences.length,
             round: ctx.round,
+            // Форма ответа дня 25 — требование к провайдеру, а не просьба в
+            // промпте (схема дня 24).
+            ...(rag ? { schema: true, fragments: ctx.retrieved?.kept.length ?? 0 } : {}),
           },
         })
         ctx.modelAsked = true
         const called = await callModel((signal) =>
           askLayered(
-            { system, taskClass: agent.taskClass, input: ctx.assembled.input, params },
+            {
+              system,
+              taskClass: agent.taskClass,
+              input: ctx.assembled.input,
+              params,
+              schema: rag ? rag.answerSchema : null,
+            },
             env,
             { fetchImpl, signal },
           ),
@@ -1052,6 +1243,41 @@ export function createStagedAgent({
         const answer = called.answer
         ctx.answer = answer
         ctx.answerCalls += 1
+        // День 25: ответ пришёл объектом по схеме. Текстом реплики становится
+        // поле `answer` схемы, а не всё тело (в `answer.text` лежит JSON
+        // целиком — показывать его посетителю нечем). Проверка, память и
+        // выдача работают с этим текстом и ни о схеме, ни о цитатах не знают.
+        if (rag) {
+          const parsed = rag.readAnswer(answer.json, ctx.retrieved?.kept ?? [])
+          if (!parsed.ok) {
+            log(`запуск ${run.id}: форма ответа: ${parsed.reason}`)
+            fail({
+              code: 'answer_invalid',
+              title: 'Ответ не по форме',
+              message: parsed.message,
+              // Вызов состоялся и оплачен; повтора нет (развилка Р4 дня 24).
+              paid: true,
+            })
+            return { failed: true }
+          }
+          ctx.read = parsed.read
+          ctx.answer = { ...answer, text: parsed.read.answer }
+          if (parsed.read.quotes.some((item) => !item.verified)) {
+            emit({
+              stage: 'warning',
+              level: 'warn',
+              title: 'Цитата не подтверждена',
+              detail: parsed.read.quotes
+                .filter((item) => !item.verified)
+                .map((item) => `[${item.n}]`)
+                .join(', '),
+              data: {
+                unverified: parsed.read.quotes.filter((i) => !i.verified).map((i) => i.n),
+                outcome: parsed.read.outcome,
+              },
+            })
+          }
+        }
         const ms = now() - started
         emit({
           stage: 'llm_result',
@@ -1379,6 +1605,32 @@ export function createStagedAgent({
             : {}),
           ...(strategy !== null ? { strategy } : {}),
           ...(summarizeAt !== null ? { summarizeAt } : {}),
+          // День 25: источники, цитаты и исход — у СООБЩЕНИЯ, а не только в
+          // результате запуска (ADR 2026-10-05-0544, п. 3.3). Карточка
+          // реплики показывает их и после перезагрузки страницы, когда
+          // результата запуска уже нет. Отсюда и «источники всегда»: они
+          // лежат рядом с текстом реплики, а не в потоке событий.
+          ...(ctx.read
+            ? {
+                rag: {
+                  outcome: ctx.read.outcome,
+                  status: ctx.read.status,
+                  clarification: ctx.read.clarification,
+                  sources: ctx.retrieved.kept.map(({ n, source, section, score, relevance }) => ({
+                    n,
+                    source,
+                    section,
+                    score,
+                    relevance,
+                  })),
+                  cited: ctx.read.sources,
+                  quotes: ctx.read.quotes,
+                  checks: ctx.read.checks,
+                  rewritten: ctx.retrieved.rewritten,
+                  index: ctx.retrieved.index,
+                },
+              }
+            : {}),
         }
         ctx.summary = summary
         ctx.answerId = remember(
@@ -1474,7 +1726,77 @@ export function createStagedAgent({
           })
           ctx.proposal = { title, facts: replenished.report.proposal.facts, messageId: id }
         }
+
+        // --- Шестой вызов хода дня 25: состояние задачи (ADR, п. 3.4).
+        // Отдельным вызовом и после пополнения: вход у него другой (прежнее
+        // состояние и последняя пара реплик), и путать его с правилами
+        // профиля нельзя — состояние живёт с диалогом, а правила с профилем.
+        if (rag) await taskStep()
         return { done: true }
+      }
+
+      /**
+       * Обновление состояния задачи. Ни один его исход хода не валит: ответ
+       * уже оплачен и записан, а состояние — рабочая память цели. Отказ
+       * вызова оставляет прежнее состояние в силе и говорит об этом словами.
+       */
+      const taskStep = async () => {
+        const previous = ctx.task.state
+        const out = await rag.updateTask({
+          state: previous,
+          pair: [
+            { role: 'user', text: params.prompt },
+            { role: 'agent', text: ctx.answer?.text ?? '' },
+          ],
+          params,
+          system: promptOf('stage.task'),
+          emit,
+          now,
+          runId: run.id,
+        })
+        if (out.paid) ctx.summaryPaid = true
+        if (!out.ok || out.state === null) {
+          emit({
+            stage: 'warning',
+            level: 'warn',
+            title: 'Состояние задачи не обновлено',
+            detail:
+              (out.error ? `${out.error.message}\n` : 'ответ пришёл не по схеме\n') +
+              'прежнее состояние осталось в силе',
+            data: { code: out.error?.code ?? 'task_invalid', round: ctx.round },
+          })
+          return
+        }
+        const stored = rag.storeTask({
+          sessionId,
+          profileId,
+          state: out.state,
+          round: ctx.task.round + 1,
+        })
+        ctx.task = { state: out.state, round: ctx.task.round + 1 }
+        ctx.taskStored = stored
+        emit({
+          stage: 'planning',
+          title:
+            out.state.goal === ''
+              ? 'Состояние задачи: цель пока не названа'
+              : `Состояние задачи: «${out.state.goal}»`,
+          detail:
+            `ход ${ctx.task.round}: ограничений ${out.state.constraints.length}, ` +
+            `терминов ${out.state.terms.length}, уточнений ${out.state.clarifications.length}, ` +
+            `открытых вопросов ${out.state.open.length}` +
+            (stored ? '' : '\nсостояние не сохранено: диалог не найден'),
+          data: {
+            round: ctx.task.round,
+            goal: out.state.goal,
+            constraints: out.state.constraints.length,
+            terms: out.state.terms.length,
+            clarifications: out.state.clarifications.length,
+            open: out.state.open.length,
+            stored,
+            promptSource: promptSource('stage.task'),
+          },
+        })
       }
 
       const deliverStage = () => {
@@ -1575,6 +1897,50 @@ export function createStagedAgent({
             reviewModel,
             marked: ctx.marked !== null,
             review: ctx.marked ?? { verdict: ctx.verdict, remarks: '', rounds: ctx.round },
+            // День 25 (ADR 2026-10-05-0544, п. 3): источники хода, исход,
+            // цитаты и состояние задачи. `sources` — то, что ушло модели
+            // номерами, в том же порядке и под теми же номерами, которыми
+            // ссылается ответ; `cited` — то, на что модель сослалась сама.
+            ...(ctx.read
+              ? {
+                  outcome: ctx.read.outcome,
+                  status: ctx.read.status,
+                  clarification: ctx.read.clarification,
+                  sources: ctx.retrieved.kept.map(
+                    ({ n, source, section, score, relevance, text, truncated }) => ({
+                      n,
+                      source,
+                      section,
+                      score,
+                      relevance,
+                      text,
+                      truncated: truncated === true,
+                    }),
+                  ),
+                  cited: ctx.read.sources,
+                  quotes: ctx.read.quotes,
+                  checks: ctx.read.checks,
+                  rewritten: ctx.retrieved.rewritten,
+                  candidates: ctx.retrieved.candidates.map(
+                    ({ n, source, section, score, relevance, kept, from }) => ({
+                      n,
+                      source,
+                      section,
+                      score,
+                      relevance,
+                      kept,
+                      from,
+                    }),
+                  ),
+                  index: ctx.retrieved.index,
+                }
+              : {}),
+            // Состояние задачи после хода — в результате, а не только в базе:
+            // панель «Состояние задачи» показывает его сразу, без второго
+            // запроса (ADR, п. 3.4).
+            ...(rag
+              ? { task: { ...ctx.task.state, round: ctx.task.round, stored: ctx.taskStored } }
+              : {}),
             layers: {
               topicId: ctx.replenished?.report?.topicId ?? ctx.topic?.id ?? null,
               topicTitle: ctx.replenished?.report?.topicTitle ?? ctx.topic?.title ?? null,
@@ -1770,6 +2136,9 @@ export function createStagedAgent({
           let outcome
           if (stage.id === 'intake') outcome = intake()
           else if (stage.id === 'assemble') outcome = await assembleStage()
+          // Восьмой этап дня 25 — ПЕРЕД подготовкой промпта и вызовом модели
+          // (ADR 2026-10-05-0544, п. 3.2, I-4).
+          else if (stage.id === 'retrieve') outcome = await retrieveStage()
           else if (stage.id === 'prepare') outcome = prepareStage()
           else if (stage.id === 'answer') outcome = await answerStage()
           else if (stage.id === 'verify') outcome = await verifyStage()

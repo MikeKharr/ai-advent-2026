@@ -105,7 +105,11 @@ test('сохранение настроек дня 13/14 промпты проф
     assert.equal(sessions.savePrompt({ profileId: profile, promptId, text: `текст ${promptId}` }).ok, true)
   }
   const db = raw(file)
-  assert.equal(count(db, 'profile_prompts'), 5, 'пять промптов записаны до сохранения настроек')
+  // Число — из списка, а не литералом: день 25 завёл шестой промпт
+  // (ADR 2026-10-05-0544, п. 3.4), и предмет теста — что настройки не трогают
+  // НИ ОДНОГО из них, сколько бы их ни было.
+  const all = PROFILE_PROMPT_IDS.length
+  assert.equal(count(db, 'profile_prompts'), all, 'все промпты записаны до сохранения настроек')
 
   // Тот самый оператор, который переписывает столбец целиком заново
   // (sessions.js, saveStagedSettings) — причина отдельной таблицы.
@@ -115,7 +119,7 @@ test('сохранение настроек дня 13/14 промпты проф
   )
   assert.equal(sessions.saveSettings({ profileId: profile, settings: { model: 'haiku' } }), true)
 
-  assert.equal(count(db, 'profile_prompts'), 5, 'промпты пережили сохранение настроек')
+  assert.equal(count(db, 'profile_prompts'), all, 'промпты пережили сохранение настроек')
   assert.equal(sessions.promptsOf(profile).get('stage.answer'), 'текст stage.answer')
   // И наоборот: промпт не просочился в настройки, которые читают дни 11–14.
   const row = db.prepare('SELECT settings, settings_staged FROM profiles WHERE id = ?').get(profile)

@@ -10,6 +10,7 @@ import { createLayeredAgent, LAYERED_AGENT_ID } from './layered.js'
 import { createMcpAgent, MCP_AGENT_ID } from './mcp/agent.js'
 import { createPipelineAgent, PIPELINE_AGENT_ID } from './mcp/pipeline-agent.js'
 import { STAGED15_MAX_TOKENS } from './params.js'
+import { CHAT_AGENT_ID, createRagChat, RAG_STAGES } from './rag/chat.js'
 import { CITED_AGENT_ID, createRagAgent, RAG_AGENT_ID, RERANK_AGENT_ID } from './rag-agent.js'
 import {
   createStagedAgent,
@@ -83,6 +84,23 @@ export function createAgents({
         prompts,
         stages: PREPARE_STAGES,
         maxOutputTokens: STAGED15_MAX_TOKENS,
+      })
+    // День 25 — та же машина дня 15 с восьмым этапом «Поиск», схемой ответа
+    // дня 24 и состоянием задачи (ADR 2026-10-05-0544, п. 3). Шов `rag` —
+    // единственное, что знает про корпус; остальные опции те же, что у дня 15.
+    else if (entry.id === CHAT_AGENT_ID)
+      agent = createStagedAgent({
+        agent: entry,
+        runs,
+        sessions,
+        stageLog,
+        env,
+        log,
+        invariants,
+        prompts,
+        stages: RAG_STAGES,
+        maxOutputTokens: STAGED15_MAX_TOKENS,
+        rag: createRagChat({ agent: entry, servers, sessions, env, log }),
       })
     else agent = createNewsAnalyst({ agent: entry, archive, runs, sessions, env, log })
     agents.set(entry.id, agent)
