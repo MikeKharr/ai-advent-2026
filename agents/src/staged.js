@@ -998,6 +998,37 @@ export function createStagedAgent({
        * `ctx.task` прочитан на входе хода, до первого этапа.
        */
       const retrieveStage = async () => {
+        // ВОРОТА КРУГА (находки `reviewer` Б1 и `compliance` Б1 к PR #317).
+        // Возврат с «Проверки» идёт на «Сборку», и без этих ворот каждый
+        // лишний круг платил бы ещё переписывание, ещё реранкер и ещё ДВА
+        // эмбеддинга — то есть ход стоил бы `4×кругов + 2` вызова и
+        // `2×кругов` эмбеддингов вместо принятых владельцем 6–7 и двух
+        // (ADR 2026-10-05-0544, п. 4). Эмбеддинги идут в суточные 500 службы
+        // `rag`, и счётчик общий с днём 22 — то есть перерасход тут не
+        // бумажный.
+        //
+        // Переиспользовать можно именно потому, что вход отбора от круга НЕ
+        // зависит: переписывание видит реплику посетителя, состояние задачи и
+        // прошлые ходы, а замечания проверки в него не входят ни одним полем.
+        // Обещание контракта при этом целое: `prepare` берёт `ctx.retrieved`
+        // на каждом круге, поэтому у круга свои блоки и своя строка
+        // `run_prompts`.
+        if (ctx.retrieved !== null) {
+          emit({
+            stage: 'planning',
+            title: `Поиск не повторяется: круг ${ctx.round}`,
+            detail:
+              `фрагменты круга 1 идут в промпт как есть — ${ctx.retrieved.kept.length} из ` +
+              `${ctx.retrieved.candidates.length}; ни переписывания, ни реранкера, ни эмбеддинга этот круг не стоит`,
+            data: {
+              round: ctx.round,
+              reused: true,
+              kept: ctx.retrieved.kept.length,
+              rewritten: ctx.retrieved.rewritten,
+            },
+          })
+          return { done: true, skipped: true }
+        }
         let selection
         try {
           selection = await rag.search({
@@ -1011,13 +1042,24 @@ export function createStagedAgent({
           })
         } catch (error) {
           if (!(error instanceof RetrieveFailure)) throw error
+          // Оплачен ли отказ, знает только он сам: отказ поиска не оплачен
+          // ничем, отказ реранкера оплачен вызовом. Но вызов мог быть оплачен
+          // и ДО этапа — сжатием истории на «Сборке», — и тогда хвост «Модель
+          // не вызывалась» в словах отказа поиска становится ложью в сторону
+          // «вам ничего не стоило» (находка `compliance` Б2 к PR #317; та же,
+          // что `reviewer` сделал к PR #311 про второй поиск). Поэтому у
+          // оплаченного хода берётся `reason` — та же причина без хвоста, —
+          // и к ней своя честная строка.
+          const paid = error.fields.paid === true || ctx.summaryPaid
+          const reason = error.fields.reason
           fail({
             code: error.fields.code,
             title: error.fields.title,
-            message: error.fields.message,
-            // Оплачен ли отказ, знает только он сам: отказ поиска не оплачен
-            // ничем, отказ реранкера оплачен вызовом.
-            paid: error.fields.paid === true,
+            message:
+              paid && typeof reason === 'string' && reason !== ''
+                ? `${reason}. Ответа не будет, но вызовы этого хода, сделанные до поиска, уже оплачены.`
+                : error.fields.message,
+            paid,
           })
           return { failed: true }
         }
@@ -1715,7 +1757,9 @@ export function createStagedAgent({
             level: 'warn',
             title: 'Состояние задачи не обновлено',
             detail:
-              (out.error ? `${out.error.message}\n` : 'ответ пришёл не по схеме\n') +
+              (out.error
+                ? `${out.error.message}\n`
+                : 'ответ не разобран: не по схеме либо не уложился в потолок состояния\n') +
               'прежнее состояние осталось в силе',
             data: { code: out.error?.code ?? 'task_invalid', round: ctx.round },
           })

@@ -463,6 +463,44 @@ export function createSearchOnce({ agentServers, strategy, emit, log, now, runId
 }
 
 /**
+ * Заголовки вызовов, которые делает это замыкание, — КАРТОЙ по `purpose`, а не
+ * тернарником «переписывание или всё остальное».
+ *
+ * Почему это не косметика: шестым вызовом хода дня 25 сюда приходит
+ * `purpose: 'task'` (обновление состояния задачи, `rag/chat.js`), и прежний
+ * тернарник подписывал его в ленте и в журнале «Оцениваю фрагменты
+ * реранкером», а отказ — «Реранкер не ответил». Врала ровно та строка, которую
+ * читает человек, причём в дне, смысл которого — «посетитель видит, что ушло
+ * модели на каждом ходе» (находки `reviewer` Б2 и `compliance` Б3 к PR #317).
+ *
+ * Умолчание есть и названо: новый `purpose` без своей строки получает
+ * нейтральные заголовки, а не чужие.
+ */
+export const DEFAULT_TITLES = {
+  call: 'Спросил модель',
+  result: 'Получил ответ',
+  failure: 'Модель не ответила',
+}
+
+export const TITLES = {
+  rewrite: {
+    call: 'Переписываю вопрос',
+    result: 'Запрос переписан',
+    failure: 'Переписывание не удалось',
+  },
+  rerank: {
+    call: 'Оцениваю фрагменты реранкером',
+    result: 'Оценки получены',
+    failure: 'Реранкер не ответил',
+  },
+  task: {
+    call: 'Обновляю состояние задачи',
+    result: 'Состояние задачи получено',
+    failure: 'Состояние задачи не обновлено',
+  },
+}
+
+/**
  * Замыкание вызовов модели ВТОРОГО ЭТАПА — переписывание и реранкер. Живёт
  * рядом с поиском и по той же причине: про роутер, события и потолки знает
  * агент, а `retrieve.js` — арифметика над их результатом.
@@ -479,7 +517,7 @@ export function createAskStage({ model, temperature, env, fetchImpl, emit, log, 
     answerTokens,
     schema = null,
   }) => {
-    const title = purpose === 'rewrite' ? 'Переписываю вопрос' : 'Оцениваю фрагменты реранкером'
+    const title = TITLES[purpose]?.call ?? DEFAULT_TITLES.call
     const needed = estimateTokens(system) + estimateTokens(input)
     const started = now()
     emit({
@@ -517,7 +555,7 @@ export function createAskStage({ model, temperature, env, fetchImpl, emit, log, 
       log(`запуск ${runId}: ${purpose}: ${error.code ?? ''} ${error.message}`)
       throw new RetrieveFailure({
         code: error.code ?? (error.status === 429 ? 'rate_limited' : 'router_error'),
-        title: purpose === 'rewrite' ? 'Переписывание не удалось' : 'Реранкер не ответил',
+        title: TITLES[purpose]?.failure ?? DEFAULT_TITLES.failure,
         message: explainRouterError(error),
         paid: !paidNothing(error),
         data: { purpose, status: error.status ?? null },
@@ -526,7 +564,7 @@ export function createAskStage({ model, temperature, env, fetchImpl, emit, log, 
     const ms = now() - started
     emit({
       stage: 'llm_result',
-      title: purpose === 'rewrite' ? 'Запрос переписан' : 'Оценки получены',
+      title: TITLES[purpose]?.result ?? DEFAULT_TITLES.result,
       detail: `${out.provider?.model ?? model}, ${seconds(ms)}, ${out.usage.inputTokens ?? '?'} → ${out.usage.outputTokens ?? '?'} токенов`,
       data: { purpose, provider: out.provider, usage: out.usage, truncated: out.truncated },
       durationMs: ms,

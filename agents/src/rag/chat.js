@@ -177,10 +177,42 @@ export function readTaskState(json) {
     clarifications: strings(json.clarifications, LIST_CAP.clarifications, 200),
     open: strings(json.open, LIST_CAP.open, 200),
   }
-  // Потолок хранилища — тот же, что в `saveTaskState`: состояние, не
-  // влезающее в него, не пишется вовсе, и узнать это обязан вызывающий, а не
-  // база молчанием.
-  return JSON.stringify(state).length > TASK_STATE_CHARS ? null : state
+  // Потолок хранилища (`saveTaskState`, 4000 знаков) — не то же, что потолки
+  // полей: на полных списках максимум разбора ≈ 5740 знаков, то есть
+  // состояние могло НЕ ВЛЕЗТИ и не обновиться вовсе — диалог застрял бы с
+  // «прежним состоянием» навсегда (находка `reviewer` 1 к PR #317). Поэтому
+  // здесь не отказ, а подрезка: пока не влезает, уходит самая старая запись
+  // самого длинного списка. Открытые вопросы и уточнения стареют первыми,
+  // цель не трогается вовсе — её потеря и была бы настоящей потерей.
+  return fitTaskState(state)
+}
+
+/** Порядок, в котором списки состояния теряют старшие записи под потолок. */
+const SHRINK_ORDER = ['open', 'clarifications', 'constraints', 'terms']
+
+/**
+ * Подрезка состояния под потолок хранилища. `null` — только если не влезает
+ * даже одна цель: тогда писать правда нечего.
+ */
+export function fitTaskState(state) {
+  const fitted = {
+    ...state,
+    constraints: [...state.constraints],
+    terms: [...state.terms],
+    clarifications: [...state.clarifications],
+    open: [...state.open],
+  }
+  const size = () => JSON.stringify(fitted).length
+  while (size() > TASK_STATE_CHARS) {
+    // Самый длинный список, а не первый непустой: подрезать надо то, что
+    // занимает место.
+    const target = SHRINK_ORDER.filter((key) => fitted[key].length > 0).sort(
+      (a, b) => fitted[b].length - fitted[a].length,
+    )[0]
+    if (target === undefined) break
+    fitted[target].shift()
+  }
+  return size() > TASK_STATE_CHARS ? null : fitted
 }
 
 /** Состояние из базы → объект. Порченая строка читается как пустое состояние. */
@@ -255,6 +287,18 @@ export function buildChatRewriteInput({ question, state = null, history = [] }) 
   return blocks.join('\n\n')
 }
 
+/**
+ * Знаков реплики во входе вызова состояния задачи. Потолок назван числом, а
+ * не унаследован: реплика посетителя держится 2000 знаками
+ * (`PARAM_LIMITS.promptChars`), а ОТВЕТ агента — только потолком ответа хода,
+ * то есть до 32 000 токенов. Без среза вход одного шестого вызова стоил бы
+ * дороже всего остального хода вместе (находка `compliance` Б4 к PR #317:
+ * ответ в 60 000 знаков давал вход 60 325 знаков). Число то же, что у
+ * переписывания, и по той же причине: состояние задачи выжимается из СМЫСЛА
+ * пары реплик, а не из её объёма.
+ */
+export const TASK_PAIR_CHARS = 2000
+
 /** Вход вызова `stage.task`: прежнее состояние и последняя пара реплик. */
 export function buildTaskInput({ state = null, pair = [] }) {
   const blocks = [
@@ -265,7 +309,9 @@ export function buildTaskInput({ state = null, pair = [] }) {
   const lines = pair.map(
     (item) =>
       `${item.role === 'user' ? 'посетитель' : 'агент'}: ` +
-      String(item.text ?? '').replace(/\s+/g, ' '),
+      String(item.text ?? '')
+        .replace(/\s+/g, ' ')
+        .slice(0, TASK_PAIR_CHARS),
   )
   blocks.push(
     [

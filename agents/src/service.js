@@ -106,6 +106,36 @@ function factsView(row) {
   }
 }
 
+/**
+ * Состояние задачи дня 25 для страницы (ADR 2026-10-05-0544, п. 3.4): поля
+ * состояния и номер хода, на котором оно обновлено.
+ *
+ * Разбор — здесь, а не в хранилище: в базе лежит текст JSON, и сервис обязан
+ * отдать странице объект, а не строку. Порченая строка читается как
+ * «состояния нет»: панель покажет пустую задачу, а не свалит чтение диалога.
+ * Потолки те же, что при записи, — текст уже прошёл `readTaskState` и
+ * `saveTaskState`, второй раз их тут не считают.
+ */
+function taskStateView(row) {
+  if (!row) return null
+  let state
+  try {
+    state = JSON.parse(row.state)
+  } catch {
+    return null
+  }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return null
+  return {
+    goal: typeof state.goal === 'string' ? state.goal : '',
+    constraints: Array.isArray(state.constraints) ? state.constraints : [],
+    terms: Array.isArray(state.terms) ? state.terms : [],
+    clarifications: Array.isArray(state.clarifications) ? state.clarifications : [],
+    open: Array.isArray(state.open) ? state.open : [],
+    round: row.round,
+    updatedAt: new Date(row.updatedAt).toISOString(),
+  }
+}
+
 export function createService({
   agents,
   archive,
@@ -593,6 +623,12 @@ export function createService({
           // дней 7–9; со стратегией счётчик считается по ней и по
           // действующему окну этой модели (ADR 2026-09-14-0447, п. 3).
           context: contextFor(sessionId, url.searchParams),
+          // Состояние задачи дня 25 (ADR 2026-10-05-0544, п. 3.4): панель
+          // «Состояние задачи» переживает перезагрузку страницы. Без этого
+          // поля состояние было видно только в результате хода, то есть
+          // исчезало с обновлением (находка автора страницы дня 25).
+          // `null` у всех прочих дней: строки в `task_state` у них нет.
+          task: taskStateView(sessions.taskStateOf(sessionId)),
         })
       }
       if (req.method === 'DELETE') {
