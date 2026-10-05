@@ -24,7 +24,7 @@ const rules = (() => {
   const to = page.indexOf('/* --- конец выделяемого блока итогов --- */', from)
   assert.notEqual(to, -1, 'у блока правил итогов обязан быть конец')
   return new Function(`${page.slice(from, to)}
-    return { EV_WORD, EV_ORDER, EV_UNKNOWN, EV_NONE, EV_BROKEN, evJoin };`)()
+    return { EV_WORD, EV_ORDER, EV_UNKNOWN, EV_NONE, EV_BROKEN, evJoin, evShortCommit };`)()
 })()
 
 test('исходы на экране — те же четыре, что в механике прогона, и ни одним больше', () => {
@@ -60,6 +60,35 @@ test('секция итогов стоит на экране входа и чи�
   const gate = page.slice(page.indexOf('<section class="gate"'), page.indexOf('</section>\n\n<div class="layout"'))
   assert.ok(gate.includes('id="ev-h"'), 'секция итогов не на экране входа: в пульт попадают с профилем')
   assert.ok(page.includes("fetch('./eval.json'"), 'итоги читаются не из файла рядом со страницей')
+})
+
+test('коммит индекса на экране короткий, а полный уходит в title', () => {
+  // ПРЕДМЕТ — УЗКАЯ ШИРИНА. Сорок знаков sha — одно слово без пробелов, и на
+  // вьюпорте 320 оно уносило страницу в горизонтальную прокрутку: замер
+  // `design-review` к PR #325, `scrollWidth` 444 при `clientWidth` 320.
+  // Здесь проверяется правило, а не пиксели: живой замер тест не заменяет.
+  const full = '7900d264083a7ad926c1adada1c4fa9700c8d6de'
+  assert.equal(rules.evShortCommit(full), '7900d26')
+  assert.equal(rules.evShortCommit(full).length, 7)
+  // Нет коммита — нет и строки о нём: прочерк на этом месте читался бы как
+  // «индекс неизвестен», а это разные вещи.
+  assert.equal(rules.evShortCommit(''), null)
+  assert.equal(rules.evShortCommit(undefined), null)
+  // Полный sha обязан остаться достижимым — тем же способом, которым на этой
+  // странице подписаны имя профиля и название темы.
+  assert.match(page, /commit\.title = data\.index\.commit/, 'полный коммит никуда не уходит')
+  assert.equal(
+    page.includes('`индекс ${data.index.commit}`'),
+    false,
+    'полный коммит снова печатается строкой',
+  )
+})
+
+test('вторичные строки итогов держат полосу чтения 52ch', () => {
+  // Правило корпуса для вторичного текста. Без него строка механики тянулась
+  // бы во всю ширину экрана входа.
+  assert.match(page, /\.ev-sum \{[^}]*max-width:52ch;/)
+  assert.match(page, /\.ev-mech \{[^}]*max-width:52ch;/)
 })
 
 test('ни одного innerHTML на странице', () => {

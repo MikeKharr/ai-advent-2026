@@ -211,12 +211,12 @@
   .ev { display:flex; flex-direction:column; gap:var(--s-4); }
   .ev-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:var(--s-5); }
   .ev-title { margin:0; font-size:var(--t-md); line-height:1.5; font-weight:600; }
-  .ev-sum { margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .ev-sum { margin:var(--s-2) 0 0; max-width:52ch; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
   .ev-turns { list-style:none; margin:var(--s-3) 0 0; padding:0; display:flex; flex-direction:column; gap:var(--s-2); }
   .ev-turn { display:grid; grid-template-columns:2rem minmax(0,1fr); gap:var(--s-2); font-size:var(--t-sm); line-height:1.5; }
   .ev-n { color:var(--fg-mut); font-variant-numeric:tabular-nums; }
   .ev-what { min-width:0; overflow-wrap:anywhere; }
-  .ev-mech { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .ev-mech { display:block; max-width:52ch; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
 
   /* --- плавающая кнопка настроек --- */
   /* Единственный вход в окно настроек (ADR, п. 9). Первым элементом .chat-col
@@ -6243,6 +6243,21 @@
 
   const evJoin = (parts) => parts.filter((p) => p !== null && p !== '').join(' · ');
 
+  /**
+   * Коммит индекса на экране — КОРОТКИЙ, семь знаков, а полный уходит в
+   * `title`: это пара «видно коротко, полное по наведению», которой на этой
+   * странице уже подписаны имя профиля и название темы (`pid-name`,
+   * `topic-name`).
+   *
+   * Почему это не вкусовщина: сорок знаков sha — одно слово без пробелов, и на
+   * вьюпорте 320 оно уносило страницу в горизонтальную прокрутку (замер
+   * `design-review` к PR #325: `scrollWidth` 444 при `clientWidth` 320).
+   * Перенос внутри слова (`overflow-wrap:anywhere`) прокрутку бы снял, но
+   * разорванный пополам sha не читается ни глазом, ни копированием.
+   */
+  const evShortCommit = (commit) =>
+    typeof commit === 'string' && commit !== '' ? commit.slice(0, 7) : null;
+
   /* --- конец выделяемого блока итогов --- */
 
   /** Строка одного хода: что ход проверял и что намерила механика. */
@@ -6337,11 +6352,17 @@
     }
     $('ev-list').replaceChildren(...scenarios.map(evScenario));
     // Коммит индекса и дата прогона стоят рядом: числа ниже измерены на том
-    // корпусе, а не на сегодняшнем.
-    $('ev-when').textContent = evJoin([
-      fmtStamp(data.ranAt),
-      typeof data.index?.commit === 'string' ? `индекс ${data.index.commit}` : null,
-    ]);
+    // корпусе, а не на сегодняшнем. Коммит — короткий, полный в `title`
+    // (см. `evShortCommit`); узел под него свой, иначе подсказка `title`
+    // накрыла бы и дату, о которой ей сказать нечего.
+    const short = evShortCommit(data.index?.commit);
+    $('ev-when').replaceChildren(fmtStamp(data.ranAt));
+    if (short !== null) {
+      const commit = document.createElement('span');
+      commit.textContent = `индекс ${short}`;
+      commit.title = data.index.commit;
+      $('ev-when').append(' · ', commit);
+    }
     $('ev-note').textContent = data.note;
     say($('ev-state'), '');
     $('ev').hidden = false;
