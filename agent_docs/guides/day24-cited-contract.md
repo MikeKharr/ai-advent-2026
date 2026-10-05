@@ -136,7 +136,7 @@ Anthropic с первого дня. `enum` у поля `status` живым вы�
 | `answer` | строка | текст **из поля схемы**, а не всё тело ответа |
 | `clarification` | строка \| `null` | уточняющий вопрос посетителю |
 | `cited` | список | `{n, source, section, claimedSource, claimedSection}` — номера, на которые сослалась модель; `source`/`section` взяты **из отбора** по номеру, `claimed*` — то, что назвала модель |
-| `quotes` | список | `{n, text, verified}` — цитаты с результатом сверки |
+| `quotes` | список | `{n, text, verified, truncated}` — цитаты с результатом сверки; `truncated` истинен у подтверждённой цитаты, обрезанной до потолка (развилка выше) |
 | `checks` | объект | `sources_present`, `quotes_present`, `quotes_verbatim`, `cited_exact` — булевы |
 | `refused` | булево | `status === "unknown"`; подстроку фразы день 24 не ищет |
 
