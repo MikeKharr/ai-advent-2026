@@ -342,6 +342,12 @@ export function createRagAgent({
   // в JS разъехалась бы молча. Опечатка видна отказом инструмента
   // («strategy — одно из: …») — то есть отказом поиска до вызова модели.
   const strategy = env.RAG_STRATEGY
+  // Неизвестное значение опции — отказ СБОРКИ, а не тихий откат к режимам
+  // дня 22: опечатка в `agents-map.js` иначе дала бы работающего агента с
+  // чужими режимами и без отбора, и заметить это можно было бы только по
+  // ответу запуска (находка `reviewer` к этому PR).
+  if (pipeline !== false && MODES_BY_PIPELINE[pipeline] === undefined)
+    throw new Error(`createRagAgent: неизвестный pipeline «${pipeline}»`)
   const modes = MODES_BY_PIPELINE[pipeline] ?? MODES
   // День 24: тот же отбор, другая форма ответа.
   const cited = pipeline === 'cited'

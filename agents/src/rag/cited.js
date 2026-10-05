@@ -40,9 +40,18 @@ export const MAX_QUOTE_CHARS = 300
  * `additionalProperties: false` — чтобы «почти та» форма была отказом формы,
  * а не тихо пропущенным полем.
  *
- * `clarification` — строка или `null`: уточняющий вопрос посетителю. Он
- * обязателен по смыслу только у `status: "unknown"`, но объявлять два разных
- * требования одной схемой нечем — это проверяет код ниже, а не схема.
+ * КОНСТРУКЦИИ ВЗЯТЫ ТОЛЬКО ТЕ, ЧТО УЖЕ ПРОШЛИ ЖИВОГО ПРОВАЙДЕРА. Схема дня 1
+ * (`days/day1/anthropic.js`, `SELECTION_SCHEMA`) ходит в Anthropic с первого
+ * дня и состоит из `type` object/array/integer/string, `properties`,
+ * `required` и `additionalProperties: false` — ровно это здесь и используется
+ * (плюс `enum`, который у дня 23 уже уехал тем же путём в `RERANK_SCHEMA`).
+ * `type: ['string', 'null']` и `maxLength` я СНЯЛ: в строгих подмножествах
+ * JSON Schema ограничения строк обычно не поддерживаются, а 400 от провайдера
+ * на первом же живом вызове — оплаченный отказ там, где его можно не
+ * заводить (находка `reviewer` к этому PR). Поэтому:
+ *   - `clarification` — обычная строка, и «уточнения нет» это пустая строка;
+ *     в `null` её превращает код (`readCited`), а не схема;
+ *   - потолок цитаты держит код (`verifyQuotes`), а не схема.
  */
 export const ANSWER_SCHEMA = {
   type: 'object',
@@ -68,13 +77,13 @@ export const ANSWER_SCHEMA = {
         type: 'object',
         properties: {
           n: { type: 'integer' },
-          text: { type: 'string', maxLength: MAX_QUOTE_CHARS },
+          text: { type: 'string' },
         },
         required: ['n', 'text'],
         additionalProperties: false,
       },
     },
-    clarification: { type: ['string', 'null'] },
+    clarification: { type: 'string' },
   },
   required: ['status', 'answer', 'sources', 'quotes', 'clarification'],
   additionalProperties: false,
@@ -149,6 +158,10 @@ export function flatten(text) {
  * Цитата с номером, которого среди оставшихся фрагментов нет, и пустая
  * цитата — `verified: false`: проверить их не по чему, а молчаливое
  * «подтверждена» здесь было бы ровно той дырой, ради которой день затеян.
+ *
+ * Потолок `MAX_QUOTE_CHARS` держится ЗДЕСЬ, а не схемой (см. `ANSWER_SCHEMA`),
+ * и держится по делу: цитата размером во весь фрагмент проходила бы сверку
+ * даром — подстрока, равная строке, не доказывает ничего, кроме копирования.
  */
 export function verifyQuotes(quotes, kept) {
   const textOf = new Map(kept.map((item) => [item.n, flatten(item.text)]))
@@ -158,7 +171,11 @@ export function verifyQuotes(quotes, kept) {
     return {
       n: item.n,
       text: item.text,
-      verified: haystack !== undefined && needle !== '' && haystack.includes(needle),
+      verified:
+        haystack !== undefined &&
+        needle !== '' &&
+        needle.length <= MAX_QUOTE_CHARS &&
+        haystack.includes(needle),
     }
   })
 }
@@ -198,7 +215,10 @@ export function readCited(json, kept) {
     throw new FormFailure('bad_status', 'В ответе модели нет исхода answered или unknown.')
 
   const answer = typeof json.answer === 'string' ? json.answer : ''
-  const clarification = typeof json.clarification === 'string' ? json.clarification : null
+  // Уточнения нет — пустая строка схемы; наружу это `null`, как обещает
+  // контракт, а не '' (схема без типа-объединения, см. `ANSWER_SCHEMA`).
+  const rawClarification = typeof json.clarification === 'string' ? json.clarification.trim() : ''
+  const clarification = rawClarification === '' ? null : rawClarification
   const noFragments = kept.length === 0
 
   // Фрагментов не было — отвечать было не по чему. `answered` здесь означает,
@@ -218,7 +238,12 @@ export function readCited(json, kept) {
       clarification,
       sources: [],
       quotes: [],
-      checks: { sources_present: false, quotes_present: false, quotes_verbatim: false },
+      checks: {
+        sources_present: false,
+        quotes_present: false,
+        quotes_verbatim: false,
+        cited_exact: false,
+      },
     }
 
   const keptNumbers = new Set(kept.map((item) => item.n))
@@ -238,6 +263,23 @@ export function readCited(json, kept) {
     kept,
   )
   const verified = quotes.filter((item) => item.verified).length
+  // ПУТЬ БЕРЁТСЯ ИЗ ОТБОРА, А НЕ ИЗ ОТВЕТА МОДЕЛИ. Сверять один номер мало:
+  // подтверждённая цитата могла бы стоять под выдуманным путём, и страница
+  // показала бы «дословно из `agent_docs/выдумка.md`» — ровно та достоверность
+  // наоборот, против которой затеян день (находка `compliance` к этому PR).
+  // Заявленное моделью не выбрасывается, а едет рядом полями `claimedSource` и
+  // `claimedSection`, и расхождение видно признаком `cited_exact`.
+  const keptByNumber = new Map(kept.map((item) => [item.n, item]))
+  const citedSources = sources.map((item) => {
+    const real = keptByNumber.get(item.n)
+    return {
+      n: item.n,
+      source: real.source,
+      section: real.section,
+      claimedSource: typeof item.source === 'string' ? item.source : '',
+      claimedSection: typeof item.section === 'string' ? item.section : '',
+    }
+  })
   const checks = {
     sources_present: sources.length > 0,
     quotes_present: quotes.length > 0,
@@ -245,6 +287,13 @@ export function readCited(json, kept) {
     // краснеть от первой же выдуманной, иначе он меряет старательность, а не
     // достоверность.
     quotes_verbatim: quotes.length > 0 && verified === quotes.length,
+    // Путь модель назвала ТОЧНО тот, что стоит у фрагмента, — сравнение
+    // точное, не по подстроке (находка дня 22 про q72/q57). Ложь здесь уже не
+    // попадает на экран (путь взят из отбора), но её надо видеть: это
+    // признак, что ссылки модели разъезжаются с номерами.
+    cited_exact:
+      citedSources.length > 0 &&
+      citedSources.every((item) => item.claimedSource === item.source),
   }
   return {
     // Ответ без подтверждённых цитат — `unsupported`: он показывается, но
@@ -253,7 +302,7 @@ export function readCited(json, kept) {
     status,
     answer,
     clarification,
-    sources: sources.map((item) => ({ n: item.n, source: item.source, section: item.section })),
+    sources: citedSources,
     quotes,
     checks,
   }

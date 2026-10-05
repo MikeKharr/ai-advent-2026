@@ -194,7 +194,15 @@ test('ответ по схеме: вызов ушёл со схемой, цит�
   assert.equal(result.outcome, 'answered')
   assert.equal(result.status, 'answered')
   assert.equal(result.answer, 'Гейт мержа держит ревьюер [1].')
-  assert.deepEqual(result.cited, [{ n: 1, source: 'agent_docs/file-1.md', section: 'Раздел 1' }])
+  assert.deepEqual(result.cited, [
+    {
+      n: 1,
+      source: 'agent_docs/file-1.md',
+      section: 'Раздел 1',
+      claimedSource: 'agent_docs/file-1.md',
+      claimedSection: 'Раздел 1',
+    },
+  ])
   assert.equal(result.quotes[0].verified, true)
   // Признак отказа у дня 24 — из поля схемы: ответ с цитатами отказом не
   // считается (находка `compliance` к PR #311, B1, в своей форме).
@@ -203,6 +211,7 @@ test('ответ по схеме: вызов ушёл со схемой, цит�
     sources_present: true,
     quotes_present: true,
     quotes_verbatim: true,
+    cited_exact: true,
   })
   // Отобранные фрагменты с текстами на месте: страница показывает цитату
   // рядом с тем, из чего её проверяли.
@@ -314,6 +323,7 @@ test('МУТАЦИЯ ПУСТОГО ОТБОРА: ноль релевантны�
     sources_present: false,
     quotes_present: false,
     quotes_verbatim: false,
+    cited_exact: false,
   })
   assert.equal(result.candidates.length, WIDE_LIMIT)
 })
@@ -383,4 +393,87 @@ test('модель сама вернула unknown при найденных ф�
 test('нормализация прощает пробелы и регистр и не прощает слов', () => {
   assert.equal(flatten('  Гейт\nМержа  '), 'гейт мержа')
   assert.notEqual(flatten('гейт мержа'), flatten('гейт ревью'))
+})
+
+test('МУТАЦИЯ ПУТИ: путь источника берётся из отбора, выдуманный едет рядом и краснит cited_exact', async () => {
+  const rag = await fakeRag()
+  const router = fakeRouter([
+    KEEP_TWO,
+    cited({
+      status: 'answered',
+      answer: 'Гейт мержа держит ревьюер [1].',
+      // Номер настоящий, путь — выдуманный. Без взятия пути из отбора
+      // страница показала бы дословную цитату под несуществующим файлом.
+      sources: [{ n: 1, source: 'agent_docs/выдумка.md', section: 'Выдуманный раздел' }],
+      quotes: [{ n: 1, text: 'гейт мержа держит ревьюер номер 1.' }],
+    }),
+  ])
+  const { runs, agent } = build({ rag, fetchImpl: router.fetchImpl })
+  const snapshot = await run(agent, runs, { question: 'кто держит гейт мержа', mode: 'rerank' })
+  await rag.close()
+
+  const result = snapshot.result
+  assert.equal(result.cited[0].source, 'agent_docs/file-1.md', 'на экран ушёл путь от модели')
+  assert.equal(result.cited[0].section, 'Раздел 1')
+  // Заявленное моделью не выброшено: расхождение обязано быть видно.
+  assert.equal(result.cited[0].claimedSource, 'agent_docs/выдумка.md')
+  assert.equal(result.checks.cited_exact, false)
+  // Цитата при этом настоящая, и исход — `answered`: признак расхождения
+  // путей не отменяет подтверждённой цитаты, он стоит рядом с ней.
+  assert.equal(result.checks.quotes_verbatim, true)
+  assert.equal(result.outcome, 'answered')
+})
+
+test('смешанные цитаты: одна дословная, одна выдуманная — answered, но quotes_verbatim красный', async () => {
+  const rag = await fakeRag()
+  const router = fakeRouter([
+    KEEP_TWO,
+    cited({
+      status: 'answered',
+      answer: 'Гейт мержа держат ревьюеры [1] и [2].',
+      sources: [
+        { n: 1, source: 'agent_docs/file-1.md', section: 'Раздел 1' },
+        { n: 2, source: 'agent_docs/file-2.md', section: 'Раздел 2' },
+      ],
+      quotes: [
+        { n: 1, text: 'гейт мержа держит ревьюер номер 1.' },
+        { n: 2, text: 'гейт мержа держит архитектор номер 2.' },
+      ],
+    }),
+  ])
+  const { runs, agent } = build({ rag, fetchImpl: router.fetchImpl })
+  const snapshot = await run(agent, runs, { question: 'кто держит гейт мержа', mode: 'rerank' })
+  await rag.close()
+
+  const result = snapshot.result
+  assert.deepEqual(
+    result.quotes.map((item) => item.verified),
+    [true, false],
+  )
+  // Одна подтверждённая цитата есть — исход `answered`; но признак
+  // дословности красный, и это видно отдельно от исхода.
+  assert.equal(result.outcome, 'answered')
+  assert.equal(result.checks.quotes_verbatim, false)
+})
+
+test('цитата во весь фрагмент сверку не проходит: подстрока, равная строке, ничего не доказывает', () => {
+  const long = 'а'.repeat(400)
+  const checked = verifyQuotes([{ n: 1, text: long }], [{ n: 1, text: long }])
+  assert.equal(checked[0].verified, false)
+})
+
+test('неизвестный pipeline — отказ сборки, а не тихий откат к режимам дня 22', () => {
+  assert.throws(
+    () =>
+      createRagAgent({
+        agent: ENTRY,
+        servers: new Map(),
+        runs: createRuns(),
+        env: envOf(),
+        fetchImpl: async () => assert.fail('роутер'),
+        log: () => {},
+        pipeline: 'citd',
+      }),
+    /неизвестный pipeline/,
+  )
 })
