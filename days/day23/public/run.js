@@ -625,6 +625,39 @@ export function selectNone(found) {
 /** Тот же исход там, где числа кандидатов под рукой нет. */
 export const SELECT_NONE = selectNone(null)
 
+/**
+ * Исход «ни один фрагмент не относится» — ПОЛЕМ `outcome`, а не выводом из
+ * косвенных признаков: модель ответа при нём не вызывалась, и утверждать это
+ * за агента страница не вправе. Запасной вывод оставлен на случай ответа без
+ * поля: кандидаты есть, источников нет — другого смысла у такой пары нет.
+ */
+export function isUnknownFilter(result) {
+  if (result.outcome === 'unknown_filter') return true
+  if (result.outcome === 'answered') return false
+  return result.candidates.length > 0 && result.sources.length === 0
+}
+
+/**
+ * ЧТО СТОИТ В БЛОКЕ «ОТВЕТ» — решается здесь, а не в обработчике страницы.
+ *
+ * ВЫНЕСЕНО РАДИ ДЕРЖАТЕЛЯ, и причина названа прогоном мутации: пока правило
+ * жило условием в `app.js`, снятие ветви исхода оставляло все тесты зелёными —
+ * греп по исходному тексту подтверждает, что строка есть, а не что она
+ * исполняется (тот же урок, что у `dayLimitNote` и `tornSrcsNote` в дне 22).
+ *
+ * Ветвь исхода обязана быть ПЕРВОЙ. При `unknown_filter` ответ равен `null`, а
+ * `refused` — `true`, и обе ветви дня 22 сказали бы неправду: «модель вернула
+ * пустой ответ, вызов при этом состоялся» (вызова не было) и «фрагменты
+ * нашлись, ответа на вопрос в них не оказалось» (это сказал бы отвечавший,
+ * которого не спрашивали). Решил реранкер — и сказано это его словами.
+ */
+export function answerBlock(result) {
+  if (isUnknownFilter(result))
+    return { kind: 'unknown_filter', text: selectNone(result.candidates.length), refusedNote: false }
+  if (isBlank(result.answer)) return { kind: 'blank', text: ANSWER_BLANK, refusedNote: result.refused }
+  return { kind: 'answer', text: result.answer, refusedNote: result.refused }
+}
+
 /** Режим без отбора: кандидатов нет по построению, и это не пропажа. */
 export const CANDIDATES_RAG =
   'В этом режиме второй ступени нет: что нашёл поиск, то и ушло в модель. Сравнивать ' +

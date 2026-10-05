@@ -33,7 +33,7 @@ import {
 } from './evalview.js'
 import { clipBody, partialNotes, reindent } from './rpc.js'
 import {
-  ANSWER_BLANK,
+  answerBlock,
   ANSWER_CUT,
   ANSWER_TORN,
   answerMeta,
@@ -44,7 +44,6 @@ import {
   fragmentTextNote,
   FRAGMENT_EMPTY,
   indexMeta,
-  isBlank,
   MAX_QUESTION,
   CANDIDATES_NONE,
   CANDIDATES_RAG,
@@ -55,6 +54,7 @@ import {
   REWRITE_NOTE,
   REWRITTEN_NONE,
   fromWord,
+  isUnknownFilter,
   PICK_RULE,
   SELECT_NONE,
   selectionNote,
@@ -320,26 +320,18 @@ function showAnswer(result) {
   const meta = answerMeta(result)
   if (meta) parts.push(node('p', 'entry-meta', meta))
 
-  // ИСХОД «НИ ОДИН ФРАГМЕНТ НЕ ОТНОСИТСЯ» — отдельная ветвь, и она обязана
-  // быть первой. При нём `answer` равен `null`, а `refused` — `true`, то есть
-  // обе ветви дня 22 сказали бы неправду: «Модель вернула пустой ответ. Вызов
-  // при этом состоялся» — вызова не было вовсе, а «фрагменты нашлись, ответа
-  // на вопрос в них не оказалось» — это сказал бы отвечавший, которого не
-  // спрашивали. Решил здесь реранкер, и сказано это его словами.
-  if (isUnknownFilter(result)) {
-    parts.push(node('p', 'answer', selectNone(result.candidates.length)))
-    answerBox.replaceChildren(...parts)
-    return
-  }
-
-  // Пустой ответ при удачном запуске — не пустое место, а сказанная словами
-  // пустота: строка меры остаётся, потому что токены потратились.
-  if (isBlank(result.answer)) parts.push(node('p', 'empty', ANSWER_BLANK))
-  else parts.push(node('p', 'answer', result.answer))
+  // ЧТО ИМЕННО СТОИТ В БЛОКЕ — решает `answerBlock`, и решает она одна: у
+  // правила «не говорить про состоявшийся вызов там, где модель не звали»
+  // должен быть держатель, который исполняется. Условие, стоявшее здесь, в
+  // коде страницы, снималось мутацией молча — все тесты оставались зелёными
+  // (своя проверка мутацией при сборке PR; тот же урок, что у `dayLimitNote`
+  // в дне 22).
+  const block = answerBlock(result)
+  parts.push(node('p', block.kind === 'blank' ? 'empty' : 'answer', block.text))
   // Отказ промпта показывается ТЕМ ЖЕ цветом и размером: модель ответила,
   // вызов состоялся, деньги потрачены, граница поиска показана (п. 5.3).
   // Распознавать фразу страница не обязана — признак пришёл полем.
-  if (result.refused) parts.push(node('p', 'entry-note', REFUSED_NOTE))
+  if (block.refusedNote) parts.push(node('p', 'entry-note', REFUSED_NOTE))
   if (result.truncated) parts.push(node('p', 'entry-note', ANSWER_CUT))
   answerBox.replaceChildren(...parts)
 }
@@ -488,18 +480,6 @@ function showPick(result) {
   const commit = result.index?.commit ?? null
   candsList.replaceChildren(...result.candidates.map((c) => renderCandidate(c, commit)))
   thresholdBox.textContent = PICK_RULE
-}
-
-/**
- * Исход «ни один фрагмент не относится». Берётся ПОЛЕМ `outcome` — модель
- * ответа при нём не вызывалась, и утверждать это за агента по косвенным
- * признакам страница не станет. Запасной вывод оставлен на случай ответа без
- * поля: кандидаты есть, источников нет — другого смысла у такой пары нет.
- */
-function isUnknownFilter(result) {
-  if (result.outcome === 'unknown_filter') return true
-  if (result.outcome === 'answered') return false
-  return result.candidates.length > 0 && result.sources.length === 0
 }
 
 function showSources(result) {

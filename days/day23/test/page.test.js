@@ -628,7 +628,11 @@ test('состояние загрузки итогов ставится ДО з�
 test('на экране есть место, где назван отказ модели как результат (п. 5.3)', () => {
   const app = stripJs(read('app.js'))
   assert.ok(app.includes('REFUSED_NOTE'), 'строка-пояснение к отказу не показывается')
-  assert.ok(app.includes('result.refused'), 'признак отказа не читается')
+  // Признак отказа читается в `run.js`: что стоит в блоке ответа, решает
+  // `answerBlock`, и это вынесено туда ради держателя, который исполняется.
+  const run = stripJs(read('run.js'))
+  assert.ok(run.includes('refusedNote: result.refused'), 'признак отказа не читается')
+  assert.ok(app.includes('block.refusedNote'), 'страница решает про отказ сама, мимо правила')
   // Отказ не красится: класса --danger у него нет, он идёт обычной записью.
   assert.ok(!/refused[^\n]*is-bad/.test(app))
 })

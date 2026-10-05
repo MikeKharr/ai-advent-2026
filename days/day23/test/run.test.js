@@ -24,6 +24,7 @@ import {
   MODE_WORD,
   parseResult,
   plural,
+  answerBlock,
   fromWord,
   PICK_RULE,
   relevanceWord,
@@ -576,4 +577,55 @@ test('отказ реранкера по схеме — оплаченный, и
   // Отказы поиска — наоборот: они наступают ДО первого вызова модели.
   for (const code of ['search_unavailable', 'search_failed', 'search_empty'])
     assert.match(failure({ code, message: 'сломалось', paidNothing: true }).lead, /Поиск недоступен/)
+})
+
+// ——— что стоит в блоке «Ответ»: решает правило, а не обработчик ———
+
+/** Ровно то, что отдаёт агент при `unknown_filter`: ответа нет, `refused` стоит. */
+const unknown = (over = {}) =>
+  parseResult(
+    result({
+      mode: 'rerank',
+      outcome: 'unknown_filter',
+      answer: null,
+      refused: true,
+      sources: [],
+      candidates: cands.map((c) => ({ ...c, relevance: 0, kept: false })),
+      ...over,
+    }),
+  )
+
+test('при невызванной модели блок ответа НЕ говорит, что вызов состоялся', () => {
+  const block = answerBlock(unknown())
+  assert.equal(block.kind, 'unknown_filter')
+  assert.match(block.text, /Модель ответа не вызывалась/)
+  assert.ok(!/Вызов при этом состоялся/.test(block.text), block.text)
+  // И не говорит словами отвечавшего, которого не спрашивали.
+  assert.equal(block.refusedNote, false, 'показан отказ модели, которой не было')
+})
+
+test('исход берётся полем: без него — вывод, с `answered` — обычный ответ', () => {
+  // Поля нет: кандидаты есть, источников нет — другого смысла у пары нет.
+  assert.equal(answerBlock(unknown({ outcome: undefined })).kind, 'unknown_filter')
+  // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: поле говорит «не знаю», а источники в ответе есть.
+  // Запасной вывод здесь сказал бы «ответ есть» — и страница объявила бы
+  // состоявшимся вызов, которого по словам агента не было. Верит полю.
+  assert.equal(
+    answerBlock(
+      unknown({ sources: [{ n: 1, source: 'a.md', section: '', score: 0.5, text: 'т' }] }),
+    ).kind,
+    'unknown_filter',
+    'страница додумала исход вместо того, чтобы прочитать поле',
+  )
+  // Поле говорит «ответили» — страница верит полю, а не своим догадкам.
+  const answered = answerBlock(unknown({ outcome: 'answered', answer: 'Ответ есть.' }))
+  assert.equal(answered.kind, 'answer')
+  assert.equal(answered.text, 'Ответ есть.')
+  assert.equal(answered.refusedNote, true)
+})
+
+test('пустой ответ при состоявшемся вызове — по-прежнему «вызов состоялся»', () => {
+  const block = answerBlock(parseResult(result({ answer: '   ' })))
+  assert.equal(block.kind, 'blank')
+  assert.match(block.text, /Вызов при этом состоялся/)
 })
