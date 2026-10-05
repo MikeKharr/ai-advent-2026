@@ -49,6 +49,7 @@ import {
   QUOTES_NONE,
   QUOTES_NONE_FILTER,
   quotesTally,
+  quoteCutNote,
   quoteWord,
   relevanceWord,
   rewriteSearchWord,
@@ -683,7 +684,9 @@ test('поля схемы разбираются по одному, и чужо�
       claimedSection: 'Расход средств › I-4',
     },
   ])
-  assert.deepEqual(parsed.quotes, [{ n: 1, text: 'строка', verified: true }])
+  // `truncated: false` у цитаты, в ответе которой поля нет вовсе: запуск шёл
+  // до обрезки, и это молчание, а не «обрезана».
+  assert.deepEqual(parsed.quotes, [{ n: 1, text: 'строка', verified: true, truncated: false }])
   assert.deepEqual(parsed.checks, {
     sources_present: true,
     quotes_present: true,
@@ -918,4 +921,31 @@ test('подпись секции говорит, откуда взят путь
   // И названа причина, а не правило без причины: иначе подтверждённая цитата
   // стояла бы под придуманным путём.
   assert.match(CITED_RULE, /стояла бы под путём, который модель\s+придумала/)
+})
+
+// ——— обрезанная цитата не выдаётся за целую (PR #321, образец — день 25) ———
+
+test('строка об обрезке — те же слова, что у дня 25, и число согласовано', () => {
+  // Слова проверяются ДОСЛОВНО: предмет один с днём 25, и двумя разными
+  // фразами он читался бы как два разных события (I-13).
+  assert.equal(
+    quoteCutNote(300),
+    'Цитату обрезал агент при сверке: показаны первые 300 знаков.',
+  )
+  assert.match(quoteCutNote(1), /первые 1 знак\./)
+  assert.match(quoteCutNote(2), /первые 2 знака\./)
+  assert.match(quoteCutNote(5), /первые 5 знаков\./)
+  assert.match(quoteCutNote(11), /первые 11 знаков\./)
+})
+
+test('признак обрезки цитаты читается строго: нет поля — страница молчит', () => {
+  const quotesOf = (q) => parseResult(result({ quotes: [q] })).quotes[0]
+  // Поля нет вовсе — запуск шёл до обрезки. Это молчание, а не «обрезана».
+  assert.equal(quotesOf({ n: 1, text: 'т', verified: true }).truncated, false)
+  assert.equal(quotesOf({ n: 1, text: 'т', verified: true, truncated: false }).truncated, false)
+  assert.equal(quotesOf({ n: 1, text: 'т', verified: true, truncated: true }).truncated, true)
+  // Чужое «похожее на правду» значение признаком не становится: иначе строка
+  // об обрезке появилась бы у цитаты, которую никто не резал.
+  for (const bad of ['true', 1, {}, 'да'])
+    assert.equal(quotesOf({ n: 1, text: 'т', verified: true, truncated: bad }).truncated, false, String(bad))
 })
