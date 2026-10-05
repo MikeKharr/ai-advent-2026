@@ -66,6 +66,7 @@ services:
       - day22
       - day23
       - day24
+      - day25
       - mcp
       - rag
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
@@ -472,6 +473,31 @@ services:
       - "8080"
     env_file:
       - path: ./day24.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # День 25 — чат по проекту с состоянием задачи (ADR 2026-10-05-0544, п. 3).
+  # Пульт дня 15 с восьмым этапом «Поиск»: ключа RAG_KEY у дня НЕТ и быть не
+  # должно — поиск, отбор и переписывание за него делает `agents` под своим
+  # ключом. Сеть одна, по умолчанию, как у всех дней: до службы `rag` дню не
+  # дотянуться.
+  day25:
+    image: ghcr.io/mikekharr/advent-day25:${DAY25_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      # Только ключ сервиса агентов, как у дней 15, 22, 23 и 24. Файла
+      # `secrets.env` здесь НЕТ намеренно: в нём лежит ключ Anthropic, а дню
+      # он не нужен ни для чего — потерять его нечем, и это сильнее любой
+      # проверки (I-1).
+      - path: ./day25.env
         required: false
     environment:
       - NODE_ENV=production
