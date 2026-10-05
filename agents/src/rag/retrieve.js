@@ -267,11 +267,18 @@ export async function retrieve({ question, mode, search, ask, emit = () => {} })
       } catch (error) {
         if (!(error instanceof RetrieveFailure)) throw error
         rewriteSearch = 'failed'
+        // Текст записи собирается ЗДЕСЬ, из кода отказа и слов службы
+        // (`fields.reason`), а не из `fields.message`: в том сообщении
+        // стоит хвост «Модель не вызывалась», верный для отказа запуска на
+        // первом поиске и ЛОЖНЫЙ здесь — переписывание уже оплачено, и
+        // дальше идут ещё два вызова (находка `reviewer` к PR #311).
         emit({
           stage: 'planning',
           level: 'warn',
           title: 'Поиск по переписанному вопросу не удался',
-          detail: `${error.fields.message} Отвечаем по кандидатам исходного вопроса.`,
+          detail:
+            `${error.fields.code}: ${error.fields.reason ?? 'причина не названа'}. ` +
+            'Переписывание уже оплачено; отвечаем по кандидатам исходного вопроса.',
           data: { rewritten, rewriteSearch, code: error.fields.code },
         })
       }

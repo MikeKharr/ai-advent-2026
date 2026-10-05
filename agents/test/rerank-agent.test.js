@@ -346,9 +346,16 @@ for (const [name, second, expected] of [
     assert.ok(snapshot.result.candidates.every((item) => item.from === 'original'))
     assert.equal(router.bodies.length, 3)
     // Случившееся названо в ленте, а не замолчано.
+    const warn = snapshot.events.find(
+      (e) => e.level === 'warn' && e.data?.rewriteSearch === expected,
+    )
+    assert.ok(warn, 'предупреждения о втором поиске нет в ленте')
+    // И названо честно: переписывание к этому моменту оплачено, а дальше
+    // идут ещё два вызова — «Модель не вызывалась» здесь было бы ложью
+    // (находка `reviewer` к PR #311).
     assert.ok(
-      snapshot.events.some((e) => e.level === 'warn' && e.data?.rewriteSearch === expected),
-      'предупреждения о втором поиске нет в ленте',
+      !`${warn.title} ${warn.detail}`.includes('Модель не вызывалась'),
+      `в записи ленты ложный хвост: ${warn.detail}`,
     )
   })
 }
