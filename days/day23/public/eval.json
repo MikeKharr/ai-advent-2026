@@ -1,0 +1,1091 @@
+{
+  "at": "2026-10-05T15:13:09.269Z",
+  "index": {
+    "commit": "7900d264083a7ad926c1adada1c4fa9700c8d6de",
+    "strategy": "structural",
+    "chunks": 3384
+  },
+  "questionsTotal": 30,
+  "modes": {
+    "rerank": {
+      "before": {
+        "recall5": 0.5667,
+        "mrr10": 0.4468
+      },
+      "after": {
+        "recall5": 0.5,
+        "mrr10": 0.4361
+      },
+      "ran": 30,
+      "emptyPicks": 1
+    },
+    "rewrite": {
+      "before": {
+        "recall5": 0.6833,
+        "mrr10": 0.4815
+      },
+      "after": {
+        "recall5": 0.6333,
+        "mrr10": 0.5333
+      },
+      "ran": 30,
+      "emptyPicks": 1
+    }
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "question": "какой потолок у результата инструмента в хосте MCP",
+      "expect": [
+        "agents/src/mcp/agent.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 8,
+        "kept": 0,
+        "empty": true,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q04",
+      "question": "как в CI проверяется граница runtime-зависимостей",
+      "expect": [
+        ".github/workflows/ci.yml"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "candidates": 3,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "candidates": 4,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q07",
+      "question": "куда класть временные файлы и отчёты",
+      "expect": [
+        "agent_docs/guides/archiving-and-temp.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q10",
+      "question": "какой формат у журналов служб",
+      "expect": [
+        "agent_docs/guides/logging.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0.125
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q13",
+      "question": "какой порт в CI поднимает единица mcpnews",
+      "expect": [
+        ".github/workflows/ci.yml"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q16",
+      "question": "какие имена веток и какой формат коммитов приняты",
+      "expect": [
+        "AGENTS.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q19",
+      "question": "что лежит в бэклоге владельцу",
+      "expect": [
+        "agent_docs/backlog.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.3333
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q22",
+      "question": "как выбираются единицы для выкатки по push",
+      "expect": [
+        ".github/scripts/deploy-units.sh"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.3333
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 9,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.3333
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q25",
+      "question": "какие провайдеры знает роутер и какие у них возможности",
+      "expect": [
+        "router/config/providers.json"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q28",
+      "question": "что делает сервер mcpstore",
+      "expect": [
+        "mcpstore/README.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.3333
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q31",
+      "question": "что должно приехать вместе с новым лимитом или проверкой безопасности в том же PR",
+      "expect": [
+        "agent_docs/invariants.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.3333
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q34",
+      "question": "зачем хранить запись о решении, которое в итоге не приняли",
+      "expect": [
+        "agent_docs/adr/README.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0.1111
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0.1111
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q37",
+      "question": "что экран обязан показывать, когда данных нет или они пришли не полностью",
+      "expect": [
+        "agent_docs/design/corpus.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q40",
+      "question": "даёт ли разделение на роли гарантию качества или держит что-то другое",
+      "expect": [
+        "agent_docs/guides/agent-roles.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q43",
+      "question": "что приложение получит в ответ, когда его суточные деньги закончились",
+      "expect": [
+        "agent_docs/operations.md",
+        "router/src/service.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0.5,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q46",
+      "question": "что именно лежит в репозитории для сверки сервера при подключении по ssh",
+      "expect": [
+        "agent_docs/adr/2026-10-02-0921-ssh-host-key-pin.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q49",
+      "question": "чем опасно сменить модель эмбеддингов, не тронув ключ инкремента",
+      "expect": [
+        "agent_docs/adr/2026-09-30-0957-rag-quantized-embedder.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.5
+        },
+        "candidates": 10,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q52",
+      "question": "что при сокращении проектного документа режется последним и почему",
+      "expect": [
+        "agent_docs/adr/2026-09-19-1252-architect-decisions-not-encyclopedias.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 0,
+        "empty": true,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q55",
+      "question": "чем ограничен размер очереди задач и что именно считается при проверке",
+      "expect": [
+        "agent_docs/adr/2026-09-29-1533-backlog-limit-by-open-items.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q58",
+      "question": "когда исполнение команды внутри прод-контейнера считается стороной main, а не руками агента",
+      "expect": [
+        "agent_docs/adr/2026-09-22-1301-server-command-list-scope.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 9,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q61",
+      "question": "из-за чего экран состояния у девяти приложений показывал, что агент недоступен",
+      "expect": [
+        "agent_docs/development-history/2026-09-29-1404-agents-describe-regression.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q64",
+      "question": "что теряется, когда часть системы переносят в другой репозиторий",
+      "expect": [
+        "agent_docs/guides/verification.md"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q67",
+      "question": "насколько большое тело запроса роутер согласен прочитать, прежде чем оборвать",
+      "expect": [
+        "router/src/service.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q70",
+      "question": "сколько разных провайдеров роутер пробует на один запрос, прежде чем сдаться",
+      "expect": [
+        "router/src/router.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.3333
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 8,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.3333
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q73",
+      "question": "для какой задачи провайдер обязан уметь искать в интернете, иначе его не допустят",
+      "expect": [
+        "router/config/classes.json"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q76",
+      "question": "что проверяется у провайдера до выбора и почему нехватка умения — отказ, а не замена на попроще",
+      "expect": [
+        "router/src/config.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q79",
+      "question": "со скольких промахов по ключу с одного адреса за час в журнал уходит сигнал о переборе",
+      "expect": [
+        "mcp/src/env.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 9,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 3,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q82",
+      "question": "сколько файлов разом согласно держать хранилище цепочки и что бывает, когда оно полно",
+      "expect": [
+        "mcpstore/src/store.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "after": {
+          "recall5": 0,
+          "mrr10": 0
+        },
+        "candidates": 10,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 0.25
+        },
+        "candidates": 10,
+        "kept": 5,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q85",
+      "question": "как инструмент сервера получает имя, которое видит модель, и почему обратный разбор идёт не по строке",
+      "expect": [
+        "agents/src/mcp/tool-names.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 2,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 1,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    },
+    {
+      "id": "q88",
+      "question": "короткий ключ управления — это ослабленная защита или выключенная поверхность",
+      "expect": [
+        "agents/src/env.js",
+        "agents/src/control/key.js"
+      ],
+      "rerank": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 8,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": null
+      },
+      "rewrite": {
+        "before": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "after": {
+          "recall5": 1,
+          "mrr10": 1
+        },
+        "candidates": 10,
+        "kept": 4,
+        "empty": false,
+        "rewriteSearch": "ok"
+      }
+    }
+  ],
+  "note": "Прогон собран тремя приёмами одних суток UTC (2026-10-05) по одному индексу 7900d26: 5 пар, затем 30, затем 25. В одни сутки 60 запусков уложились потому, что суточный потолок дня поднят с 50 до 150 решением владельца (ADR 2026-10-05-1004); окна на адрес — 5 в минуту и 30 в час — не менялись, и часовое окно прогон переждал на границе режимов. Во втором приёме 25 запусков режима «с переписыванием» не состоялись вовсе: запуск не создавался на обрыве связи (create_failed, «fetch failed»), то есть платных вызовов эти попытки не стоили; третий приём домерил их на том же индексе, поэтому отказов в файле не осталось. Был и более ранний приём, прерванный до записи файла: по записи в шапке раннера его 15 измеренных вопросов потеряны, и с тех пор файл пишется после каждого запуска. На 30 вопросах это замер, а не статистика: разницу режимов между собой он не доказывает.",
+  "failures": []
+}
