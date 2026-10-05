@@ -21,7 +21,7 @@ import http from 'node:http'
 import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from './env.js'
-import { createLimiter } from './limits.js'
+import { createLimiter, EVAL_HEADER, isOperator } from './limits.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const PUBLIC = join(here, 'public')
@@ -1596,13 +1596,19 @@ function handleHealth(req, res) {
  * службы» (I-4) держит диспетчер, а не обработчик. Пустое сообщение в дне 22
  * стоило слота из 50 в сутки; здесь не стоит.
  */
-function runLedger(ip) {
+function runLedger(ip, operator) {
   let held = 0
   let refunded = false
   return {
-    /** Занять `n` слотов одним синхронным шагом. Отказ лимитера — его словами. */
+    /**
+     * Занять `n` слотов одним синхронным шагом. Отказ лимитера — его словами.
+     *
+     * `operator` приходит из диспетчера и снимает окна НА АДРЕС, и только их
+     * (ADR 2026-10-05-1130): суточный потолок лимитер проверяет первым и до
+     * всякого ключа, поэтому учёт слотов ниже от ключа не зависит вовсе.
+     */
     take(n) {
-      const got = limiter.reserve(ip, n)
+      const got = limiter.reserve(ip, n, { operator })
       if (got.ok) held += n
       return got
     },
@@ -1878,6 +1884,11 @@ async function dispatch(req, res) {
 
   const { route } = found
   const ip = clientIp(req)
+  // Ключ оператора (ADR 2026-10-05-1130). Ни значение заголовка, ни сам факт
+  // его присутствия в журнал не пишутся: иначе ключ приезжал бы в логи
+  // контейнера, а «ключ предъявлен» стало бы оракулом для перебирающего.
+  // Окна записей профиля он не снимает (п. 8): прогон профилей не правит.
+  const operator = isOperator(env, req.headers[EVAL_HEADER])
 
   if (route.limit === 'write') {
     const slot = limiter.reserveWrite(ip)
@@ -1886,7 +1897,7 @@ async function dispatch(req, res) {
 
   // Учёт слотов запусков заводится только там, где таблица объявила окно:
   // у прочих ручек `ctx.run` равен `null`, и взять слот тайком нельзя.
-  const run = route.limit === 'run' || route.alsoRun !== undefined ? runLedger(ip) : null
+  const run = route.limit === 'run' || route.alsoRun !== undefined ? runLedger(ip, operator) : null
   if (route.limit === 'run' && route.slots !== 'own') {
     const slot = run.take(route.slots)
     if (!slot.ok) return send(res, 429, { error: slot.message })

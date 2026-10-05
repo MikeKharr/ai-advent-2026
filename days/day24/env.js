@@ -93,6 +93,13 @@ export function parseEnv(source = process.env) {
   if (!key) errors.push('AGENT_KEY не задан')
   env.AGENT_KEY = key
 
+  // Ключ оператора (ADR 2026-10-05-1130). Пустой или отсутствующий — это НЕ
+  // ошибка конфигурации, а выключенная возможность: совпадений не бывает ни с
+  // каким заголовком, включая пустой, и день работает как до того ADR.
+  // Умолчания у него нет и быть не может — умолчание означало бы общеизвестный
+  // ключ, то есть снятые окна у всех.
+  env.EVAL_KEY = source.EVAL_KEY ?? ''
+
   for (const [name, fallback] of Object.entries(NUMBERS)) {
     const raw = source[name]
     if (raw === undefined || raw === '') {

@@ -1742,6 +1742,16 @@ export function createStagedAgent({
        */
       const taskStep = async () => {
         const previous = ctx.task.state
+        // Подпись вызова — своя, а не доставшаяся от пополнения. `taskStep`
+        // идёт ВНУТРИ этапа `replenish`, и `current` к этому моменту несёт
+        // `stage.replenish` от его собственного вызова: без этих двух строк
+        // событие `llm_call` шестого вызова называло бы промптом пополнения
+        // текст, которого в запросе нет, — а отпечаток `promptSha` считался
+        // бы по нему же. Текст берётся тот, что уйдёт модели: правка профиля
+        // или умолчание шва.
+        const system = promptOf('stage.task')
+        current.promptId = rag.taskPromptId
+        current.promptText = system ?? rag.taskPrompt
         const out = await rag.updateTask({
           state: previous,
           pair: [
@@ -1749,7 +1759,7 @@ export function createStagedAgent({
             { role: 'agent', text: ctx.answer?.text ?? '' },
           ],
           params,
-          system: promptOf('stage.task'),
+          system,
           emit,
           now,
           runId: run.id,
@@ -1762,8 +1772,17 @@ export function createStagedAgent({
             title: 'Состояние задачи не обновлено',
             detail:
               (out.error ? `${out.error.message}\n` : 'ответ пришёл не по схеме\n') +
+              // Причина отказа словами роутера: `code` у обрыва по потолку и
+              // у отказа провайдера один и тот же — `all_failed`, — и без
+              // этой строки «ответ обрезан по лимиту токенов» неотличимо от
+              // «провайдер отказал» ни в ленте, ни в журнале.
+              (out.error?.providerReason ? `${out.error.providerReason}\n` : '') +
               'прежнее состояние осталось в силе',
-            data: { code: out.error?.code ?? 'task_invalid', round: ctx.round },
+            data: {
+              code: out.error?.code ?? 'task_invalid',
+              providerReason: out.error?.providerReason ?? null,
+              round: ctx.round,
+            },
           })
           return
         }

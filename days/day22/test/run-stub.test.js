@@ -114,13 +114,19 @@ test('запрос дошёл до стенда: его журнал несёт 
   assert.match(seen[1].url, /^\/api\/runs\/run-1\/events$/)
 })
 
-test('прогон не предъявляет дню никакого ключа — предъявлять нечего (I-3)', async () => {
+// Ключей к модели, к роутеру, к службе поиска и к сервису агентов у прогона
+// нет по-прежнему — предъявлять нечего. Один ключ он знает с ADR
+// 2026-10-05-1130: `EVAL_KEY` дня, и только при явном `key`. Что уходит с ним
+// и чего не уходит — в `test/eval-key-runner.test.js`.
+test('прогон не предъявляет дню ключей к модели и к сервису агентов (I-3)', async () => {
   reset()
   await runOne({ base, question: ask('q08'), mode: 'rag' })
   // Проверяется ЖУРНАЛ СТЕНДА, то есть то, что реально ушло в сеть.
   for (const request of seen) {
     assert.equal(request.headers.authorization, undefined, `${request.url}: заголовок ключа`)
     assert.equal(request.headers['x-api-key'], undefined, `${request.url}: заголовок ключа`)
+    // Ключ оператора без явного `key` не ставится вовсе.
+    assert.equal(request.headers['x-eval-key'], undefined, `${request.url}: ключ оператора без спроса`)
   }
 })
 
