@@ -269,18 +269,6 @@ const postJson = (path, body) => ({
   path,
 })
 
-/**
- * Записи профиля идут под своим окном лимитера (ADR, п. 8.3): модель они не
- * зовут, но меняют память, общую для всех посетителей. Слот занимается до
- * обращения к агенту, как и у запусков.
- */
-function reserveWrite(req, res) {
-  const slot = limiter.reserveWrite(clientIp(req))
-  if (slot.ok) return true
-  send(res, 429, { error: slot.message })
-  return false
-}
-
 /** Профиль из cookie или отказ: все ручки профиля работают только с ним. */
 function requireProfile(req, res) {
   const profileId = profileFromCookie(req)
@@ -384,7 +372,6 @@ async function handleProfileState(req, res) {
 }
 
 async function handleCreateProfile(req, res) {
-  if (!reserveWrite(req, res)) return
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
@@ -418,7 +405,6 @@ async function handleCreateProfile(req, res) {
  * которого это правило написано.
  */
 async function handleSelectProfile(req, res) {
-  if (!reserveWrite(req, res)) return
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор профиля' })
   try {
@@ -454,7 +440,6 @@ async function handleSelectProfile(req, res) {
  * приходит телом, потому что удаляют со списка на экране входа.
  */
 async function handleDeleteProfile(req, res) {
-  if (!reserveWrite(req, res)) return
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор профиля' })
   try {
@@ -482,7 +467,6 @@ async function handleDeleteProfile(req, res) {
 
 /** Настройки агента за профилем: проверяет их агент теми же разборщиками, что вход запуска. */
 async function handleSettings(req, res) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const body = await jsonBody(req)
@@ -519,31 +503,21 @@ async function handleSettings(req, res) {
  * обращения к агенту (I-4). Слот берётся один: ход — один вызов Haiku.
  *
  * Слот не возвращается и тогда, когда формулировщик не дал варианта: вызов
- * состоялся и оплачен (ADR, п. 3). Возврат идёт только там, где до вызова
- * дело не дошло, и **ровно один раз на один резерв**: прежняя редакция
- * возвращала слот дважды на любом отказе службы — сначала по признаку
+ * состоялся и оплачен (ADR, п. 3). Всё остальное — путей выхода у ручки
+ * шесть — возвращает диспетчер: обработчик только ПОМЕЧАЕТ слот
+ * израсходованным (`ctx.run.spend`). Прежняя редакция возвращала его здесь
+ * руками и на одном отказе службы делала это дважды — сначала по признаку
  * `paid`, потом ещё раз в перехвате, — и счётчик уходил в минус. Чередуя
  * удачный ход с отказом провайдера, посетитель держал бы суточный лимитер у
- * нуля бесконечно (находка reviewer и compliance к PR #200).
+ * нуля бесконечно (находка reviewer и compliance к PR #200). Один держатель
+ * вместо шести выходов закрывает этот класс дефекта формой, а не
+ * внимательностью.
  */
-async function handleInvariantDraft(req, res) {
+async function handleInvariantDraft(req, res, ctx) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
-
-  const ip = clientIp(req)
-  const slot = limiter.reserve(ip, 1)
-  if (!slot.ok) return send(res, 429, { error: slot.message })
-
-  // Один возврат на один резерв: повторный вызов не делает ничего. Флаг, а
-  // не внимательность, потому что путей выхода у ручки шесть.
-  let released = false
-  const giveBack = () => {
-    if (released) return
-    released = true
-    limiter.release(ip, 1)
-  }
 
   try {
     const { response, json } = await callAgent(
@@ -554,11 +528,15 @@ async function handleInvariantDraft(req, res) {
         body: JSON.stringify({ text: body.text }),
       },
     )
-    if (response.ok) return send(res, 200, { draft: json.draft })
-    // Отказы до вызова модели возвращают слот; оплаченный ход — нет. Служба
-    // называет это полем `paid`, и отсутствие поля читается как «не оплачен»:
-    // ошибка в сторону посетителя там, где мы не знаем, был ли вызов.
-    if (json?.paid !== true) giveBack()
+    if (response.ok) {
+      ctx.run.spend()
+      return send(res, 200, { draft: json.draft })
+    }
+    // Оплаченный ход слот не возвращает; отказ до вызова модели — возвращает,
+    // и делает это диспетчер. Служба называет расход полем `paid`, и
+    // отсутствие поля читается как «не оплачен»: ошибка в сторону посетителя
+    // там, где мы не знаем, был ли вызов.
+    if (json?.paid === true) ctx.run.spend()
     if (response.status === 400 || response.status === 404 || response.status === 409) {
       return send(res, response.status, {
         error: json?.message ?? 'Черновик не принят',
@@ -574,7 +552,7 @@ async function handleInvariantDraft(req, res) {
     return send(res, 502, { error: AGENT_DOWN, code: json?.code })
   } catch (error) {
     // Перехват остаётся только для транспорта: службы нет, ответ не разобран.
-    giveBack()
+    // Слот не помечен израсходованным — диспетчер вернёт его сам.
     console.error(`черновик инварианта: ${error.message}`)
     return send(res, 502, { error: AGENT_DOWN })
   }
@@ -582,7 +560,6 @@ async function handleInvariantDraft(req, res) {
 
 /** Приём формулировки по билету: модель не зовётся, окно — записи профиля. */
 async function handleInvariantAccept(req, res) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const body = await jsonBody(req)
@@ -609,7 +586,6 @@ async function handleInvariantAccept(req, res) {
 
 /** Удаление инварианта по номеру. Номер не переиспользуется — остаётся дыра. */
 async function handleInvariantDelete(req, res, num) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   try {
@@ -635,7 +611,6 @@ async function handleInvariantDelete(req, res, num) {
  * Пять идентификаторов проверяет служба: закрытый список живёт у неё.
  */
 async function handlePromptSave(req, res, promptId) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const body = await jsonBody(req)
@@ -666,7 +641,6 @@ async function handlePromptSave(req, res, promptId) {
 
 /** Возврат промпта к умолчанию реестра — удалением строки профиля. */
 async function handlePromptReset(req, res, promptId) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   try {
@@ -730,7 +704,6 @@ async function handleSessions(req, res) {
 
 /** Новый диалог с выбранной темой (ADR, п. 6.3). Потолок в 20 держит агент. */
 async function handleCreateSession(req, res) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const body = (await jsonBody(req)) ?? {}
@@ -761,7 +734,6 @@ async function handleCreateSession(req, res) {
 
 /** Переключение на другой диалог профиля: принадлежность проверяет агент. */
 async function handleSelectSession(req, res) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const body = await jsonBody(req)
@@ -788,7 +760,6 @@ async function handleSelectSession(req, res) {
  * (ADR, п. 6.2.3). Вызовов модели здесь нет: ответ кнопкой действует сразу.
  */
 async function handleTopic(req, res) {
-  if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const sessionId = sessionFromCookie(req)
@@ -869,7 +840,7 @@ async function handleTopicFacts(req, res, topicId) {
  * называет число сделанных кругов сам, при падении число считается по
  * пройденным этапам (см. `proxyEvents`).
  */
-async function handleAnswer(req, res) {
+async function handleAnswer(req, res, ctx) {
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело должно быть объектом' })
   const profileId = requireProfile(req, res)
@@ -898,10 +869,15 @@ async function handleAnswer(req, res) {
     return send(res, 502, { error: AGENT_DOWN })
   }
 
-  const ip = clientIp(req)
-  // С этого места и до создания запуска платных обращений нет: слот занят
+  // С этого места и до создания запуска платных обращений нет: слоты заняты
   // одним синхронным шагом раньше единственного вызова, который тратит деньги.
-  const slot = limiter.reserve(ip, rounds)
+  //
+  // Берёт их ЗДЕСЬ, а не диспетчер, и причина названа в таблице ручек полем
+  // `why`: число слотов равно пределу кругов из настроек профиля, а оно
+  // известно только после чтения настроек — бесплатного обращения выше.
+  // Возвращает их всё равно диспетчер: ниже шесть путей выхода, и ни один из
+  // них слот руками не трогает.
+  const slot = ctx.run.take(rounds)
   if (!slot.ok) return send(res, 429, { error: slot.message })
 
   // Тема уходит в создание диалога, а не во вход запуска: у агента такого
@@ -926,7 +902,6 @@ async function handleAnswer(req, res) {
         body: JSON.stringify({ topicId: topicId ?? null }),
       })
       if (!response.ok) {
-        limiter.release(ip, rounds)
         if (response.status === 409 || response.status === 404 || response.status === 400) {
           return send(res, response.status, {
             error: json?.message ?? 'Диалог не создан',
@@ -938,7 +913,6 @@ async function handleAnswer(req, res) {
       sessionId = json.sessionId
       headers['set-cookie'] = [sessionCookie(sessionId)]
     } catch (error) {
-      limiter.release(ip, rounds)
       console.error(`диалог: ${error.message}`)
       return send(res, 502, { error: AGENT_DOWN })
     }
@@ -957,18 +931,19 @@ async function handleAnswer(req, res) {
       }),
     })
   } catch (error) {
-    limiter.release(ip, rounds)
     console.error(`агент: ${error.name}: ${error.message}`)
     return send(res, 502, { error: AGENT_DOWN }, headers)
   }
 
   const { response, json } = result
   if (response.status === 202 && json?.runId) {
-    remember(json.runId, ip, rounds)
+    // Запуск создан — слоты израсходованы. Дальше их судьбу решает поток
+    // событий: `paidNothing` и число состоявшихся кругов (см. proxyEvents).
+    ctx.run.spend()
+    remember(json.runId, ctx.ip, rounds)
     return send(res, 202, { runId: json.runId, reserved: rounds }, headers)
   }
-  // До запуска дело не дошло — слоты возвращаются.
-  limiter.release(ip, rounds)
+  // До запуска дело не дошло — слоты возвращает диспетчер.
   if (response.status === 400)
     return send(res, 400, { error: json?.message ?? 'Запрос отклонён' }, headers)
   console.error(`агент: ${response.status} ${json?.code ?? ''}`)
@@ -1287,8 +1262,7 @@ async function proxyEvents(req, res, runId) {
  * не 409. Чем кончился запуск, страница показывает переписка: ответ или
  * строка отмены уже лежат в ней.
  */
-async function handlePause(req, res) {
-  if (!reserveWrite(req, res)) return
+async function handlePause(req, res, ctx) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
   const sessionId = sessionFromCookie(req)
@@ -1322,12 +1296,14 @@ async function handlePause(req, res) {
 
   if (!run?.id) return finished()
 
-  const ip = clientIp(req)
   // Повтор прерванного вызова — новый платный вызов, и слот под него берётся
-  // до возобновления: нет слота — запуск остаётся на паузе.
+  // до возобновления: нет слота — запуск остаётся на паузе. Слот окна
+  // запусков на этой ручке условный, поэтому таблица объявляет его полем
+  // `alsoRun`, а не `limit`: без этого поля `ctx.run` здесь равен `null`, и
+  // попытка взять слот не прошла бы вовсе.
   const needsSlot = body.paused === false && run.interruptedCall === true
   if (needsSlot) {
-    const slot = limiter.reserve(ip, 1)
+    const slot = ctx.run.take(1)
     if (!slot.ok) return send(res, 429, { error: slot.message })
   }
 
@@ -1338,9 +1314,8 @@ async function handlePause(req, res) {
       body: JSON.stringify({ paused: body.paused, profileId, sessionId }),
     })
     if (!response.ok) {
-      // Слот под повтор вызова возвращается при любом неуспехе: повтора не
-      // было, платить не за что.
-      if (needsSlot) limiter.release(ip, 1)
+      // Слот под повтор вызова возвращает диспетчер: обработчик его не
+      // израсходовал, значит повтора не было и платить не за что.
       // Запуск успел завершиться между чтением диалога и ручкой паузы —
       // гонка на секунды, и для посетителя это то же самое состояние.
       if (response.status === 409) return finished()
@@ -1348,9 +1323,10 @@ async function handlePause(req, res) {
         return send(res, 404, { error: json?.message ?? 'Запуск не найден', code: json?.code })
       throw new Error(`агент ${response.status}`)
     }
+    // Возобновление прошло: прерванный вызов повторится и будет оплачен.
+    if (needsSlot) ctx.run.spend()
     return send(res, 200, { paused: json?.paused ?? body.paused, runId: run.id })
   } catch (error) {
-    if (needsSlot) limiter.release(ip, 1)
     console.error(`пауза: ${error.message}`)
     return send(res, 502, { error: AGENT_DOWN })
   }
@@ -1440,93 +1416,380 @@ async function handleState(req, res) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)
-  const path = url.pathname
+/* ---------- статика ---------- */
 
-  if (path === '/healthz') {
-    const ok = envErrors.length === 0
-    return send(res, ok ? 200 : 503, { ok, errors: envErrors, limiter: limiter.stats() })
-  }
+const TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  // Итоги двух сценариев (ADR 2026-10-05-0544, п. 3.5) лежат рядом файлом и
+  // читаются страницей как обычная статика. Файл появляется прогоном (PR 2);
+  // пока его нет, страница говорит об этом словами, а не пустотой.
+  '.json': 'application/json; charset=utf-8',
+}
 
-  if (path === '/api/profiles' && req.method === 'GET') return handleProfiles(req, res)
-  if (path === '/api/profile' && req.method === 'GET') return handleProfileState(req, res)
-  if (path === '/api/profile' && req.method === 'POST') return handleCreateProfile(req, res)
-  if (path === '/api/profile' && req.method === 'DELETE') return handleDeleteProfile(req, res)
-  if (path === '/api/profile/select' && req.method === 'POST') return handleSelectProfile(req, res)
-  if (path === '/api/settings' && req.method === 'PUT') return handleSettings(req, res)
-
-  if (path === '/api/invariants/draft' && req.method === 'POST')
-    return handleInvariantDraft(req, res)
-  if (path === '/api/invariants' && req.method === 'POST') return handleInvariantAccept(req, res)
-  const invariant = path.match(/^\/api\/invariants\/(\d{1,9})$/)
-  if (invariant && req.method === 'DELETE') return handleInvariantDelete(req, res, invariant[1])
-
-  // Пять промптов профиля: правка и возврат к умолчанию. Идентификатор
-  // сверяет служба — закрытый список у неё, и второй копии ему здесь не место.
-  const prompt = path.match(/^\/api\/prompts\/([a-z][a-z.]{1,40})$/)
-  if (prompt && req.method === 'PUT') return handlePromptSave(req, res, prompt[1])
-  if (prompt && req.method === 'DELETE') return handlePromptReset(req, res, prompt[1])
-
-  if (path === '/api/sessions' && req.method === 'GET') return handleSessions(req, res)
-  if (path === '/api/session' && req.method === 'POST') return handleCreateSession(req, res)
-  if (path === '/api/session/select' && req.method === 'POST') return handleSelectSession(req, res)
-  if (path === '/api/session/topic' && req.method === 'POST') return handleTopic(req, res)
-
-  const topic = path.match(/^\/api\/topic\/(\d{1,9})$/)
-  if (topic && req.method === 'GET') return handleTopicFacts(req, res, topic[1])
-
-  if (path === '/api/answer' && req.method === 'POST') return handleAnswer(req, res)
-  if (path === '/api/run/pause' && req.method === 'POST') return handlePause(req, res)
-
-  const runPrompts = path.match(/^\/api\/runs\/([^/]+)\/prompts$/)
-  if (runPrompts && req.method === 'GET') {
-    if (!RUN_ID.test(runPrompts[1])) return send(res, 404, { error: 'Текст промпта не найден' })
-    return handleRunPrompts(req, res, runPrompts[1])
-  }
-
-  const stageLog = path.match(/^\/api\/runs\/([^/]+)\/log\.csv$/)
-  if (stageLog && req.method === 'GET') {
-    if (!RUN_ID.test(stageLog[1])) return send(res, 404, { error: 'Журнал не найден' })
-    return handleStageLog(req, res, stageLog[1])
-  }
-
-  if (path === '/api/chat' && (req.method === 'GET' || req.method === 'DELETE'))
-    return handleChat(req, res)
-
-  if (path === '/api/chat/head' && req.method === 'PUT') return handleHead(req, res)
-
-  const events = path.match(/^\/api\/runs\/([^/]+)\/events$/)
-  if (events && req.method === 'GET') {
-    if (!RUN_ID.test(events[1])) return send(res, 404, { error: 'Запуск не найден' })
-    return proxyEvents(req, res, events[1])
-  }
-
-  if (path === '/api/state') return handleState(req, res)
-
-  const rel = path === '/' ? 'index.html' : path.slice(1)
+/**
+ * Путь запроса → путь файла внутри `public`, либо `null`, если он выводит за
+ * пределы каталога. Отдельной функцией, а не строками внутри обработчика, —
+ * ради держателя: через HTTP эта проверка недостижима, `new URL` нормализует
+ * `..` до неё, и тест через сокет оставался бы зелёным с убранной проверкой
+ * (замер дня 23, `days/day23/server.js`, `resolveStatic`).
+ */
+export function resolveStatic(pathname) {
+  const rel = pathname === '/' ? 'index.html' : pathname.slice(1)
   const file = normalize(join(PUBLIC, rel))
-  if (file !== PUBLIC && !file.startsWith(PUBLIC + sep)) {
+  if (file !== PUBLIC && !file.startsWith(PUBLIC + sep)) return null
+  return file
+}
+
+async function serveStatic(url, res) {
+  const file = resolveStatic(url.pathname)
+  if (file === null) {
     res.writeHead(403)
     return res.end()
   }
   try {
     const data = await readFile(file)
-    const type = file.endsWith('.html')
-      ? 'text/html; charset=utf-8'
-      : file.endsWith('.css')
-        ? 'text/css; charset=utf-8'
-        : 'application/octet-stream'
-    res.writeHead(200, { 'content-type': type })
+    const ext = file.slice(file.lastIndexOf('.'))
+    res.writeHead(200, { 'content-type': TYPES[ext] ?? 'application/octet-stream' })
     res.end(data)
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     res.end('не найдено')
   }
-})
-
-if (process.env.NODE_ENV !== 'test') {
-  server.listen(env.PORT, () => console.log(`день 15 слушает :${env.PORT}`))
 }
 
-export { env, server }
+/**
+ * Проба живости: годна ли конфигурация, и больше ничего. Ключа здесь нет
+ * (I-1), и ОСТАТКА СУТОЧНОГО ПОТОЛКА ТОЖЕ НЕТ — в отличие от дня 15, который
+ * отдавал `limiter.stats()` целиком.
+ *
+ * Причина названа пунктом «Владельцу» в `agent_docs/backlog.md` и закрыта
+ * решением владельца по развилке Р8 (ADR 2026-10-05-0544): ручка доступна
+ * анонимно, а в `stats()` лежат `callsToday` и `dailyLimit` — то есть любой
+ * снаружи видел, сколько вызовов дня осталось, и мог выбирать момент залпа.
+ * День 15 при этом не правится: сданный день (правило AGENTS.md).
+ *
+ * Что проба не потеряла: `docker` и Caddy спрашивают её про живость
+ * контейнера, а живость — это `ok`.
+ */
+function handleHealth(req, res) {
+  const ok = envErrors.length === 0
+  return send(res, ok ? 200 : 503, { ok, errors: envErrors })
+}
+
+/* ---------- таблица ручек и диспетчер ---------- */
+
+/**
+ * Учёт слотов окна запусков НА ОДИН ЗАПРОС. Единственный держатель возврата:
+ * обработчик слот берёт и, если он израсходован, говорит об этом
+ * (`spend`), — а возвращает его всегда диспетчер, после обработчика.
+ *
+ * Зачем так, а не `limiter.release` по путям выхода: у ручки сообщения шесть
+ * путей выхода, у ручки формулировщика — столько же, и прежняя редакция дня
+ * 15 на одном из них возвращала слот ДВАЖДЫ (находка reviewer и compliance к
+ * PR #200). Один держатель на запрос делает этот класс дефекта невозможным
+ * формой, а не внимательностью автора ручки.
+ *
+ * Отсюда и решение владельца Р8(б) (ADR 2026-10-05-0544, п. 6): слот
+ * суточного потолка берётся ДО разбора тела — порядок «лимитер до сервиса»
+ * (I-4) сохранён, — а отказ 4xx его ВОЗВРАЩАЕТ, потому что модель не
+ * вызывалась. Пустое сообщение в дне 22 стоило слота; здесь не стоит.
+ */
+function runLedger(ip) {
+  let held = 0
+  let spent = false
+  return {
+    /** Занять `n` слотов одним синхронным шагом. Отказ лимитера — его словами. */
+    take(n) {
+      const got = limiter.reserve(ip, n)
+      if (got.ok) held += n
+      return got
+    },
+    /** Слоты израсходованы: вызов модели состоялся или запуск создан. */
+    spend() {
+      spent = true
+    },
+    /** Итог запроса. Вызывается диспетчером ровно один раз. */
+    settle() {
+      if (spent || held === 0) return 0
+      const back = held
+      held = 0
+      limiter.release(ip, back)
+      return back
+    },
+  }
+}
+
+/**
+ * ТАБЛИЦА РУЧЕК ДНЯ — единственный вход в серверную логику
+ * (ADR 2026-09-29-1600, п. 1; образец — `days/day23/server.js`). Поле `limit`
+ * обязательно у каждой записи:
+ *
+ *   run   — стоит денег: слот окна запусков;
+ *   write — меняет общую память сервиса: слот окна записей профиля;
+ *   read  — только читает, и запись ОБЯЗАНА сказать `why`;
+ *   open  — вне окон, и запись ОБЯЗАНА сказать `why`.
+ *
+ * Поле `slots` у записи `run`: число — столько слотов занимает диспетчер до
+ * обработчика; `'own'` — число известно только обработчику, и тогда запись
+ * обязана назвать `why`. Таких ручек одна: предел кругов живёт в настройках
+ * профиля, и прочитать его раньше нечем.
+ *
+ * Поле `alsoRun` — ручка окна записей, которая при одном из исходов берёт ещё
+ * и слот запусков (возобновление после прерванного вызова). Без этого поля
+ * `ctx.run` равен `null`, и взять слот тайком нельзя: окно объявляет таблица.
+ *
+ * Ручка без `limit`, с неизвестным значением, `read`/`open` без `why` или
+ * `run` со слотами `'own'` без `why` не дают модулю загрузиться
+ * (`checkRoutes`): забыть окно нельзя, можно только назвать его вслух. Весь
+ * список исключений добывается одной строкой:
+ * `grep "limit: 'open'" days/day25/server.js`.
+ */
+const routes = [
+  {
+    method: 'GET',
+    path: '/healthz',
+    limit: 'open',
+    why: 'проба живости контейнера: до сервиса агентов не ходит и денег не стоит, а окно на ней перезапускало бы здоровый контейнер',
+    handler: handleHealth,
+  },
+
+  // --- профили
+  {
+    method: 'GET',
+    path: '/api/profiles',
+    limit: 'read',
+    why: 'список профилей для экрана входа: модель не зовёт и память не меняет',
+    handler: handleProfiles,
+  },
+  {
+    method: 'GET',
+    path: '/api/profile',
+    limit: 'read',
+    why: 'монитор памяти перечитывает правила и темы после каждого ответа; окно записей на этом тратилось бы на показ',
+    handler: handleProfileState,
+  },
+  { method: 'POST', path: '/api/profile', limit: 'write', handler: handleCreateProfile },
+  { method: 'DELETE', path: '/api/profile', limit: 'write', handler: handleDeleteProfile },
+  { method: 'POST', path: '/api/profile/select', limit: 'write', handler: handleSelectProfile },
+  { method: 'PUT', path: '/api/settings', limit: 'write', handler: handleSettings },
+
+  // --- инварианты профиля
+  {
+    method: 'POST',
+    path: '/api/invariants/draft',
+    limit: 'run',
+    slots: 1,
+    handler: handleInvariantDraft,
+  },
+  { method: 'POST', path: '/api/invariants', limit: 'write', handler: handleInvariantAccept },
+  {
+    method: 'DELETE',
+    path: /^\/api\/invariants\/(\d{1,9})$/,
+    limit: 'write',
+    handler: (req, res, ctx) => handleInvariantDelete(req, res, ctx.params[0]),
+  },
+
+  // --- шесть промптов профиля. Идентификатор сверяет служба: закрытый список
+  // у неё, и второй копии ему здесь не место.
+  {
+    method: 'PUT',
+    path: /^\/api\/prompts\/([a-z][a-z.]{1,40})$/,
+    limit: 'write',
+    handler: (req, res, ctx) => handlePromptSave(req, res, ctx.params[0]),
+  },
+  {
+    method: 'DELETE',
+    path: /^\/api\/prompts\/([a-z][a-z.]{1,40})$/,
+    limit: 'write',
+    handler: (req, res, ctx) => handlePromptReset(req, res, ctx.params[0]),
+  },
+
+  // --- диалоги профиля
+  {
+    method: 'GET',
+    path: '/api/sessions',
+    limit: 'read',
+    why: 'список диалогов профиля: чтение, как и у профилей',
+    handler: handleSessions,
+  },
+  { method: 'POST', path: '/api/session', limit: 'write', handler: handleCreateSession },
+  { method: 'POST', path: '/api/session/select', limit: 'write', handler: handleSelectSession },
+  { method: 'POST', path: '/api/session/topic', limit: 'write', handler: handleTopic },
+  {
+    method: 'GET',
+    path: /^\/api\/topic\/(\d{1,9})$/,
+    limit: 'read',
+    why: 'факты темы для монитора памяти: чтение',
+    handler: (req, res, ctx) => handleTopicFacts(req, res, ctx.params[0]),
+  },
+
+  // --- ход диалога
+  {
+    method: 'POST',
+    path: '/api/answer',
+    limit: 'run',
+    slots: 'own',
+    why: 'число слотов равно пределу кругов из настроек профиля, и прочитать его раньше нечем: чтение настроек модель не зовёт и стоит перед резервом (I-4)',
+    handler: handleAnswer,
+  },
+  {
+    method: 'POST',
+    path: '/api/run/pause',
+    limit: 'write',
+    alsoRun: 'возобновление после прерванного вызова повторяет вызов модели: слот берётся под повтор и возвращается, если возобновить не удалось',
+    handler: handlePause,
+  },
+
+  // --- журнал и тексты промптов запуска
+  {
+    method: 'GET',
+    path: /^\/api\/runs\/([^/]+)\/prompts$/,
+    limit: 'read',
+    why: 'текст промпта круга своего запуска: чтение, чужой запуск служба не отдаёт',
+    handler: (req, res, ctx) =>
+      RUN_ID.test(ctx.params[0])
+        ? handleRunPrompts(req, res, ctx.params[0])
+        : send(res, 404, { error: 'Текст промпта не найден' }),
+  },
+  {
+    method: 'GET',
+    path: /^\/api\/runs\/([^/]+)\/log\.csv$/,
+    limit: 'read',
+    why: 'журнал этапов своего запуска: чтение, текстов в файле нет',
+    handler: (req, res, ctx) =>
+      RUN_ID.test(ctx.params[0])
+        ? handleStageLog(req, res, ctx.params[0])
+        : send(res, 404, { error: 'Журнал не найден' }),
+  },
+
+  // --- переписка и поток событий
+  {
+    method: 'GET',
+    path: '/api/chat',
+    limit: 'read',
+    why: 'чтение переписки: модель не зовёт',
+    handler: handleChat,
+  },
+  { method: 'DELETE', path: '/api/chat', limit: 'write', handler: handleChat },
+  { method: 'PUT', path: '/api/chat/head', limit: 'write', handler: handleHead },
+  {
+    method: 'GET',
+    path: /^\/api\/runs\/([^/]+)\/events$/,
+    limit: 'read',
+    why: 'поток событий запуска живёт минутами; окно на нём обрывало бы показ уже оплаченного хода',
+    handler: (req, res, ctx) =>
+      RUN_ID.test(ctx.params[0])
+        ? proxyEvents(req, res, ctx.params[0])
+        : send(res, 404, { error: 'Запуск не найден' }),
+  },
+  {
+    method: 'GET',
+    path: '/api/state',
+    limit: 'read',
+    why: 'описание агента, модели и сроки хранения: чтение',
+    handler: handleState,
+  },
+]
+
+const LIMITS = new Set(['run', 'write', 'read', 'open'])
+
+/**
+ * Проверка таблицы при загрузке модуля: умолчание безопасное ОТКАЗОМ СТАРТА,
+ * а не пропуском. Красным это становится не в одном тесте, а во всех сразу —
+ * сервер просто не поднимается (ADR 2026-09-29-1600, «Держатель», слой 1).
+ */
+export function checkRoutes(list) {
+  const named = (value) => typeof value === 'string' && value.trim() !== ''
+  for (const route of list) {
+    const name = `${route.method} ${route.path}`
+    if (!LIMITS.has(route.limit))
+      throw new Error(
+        `ручка ${name}: поле limit обязано быть run|write|read|open, получено ${JSON.stringify(route.limit)}`,
+      )
+    if ((route.limit === 'open' || route.limit === 'read') && !named(route.why))
+      throw new Error(
+        `ручка ${name}: limit '${route.limit}' обязан назвать why — почему ручка вне окон`,
+      )
+    if (route.limit === 'run') {
+      const slots = route.slots
+      if (slots !== 'own' && !(Number.isInteger(slots) && slots > 0))
+        throw new Error(
+          `ручка ${name}: limit 'run' обязан назвать slots — число слотов или 'own', получено ${JSON.stringify(slots)}`,
+        )
+      if (slots === 'own' && !named(route.why))
+        throw new Error(
+          `ручка ${name}: slots 'own' обязан назвать why — почему слот берёт обработчик`,
+        )
+    }
+    if (route.alsoRun !== undefined && !named(route.alsoRun))
+      throw new Error(`ручка ${name}: alsoRun обязан назвать, под какой исход берётся слот запусков`)
+    if (typeof route.handler !== 'function') throw new Error(`ручка ${name}: нет обработчика`)
+  }
+  return list
+}
+
+checkRoutes(routes)
+
+function match(list, method, pathname) {
+  for (const route of list) {
+    if (route.method !== method) continue
+    if (typeof route.path === 'string') {
+      if (route.path === pathname) return { route, params: [] }
+      continue
+    }
+    const hit = pathname.match(route.path)
+    if (hit) return { route, params: hit.slice(1) }
+  }
+  return null
+}
+
+/**
+ * Единственный вход. Слот занимается ЗДЕСЬ, до вызова обработчика (I-4):
+ * порядок «сначала окно, потом работа» виден чтением сверху вниз и не зависит
+ * от того, вспомнил ли о нём автор ручки. Отказ отвечает словами лимитера, и
+ * обработчик не вызывается вовсе — до сервиса агентов ничего не доходит.
+ *
+ * После обработчика диспетчер закрывает учёт: слоты окна запусков, которые
+ * обработчик не пометил израсходованными, возвращаются (решение владельца
+ * Р8(б)). Слот окна ЗАПИСЕЙ не возвращается и здесь: суточного счётчика у
+ * него нет, он держит только частоту правок общей памяти, — и попытка правки
+ * состоялась даже при отказе формы тела.
+ */
+async function dispatch(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)
+  const found = match(routes, req.method, url.pathname)
+  // Не ручка — статика: всё, чего нет в таблице, отвечает файлом или 404.
+  if (!found) return serveStatic(url, res)
+
+  const { route } = found
+  const ip = clientIp(req)
+
+  if (route.limit === 'write') {
+    const slot = limiter.reserveWrite(ip)
+    if (!slot.ok) return send(res, 429, { error: slot.message })
+  }
+
+  // Учёт слотов запусков заводится только там, где таблица объявила окно:
+  // у прочих ручек `ctx.run` равен `null`, и взять слот тайком нельзя.
+  const run = route.limit === 'run' || route.alsoRun !== undefined ? runLedger(ip) : null
+  if (route.limit === 'run' && route.slots !== 'own') {
+    const slot = run.take(route.slots)
+    if (!slot.ok) return send(res, 429, { error: slot.message })
+  }
+
+  try {
+    return await route.handler(req, res, { ip, run, params: found.params })
+  } finally {
+    run?.settle()
+  }
+}
+
+const server = http.createServer(dispatch)
+
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(env.PORT, () => console.log(`день 25 слушает :${env.PORT}`))
+}
+
+export { env, routes, server }
