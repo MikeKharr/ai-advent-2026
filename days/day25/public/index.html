@@ -204,6 +204,20 @@
   .gate-row .grow { flex:1 1 14rem; min-width:0; }
   .gate-row .submit { margin-top:0; }
 
+  /* --- итоги двух сценариев --- */
+  /* Таблицы здесь нет намеренно: у строки хода одна клетка чисел, а не
+     столбцы, и таблица из одной колонки чисел читалась бы скринридером
+     медленнее списка. Числа — tabular-nums, чтобы колонка держалась глазом. */
+  .ev { display:flex; flex-direction:column; gap:var(--s-4); }
+  .ev-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:var(--s-5); }
+  .ev-title { margin:0; font-size:var(--t-md); line-height:1.5; font-weight:600; }
+  .ev-sum { margin:var(--s-2) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .ev-turns { list-style:none; margin:var(--s-3) 0 0; padding:0; display:flex; flex-direction:column; gap:var(--s-2); }
+  .ev-turn { display:grid; grid-template-columns:2rem minmax(0,1fr); gap:var(--s-2); font-size:var(--t-sm); line-height:1.5; }
+  .ev-n { color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+  .ev-what { min-width:0; overflow-wrap:anywhere; }
+  .ev-mech { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+
   /* --- плавающая кнопка настроек --- */
   /* Единственный вход в окно настроек (ADR, п. 9). Первым элементом .chat-col
      в DOM — значит, достижима с клавиатуры первой на любой ширине. */
@@ -862,6 +876,24 @@
 
   <p class="gate-note" id="gate-ttl">Профиль и его память — правила и факты — живут 30 дней
   с последнего действия в нём; переписка — 30 часов.</p>
+
+  <!-- Итоги двух сценариев. Стоят на экране входа, а не в пульте: мера дня —
+       то, что посетителю надо знать ДО разговора, а в пульт он попадает,
+       только заняв профиль.
+       Все числа приходят из `./eval.json`; ни одно не стоит литералом в
+       разметке, включая число ходов и состав сценариев. Файла нет или он не
+       прочитан — страница говорит это словами, а не показывает пустоту (I-8). -->
+  <section aria-labelledby="ev-h">
+    <div class="gate-head">
+      <h2 id="ev-h">Итоги двух сценариев</h2>
+      <span class="gate-count" id="ev-when"></span>
+    </div>
+    <p class="mem-empty" id="ev-state">Читаю файл прогона…</p>
+    <div class="ev" id="ev" hidden>
+      <ul class="ev-list" id="ev-list"></ul>
+      <p class="gate-note" id="ev-note"></p>
+    </div>
+  </section>
 </section>
 
 <div class="layout" id="layout" hidden>
@@ -6172,6 +6204,149 @@
     }
   };
 
+  /* ---------- итоги двух сценариев ---------- */
+
+  /*
+   * Мера дня 25 — ДВА длинных сценария по одиннадцать ходов, и мера эта
+   * МЕХАНИЧЕСКАЯ: исход хода, число источников, пометки дословности цитат,
+   * расхождение путей, круги проверки и состояние задачи. Вердиктов здесь нет
+   * ни одного — судейство дней 24–25 владелец отложил, и пустое поле вердикта
+   * читалось бы как «забыли оценить».
+   *
+   * ВСЕ ЧИСЛА ПРИХОДЯТ ИЗ ФАЙЛА `./eval.json`, включая число ходов, состав
+   * сценариев и сводку: арифметика живёт в `days/day25/eval/mechanics.mjs`,
+   * страница её не повторяет. Вторая копия той же арифметики разъехалась бы
+   * молча — это уже случалось в дне 22 с копией набора вопросов.
+   */
+
+  /* --- Выделяемый блок: его извлекает и исполняет test/day25-page-eval.test.js.
+     Правила показа итогов — без DOM, поэтому тест проверяет ИСХОДНЫЙ текст
+     страницы, а не копию в себе. --- */
+
+  /** Исходы в порядке строк сводки. Слова — те же, что у дня 24 (I-13). */
+  const EV_WORD = {
+    answered: 'ответ с подтверждённой цитатой',
+    unsupported: 'ответ без подтверждения',
+    unknown_model: '«не знаю» от модели',
+    unknown_filter: '«не знаю» от отбора',
+  };
+  const EV_ORDER = ['answered', 'unsupported', 'unknown_model', 'unknown_filter'];
+  /** Исход, которого страница не знает: молчать о нём нельзя. */
+  const EV_UNKNOWN = 'исход страница не узнала';
+
+  const EV_NONE =
+    'Файла прогона рядом нет: сценарии на этой сборке не прогоняли. Числа появятся здесь ' +
+    'после прогона — выдумывать их странице нечем.';
+  const EV_BROKEN =
+    'Файл прогона есть, но его форма не та, которую ждёт страница: показывать нечего, ' +
+    'кроме этой строки.';
+
+  const evJoin = (parts) => parts.filter((p) => p !== null && p !== '').join(' · ');
+
+  /* --- конец выделяемого блока итогов --- */
+
+  /** Строка одного хода: что ход проверял и что намерила механика. */
+  const evTurnRow = (turn) => {
+    const li = document.createElement('li');
+    li.className = 'ev-turn';
+    const num = document.createElement('span');
+    num.className = 'ev-n';
+    num.textContent = `${turn.n}.`;
+    const what = document.createElement('span');
+    what.className = 'ev-what';
+    what.textContent = String(turn.purpose ?? '');
+    const mech = document.createElement('span');
+    mech.className = 'ev-mech';
+    mech.textContent = turn.failure
+      ? `ход отказан: ${turn.failure.code}`
+      : evJoin([
+          EV_WORD[turn.outcome] ?? EV_UNKNOWN,
+          `источников ${fmtInt(turn.sources)}`,
+          turn.quotes > 0
+            ? `цитат ${fmtInt(turn.quotesVerified)} из ${fmtInt(turn.quotes)} дословно`
+            : 'цитат нет',
+          turn.citedMismatch > 0 ? `путь модели разошёлся: ${fmtInt(turn.citedMismatch)}` : null,
+          turn.task === null
+            ? null
+            : turn.task.stored === true
+              ? 'правка состояния легла'
+              : 'правка состояния не легла',
+          fmtDuration(turn.latencyMs),
+        ]);
+    what.append(mech);
+    li.append(num, what);
+    return li;
+  };
+
+  /** Один сценарий: название, диалог, сводка числами и ходы по порядку. */
+  const evScenario = (scenario) => {
+    const li = document.createElement('li');
+    const title = document.createElement('p');
+    title.className = 'ev-title';
+    title.textContent = String(scenario.title ?? '');
+    const s = scenario.summary ?? {};
+    const counts = EV_ORDER.filter((id) => (s.outcomes?.[id] ?? 0) > 0).map(
+      (id) => `${EV_WORD[id]} — ${fmtInt(s.outcomes[id])}`,
+    );
+    const head = document.createElement('p');
+    head.className = 'ev-sum';
+    head.textContent = evJoin([
+      `диалог «${scenario.sessionName}»`,
+      `ходов ${fmtInt(s.turns ?? 0)}`,
+      s.failed > 0 ? `отказов ${fmtInt(s.failed)}` : null,
+      ...counts,
+    ]);
+    const more = document.createElement('p');
+    more.className = 'ev-sum';
+    more.textContent = evJoin([
+      `источники были у ${fmtInt(s.withSources ?? 0)} ходов`,
+      `цитат ${fmtInt(s.quotesVerified ?? 0)} из ${fmtInt(s.quotes ?? 0)} дословно`,
+      `путей разошлось ${fmtInt(s.citedMismatch ?? 0)}`,
+      `правка состояния легла ${fmtInt(s.taskStored ?? 0)} раз`,
+      `токенов ${fmtInt(s.tokens ?? 0)}`,
+      s.latencyMs === null || s.latencyMs === undefined
+        ? null
+        : `среднее время хода ${fmtDuration(s.latencyMs)}`,
+    ]);
+    const turns = document.createElement('ul');
+    turns.className = 'ev-turns';
+    turns.append(...(scenario.turns ?? []).map(evTurnRow));
+    li.append(title, head, more, turns);
+    return li;
+  };
+
+  /**
+   * Чтение файла прогона. Форма проверяется, а не принимается на веру: файл
+   * собирает прогон, и недостающее поле обязано стать строкой «форма не та», а
+   * не `undefined` на экране.
+   */
+  const loadEval = async () => {
+    let data;
+    try {
+      const r = await fetch('./eval.json', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`ответ ${r.status}`);
+      data = await r.json();
+    } catch (error) {
+      say($('ev-state'), EV_NONE);
+      return;
+    }
+    const scenarios = Array.isArray(data?.scenarios) ? data.scenarios : [];
+    if (scenarios.length === 0 || typeof data?.note !== 'string' || typeof data?.ranAt !== 'string') {
+      say($('ev-state'), EV_BROKEN);
+      return;
+    }
+    $('ev-list').replaceChildren(...scenarios.map(evScenario));
+    // Коммит индекса и дата прогона стоят рядом: числа ниже измерены на том
+    // корпусе, а не на сегодняшнем.
+    $('ev-when').textContent = evJoin([
+      fmtStamp(data.ranAt),
+      typeof data.index?.commit === 'string' ? `индекс ${data.index.commit}` : null,
+    ]);
+    $('ev-note').textContent = data.note;
+    say($('ev-state'), '');
+    $('ev').hidden = false;
+  };
+
   /* ---------- старт ---------- */
 
   // Панель состояния задачи рисуется СРАЗУ, до первого чтения переписки: её
@@ -6183,6 +6358,10 @@
   // Экран выбора профиля показывается при каждом заходе, даже если cookie
   // профиля стоит: под ним нет ни диалога, ни памяти, ни агента.
   showGate();
+
+  // Итоги прогона читаются один раз и ничего не ждут: файл лежит рядом со
+  // страницей, службы для него не нужно, и отказ его чтения экрана не ломает.
+  loadEval();
 </script>
 </body>
 </html>

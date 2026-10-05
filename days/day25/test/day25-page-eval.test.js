@@ -1,0 +1,69 @@
+// Секция итогов двух сценариев на экране входа дня 25: что она говорит и чего
+// не говорит.
+//
+// Метод — тот же, что в `day25-page-rag.test.js`: правила показа вынесены в
+// странице в выделяемый блок без DOM, тест ВЫРЕЗАЕТ ЭТОТ БЛОК ИЗ СТРАНИЦЫ и
+// исполняет его. Проверяется исходный текст страницы, а не копия в тесте;
+// живой браузер этим не заменяется.
+
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { test } from 'node:test'
+import { OUTCOMES } from '../eval/mechanics.mjs'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const page = readFileSync(join(here, '..', 'public', 'index.html'), 'utf8')
+
+const rules = (() => {
+  const from = page.indexOf(
+    '/* --- Выделяемый блок: его извлекает и исполняет test/day25-page-eval.test.js.',
+  )
+  assert.notEqual(from, -1, 'блок правил итогов обязан остаться выделяемым')
+  const to = page.indexOf('/* --- конец выделяемого блока итогов --- */', from)
+  assert.notEqual(to, -1, 'у блока правил итогов обязан быть конец')
+  return new Function(`${page.slice(from, to)}
+    return { EV_WORD, EV_ORDER, EV_UNKNOWN, EV_NONE, EV_BROKEN, evJoin };`)()
+})()
+
+test('исходы на экране — те же четыре, что в механике прогона, и ни одним больше', () => {
+  // Два списка в двух файлах: разойдясь, они дали бы на экране исход без
+  // слова — то есть пустое место там, где предмет дня (I-13 про одно имя).
+  assert.deepEqual([...rules.EV_ORDER].sort(), [...OUTCOMES].sort())
+  assert.deepEqual(Object.keys(rules.EV_WORD).sort(), [...OUTCOMES].sort())
+  // Четыре РАЗНЫХ слова: «не знаю» от отбора и «не знаю» от модели — разные
+  // вещи, и один текст на оба скрывал бы, кто именно не нашёл ответа.
+  assert.equal(new Set(Object.values(rules.EV_WORD)).size, 4)
+})
+
+test('исход, которого страница не знает, не выдаётся за ответ по корпусу', () => {
+  assert.equal(rules.EV_WORD.какой_то_новый, undefined)
+  assert.ok(rules.EV_UNKNOWN.length > 0, 'о неизвестном исходе сказать нечем')
+  assert.notEqual(rules.EV_UNKNOWN, rules.EV_WORD.answered)
+})
+
+test('нет файла и негодный файл — РАЗНЫЕ строки, и обе говорят, что чисел нет', () => {
+  // Пустое место под заголовком читается как «всё в порядке» (I-8), а одна
+  // строка на оба случая не дала бы отличить «не прогоняли» от «файл битый».
+  assert.notEqual(rules.EV_NONE, rules.EV_BROKEN)
+  assert.match(rules.EV_NONE, /не прогоняли/)
+  assert.match(rules.EV_BROKEN, /форма не та/)
+})
+
+test('строка механики не печатает пустых мест на месте непришедшего', () => {
+  assert.equal(rules.evJoin(['исход', null, '', 'источников 5']), 'исход · источников 5')
+  assert.equal(rules.evJoin([null, '']), '')
+})
+
+test('секция итогов стоит на экране входа и читает файл рядом со страницей', () => {
+  const gate = page.slice(page.indexOf('<section class="gate"'), page.indexOf('</section>\n\n<div class="layout"'))
+  assert.ok(gate.includes('id="ev-h"'), 'секция итогов не на экране входа: в пульт попадают с профилем')
+  assert.ok(page.includes("fetch('./eval.json'"), 'итоги читаются не из файла рядом со страницей')
+})
+
+test('ни одного innerHTML на странице', () => {
+  // Правило дня 25 (`day25-page-rag.test.js`) распространяется и на новый
+  // код: секция итогов собирается узлами, а не разметкой из файла.
+  assert.equal(page.includes('innerHTML'), false)
+})
