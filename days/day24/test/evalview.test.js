@@ -9,7 +9,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   GENERAL_NOTE,
+  judged,
   JUDGE_ROWS,
+  judgeSummaryRows,
   limitsText,
   mechanics,
   NOT_RUN,
@@ -218,4 +220,119 @@ test('исход словом, а у общего вопроса «не знаю
   assert.equal(outcomeWord({ outcome: 'unknown_filter' }), '«не знаю» от отбора')
   // Общий вопрос: источника у него не бывает, и «не знаю» здесь не промах.
   assert.match(GENERAL_NOTE, /верный исход, а не промах/)
+})
+
+// ——— судейства могло не быть: ни одно место не считает вердикт сделанным ———
+// (находки `reviewer` и `design-review` к PR #319 на живом прогоне 2026-10-05,
+// где вердиктов ноль)
+
+/** Вопрос без вердиктов — то, что даёт прогон без судейства. */
+const unjudged = (over = {}) => question({ run: run({ meaning: null, correct: null }), ...over })
+
+test('границы метода НЕ обещают вердиктов, которых нет', () => {
+  const text = limitsText(parseEval(file([unjudged({ id: 'q01' })])))
+  assert.match(text, /судейство не проводилось/)
+  assert.match(text, /закрывать её нечем/)
+  // Обещания «рядом стоят два вердикта» в этой ветви быть не должно: оно и
+  // было неправдой на живых данных.
+  assert.ok(!/стоят два вердикта/.test(text), text)
+})
+
+test('границы метода обещают вердикты, когда они есть', () => {
+  const text = limitsText(parseEval(file([question({ id: 'q01' })])))
+  assert.match(text, /рядом с механикой стоят два вердикта/)
+  assert.ok(!/судейство не проводилось/.test(text), text)
+})
+
+test('судили или нет — считается по вердиктам, а не по имени судьи', () => {
+  // Имя в файле есть у обоих: `file` его ставит. Различает только вердикт.
+  assert.equal(judged(parseEval(file([question({ id: 'q01' })]))), true)
+  assert.equal(judged(parseEval(file([unjudged({ id: 'q01' })]))), false)
+  // Один вердикт из двух — уже судили: обещание про вердикты становится правдой.
+  assert.equal(judged(parseEval(file([question({ id: 'q01', run: run({ meaning: null }) })]))), true)
+  // Непрогнанный вопрос вердикта не ждёт и за судейство не считается.
+  assert.equal(judged(parseEval(file([question({ id: 'q01', run: null })]))), false)
+})
+
+test('сводка вердиктов без судейства — слово, а не три нуля', () => {
+  const t = tally(parseEval(file([unjudged({ id: 'q01' }), unjudged({ id: 'q02' })])))
+  const rows = judgeSummaryRows(t)
+  // Две строки, по одной на вопрос судьи, и в каждой — слово.
+  assert.deepEqual(rows, [
+    ['смысл ответа совпадает с цитатами', NOT_RUN],
+    ['ответ верен по эталону', NOT_RUN],
+  ])
+  // Нуля в клетках нет вовсе: именно он читался как «верных нет».
+  assert.ok(!rows.some(([, cell]) => cell === '0'), JSON.stringify(rows))
+})
+
+test('сводка вердиктов с судейством — три строки на вопрос, с числами', () => {
+  const t = tally(
+    parseEval(
+      file([question({ id: 'q01' }), question({ id: 'q02', run: run({ meaning: 1, correct: 0 }) })]),
+    ),
+  )
+  assert.deepEqual(judgeSummaryRows(t), [
+    ['смысл ответа совпадает с цитатами: да', '1'],
+    ['смысл ответа совпадает с цитатами: частично', '1'],
+    ['смысл ответа совпадает с цитатами: нет', '0'],
+    ['ответ верен по эталону: да', '1'],
+    ['ответ верен по эталону: частично', '0'],
+    ['ответ верен по эталону: нет', '1'],
+  ])
+})
+
+// ——— «нечем проверить» бывает по двум причинам, и фраза их не сливает ———
+
+const bad = (id, hasQuotes) =>
+  question({
+    id,
+    run: run({
+      outcome: 'unsupported',
+      has_quotes: hasQuotes,
+      quotes_verified: hasQuotes ? 'none' : null,
+    }),
+  })
+
+test('ответ без цитат вовсе и ответ с ненайденными цитатами названы порознь', () => {
+  // q94 живого прогона: цитат не было вовсе. Прежняя фраза уверяла, что
+  // «цитаты в них есть, во фрагментах их нет», — про него это ложь.
+  const t = tally(parseEval(file([bad('q01', false), bad('q02', true), bad('q03', true)])))
+  assert.deepEqual(t.unsupported, { noQuotes: 1, unverified: 2 })
+  const v = verdict(t)
+  assert.match(v.text, /3 ответа нечем проверить по источникам/)
+  assert.match(v.text, /у 1 ответа цитат нет вовсе/)
+  assert.match(v.text, /у 2 цитаты есть, но во фрагментах не нашлись/)
+})
+
+test('встретилась одна причина — названа одна, без пустой половины фразы', () => {
+  const only = verdict(tally(parseEval(file([bad('q01', false)]))))
+  assert.match(only.text, /у 1 ответа цитат нет вовсе\./)
+  assert.ok(!/во фрагментах не нашлись/.test(only.text), only.text)
+  const other = verdict(tally(parseEval(file([bad('q01', true)]))))
+  assert.match(other.text, /у 1 цитаты есть, но во фрагментах не нашлись\./)
+  assert.ok(!/цитат нет вовсе/.test(other.text), other.text)
+})
+
+test('прогон не сказал про цитаты — это третий случай, и сумма не врёт', () => {
+  // `has_quotes` потерялся: в оба ведра такой ответ не падает, иначе два
+  // числа молча расходились бы с числом ответов без подтверждения.
+  const t = tally(
+    parseEval(
+      file([
+        bad('q01', false),
+        question({ id: 'q02', run: run({ outcome: 'unsupported', has_quotes: 'да' }) }),
+      ]),
+    ),
+  )
+  assert.deepEqual(t.unsupported, { noQuotes: 1, unverified: 0 })
+  const v = verdict(t)
+  assert.match(v.text, /2 ответа нечем проверить/)
+  assert.match(v.text, /про 1 прогон не сказал, были ли цитаты/)
+})
+
+test('подтверждённых ответов хватает — про «нечем проверить» не говорится вовсе', () => {
+  const t = tally(parseEval(file([question({ id: 'q01' })])))
+  assert.equal(t.unsupported.noQuotes, 0)
+  assert.ok(!/нечем проверить/.test(verdict(t).text), verdict(t).text)
 })

@@ -22,6 +22,7 @@
 import {
   GENERAL_NOTE,
   JUDGE_ROWS,
+  judgeSummaryRows,
   limitsText,
   mechanics,
   NOT_RUN,
@@ -910,15 +911,16 @@ function renderSummary(t) {
     tbody.append(tr)
   }
   // Вердикты судьи — рядом, но отдельными строками: механика и суждение на
-  // одном экране, и видно, где кончается одно и начинается другое.
-  for (const [key, label] of JUDGE_ROWS)
-    for (const value of [2, 1, 0]) {
-      const tr = node('tr')
-      const th = node('th', undefined, `${label}: ${verdictWord(value)}`)
-      th.scope = 'row'
-      tr.append(th, node('td', undefined, String(t.judge[key][value])))
-      tbody.append(tr)
-    }
+  // одном экране, и видно, где кончается одно и начинается другое. КАКИЕ ЭТО
+  // СТРОКИ, решает `judgeSummaryRows` (правило показа, проверяется
+  // исполнением), а здесь только разметка.
+  for (const [header, cell] of judgeSummaryRows(t)) {
+    const tr = node('tr')
+    const th = node('th', undefined, header)
+    th.scope = 'row'
+    tr.append(th, node('td', undefined, cell))
+    tbody.append(tr)
+  }
   sum.replaceChildren(thead, tbody)
 }
 
