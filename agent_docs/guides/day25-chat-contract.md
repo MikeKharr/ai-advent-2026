@@ -81,7 +81,7 @@ ADR `2026-10-05-0544`, п. 3; код — `agents/src/rag/chat.js`,
 |---|---|
 | `sources[]` | фрагменты, ушедшие модели: `n`, `source`, `section`, `score`, `relevance`, `text`, `truncated`. Номера те же, которыми ссылается ответ |
 | `cited[]` | источники, на которые сослалась модель: `n`, `source`, `section` — **из отбора**, плюс `claimedSource`, `claimedSection` — что назвала модель |
-| `quotes[]` | `n`, `text`, `verified` — дословность сверена кодом, не моделью; потолок цитаты (300 знаков) держит код, не схема |
+| `quotes[]` | `n`, `text`, `verified`, `truncated` — дословность сверена кодом, не моделью; потолок цитаты (300 знаков) держит код, не схема: сверяются первые 300 знаков, и подтверждённая цитата уходит полем `text` обрезанной (`truncated: true`), а неподтверждённая — целиком, как её привела модель (ADR `2026-10-05-1013`) |
 | `checks` | `sources_present`, `quotes_present`, `quotes_verbatim`, `cited_exact` |
 | `status` | `answered` или `unknown` (поле схемы) |
 | `outcome` | `answered`, `unknown_filter`, `unknown_model`, `unsupported` |
