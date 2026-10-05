@@ -1,6 +1,7 @@
-// Приёмка задания владельца по дню 15 (пункты 1, 3 и части 4): промпты
-// профиля правятся из окна «Об агенте», системного промпта в настройках нет,
-// полоса этапов — семь, потолок ответа приходит с сервера.
+// Приёмка задания владельца по промптам профиля (день 15, пункты 1, 3 и части
+// 4; день 25 — шестой промпт `stage.task`): промпты правятся из окна «Об
+// агенте», системного промпта в настройках нет, полоса этапов — восемь,
+// потолок ответа приходит с сервера.
 //
 // Проверки выведены из задания, а не из кода: каждая называет то, что владелец
 // потребовал, и краснеет при возврате прежнего поведения.
@@ -209,13 +210,21 @@ test('подсказка лимита не обещает, что длинный
   assert.match(hint, /уже оплачено/)
 })
 
-test('в полосе семь этапов, «Подготовка промпта» — между сборкой и вызовом', () => {
+test('в полосе восемь этапов: «Поиск» — до подготовки промпта и вызова модели', () => {
   const source = page.match(/const FALLBACK_STAGES = \[[\s\S]*?\n {2}\];/)
   assert.notEqual(source, null)
   const list = new Function(`${source[0]} return FALLBACK_STAGES;`)()
+  // Порядок, а не состав: «Поиск» ПОСЛЕ сборки памяти и ДО подготовки
+  // промпта. Переставленный назад этап оставил бы ход без фрагментов в
+  // запросе и оплачивал бы вызов до того, как выяснилось, что искать не по
+  // чему (ADR 2026-10-05-0544, п. 3.2, I-4).
   assert.deepEqual(list.map((x) => x.id), [
-    'intake', 'assemble', 'prepare', 'answer', 'verify', 'replenish', 'deliver',
+    'intake', 'assemble', 'retrieve', 'prepare', 'answer', 'verify', 'replenish', 'deliver',
   ])
+  const retrieve = list.find((x) => x.id === 'retrieve')
+  assert.equal(retrieve.title, 'Поиск')
+  assert.equal(retrieve.prompt, null, 'ни переписывание, ни реранкер профилем не правятся')
+  assert.match(retrieve.rule, /отказ поиска обрывает ход до вызова модели/)
   const prepare = list.find((x) => x.id === 'prepare')
   assert.equal(prepare.title, 'Подготовка промпта')
   assert.equal(prepare.prompt, null, 'у этапа без вызова модели промпта нет')
@@ -271,9 +280,29 @@ test('нечего править — сказано почему, а не пу�
     rules.editablePrompts({ systemPrompt: 'с' }, live, { prompt: 'ф' }),
     ['stage.answer', 'stage.summary', 'stage.verify.invariants', 'stage.replenish', 'invariant.draft'],
   )
+  // Шестой промпт профиля дня 25 (ADR 2026-10-05-0544, п. 3.4) приходит
+  // отдельным полем `extraPrompts`, а не строкой таблицы этапов: у этапа
+  // пополнения два вызова, а `promptId` этапа один.
+  const extras = [{ promptId: 'stage.task', prompt: 'т', stageId: 'replenish', rule: 'п' }]
+  assert.deepEqual(
+    rules.editablePrompts({ systemPrompt: 'с' }, live, { prompt: 'ф' }, extras),
+    [
+      'stage.answer', 'stage.summary', 'stage.verify.invariants', 'stage.replenish',
+      'stage.task', 'invariant.draft',
+    ],
+  )
+  // Запись без текста умолчания правимой не делает: править вслепую нельзя, и
+  // поле без текста обещало бы правку, которой нет.
+  assert.deepEqual(
+    rules.editablePrompts(null, [], {}, [{ promptId: 'stage.task', prompt: '' }]),
+    [],
+  )
   // Честный текст показывается, обещание правки убирается вместе с полями.
   assert.match(page, /id="dlg-pr-none" hidden>Промпты недоступны/)
-  assert.match(page, /const empty = editablePrompts\(agentInfo, stages, invariantLimits\)\.length === 0;/)
+  assert.match(
+    page,
+    /const empty =\n\s+editablePrompts\(agentInfo, stages, invariantLimits, extraPrompts\)\.length === 0;/,
+  )
   assert.match(page, /\$\('dlg-pr-none'\)\.hidden = !empty;/)
   assert.match(page, /\$\('dlg-pr-about'\)\.hidden = empty;/)
   // И грузить в этом состоянии нечего: «Правки этого профиля» над пустотой —

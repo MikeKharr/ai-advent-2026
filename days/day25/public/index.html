@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Никакого <base>: redir /day25 -> /day25/ на Caddy делает относительные
      пути верными и в проде, и при локальном запуске (см. README дня 1). -->
-<title>Агент с инвариантами профиля — AI Advent 2026, день 15</title>
+<title>Чат по проекту с состоянием задачи — AI Advent 2026, день 25</title>
 <style>
   /* Токены дизайн-корпуса: agent_docs/design/corpus.md.
      Значения вне этих шкал — дефект, а не нюанс. */
@@ -287,6 +287,47 @@
     font-variant-numeric:tabular-nums;
   }
   .sum + .sum { margin-top:var(--s-1); }
+
+  /* --- источники и цитаты ответа (день 25) ---
+     Карточка стоит под текстом ответа и ВЫШЕ пометки проверки: источник — то,
+     на чём ответ стоит, а вердикт — мнение о нём. Номер фрагмента здесь тот
+     же, под которым он ушёл модели: номера идут с пропусками, и переназывать
+     их страница не вправе. */
+  .rag { margin:var(--s-3) 0 0; }
+  .rag-outcome {
+    margin:0; font-size:var(--t-xs); line-height:1.4; font-weight:600; max-width:68ch;
+  }
+  .rag-outcome .mark { margin-right:var(--s-1); }
+  .rag.is-weak .rag-outcome, .rag.is-weak .quote-mark { color:var(--danger); }
+  .srcs { list-style:none; margin:var(--s-2) 0 0; padding:0; }
+  .src + .src { margin-top:var(--s-2); }
+  .src-head {
+    margin:0; font-size:var(--t-xs); line-height:1.4;
+    overflow-wrap:anywhere; font-variant-numeric:tabular-nums;
+  }
+  .src-n { font-weight:600; }
+  .src-sec { color:var(--fg-mut); }
+  .quote {
+    margin:var(--s-1) 0 0; padding-left:var(--s-3);
+    border-left:2px solid var(--line-ctl);
+    font-size:var(--t-xs); line-height:1.4; max-width:68ch;
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .quote.is-bad { border-left-color:var(--danger); }
+  .quote-mark { display:block; color:var(--fg-mut); font-weight:600; }
+  .quote.is-bad .quote-mark { color:var(--danger); }
+  .rag-ask { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; max-width:68ch; }
+
+  /* --- панель «Состояние задачи» (день 25) --- */
+  .task-sec { display:flex; flex-direction:column; gap:var(--s-3); }
+  .task-dl {
+    margin:0; padding:var(--s-3); display:grid; grid-template-columns:auto 1fr;
+    gap:var(--s-2) var(--s-3); font-size:var(--t-sm); line-height:1.5;
+  }
+  .task-dl dt { margin:0; color:var(--fg-mut); font-size:var(--t-xs); line-height:1.4; }
+  .task-dl dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+  .task-list { list-style:none; margin:0; padding:0; }
+  .task-list li + li { margin-top:var(--s-1); }
   .msg .params-d { margin-top:var(--s-3); }
   .msg .params-d > summary {
     list-style:none; cursor:pointer; display:flex; align-items:center; gap:var(--s-2);
@@ -746,9 +787,10 @@
 
 <!-- Экран выбора профиля: показывается при каждом заходе, до всего остального. -->
 <section class="gate" id="gate" aria-labelledby="gate-h">
-  <h1 id="gate-h">Агент с инвариантами профиля</h1>
-  <p class="sub">Агент ведёт ответ по семи этапам и помнит вас между диалогами: правила
-  работы с вами, факты по темам и текущий разговор.</p>
+  <h1 id="gate-h">Чат по проекту с состоянием задачи</h1>
+  <p class="sub">Разговор о проекте ai-advent-2026 по его же корпусу: каждый ход ищет
+  фрагменты, отвечает с источниками и дословными цитатами и ведёт состояние задачи.
+  Восемь этапов, профили и журнал — машина дня 15.</p>
 
   <p class="notice"><span class="mark" aria-hidden="true">!</span><span>Профили открыты:
   любой посетитель может выбрать, читать, пополнять и удалить любой профиль. Не записывайте
@@ -810,7 +852,7 @@
          обе модели и предел кругов до отправки (раскладка, п. 7.3), и запас у
          неё меньше. Обязательное по ADR — открытость профиля и непроверенность
          ответов — живёт на экране входа и в футере, здесь его нет. -->
-    <p class="sub">Агент ведёт ответ по семи этапам; работу можно остановить и продолжить.
+    <p class="sub">Агент ведёт ответ по восьми этапам; работу можно остановить и продолжить.
     <button class="about" id="about" type="button" disabled>Об агенте</button></p>
 
     <section class="chat" aria-labelledby="chat-h">
@@ -836,7 +878,7 @@
         помня правила и факты этого профиля.</li>
       </ol>
 
-      <!-- Полоса запуска: семь этапов, пульс, счётчик, круг проверки и кнопка
+      <!-- Полоса запуска: восемь этапов, пульс, счётчик, круг проверки и кнопка
            паузы. Стоит между логом и строкой значений и существует всегда. -->
       <div class="runbar" id="runbar" data-state="loading">
         <ol class="stages" id="stages" aria-label="Этапы запуска"></ol>
@@ -874,6 +916,23 @@
 
   <div class="col right">
     <button class="clear mem-btn" id="mem-btn" type="button">Память профиля</button>
+
+    <!-- Состояние задачи диалога: цель, уточнения, ограничения и термины.
+         Ведёт его отдельный вызов на этапе «Пополнение памяти», и в поиск
+         следующего хода уходит оно же — поэтому панель стоит рядом с
+         диалогом, а не в окне памяти профиля: состояние живёт с диалогом и
+         уходит вместе с ним. -->
+    <section class="task-sec" aria-labelledby="task-h">
+      <div class="head-row">
+        <h2 id="task-h">Состояние задачи</h2>
+        <span class="tag" id="task-round" hidden></span>
+      </div>
+      <div class="panel" id="task-panel">
+        <p class="mon-empty" id="task-empty"></p>
+        <dl class="task-dl" id="task-dl" hidden></dl>
+      </div>
+      <p class="warned" id="task-warn" hidden></p>
+    </section>
 
     <section class="monitor" aria-labelledby="mon-h">
       <h2 id="mon-h">Монитор агента</h2>
@@ -1349,14 +1408,30 @@
   /* ---------- машина состояний запуска ---------- */
 
   /**
-   * Семь этапов — имена дословно по ADR 2026-09-23-0646, п. 4. Список приходит
-   * из describe()
-   * вместе с промптами; этот — запасной, чтобы полоса существовала и тогда,
-   * когда состояние агента не загрузилось: машину видно до первого запроса.
+   * Восемь этапов — имена дословно по RAG_STAGES агента (ADR 2026-10-05-0544,
+   * п. 3.2). Список приходит из describe() вместе с промптами; этот —
+   * запасной, чтобы полоса существовала и тогда, когда состояние агента не
+   * загрузилось: машину видно до первого запроса.
+   *
+   * «Поиск» стоит третьим — ДО подготовки промпта и вызова модели, — и это не
+   * косметика порядка: без найденных фрагментов ход не идёт вовсе, отказ
+   * поиска обрывает его до единого вызова модели. Полоса обязана показывать
+   * этот порядок, а не удобный.
    */
   const FALLBACK_STAGES = [
     { id: 'intake', title: 'Приём', prompt: null, rule: null },
     { id: 'assemble', title: 'Сборка контекста', prompt: null, rule: null },
+    {
+      id: 'retrieve',
+      title: 'Поиск',
+      // Промпта у этапа два — переписывания и реранкера, — и ни один не
+      // правится профилем: шестым правимым идёт `stage.task`.
+      prompt: null,
+      rule:
+        'поиск по реплике хода, затем модельное переписывание запроса с целью задачи и двумя '
+        + 'прошлыми ходами, второй поиск, объединение выдач, реранкер одним вызовом, не больше '
+        + 'пяти фрагментов; отказ поиска обрывает ход до вызова модели ответа',
+    },
     // Этап без вызова модели: промпта у него нет, есть правило в коде.
     {
       id: 'prepare',
@@ -1378,6 +1453,16 @@
    * умолчание записи: десять и двести знаков.
    */
   let invariantLimits = { cap: 10, chars: 200, draftChars: 1000, prefix: 'П', prompt: null };
+  /**
+   * Правимые промпты сверх таблицы этапов (ADR 2026-10-05-0544, п. 3.4). У
+   * дня 25 здесь один — `stage.task`, шестой промпт профиля: он уходит вторым
+   * вызовом этапа «Пополнение памяти», и промптом ЭТАПА его объявить нельзя —
+   * у этапа два вызова, а `promptId` этапа один.
+   *
+   * Список приходит от службы (`describe().extraPrompts`), а не зашит здесь:
+   * закрытый список идентификаторов живёт у неё.
+   */
+  let extraPrompts = [];
   /** Предел кругов: границы приходят с сервера, умолчание — два. */
   let roundLimits = { min: 1, max: 3, default: 2 };
 
@@ -1543,7 +1628,7 @@
     layout.hidden = true;
     gate.hidden = false;
     profile = null;
-    document.title = 'Агент с инвариантами профиля — AI Advent 2026, день 15';
+    document.title = 'Чат по проекту с состоянием задачи — AI Advent 2026, день 25';
     loadProfiles({ focus: true }).then(() => {
       announce(`Экран выбора профиля. Профилей: ${profileList.length}.`);
     });
@@ -1820,6 +1905,7 @@
         stages = d.stages;
         stagesLoaded = true;
       }
+      if (Array.isArray(d.extraPrompts)) extraPrompts = d.extraPrompts;
       if (d.invariants) invariantLimits = { ...invariantLimits, ...d.invariants };
       if (limits.reviewRounds) roundLimits = { ...roundLimits, ...limits.reviewRounds };
       // Потолок этапа (ADR, п. 5) — единственный токенный потолок дня 13, и он
@@ -2255,12 +2341,19 @@
    * «пока пусто», а «состояние не загрузилось»: заголовок с обещанием правки
    * над пустым местом обещает то, чего нет.
    */
-  const editablePrompts = (agent, list, invariants) => {
+  const editablePrompts = (agent, list, invariants, extras) => {
     const out = []
     if (agent?.systemPrompt) out.push(SYSTEM_PROMPT_ID);
     for (const stage of list ?? []) {
       const id = stage?.prompt ? promptIdOf(stage) : null;
       if (id && id !== SYSTEM_PROMPT_ID && !out.includes(id)) out.push(id);
+    }
+    // Промпты сверх таблицы этапов (день 25: `stage.task`). Правимым промпт
+    // делает НАЛИЧИЕ ТЕКСТА умолчания: запись без текста править вслепую
+    // нельзя, и обещать её правку — ложь.
+    for (const extra of extras ?? []) {
+      const id = extra?.promptId;
+      if (id && extra.prompt && !out.includes(id)) out.push(id);
     }
     if (invariants?.prompt) out.push(DRAFT_PROMPT_ID);
     return out;
@@ -2339,6 +2432,10 @@
     [DRAFT_PROMPT_ID]:
       'Если формулировки перестанут разбираться, ход кончится отказом при уже '
       + 'оплаченном вызове.',
+    'stage.task':
+      'Промпт состояния задачи. Если ответ перестанет разбираться, состояние не '
+      + 'обновится: прежнее останется в силе, а вызов будет оплачен. Состояние '
+      + 'уходит в поиск следующего хода, поэтому сломанная цель портит и выдачу.',
   };
 
   const dlg = $('dlg');
@@ -2353,6 +2450,9 @@
     for (const stage of stages) {
       const id = promptIdOf(stage);
       if (id && stage.prompt) out[id] = stage.prompt;
+    }
+    for (const extra of extraPrompts) {
+      if (extra?.promptId && extra.prompt) out[extra.promptId] = extra.prompt;
     }
     if (agentInfo?.systemPrompt) out[SYSTEM_PROMPT_ID] = agentInfo.systemPrompt;
     if (invariantLimits?.prompt) out[DRAFT_PROMPT_ID] = invariantLimits.prompt;
@@ -2548,7 +2648,8 @@
     applyPrompts({ all: true });
     // Ноль редакторов — обещание правки без полей: раздел честно говорит, что
     // править нечего, и объяснение правки убирается вместе с полями.
-    const empty = editablePrompts(agentInfo, stages, invariantLimits).length === 0;
+    const empty =
+      editablePrompts(agentInfo, stages, invariantLimits, extraPrompts).length === 0;
     $('dlg-pr-none').hidden = !empty;
     $('dlg-pr-about').hidden = empty;
   };
@@ -2602,6 +2703,19 @@
           ? `без вызова модели: ${stage.rule}`
           : 'без вызова модели';
         li.append(rule);
+      }
+      // Промпты сверх таблицы этапов — под тем этапом, которому они
+      // принадлежат (день 25: `stage.task` под «Пополнением памяти»). Своим
+      // разделом их показывать нельзя: посетитель не узнал бы, когда этот
+      // текст уходит модели.
+      for (const extra of extraPrompts.filter((x) => x?.stageId === stage.id && x.prompt)) {
+        const note = document.createElement('span');
+        note.className = 'pr-note';
+        note.style.display = 'block';
+        note.textContent = extra.rule
+          ? `ещё один вызов этапа: ${extra.rule}`
+          : 'ещё один вызов этапа';
+        li.append(note, promptEditor(extra.promptId, 'состояние задачи'));
       }
       box.append(li);
     });
@@ -3801,6 +3915,194 @@
     error: () => 'Проверка не состоялась: модель не ответила. Ответ отдан как есть.',
   };
 
+  /* ---------- источники, цитаты и исход хода (день 25) ---------- */
+
+  /* --- Выделяемый блок: его извлекает и исполняет test/day25-page-rag.test.js.
+         Всё, что решает, ЧТО написано о ходе, живёт здесь и не трогает DOM.
+         Раскладки у дня нет (решение владельца о процессе), поэтому дословные
+         формулировки держит тест, а не документ. --- */
+
+  /**
+   * Четыре исхода хода (ADR 2026-10-05-0544, п. 2.3). Исход приходит от
+   * сервиса полем `outcome`, и страница его НЕ ВЫВОДИТ из состава полей:
+   * «источников нет» и «модель сказала „не знаю“» — разные вещи, и назвать их
+   * одним текстом значило бы скрыть, кто именно не нашёл ответа.
+   *
+   * Пятый случай — исход, которого страница не знает. Молчать о нём нельзя:
+   * пустое место под ответом читается как «всё в порядке».
+   */
+  const OUTCOME_TEXT = {
+    answered: 'Ответ по корпусу: ниже источники и дословные цитаты из них.',
+    unsupported:
+      'Ответ не подтверждён: ни одна цитата не нашлась в найденных фрагментах дословно.',
+    unknown_filter:
+      'Ответа в корпусе не нашлось: поиск нашёл фрагменты, но ни один из них не отнесён к реплике.',
+    unknown_model: 'Ответа в найденных фрагментах нет — так сказала сама модель.',
+  };
+  const OUTCOME_UNKNOWN = 'Исход хода страница не узнала: сервис назвал его иначе.';
+  /** Исходы, у которых ответ на корпус не опирается: пометка и цвет тревоги. */
+  const WEAK_OUTCOMES = ['unsupported', 'unknown_filter', 'unknown_model'];
+
+  /** Пометка цитаты. «Проверена дословно» — вывод кода, а не мнение модели. */
+  const QUOTE_WORD = {
+    ok: 'проверена дословно',
+    bad: 'не найдена во фрагменте',
+  };
+
+  /**
+   * Что сказать о деньгах при отказе хода. Берётся ТОЛЬКО из признака
+   * `paidNothing`, который ставит сервис: отказ поиска денег не стоит, отказ
+   * реранкера стоит, и выводить это из кода отказа на странице значило бы
+   * угадывать расход. Признака нет вовсе — так и говорим, а не домысливаем в
+   * свою пользу.
+   */
+  const MONEY_TEXT = {
+    free: 'Денег отказ не стоил: ни один вызов модели не состоялся, слот суточного лимита возвращён.',
+    paid: 'Отказ оплачен: вызов модели состоялся, слот суточного лимита занят.',
+    unknown:
+      'Был ли вызов модели оплачен, сервис не сказал — слот суточного лимита считаем занятым.',
+  };
+  const moneyWord = (paidNothing) =>
+    paidNothing === true ? 'free' : paidNothing === false ? 'paid' : 'unknown';
+
+  const outcomeText = (outcome) => OUTCOME_TEXT[outcome] ?? OUTCOME_UNKNOWN;
+  const weakOutcome = (outcome) => WEAK_OUTCOMES.includes(outcome);
+
+  /**
+   * Строка о поиске хода: переписанный запрос и коммит индекса. Переписывание
+   * у дня 25 идёт ВСЕГДА, но нового запроса оно могло не дать — и тогда это
+   * сказано словами, а не пустым местом.
+   */
+  const searchLine = (rag) => {
+    const parts = [
+      rag.rewritten
+        ? `поиск по переписанному запросу: «${rag.rewritten}»`
+        : 'поиск только по реплике: переписывание не дало нового запроса',
+    ];
+    if (Array.isArray(rag.sources))
+      parts.push(`фрагментов модели: ${rag.sources.length}`);
+    if (rag.index?.commit) parts.push(`индекс ${rag.index.commit}`);
+    return parts.join(' · ');
+  };
+
+  /** Цитаты, чьего номера нет среди названных источников: они тоже на экране. */
+  const orphanQuotes = (quotes, cited) => {
+    const named = new Set((cited ?? []).map((item) => item?.n));
+    return (quotes ?? []).filter((item) => !named.has(item?.n));
+  };
+
+  /* --- конец выделяемого блока --- */
+
+  const quoteLine = (quote) => {
+    const box = document.createElement('blockquote');
+    box.className = `quote${quote.verified ? '' : ' is-bad'}`;
+    const mark = document.createElement('span');
+    mark.className = 'quote-mark';
+    mark.textContent = `[${quote.n}] ${quote.verified ? QUOTE_WORD.ok : QUOTE_WORD.bad}`;
+    const text = document.createElement('span');
+    // Цитата — текст из корпуса, прошедший через модель: только textContent.
+    text.textContent = String(quote.text ?? '');
+    box.append(mark, text);
+    return box;
+  };
+
+  const sourceRow = (src, quotes) => {
+    const item = document.createElement('li');
+    item.className = 'src';
+    const head = document.createElement('p');
+    head.className = 'src-head';
+    const n = document.createElement('span');
+    n.className = 'src-n';
+    // Номер тот же, под которым фрагмент ушёл модели: номера идут с
+    // пропусками, и переназывать их страница не вправе.
+    n.textContent = `[${src.n}]`;
+    head.append(n, ' ', String(src.source ?? ''));
+    if (src.section) {
+      const sec = document.createElement('span');
+      sec.className = 'src-sec';
+      sec.textContent = ` · ${src.section}`;
+      head.append(sec);
+    }
+    item.append(head);
+    for (const quote of quotes) item.append(quoteLine(quote));
+    return item;
+  };
+
+  /**
+   * Карточка хода под ответом: исход, источники с цитатами и уточняющий
+   * вопрос. Данные берутся из `meta.rag` сообщения — то есть живут рядом с
+   * текстом реплики и переживают перезагрузку, а не только поток событий.
+   *
+   * Старая реплика без `meta.rag` карточки не получает вовсе: её ход шёл до
+   * дня 25, и дорисовать ей источники значило бы придумать их.
+   */
+  const addRag = (li, rag) => {
+    if (!rag || typeof rag !== 'object') return;
+    const weak = weakOutcome(rag.outcome);
+    const box = document.createElement('div');
+    box.className = `rag${weak ? ' is-weak' : ''}`;
+
+    const head = document.createElement('p');
+    head.className = 'rag-outcome';
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = weak ? '!' : '·';
+    head.append(mark);
+    if (weak) {
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Внимание: ';
+      head.append(prefix);
+    }
+    head.append(outcomeText(rag.outcome));
+    box.append(head);
+
+    const quotes = Array.isArray(rag.quotes) ? rag.quotes : [];
+    const cited = Array.isArray(rag.cited) ? rag.cited : [];
+    if (cited.length > 0) {
+      const list = document.createElement('ol');
+      list.className = 'srcs';
+      for (const src of cited)
+        list.append(sourceRow(src, quotes.filter((q) => q.n === src.n)));
+      box.append(list);
+    }
+    const orphans = orphanQuotes(quotes, cited);
+    if (orphans.length > 0) {
+      const note = document.createElement('p');
+      note.className = 'src-head';
+      note.append('Цитаты без названного источника:');
+      box.append(note);
+      for (const quote of orphans) box.append(quoteLine(quote));
+    }
+
+    if (typeof rag.clarification === 'string' && rag.clarification.trim() !== '') {
+      const ask = document.createElement('p');
+      ask.className = 'rag-ask';
+      const label = document.createElement('span');
+      label.className = 'src-sec';
+      label.textContent = 'Агент просит уточнить: ';
+      const text = document.createElement('span');
+      text.textContent = rag.clarification;
+      ask.append(label, text);
+      box.append(ask);
+    }
+
+    const line = document.createElement('p');
+    line.className = 'sum';
+    line.textContent = searchLine(rag);
+    box.append(line);
+    li.append(box);
+  };
+
+  /** Строка о расходе отказанного хода: словами сервиса, а не догадкой. */
+  const moneyLine = (paidNothing) => {
+    const row = document.createElement('p');
+    row.className = 'sum';
+    row.textContent = MONEY_TEXT[moneyWord(paidNothing)];
+    return row;
+  };
+
   const addVerdict = (li, meta) => {
     const review = meta.review ?? {};
     // Причину, которой страница не знает, сервис может завести позже. Молча
@@ -3940,7 +4242,7 @@
     const parts = [];
     // `stagesPassed` считает ПРОХОДЫ этапов, а не этапы: при двух кругах их
     // больше числа этапов (приём, круг, второй круг, пополнение, выдача).
-    // Подпись «Этапы: 9» рядом с полосой из семи этапов
+    // Подпись «Этапы: 10» рядом с полосой из восьми этапов
     // читалась бы как ошибка экрана, поэтому здесь названо то, что считается.
     if (Number.isFinite(meta.stagesPassed))
       parts.push(`Проходов этапов: ${meta.stagesPassed}`);
@@ -4000,7 +4302,12 @@
       text.textContent = m.text || '(пустой ответ)';
     }
     li.append(head, text);
-    if (meta.error) return li;
+    if (meta.error) {
+      // Отказ хода: что случилось — словами сервиса выше, а стоил ли он
+      // денег — его же признаком `paidNothing`.
+      li.append(moneyLine(meta.paidNothing));
+      return li;
+    }
 
     // Вопрос о теме — обычная реплика агента, поэтому карточка живёт здесь и
     // переживает перезагрузку страницы.
@@ -4027,6 +4334,9 @@
         ),
       );
 
+    // Источники и цитаты — ВЫШЕ пометки проверки: источник это то, на чём
+    // ответ стоит, а вердикт — мнение о нём.
+    addRag(li, meta.rag);
     addVerdict(li, meta);
     addInvariants(li, meta);
 
@@ -4267,6 +4577,95 @@
     return q;
   };
 
+  /* ---------- панель «Состояние задачи» (день 25) ---------- */
+
+  /**
+   * Состояние задачи приходит в результате хода (`end.result.task`) и живёт в
+   * памяти страницы до смены диалога.
+   *
+   * ЧЕСТНАЯ ГРАНИЦА, названная словами на экране: ПОСЛЕ ПЕРЕЗАГРУЗКИ панель
+   * пуста. Переписка состояния не несёт (`GET /v1/sessions/:id` его не
+   * отдаёт), а восстанавливать его по репликам означало бы придумать цель,
+   * которой сервис не называл. Поэтому панель говорит, когда состояние
+   * вернётся, вместо того чтобы показать свою догадку.
+   */
+  let taskState = null;
+
+  const TASK_EMPTY =
+    'Состояние задачи ведёт отдельный вызов на этапе «Пополнение памяти»: цель разговора, '
+    + 'ограничения, термины и уточнения. Оно появится здесь после ответа агента — и после '
+    + 'перезагрузки страницы тоже только после следующего ответа: в переписке служба состояние '
+    + 'не отдаёт.';
+
+  /** Поля состояния в том порядке, в каком они уходят в промпт. */
+  const TASK_ROWS = [
+    ['constraints', 'Ограничения'],
+    ['terms', 'Термины'],
+    ['clarifications', 'Уточнения'],
+    ['open', 'Открытые вопросы'],
+  ];
+
+  const taskListOf = (key, state) => {
+    const list = Array.isArray(state[key]) ? state[key] : [];
+    if (key !== 'terms') return list.map((item) => String(item));
+    return list.map((item) => `${item?.term ?? ''} — ${item?.meaning ?? ''}`);
+  };
+
+  const renderTask = () => {
+    const dl = $('task-dl');
+    const empty = $('task-empty');
+    const round = $('task-round');
+    const warn = $('task-warn');
+    dl.replaceChildren();
+    if (taskState === null) {
+      dl.hidden = true;
+      empty.hidden = false;
+      empty.textContent = TASK_EMPTY;
+      round.hidden = true;
+      warn.hidden = true;
+      return;
+    }
+    empty.hidden = true;
+    dl.hidden = false;
+
+    const row = (term, node) => {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.append(node);
+      dl.append(dt, dd);
+    };
+    const goal = document.createElement('span');
+    // Цель — пересказ реплик посетителя моделью: недоверенный текст.
+    goal.textContent = taskState.goal ? taskState.goal : 'пока не названа';
+    row('Цель', goal);
+
+    for (const [key, name] of TASK_ROWS) {
+      const items = taskListOf(key, taskState);
+      if (items.length === 0) continue;
+      const list = document.createElement('ul');
+      list.className = 'task-list';
+      for (const item of items) {
+        const li = document.createElement('li');
+        li.textContent = item;
+        list.append(li);
+      }
+      row(name, list);
+    }
+
+    const at = Number.isInteger(taskState.round) ? taskState.round : null;
+    round.hidden = at === null;
+    if (at !== null) round.textContent = `обновлено на ходе ${at}`;
+    // Состояние не записалось: следующий ход уйдёт с прежним, и молчать об
+    // этом нельзя — панель показывала бы то, чего в поиске не будет.
+    warn.hidden = taskState.stored !== false;
+    if (taskState.stored === false)
+      warn.replaceChildren(
+        ...warnLine('Состояние не сохранено: диалога уже нет. В поиск следующего хода уйдёт прежнее.')
+          .childNodes,
+      );
+  };
+
   const adoptChat = (d) => {
     messages = d.messages ?? [];
     restoredFromServer = messages.length > 0;
@@ -4277,7 +4676,15 @@
     headId = Number.isInteger(d.head) ? d.head : null;
     activeTopic = d.topic ?? null;
     pendingTopic = d.pendingTopic ?? null;
-    sessionName = d.session?.name ?? null;
+    const nextSession = d.session?.name ?? null;
+    // Состояние задачи живёт с диалогом: другой диалог — чужая цель, нет
+    // диалога — нет и состояния. Первый ход нового диалога из этого правила
+    // исключён: имя появляется как раз им, а состояние пришло вместе с
+    // ответом.
+    if (nextSession === null || (sessionName !== null && nextSession !== sessionName))
+      taskState = null;
+    sessionName = nextSession;
+    renderTask();
     // Полоса встаёт в то же положение, в котором стоит сервис. Пока запуск в
     // этом браузере идёт, поток событий точнее ответа ручки — его не трогаем.
     if (runState.view !== 'running' && runState.view !== 'paused') adoptRun(d.run ?? null);
@@ -5279,8 +5686,19 @@
           answered(r.answer, run.summarizeFailed ? { ...summary, summarizeFailed: true } : summary);
         }
         if (Number.isFinite(r.totalTokens)) spentTokens = (spentTokens ?? 0) + r.totalTokens;
+        // Состояние задачи после хода: панель обновляется каждым ходом и
+        // показывает, на каком ходе состояние записано.
+        if (r.task && typeof r.task === 'object') {
+          taskState = r.task;
+          renderTask();
+        }
       } else if (end.error) {
-        answered(end.error.message ?? 'агент не ответил', { error: true });
+        // Признак расхода уходит в карточку как есть: страница о деньгах
+        // ничего не выводит сама.
+        answered(end.error.message ?? 'агент не ответил', {
+          error: true,
+          paidNothing: end.error.paidNothing,
+        });
       }
       setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
         ? end.status
