@@ -22,9 +22,18 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { after, test } from 'node:test'
-import { contextOf, main, parseEnd, runAll, runOne, SPACING_MS } from '../eval/run.mjs'
+import {
+  contextOf,
+  EVAL_KEY_FILE,
+  main,
+  parseEnd,
+  readEvalKey,
+  runAll,
+  runOne,
+  SPACING_MS,
+} from '../eval/run.mjs'
 
 const DOD = 'agent_docs/guides/dod.md'
 
@@ -140,13 +149,93 @@ test('тело запроса — РОВНО вопрос: поля mode в нё
   assert.deepEqual(JSON.parse(seen[0].body), { question: 'вопрос q08' })
 })
 
-test('прогон не предъявляет дню никакого ключа — предъявлять нечего (I-3)', async () => {
+// ——— ключ оператора: единственный ключ, который прогон предъявляет (I-3) ———
+//
+// СВОЙСТВО ПЕРЕПИСАНО ОСОЗНАННО, а не ослаблено под новую возможность. До
+// ADR 2026-10-05-1130 прогон не предъявлял дню ничего, и тест требовал
+// отсутствия любого ключа. Теперь ключ оператора есть, и требование стало
+// точнее, а не мягче: ключ ровно один, уходит ровно в одно место и не
+// появляется нигде, кроме заголовка. Прочие ключи запрещены как прежде.
+
+/** Значение, которого в выводе и в файле результата быть не должно. */
+const OPERATOR_KEY = 'operator-key-secret-do-not-leak'
+
+test('ключ оператора уходит заголовком создания запуска — и только там (I-3)', async () => {
+  reset()
+  await runOne({ base, question: ask('q08'), key: OPERATOR_KEY })
+  const [create, events] = seen
+  assert.equal(create.url, '/api/runs')
+  assert.equal(create.headers['x-eval-key'], OPERATOR_KEY)
+  // Поток событий идёт под окном ЧТЕНИЙ, которому флаг оператора не положен
+  // (`days/day24/server.js`, `RESERVE`): предъявлять там ключ значило бы
+  // светить им в месте, где он ничего не открывает.
+  assert.match(events.url, /\/events$/)
+  assert.equal(events.headers['x-eval-key'], undefined, 'ключ ушёл в поток событий')
+})
+
+test('без ключа заголовка нет вовсе — день видит обычного посетителя', async () => {
   reset()
   await runOne({ base, question: ask('q08') })
+  for (const record of seen)
+    assert.equal(record.headers['x-eval-key'], undefined, 'заголовок появился без ключа')
+})
+
+test('пустой ключ равен отсутствию: пустое значение не посылается', async () => {
+  reset()
+  // День трактует `x-eval-key` с пустым значением как «возможности нет»
+  // (`limits.js`, `isOperator`), так что пустое значение изображало бы
+  // предъявление ключа.
+  for (const empty of [null, '', '   ']) {
+    reset()
+    await runOne({ base, question: ask('q08'), key: readEvalKey({ read: () => empty ?? '' }) })
+    assert.equal(seen[0].headers['x-eval-key'], undefined, JSON.stringify(empty))
+  }
+})
+
+test('прочих ключей прогон дню не предъявляет (I-3)', async () => {
+  reset()
+  await runOne({ base, question: ask('q08'), key: OPERATOR_KEY })
   for (const record of seen) {
     assert.equal(record.headers.authorization, undefined)
     assert.equal(record.headers['x-api-key'], undefined)
   }
+})
+
+test('значение ключа не попадает ни в вывод прогона, ни в файл результата', async () => {
+  reset()
+  const out = tmp()
+  const lines = []
+  await main({
+    argv: ['--base', base, '--out', out, '--questions', questionsFile(), '--force'],
+    sleep: async () => {},
+    log: (l) => lines.push(l),
+    key: OPERATOR_KEY,
+  })
+  // Стенд ключ получил — значит проверяется не пустая выдумка.
+  assert.equal(seen[0].headers['x-eval-key'], OPERATOR_KEY, 'ключ до стенда не дошёл')
+  const printed = lines.join('\n')
+  assert.ok(!printed.includes(OPERATOR_KEY), `ключ напечатан: ${printed}`)
+  assert.ok(!readFileSync(out, 'utf8').includes(OPERATOR_KEY), 'ключ попал в файл результата')
+  // Но сказать, ЕСТЬ ли ключ, прогон обязан: под окнами и мимо окон — разные
+  // условия прогона, и читающий вывод должен знать, в каких он шёл.
+  assert.ok(/ключ оператора: есть/.test(printed), printed)
+})
+
+test('ключ читается из файла, обрезается по краям, а его отсутствие — не ошибка', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'day24-key-'))
+  const file = join(dir, 'eval.key')
+  writeFileSync(file, `  ${OPERATOR_KEY}\n`)
+  assert.equal(readEvalKey({ file }), OPERATOR_KEY)
+  writeFileSync(file, '   \n')
+  assert.equal(readEvalKey({ file }), null, 'пустой файл дал ключ')
+  assert.equal(readEvalKey({ file: join(dir, 'нет-такого') }), null)
+})
+
+test('умолчание пути — в домашнем каталоге, и в репозитории ключа нет', () => {
+  // Путь обязан быть вне репозитория: файл ключа рядом с кодом однажды
+  // уехал бы в коммит (I-2).
+  assert.ok(EVAL_KEY_FILE.endsWith(join('.config', 'advent', 'eval.key')), EVAL_KEY_FILE)
+  assert.ok(!EVAL_KEY_FILE.includes(`${sep}days${sep}`), EVAL_KEY_FILE)
 })
 
 test('режим и индекс берутся ИЗ ОТВЕТА запуска, а не из догадки', async () => {

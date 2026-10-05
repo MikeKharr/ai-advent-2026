@@ -39,6 +39,7 @@
 // 24 судейства не было вовсе (решение владельца 2026-10-05), и подпись файла
 // говорит это словами (`score.mjs`, `NOTE`).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildReport, checkReport, pendingVerdicts, scoreRun } from './score.mjs'
@@ -56,6 +57,43 @@ export const BASE = 'https://challenge.zpq.ai/day24'
  * а не ухода ответа.
  */
 export const SPACING_MS = 13_000
+
+/**
+ * Заголовок ключа оператора. Тот же, что у дня (`days/day24/limits.js`,
+ * `EVAL_HEADER`), и образец — день 22 (`days/day22/eval/run.mjs`).
+ */
+export const EVAL_HEADER = 'x-eval-key'
+
+/** Умолчание пути к файлу ключа оператора (ADR 2026-10-05-1130). */
+export const EVAL_KEY_FILE = join(homedir(), '.config', 'advent', 'eval.key')
+
+/**
+ * Ключ оператора из файла, либо `null`, если файла нет, он не читается или
+ * пуст. Отсутствие — НЕ ошибка: прогон тогда идёт под окнами на адрес, как до
+ * ADR 2026-10-05-1130.
+ *
+ * ПУСТОЙ КЛЮЧ РАВЕН ОТСУТСТВИЮ, и это не придирка: день трактует
+ * `x-eval-key` с пустым значением как «возможности нет» (`limits.js`,
+ * `isOperator`), так что послать пустое значило бы изобразить предъявление
+ * ключа и получить тот же отказ, только непонятнее.
+ *
+ * Значение из этой функции не печатается НИГДЕ: единственный его потребитель —
+ * заголовок запроса. Поэтому и ошибка чтения глотается молча — текст
+ * исключения `fs` несёт путь, а путь к файлу ключа в выводе не нужен.
+ */
+export function readEvalKey({
+  file = process.env.EVAL_KEY_FILE || EVAL_KEY_FILE,
+  read = readFileSync,
+} = {}) {
+  let text
+  try {
+    text = read(file, 'utf8')
+  } catch {
+    return null
+  }
+  const value = String(text).trim()
+  return value === '' ? null : value
+}
 
 /** Создание запуска — быстрый вызов. Ответ модели ждём отдельно, в потоке. */
 const CREATE_TIMEOUT_MS = 15_000
@@ -100,13 +138,22 @@ export function parseEnd(chunkText, state) {
  * РЕЗУЛЬТАТ прогона, а не его авария, и он обязан доехать до файла.
  *
  * Тело запроса — ровно `{question}`. Поля `mode` в нём нет: см. шапку файла.
+ *
+ * КЛЮЧ ОПЕРАТОРА УХОДИТ ТОЛЬКО ЗДЕСЬ, на создании запуска, и только если он
+ * есть. Причина не в экономии заголовков: флаг оператора читает единственное
+ * окно `run` (`days/day24/server.js`, `RESERVE`), а поток событий идёт под
+ * окном чтений, которому ключ не положен вовсе. Послать его туда значило бы
+ * предъявлять ключ там, где он ничего не открывает.
  */
-export async function runOne({ base, question, fetchImpl = fetch }) {
+export async function runOne({ base, question, fetchImpl = fetch, key = null }) {
   let created
   try {
     created = await fetchImpl(`${base}/api/runs`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(key ? { [EVAL_HEADER]: key } : {}),
+      },
       body: JSON.stringify({ question: question.question }),
       signal: AbortSignal.timeout(CREATE_TIMEOUT_MS),
     })
@@ -162,6 +209,13 @@ export async function runOne({ base, question, fetchImpl = fetch }) {
  * Весь набор. Запуски строго последовательны и с паузой между ними — это не
  * медлительность, а условие прохождения окон (см. шапку).
  *
+ * КЛЮЧ ОПЕРАТОРА ПАУЗУ НЕ УКОРАЧИВАЕТ, и это осознанно. Он снимает окна НА
+ * АДРЕС у дня — но не окно службы `rag` (10 в минуту на хост), до которой день
+ * вообще не дотягивается: туда ходит сервис агентов под своим ключом. У дня 24
+ * на вопрос ровно одно обращение с поиском, значит 13 с между запусками и есть
+ * те самые ≥ 6 с на обращение к службе, которых требует её окно. Укорачивать
+ * нечего: день 22 делил пополам потому, что у него на вопрос ДВА запуска.
+ *
  * ПЕРВЫЙ ОТКАЗ ОСТАНАВЛИВАЕТ ПРОГОН, и это про деньги, а не про аккуратность.
  * Отказ самого первого запуска значит, что сломан путь, а не вопрос: схему
  * отклонил провайдер (`answer_invalid`), день отверг тело (`http_400`), служба
@@ -183,12 +237,13 @@ export async function runAll({
   sleep = sleepReal,
   spacingMs = SPACING_MS,
   log = console.log,
+  key = null,
 }) {
   const runs = new Map()
   let first = true
   for (const question of questions) {
     if (!first) await sleep(spacingMs)
-    const got = await runOne({ base, question, fetchImpl })
+    const got = await runOne({ base, question, fetchImpl, key })
     runs.set(question.id, got)
     if (got.failure) log(`${question.id}: отказ ${got.failure.code} — ${got.failure.message}`)
     else {
@@ -237,6 +292,7 @@ export async function main({
   sleep = sleepReal,
   log = console.log,
   now = () => new Date(),
+  key = readEvalKey(),
 } = {}) {
   const flag = (name) => argv.includes(name)
   const value = (name, fallback) => {
@@ -271,8 +327,14 @@ export async function main({
   }
 
   const base = value('--base', BASE)
-  log(`прогон: ${questions.length} вопросов через ${base}; первый — дымовой`)
-  const { runs, aborted } = await runAll({ base, questions, fetchImpl, sleep, log })
+  // Про ключ говорится ЕСТЬ ОН ИЛИ НЕТ, но никогда — какой: прогон под окнами
+  // и прогон мимо них это разные условия, и читающий вывод обязан знать, в
+  // каких шёл этот.
+  log(
+    `прогон: ${questions.length} вопросов через ${base}; первый — дымовой; ` +
+      `ключ оператора: ${key ? 'есть' : 'нет'}`,
+  )
+  const { runs, aborted } = await runAll({ base, questions, fetchImpl, sleep, log, key })
   if (aborted !== null) {
     log('файл результата не записан: прогона не было')
     return 1
