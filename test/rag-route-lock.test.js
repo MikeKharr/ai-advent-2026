@@ -1,6 +1,6 @@
 // Маршрут `/rag` и его замок не разъезжаются — ADR 2026-09-29-2139, п. 1.
 //
-// Ради чего. Заход 3 сознательно НЕ добавил `handle /rag` в `deploy/Caddyfile`,
+// Ради чего. Заход 3 сознательно НЕ добавил `handle /rag` в `deploy/caddy/Caddyfile`,
 // хотя единица уже стояла в проде: за этим адресом ядро общей машины, и
 // публичной ручки без ключа не должно существовать ни минуты. Заход 4
 // добавляет маршрут и замок одним изменением. Дальше это держать нечем:
@@ -30,7 +30,7 @@ import { test } from 'node:test'
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 export const FILES = {
-  caddy: 'deploy/Caddyfile',
+  caddy: 'deploy/caddy/Caddyfile',
   compose: 'deploy/compose.yml',
   serve: 'rag/serve.py',
 }

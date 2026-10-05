@@ -119,7 +119,7 @@
         "agent_docs/guides/new-day.md"
       ],
       "phrase": null,
-      "answer": "Нужны четыре шага: каталог days/dayN/ с Dockerfile (приложение слушает 8080 и отвечает 200 на /healthz), две строки в deploy/Caddyfile (redir и handle_path на dayN:8080), сервис по образцу day1 в deploy/compose.yml и ссылка на лендинге site/index.html. Секреты заводить не нужно — ключ и лимиты лежат в общем deploy/secrets.env; имя каталога обязано совпадать во всех этих местах.",
+      "answer": "Нужны четыре шага: каталог days/dayN/ с Dockerfile (приложение слушает 8080 и отвечает 200 на /healthz), две строки в deploy/caddy/Caddyfile (redir и handle_path на dayN:8080), сервис по образцу day1 в deploy/compose.yml и ссылка на лендинге site/index.html. Секреты заводить не нужно — ключ и лимиты лежат в общем deploy/secrets.env; имя каталога обязано совпадать во всех этих местах.",
       "evidence": "Имя каталога задаёт всё остальное и должно совпадать везде: `days/day2/` → сервис `day2`",
       "evidence_source": "agent_docs/guides/new-day.md"
     },
@@ -228,12 +228,12 @@
       "id": "q21",
       "question": "как настроен маршрут /mcp в Caddy",
       "expected": [
-        "deploy/Caddyfile"
+        "deploy/caddy/Caddyfile"
       ],
       "phrase": null,
       "answer": "Маршрут сделан двумя блоками без редиректа: handle /mcp проксирует запрос на mcp:8083 как есть, и адрес эндпоинта — ровно /mcp, без завершающего слэша. Редиректа как у дней тут нет намеренно: на 301 клиент повторил бы запрос методом GET и потерял тело JSON-RPC. Отдельный handle /mcp/healthz срезает префикс и открыт без ключа — его дёргает проверка живого сайта при выкатке.",
       "evidence": "адрес эндпоинта — ровно /mcp, без завершающего слэша",
-      "evidence_source": "deploy/Caddyfile"
+      "evidence_source": "deploy/caddy/Caddyfile"
     },
     {
       "id": "q22",
@@ -1015,9 +1015,9 @@
       "expected": [
         ".github/workflows/deploy.yml"
       ],
-      "phrase": "caddyfile_now=$(sha256sum Caddyfile | cut -d' ' -f1)",
+      "phrase": "caddyfile_now=$(sha256sum caddy/Caddyfile | cut -d' ' -f1)",
       "answer": "Выкатка считает sha256 файла Caddyfile и сравнивает его с запомненной на сервере суммой последней применённой конфигурации. Если они разошлись, конфигурация сначала проверяется через caddy validate в том же контейнере, а затем перечитывается caddy reload с повторами — reload идёт после up -d, который возвращается по старту, а не по готовности.",
-      "evidence": "caddyfile_now=$(sha256sum Caddyfile | cut -d' ' -f1)",
+      "evidence": "caddyfile_now=$(sha256sum caddy/Caddyfile | cut -d' ' -f1)",
       "evidence_source": ".github/workflows/deploy.yml"
     },
     {
@@ -1046,12 +1046,12 @@
       "id": "q95",
       "question": "как вход узнаёт настоящий адрес посетителя, если перед ним стоит ещё один прокси",
       "expected": [
-        "deploy/Caddyfile"
+        "deploy/caddy/Caddyfile"
       ],
       "phrase": "trusted_proxies static private_ranges",
       "answer": "Строкой trusted_proxies static private_ranges: вход доверяет единственному стоящему перед ним прокси на частном адресе docker-сети и берёт адрес посетителя из присланного им X-Forwarded-For. Без неё Caddy считал бы прокси обычным клиентом и подставлял бы адрес контейнера входа — лимитеры всех дней схлопнулись бы на один адрес.",
       "evidence": "trusted_proxies static private_ranges",
-      "evidence_source": "deploy/Caddyfile"
+      "evidence_source": "deploy/caddy/Caddyfile"
     },
     {
       "id": "q96",

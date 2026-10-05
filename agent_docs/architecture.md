@@ -75,7 +75,7 @@ agents/        сервис агентов: реестр, инструменты
 mcp/           служба MCP: сервер протокола на официальном SDK, три инструмента (ADR 2026-09-23-1227)
 atlas/         атлас проекта: конфигурация, overlay и образ статики на /atlas/; генератор — в project-atlas (ADR 2026-09-12-0440)
 site/          лендинг на корне домена
-deploy/        Caddyfile, compose.yml, bootstrap.sh
+deploy/        caddy/Caddyfile, compose.yml, bootstrap.sh
 ```
 
 Заголовки задаются один раз на весь сайт в блоке `header` — они доходят и до проксируемых дней. Там же `X-Robots-Tag: noindex`: домен намеренно закрыт от индексации (`development-history/2026-09-08-1245`).

@@ -152,7 +152,7 @@ def client_ip(headers, remote: str) -> str:
     Сам по себе заголовок ничего не гарантирует: подставить в него что угодно
     может кто угодно, кто до службы дотянулся. Держит границу вход —
     `header_up X-Forwarded-For {client_ip}` в блоке `/rag` файла
-    `deploy/Caddyfile` ЗАМЕНЯЕТ заголовок адресом соединения, а мимо входа до
+    `deploy/caddy/Caddyfile` ЗАМЕНЯЕТ заголовок адресом соединения, а мимо входа до
     службы не достучаться: портов наружу нет и сеть `rag` отдельная.
     Последний элемент — на случай ещё одного прокси, дописывающего адрес в
     хвост.
@@ -299,7 +299,7 @@ def make_handler(status: Status, indexes, limiter, daily_cap, handle_one, key: s
 
                 # 3. Метод не тот. Ветвь достижима БЕЗ ключа: у записи
                 # `/healthz` окно `open`, проверка ключа выше пропускается,
-                # а `handle /rag/healthz` в `deploy/Caddyfile` метод не
+                # а `handle /rag/healthz` в `deploy/caddy/Caddyfile` метод не
                 # ограничивает. Тело при этом не читается — за соединение
                 # отвечает страж в `finally`.
                 if method != route.method:

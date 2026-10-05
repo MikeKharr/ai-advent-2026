@@ -25,7 +25,7 @@
 ├── days/                     # Одно задание — один каталог — один контейнер
 │   └── day1/                 # → challenge.zpq.ai/day1
 ├── site/                     # Лендинг на корне домена
-├── deploy/                   # Caddyfile, compose.yml, bootstrap.sh
+├── deploy/                   # caddy/Caddyfile, compose.yml, bootstrap.sh
 ├── .agents/skills/           # Canonical skills: addyosmani (25) + NVIDIA skill-inspector + /design-review
 ├── .agents/references/       # Общие чек-листы vendored-набора
 ├── .claude/agents/           # Роли агентов (11 ролей)

@@ -27,7 +27,7 @@
   "deploy": {
     "compose": "deploy/compose.yml",
     "proxy": "caddy",
-    "caddyfile": "deploy/Caddyfile",
+    "caddyfile": "deploy/caddy/Caddyfile",
     "landing": "site/index.html",
     "static": [
       {
