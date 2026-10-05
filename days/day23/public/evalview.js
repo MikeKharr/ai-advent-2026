@@ -136,6 +136,40 @@ export const hasRun = (parsed) =>
  */
 export const NOTABLE = 0.02
 
+/**
+ * Ожидание этого дня, названное ДО прогона: отбор поднимает Recall@5 примерно
+ * до 0,58 против 0,48 без него (ADR 2026-10-05-0544, п. 1.2 — счёт по рангам
+ * дня 21). Число стоит здесь, чтобы расхождение меры с ожиданием называла сама
+ * страница, а не вспоминал читатель.
+ */
+export const RECALL_EXPECTED = 0.58
+
+/**
+ * Что мера сказала про ВТОРУЮ метрику, когда отбор её опустил. Фраза вывода
+ * выбирает режим по MRR@10 — так велит ADR (п. 2.4), — и этого мало: отбор
+ * может поднять MRR@10 и ОДНОВРЕМЕННО выбросить верные документы из пятёрки,
+ * то есть «лучший режим» будет назван на фоне падения Recall@5. Строка
+ * собирается из чисел файла: называются режимы, в которых `after` ниже
+ * `before`, со своими числами; не опустил ни в одном — строки нет вовсе.
+ */
+export function recallText(parsed) {
+  const fell = EVAL_MODES.map(([key, word]) => [word, parsed.modes[key]]).filter(
+    ([, m]) =>
+      m !== null &&
+      m.before.recall5 !== null &&
+      m.after.recall5 !== null &&
+      m.after.recall5 < m.before.recall5,
+  )
+  if (fell.length === 0) return ''
+  const list = fell
+    .map(([word, m]) => `«${word}» ${formatMetric(m.before.recall5)} → ${formatMetric(m.after.recall5)}`)
+    .join(', ')
+  return (
+    ` Recall@5 отбор при этом опустил: ${list}. Ожидание дня было обратным — поднять Recall@5` +
+    ` примерно до ${formatMetric(RECALL_EXPECTED)}, — и мера его не подтвердила.`
+  )
+}
+
 export function verdict(parsed) {
   const rows = EVAL_MODES.map(([key, word]) => [key, word, parsed.modes[key]]).filter(
     ([, , m]) => m !== null && m.before.mrr10 !== null && m.after.mrr10 !== null,
@@ -148,16 +182,22 @@ export function verdict(parsed) {
   if (gain >= NOTABLE)
     return {
       lead: `Отбор поднял MRR@10 на ${formatMetric(gain)}. `,
-      text: `Лучший режим — «${best[1]}». Это выше порога заметности ${formatMetric(NOTABLE)}, которым ADR выбирает режим для следующего дня.`,
+      text:
+        `Лучший режим — «${best[1]}». Это выше порога заметности ${formatMetric(NOTABLE)}, которым ADR выбирает режим для следующего дня.` +
+        recallText(parsed),
     }
   if (gain <= -NOTABLE)
     return {
       lead: `Отбор опустил MRR@10 на ${formatMetric(Math.abs(gain))}. `,
-      text: 'Вторая ступень здесь мешает, а не помогает: она выбрасывает фрагменты, которые стояли выше по близости.',
+      text:
+        'Вторая ступень здесь мешает, а не помогает: она выбрасывает фрагменты, которые стояли выше по близости.' +
+        recallText(parsed),
     }
   return {
     lead: 'Разницы нет. ',
-    text: `Ни один режим не сдвинул MRR@10 больше чем на ${formatMetric(NOTABLE)}. Это результат дня, а не недоделанный прогон: потолок отбора при десяти кандидатах был назван до прогона — верного документа нет и в десятке почти у половины вопросов эталона.`,
+    text:
+      `Ни один режим не сдвинул MRR@10 больше чем на ${formatMetric(NOTABLE)}. Это результат дня, а не недоделанный прогон: потолок отбора при десяти кандидатах был назван до прогона — верного документа нет и в десятке почти у половины вопросов эталона.` +
+      recallText(parsed),
   }
 }
 
