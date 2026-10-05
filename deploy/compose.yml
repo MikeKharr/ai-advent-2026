@@ -64,6 +64,7 @@ services:
       - day19
       - day20
       - day22
+      - day23
       - mcp
       - rag
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
@@ -432,6 +433,25 @@ services:
       - "8080"
     env_file:
       - path: ./day22.env
+        required: false
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - agents
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # День 23 — отбор второй ступенью (ADR 2026-10-05-0544). Сеть одна, по
+  # умолчанию, как у всех дней: до службы `rag` дню не дотянуться, поиск и
+  # отбор за него зовёт `agents`.
+  day23:
+    image: ghcr.io/mikekharr/advent-day23:${DAY23_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: ./day23.env
         required: false
     environment:
       - NODE_ENV=production

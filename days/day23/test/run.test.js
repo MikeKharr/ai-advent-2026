@@ -1,0 +1,902 @@
+// Правила показа запуска — исполнением (days/day23/public/run.js).
+//
+// Предмет здесь поведенческий: что страница скажет при таких-то данных. Все
+// входы — то, что реально отдаёт `agents/src/rag-agent.js`; формы событий
+// взяты из его же `emit` и из `agents/src/mcp/pipeline.js`, `rpcEvent`.
+
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import {
+  ANSWER_BLANK,
+  ANSWER_TORN,
+  answerMeta,
+  DAY_LIMIT_NOTE,
+  dayLimitNote,
+  failure,
+  formatScore,
+  fragmentSummary,
+  fragmentTextNote,
+  indexMeta,
+  isBlank,
+  MAX_QUESTION,
+  CANDIDATES_RAG,
+  keptWord,
+  MODE_WORD,
+  parseResult,
+  plural,
+  answerBlock,
+  COST_PARTIAL,
+  COST_UNKNOWN_FILTER,
+  costNote,
+  fromWord,
+  PICK_RULE,
+  PICK_SELECTED,
+  PICK_SELECTING,
+  planningReport,
+  progress,
+  SRCS_FOUND,
+  SRCS_KEPT,
+  rewriteGainNote,
+  rewriteSearchNote,
+  relevanceWord,
+  SELECT_NONE,
+  selectionNote,
+  selectNone,
+  repoUrl,
+  shortSearchNote,
+  sourceUrl,
+  SRCS_TORN_AFTER,
+  SRCS_TORN_BEFORE,
+  STATUS,
+  steps,
+  strategyWord,
+  tornSrcsNote,
+} from '../public/run.js'
+
+const COMMIT = '57a5cd7aa11bb22cc33dd44ee55ff6677889900a'
+
+const result = (over = {}) => ({
+  mode: 'rag',
+  answer: 'Ответ модели.',
+  refused: false,
+  sources: [
+    { n: 1, source: 'agent_docs/invariants.md', section: 'Расход средств › I-4', score: 0.7142, text: 'строка\nвторая', truncated: false },
+    { n: 2, source: 'rag/tools.py', section: '', score: 0.6551, text: '', truncated: false },
+  ],
+  index: { commit: COMMIT, strategy: 'structural', chunks: 3167 },
+  rpc: { server: 'rag', method: 'tools/call', request: '{}', response: '{}', status: 200, ms: 800, clipped: false },
+  tokens: 4312,
+  budgetLeftUsd: 9.87,
+  truncated: false,
+  model: { id: 'anthropic-haiku' },
+  durationMs: 3400,
+  ...over,
+})
+
+test('разбор результата: пустой текст фрагмента и ОТСУТСТВИЕ поля — разные случаи', () => {
+  const parsed = parseResult(result({ sources: [
+    { n: 1, source: 'a.md', section: '', score: 0.5, text: '' },
+    { n: 2, source: 'b.md', section: '', score: 0.5 },
+  ] }))
+  assert.equal(parsed.sources[0].text, '', 'пустой текст — пустая строка')
+  assert.equal(parsed.sources[1].text, null, 'поля не было — null, а не пустая строка')
+})
+
+test('разбор результата не падает на чужом вводе и не выдумывает полей', () => {
+  for (const bad of [null, undefined, 'строка', 42, [], { sources: 'нет', index: 'нет' }]) {
+    const parsed = parseResult(bad)
+    assert.equal(parsed.mode, null)
+    assert.equal(parsed.answer, '')
+    assert.equal(parsed.refused, false)
+    assert.deepEqual(parsed.sources, [])
+    assert.equal(parsed.index, null)
+    assert.equal(parsed.tokens, null)
+  }
+})
+
+test('признак отказа берётся ПОЛЕМ, а не поиском фразы в ответе', () => {
+  // Ответ содержит фразу, но поля нет — отказом он не считается: сверку по
+  // подстроке раскладка запрещает (п. 5.3).
+  const sneaky = parseResult(result({ answer: 'В найденных фрагментах ответа нет', refused: undefined }))
+  assert.equal(sneaky.refused, false)
+  assert.equal(parseResult(result({ refused: true })).refused, true)
+})
+
+test('строка меры называет остаток бюджета остатком, а не ценой запроса', () => {
+  const meta = answerMeta(parseResult(result()))
+  assert.equal(
+    meta,
+    'режим: без отбора · фрагментов: 2 · токенов вызова ответа: 4312 · бюджет дня: остаток $9,87',
+  )
+})
+
+test('строка меры режима с отбором называет ОБА числа: сколько было и сколько осталось', () => {
+  const meta = answerMeta(
+    parseResult(
+      result({
+        mode: 'rerank',
+        candidates: [
+          { n: 1, source: 'a.md', score: 0.5, relevance: 2, kept: true },
+          { n: 2, source: 'b.md', score: 0.4, relevance: 0, kept: false },
+        ],
+        sources: [{ n: 1, source: 'a.md', section: '', score: 0.5, text: 'т' }],
+      }),
+    ),
+  )
+  assert.ok(meta.includes('кандидатов: 2 → оставлено: 1'), meta)
+})
+
+test('чего не пришло, того в строке меры нет — нуля на его месте не бывает (I-8)', () => {
+  const meta = answerMeta(parseResult(result({ tokens: null, budgetLeftUsd: null })))
+  assert.equal(meta, 'режим: без отбора · фрагментов: 2')
+})
+
+test('шапка источников несёт короткий коммит и имя стратегии словом', () => {
+  assert.equal(indexMeta(parseResult(result())), 'индекс 57a5cd7 · стратегия структурная · фрагментов 2')
+  assert.equal(indexMeta(parseResult(result({ index: null }))), '')
+})
+
+test('имя стратегии — слово; незнакомый код не переводится и не прячется', () => {
+  assert.equal(strategyWord('structural'), 'структурная')
+  assert.equal(strategyWord('fixed'), 'фиксированная')
+  assert.equal(strategyWord('semantic'), 'semantic', 'незнакомую стратегию страница не переименовывает')
+  assert.equal(strategyWord(''), null)
+  assert.equal(strategyWord(undefined), null)
+})
+
+test('путь ведёт на файл НА ТОМ КОММИТЕ; без коммита ссылки нет вовсе', () => {
+  assert.equal(
+    sourceUrl('agent_docs/invariants.md', COMMIT),
+    `https://github.com/MikeKharr/ai-advent-2026/blob/${COMMIT}/agent_docs/invariants.md`,
+  )
+  assert.equal(sourceUrl('a.md', null), null, 'без коммита путь остаётся текстом')
+  assert.equal(sourceUrl('a.md', 'не-коммит'), null, 'чужая форма коммита ссылкой не становится')
+  assert.equal(sourceUrl('', COMMIT), null)
+  // Путь — недоверенные данные: он уезжает в адрес и обязан быть закодирован.
+  assert.ok(!sourceUrl('a/..?x=1#y.md', COMMIT).includes('?'))
+})
+
+test('близость — три знака, запятой; шкалы и цвета у неё нет', () => {
+  assert.equal(formatScore(0.7142), '0,714')
+  assert.equal(formatScore(0.6551), '0,655')
+  assert.equal(formatScore(1), '1,000')
+})
+
+test('сводка свёртки считает знаки пришедшего текста и склоняет слово', () => {
+  assert.equal(fragmentSummary('абв'), 'текст фрагмента · 3 знака')
+  assert.equal(fragmentSummary('а'), 'текст фрагмента · 1 знак')
+  assert.equal(fragmentSummary('а'.repeat(11)), 'текст фрагмента · 11 знаков')
+  assert.equal(fragmentSummary(''), 'текст фрагмента · пусто')
+  assert.equal(fragmentSummary(null), null, 'поля не было — свёртки нет')
+})
+
+test('частичный результат называется числами, а не прячется', () => {
+  const parsed = parseResult(result())
+  const sources = parsed.sources
+  assert.equal(shortSearchNote(parsed), 'Фрагментов нашлось 2, а не 5.')
+  assert.equal(
+    shortSearchNote(parseResult(result({ sources: [] }))),
+    null,
+    'пустая выдача — отдельный случай, не «меньше пяти»',
+  )
+  // В режимах с отбором пятёрка — ПОТОЛОК ОТБОРА, а не недобор поиска, и
+  // строка про «нашлось 2, а не 5» была бы ложью про чужой шаг.
+  assert.equal(shortSearchNote(parseResult(result({ mode: 'rerank' }))), null)
+  assert.equal(shortSearchNote(parseResult(result({ mode: 'rewrite' }))), null)
+  const partial = [{ text: 'есть' }, { text: null }, { text: null }]
+  assert.equal(fragmentTextNote(partial), 'Текст пришёл у 1 фрагментов из 3.')
+  assert.equal(fragmentTextNote([{ text: null }]), 'Текста фрагментов в этом ответе не пришло.')
+  assert.equal(fragmentTextNote(sources), null, 'текст у всех — строки нет')
+})
+
+test('склонение после числа', () => {
+  const f = (n) => plural(n, 'знак', 'знака', 'знаков')
+  assert.deepEqual([1, 2, 5, 11, 21, 104].map(f), ['знак', 'знака', 'знаков', 'знаков', 'знак', 'знака'])
+})
+
+// ——— лента конвейера ———
+
+const at = (sec) => new Date(Date.UTC(2026, 9, 4, 12, 0, sec)).toISOString()
+
+const ragEvents = [
+  { stage: 'received', at: at(0), data: { mode: 'rag', strategy: 'structural', limit: 5 } },
+  { stage: 'rpc', at: at(1), data: { server: 'rag', method: 'tools/call', request: '{"a":1}', response: '{"b":2}', status: 200, ms: 800, clipped: false } },
+  { stage: 'planning', at: at(1), data: { index: { commit: COMMIT }, sources: [1, 2, 3, 4, 5] } },
+  { stage: 'llm_call', at: at(1), data: { provider: 'anthropic-haiku' } },
+  { stage: 'llm_result', at: at(4), data: { usage: { inputTokens: 4000, outputTokens: 312 } } },
+]
+
+test('лента рага: шесть записей в порядке конвейера, сборка промпта — своя', () => {
+  const list = steps(ragEvents)
+  assert.deepEqual(
+    list.map((s) => s.label),
+    ['ПРИНЯТ ВОПРОС', 'ПОИСК ПО ПРОЕКТУ', 'ФРАГМЕНТЫ ПОЛУЧЕНЫ', 'СБОРКА ПРОМПТА', 'ВЫЗОВ МОДЕЛИ', 'ОТВЕТ МОДЕЛИ'],
+  )
+  // Стратегия и число фрагментов приехали из события `received`: в трейсе их
+  // нет вовсе, и запись о поиске без этого переноса осталась бы без меры.
+  assert.equal(list[1].meta, 'project.search по MCP · структурная · 5')
+  assert.equal(list[2].meta, '5 фрагментов')
+  assert.equal(list[3].meta, '5 фрагментов в контекст')
+  assert.equal(list[5].meta, 'токенов 4312')
+  // Время — ПОСЧИТАНО по событиям, а не придумано: тиканья нет.
+  assert.deepEqual(list.map((s) => s.time), ['0 мс', '1,0 с', '1,0 с', '1,0 с', '1,0 с', '4,0 с'])
+})
+
+test('лента без RAG: три записи, призраков пропущенных шагов нет', () => {
+  const list = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
+    { stage: 'llm_call', at: at(0), data: {} },
+    { stage: 'llm_result', at: at(3), data: { usage: { inputTokens: 100, outputTokens: 200 } } },
+  ])
+  assert.deepEqual(list.map((s) => s.label), ['ПРИНЯТ ВОПРОС', 'ВЫЗОВ МОДЕЛИ', 'ОТВЕТ МОДЕЛИ'])
+  // «СБОРКА ПРОМПТА» без фрагментов не рисуется: собирать в контекст нечего.
+  assert.ok(!list.some((s) => s.label === 'СБОРКА ПРОМПТА'))
+})
+
+test('запись поиска несёт тела как есть и отличает обрыв вызова от пустого ответа', () => {
+  const broken = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rag', strategy: 'fixed', limit: 5 } },
+    { stage: 'rpc', at: at(1), data: { request: '{"a":1}', response: '', status: null, ms: 10 } },
+  ])
+  assert.equal(broken[1].rpc.request, '{"a":1}')
+  // Тело передаётся КАК ПРИШЛО: пустую строку страница не превращает в `null`
+  // и обратно. Обрыв вызова опознаётся ОТСУТСТВИЕМ кода ответа, а не формой
+  // пустоты, — иначе «служба ответила пустым» и «ответа не было» слились бы
+  // в один случай, а у них разные слова и разный цвет (п. 10).
+  assert.equal(broken[1].rpc.response, '')
+  assert.equal(broken[1].rpc.status, null, 'по отсутствию кода и опознаётся обрыв')
+
+  const empty = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rag' } },
+    { stage: 'rpc', at: at(1), data: { request: '{}', response: '', status: 200, ms: 10 } },
+  ])
+  assert.equal(empty[1].rpc.status, 200, 'служба ответила — это не обрыв')
+})
+
+test('лента пуста, когда событий не было, и не падает на чужом вводе', () => {
+  assert.deepEqual(steps([]), [])
+  assert.deepEqual(steps([null, 'строка', {}, { stage: 'неизвестная', at: at(0) }]), [])
+})
+
+// ——— четыре отказа ———
+
+test('окно службы поиска: названо общим, и сказано, что денег не стоило', () => {
+  const f = failure(
+    { code: 'search_refused', message: 'Слишком часто: не больше 10 запросов в минуту. Модель не вызывалась.', paidNothing: true },
+    { status: 429 },
+  )
+  assert.equal(f.kind, 'rag_window')
+  assert.match(f.lead, /общее на всех посетителей/)
+  assert.match(f.lead, /денег не стоил/)
+  // Слова службы уходят ОТДЕЛЬНЫМ полем, а не склеиваются с фразой: фраза
+  // агента уже кончается «Модель не вызывалась.», и склейка сказала бы дважды.
+  assert.equal(f.words, 'Слишком часто: не больше 10 запросов в минуту. Модель не вызывалась.')
+  assert.equal(f.paidNothing, true)
+})
+
+test('поиск недоступен: слова службы показаны как есть', () => {
+  for (const code of ['search_refused', 'search_failed', 'search_unavailable', 'search_empty']) {
+    const f = failure({ code, message: 'NO_STRATEGY_INDEX: индекс стратегии не собран.', paidNothing: true })
+    assert.equal(f.kind, 'search_down', code)
+    assert.equal(f.words, 'NO_STRATEGY_INDEX: индекс стратегии не собран.')
+    assert.match(f.tail, /Вызова модели не случилось/)
+    // Про «режим без RAG» речи нет: такого режима у дня 23 не бывает, и
+    // предлагать его значило бы послать посетителя туда, где ничего нет.
+    assert.ok(!/без RAG/.test(f.tail), f.tail)
+  }
+})
+
+test('ОТКАЗ ПОИСКА ПОСЛЕ ОПЛАЧЕННОГО ВЫЗОВА про деньги не врёт', () => {
+  // В режиме `rewrite` второй поиск идёт ПОСЛЕ оплаченного переписывания
+  // (правка контракта в PR #311), и его отказ приходит с `paidNothing: false`.
+  // Фраза дня 22 «модель не вызывалась» здесь была бы ложью.
+  const paid = failure({ code: 'search_failed', message: 'сервер не ответил', paidNothing: false })
+  assert.match(paid.tail, /Вызов модели при этом уже состоялся/)
+  assert.ok(!/не случилось|денег не стоил/.test(paid.tail), paid.tail)
+  // Окно службы — та же развилка и тот же источник слов.
+  const window = failure({ code: 'search_refused', message: 'окно', paidNothing: false }, { status: 429 })
+  assert.match(window.lead, /Вызов модели при этом уже состоялся/)
+  // Третий случай остаётся третьим: не знаем — не утверждаем.
+  const silent = failure({ code: 'search_failed', message: 'нет связи' })
+  assert.match(silent.tail, /сервер не сказал/)
+})
+
+test('пять состояний второго поиска РАЗЛИЧАЮТСЯ, а чужое значение им не становится', () => {
+  const note = (v) => rewriteSearchNote(parseResult(result({ mode: 'rewrite', rewriteSearch: v })))
+
+  // Главное различие: «искали только исходный вопрос, потому что переписывание
+  // ничего не дало» против «служба отказала на втором поиске». В первом случае
+  // выдача полна, во втором — урезана чужим отказом.
+  assert.match(note('skipped'), /нового запроса не дало/)
+  assert.ok(!/отказ/i.test(note('skipped')), note('skipped'))
+  assert.match(note('failed'), /Служба отказала/)
+  assert.match(note('failed'), /беднее, чем могла быть/)
+  // Пусто — это не отказ, и сказано это прямо.
+  assert.match(note('empty'), /ничего не нашёл/)
+  assert.match(note('empty'), /не отказ/)
+  assert.match(note('ok'), /прошёл/)
+
+  // Все четыре формулировки РАЗНЫЕ: иначе различать было бы нечем.
+  const all = ['skipped', 'ok', 'empty', 'failed'].map(note)
+  assert.equal(new Set(all).size, 4, 'два состояния второго поиска сказаны одними словами')
+
+  // Значения нет — строки нет: в режимах `rag` и `rerank` второго поиска не бывает.
+  for (const v of [undefined, null, 'что-то', 7]) assert.equal(note(v), null, String(v))
+})
+
+test('полный расход запуска страница не выдаёт за токены вызова ответа', () => {
+  assert.match(COST_PARTIAL, /только вызова ответа/)
+  assert.match(COST_PARTIAL, /полного расхода запуска страница не знает/)
+  assert.match(answerMeta(parseResult(result())), /токенов вызова ответа/)
+})
+
+test('ПРИ ИСХОДЕ БЕЗ ВЫЗОВА ОТВЕТА токены не подписаны вызовом ответа', () => {
+  // Замер `design-review`: «токенов вызова ответа: 1870» стояло строкой выше
+  // слов «модель ответа не вызывалась». По контракту при `unknown_filter` это
+  // оценка входа реранкера, а не вызов ответа.
+  const none = parseResult(
+    result({
+      mode: 'rerank',
+      outcome: 'unknown_filter',
+      answer: null,
+      refused: true,
+      sources: [],
+      candidates: cands.map((c) => ({ ...c, relevance: 0, kept: false })),
+      tokens: 1870,
+    }),
+  )
+  const meta = answerMeta(none)
+  assert.ok(!/вызова ответа/.test(meta), meta)
+  assert.match(meta, /на оценку кандидатов, оценка: 1870/)
+  // И примечание о расходе — своё: оно не утверждает состоявшегося вызова.
+  assert.equal(costNote(none), COST_UNKNOWN_FILTER)
+  assert.match(COST_UNKNOWN_FILTER, /Вызова ответа не было/)
+  // Обычный исход — прежнее примечание; режим без отбора — примечания нет.
+  assert.equal(costNote(parseResult(result({ mode: 'rerank' }))), COST_PARTIAL)
+  assert.equal(costNote(parseResult(result({ mode: 'rag' }))), null)
+  assert.equal(costNote(parseResult(result({ mode: 'rerank', tokens: null }))), null)
+})
+
+test('коммит индекса не исчезает с экрана, когда поиск был, а источников нет', () => {
+  // Ссылки кандидатов ведут ровно на этот коммит, и шапка обязана его назвать
+  // (находка `design-review` к PR #313: было пустой строкой).
+  const none = parseResult(
+    result({ mode: 'rerank', outcome: 'unknown_filter', sources: [], candidates: cands }),
+  )
+  const meta = indexMeta(none)
+  assert.match(meta, /индекс 57a5cd7/)
+  assert.match(meta, /фрагментов 0 из 3 кандидатов/)
+})
+
+test('запись второго поиска не выходит с пустой мерой при отказе службы', () => {
+  const row = (data) =>
+    steps([
+      { stage: 'received', at: at(0), data: { mode: 'rewrite' } },
+      { stage: 'planning', at: at(1), data },
+    ]).at(-1)
+  const failed = row({ rewritten: 'запрос', found: 0, rewriteSearch: 'failed', code: 'search_refused' })
+  assert.equal(failed.label, 'ИТОГ ВТОРОГО ПОИСКА')
+  assert.match(failed.meta, /служба отказала/)
+  assert.match(failed.meta, /search_refused/)
+  assert.equal(row({ rewritten: 'запрос', found: 0, rewriteSearch: 'empty' }).meta, 'ничего не нашлось')
+  assert.match(row({ rewritten: 'запрос', found: 7, rewriteSearch: 'ok' }).meta, /7 фрагментов/)
+})
+
+test('переписывание, не добавившее ни одного кандидата, названо словами', () => {
+  const only = (from) => cands.map((c) => ({ ...c, from }))
+  assert.match(
+    rewriteGainNote(
+      parseResult(result({ mode: 'rewrite', rewriteSearch: 'ok', candidates: only('original') })),
+    ),
+    /не добавил в выдачу ни одного кандидата/,
+  )
+  // Второй поиск отказал или был пуст — об этом уже сказано своей строкой, и
+  // второй раз теми же словами страница не повторяется.
+  for (const v of ['failed', 'empty', 'skipped'])
+    assert.equal(
+      rewriteGainNote(
+        parseResult(result({ mode: 'rewrite', rewriteSearch: v, candidates: only('original') })),
+      ),
+      null,
+      v,
+    )
+  // Добавил — строки нет.
+  assert.equal(rewriteGainNote(parseResult(result({ mode: 'rewrite', candidates: only('both') }))), null)
+  // Режим не тот — строки нет: переписывания в нём не было.
+  assert.equal(rewriteGainNote(parseResult(result({ mode: 'rerank', candidates: only('original') }))), null)
+  // Поля `from` нет ни у кого — считать нечего, и страница не утверждает (I-8).
+  assert.equal(rewriteGainNote(parseResult(result({ mode: 'rewrite', candidates: only(undefined) }))), null)
+})
+
+test('отказ службы на 429 и отказ инструмента различаются, хотя код у них один', () => {
+  const same = { code: 'search_refused', message: 'слова', paidNothing: true }
+  assert.equal(failure(same, { status: 429 }).kind, 'rag_window')
+  assert.equal(failure(same, { status: null }).kind, 'search_down')
+})
+
+test('отказ после вызова модели не врёт, что денег не стоил', () => {
+  const paid = failure({ code: 'router_error', message: 'роутер ответил 500', paidNothing: false })
+  assert.equal(paid.kind, 'other')
+  assert.match(paid.lead, /стоил денег/)
+  const free = failure({ code: 'rate_limited', message: 'нет', paidNothing: true })
+  assert.match(free.lead, /денег не стоил/)
+})
+
+test('слов у отказа нет — поля words нет, а не пустая строка на экране', () => {
+  assert.equal(failure({ code: 'internal', message: '', paidNothing: true }).words, null)
+  assert.equal(failure(undefined).words, null)
+})
+
+test('про деньги не утверждается ничего, когда сервер о них не сказал', () => {
+  // Находка `compliance` и `reviewer` к PR #303: прежняя редакция считала
+  // отсутствие поля за «денег не стоил», то есть утверждала про расход там,
+  // где не знала ничего. Исходов три, и третий назван словами.
+  const unknown = failure({ code: 'internal', message: 'внутренняя ошибка' })
+  assert.equal(unknown.paidNothing, null, 'неизвестное выдано за известное')
+  assert.match(unknown.lead, /сервер не сказал/)
+  assert.ok(!/денег не стоил/.test(unknown.lead), 'страница всё-таки утверждает про деньги')
+  assert.equal(failure(undefined).paidNothing, null)
+  // А когда сказал — утверждается ровно сказанное.
+  assert.match(failure({ code: 'x', paidNothing: true }).lead, /денег не стоил/)
+  assert.match(failure({ code: 'x', paidNothing: false }).lead, /стоил денег/)
+})
+
+/**
+ * Строка про суточный предел ставится ТОЛЬКО там, где он и исчерпан.
+ *
+ * Находка `design-review`: страница ставила её на любой 429, и экран
+ * противоречил сам себе — «слишком часто» в строке состояния и «суточный
+ * предел исчерпан» под ней при `callsToday` 1 из 3. Находка `compliance`: у
+ * первой правки не было держателя — снятие условия оставляло все 315 тестов
+ * зелёными. Этот тест и есть держатель, и он исполняет правило, а не сверяет
+ * исходный текст.
+ *
+ * Вход — ровно то, что приходит со сервера дня: у суточного потолка
+ * `retryAfterSec` равен `null` (`limits.js`, ветвь `daily`), у минутного и
+ * часового окна это число секунд.
+ */
+test('суточный предел называется исчерпанным только когда он исчерпан', () => {
+  assert.equal(dayLimitNote(429, null), DAY_LIMIT_NOTE, 'потолок не назван')
+  assert.match(DAY_LIMIT_NOTE, /суточный предел вопросов исчерпан/)
+  // Окна: строки нет вовсе — достоверные слова уже в строке состояния.
+  for (const sec of [60, 1800, 3599, 1]) assert.equal(dayLimitNote(429, sec), null, `окно на ${sec} с`)
+  // Ноль — тоже число, то есть окно, а не потолок.
+  assert.equal(dayLimitNote(429, 0), null, 'ноль секунд принят за потолок')
+})
+
+/**
+ * Обрыв потока: ни одна секция не остаётся с утверждением, которое обрыв
+ * сделал ложным.
+ *
+ * Блокирующая `design-review` к PR #303: «Источники» оставались на «Ищу
+ * фрагменты…» навсегда — настоящее время рядом с красной строкой о том, что
+ * запуск кончился, — а блок «Ответ» был пустой областью высотой 0 px.
+ * Правило вынесено сюда и держится ИСПОЛНЕНИЕМ: в прошлом круге того же PR
+ * `compliance` показал, что правило, оставленное в обработчике, обходится не
+ * тронув ни одной проверенной строки.
+ */
+test('при обрыве потока секция источников не обещает идущий поиск', () => {
+  // Число фрагментов успело прийти и не успело — РАЗНЫЕ случаи, и они не
+  // сливаются. Различитель именно такой, а не «стадия `planning` пришла»:
+  // `fragmentsFound` остаётся `null` и когда стадия пришла с `sources`
+  // не-массивом (находка `reviewer` к PR #303).
+  assert.equal(tornSrcsNote('rag', 5), SRCS_TORN_AFTER, 'доложившийся поиск назван недоложившимся')
+  assert.equal(tornSrcsNote('rag', 0), SRCS_TORN_AFTER, 'ноль фрагментов — тоже доклад')
+  assert.equal(tornSrcsNote('rag', null), SRCS_TORN_BEFORE, 'недоложившийся поиск назван доложившимся')
+  assert.notEqual(SRCS_TORN_AFTER, SRCS_TORN_BEFORE, 'два случая одними словами')
+  // Ни один из них не ставит поиск в настоящее время.
+  for (const text of [SRCS_TORN_AFTER, SRCS_TORN_BEFORE])
+    assert.ok(!/Ищу/.test(text), `обещает идущий поиск: ${text}`)
+  // Режим без RAG не трогаем: там стоит SRCS_NORAG, и обрыв этого не меняет.
+  for (const mode of ['norag', null, undefined, 'что-то третье'])
+    assert.equal(tornSrcsNote(mode, 5), null, `режим ${mode} переписан`)
+})
+
+test('при обрыве потока блок ответа говорит словами и молчит про деньги', () => {
+  assert.ok(ANSWER_TORN.length > 0, 'пустое место на месте главного предмета экрана (I-8)')
+  assert.match(ANSWER_TORN, /оборвался/)
+  // Был ли вызов модели оплачен, с оборванного потока не видно.
+  for (const word of ['денег', 'бесплатн', 'не стоил', 'потрачен'])
+    assert.ok(!ANSWER_TORN.includes(word), `утверждает про расход: ${word}`)
+})
+
+test('при деградации страница молчит про причину, а не угадывает её', () => {
+  // Тело 429 не разобралось либо поля нет: утверждать причину нельзя.
+  assert.equal(dayLimitNote(429, undefined), null, 'поля нет — причина выдумана')
+  // Не 429 — строка не про этот случай вовсе.
+  for (const status of [200, 400, 502, 0]) assert.equal(dayLimitNote(status, null), null, `статус ${status}`)
+})
+
+test('путь из файла итогов кодируется так же, как путь из выдачи поиска', () => {
+  assert.equal(repoUrl('agent_docs/guides/dod.md'), `${'https://github.com/MikeKharr/ai-advent-2026/blob'}/main/agent_docs/guides/dod.md`)
+  assert.equal(repoUrl(''), null)
+  assert.equal(repoUrl(null), null)
+  // Две соседние ветви одного показа не расходятся: один и тот же путь даёт
+  // одинаково закодированный хвост.
+  const odd = 'a b/c?d#e.md'
+  assert.equal(repoUrl(odd).split('/main/')[1], sourceUrl(odd, COMMIT).split(`/${COMMIT}/`)[1])
+  assert.ok(!repoUrl(odd).includes('?') && !repoUrl(odd).includes('#'))
+})
+
+test('пустой и пробельный ответ при удачном запуске — один случай', () => {
+  // Пустое место на месте главного предмета экрана — та же заглушка, что «—»
+  // (I-8), только невидимая. Пробельный ответ считается тем же случаем:
+  // «\n  \n» даёт не состояние, а пустую полосу.
+  for (const text of ['', '   ', '\n  \n', undefined, null, 42]) assert.equal(isBlank(text), true, JSON.stringify(text))
+  for (const text of ['ответ', ' а ', 'В найденных фрагментах ответа нет']) assert.equal(isBlank(text), false, text)
+  assert.match(ANSWER_BLANK, /Вызов при этом состоялся/, 'не сказано, что деньги потрачены')
+})
+
+test('строка состояния называет число фрагментов из события, а не из разметки', () => {
+  assert.equal(STATUS.asking(5), 'Фрагментов: 5. Спрашиваю модель…')
+  assert.equal(STATUS.done(3400), 'Готово за 3,4 с.')
+  assert.equal(STATUS.long, `Не отправлено: вопрос длиннее ${MAX_QUESTION} знаков.`)
+})
+
+// ——— отбор второй ступенью (ADR 2026-10-05-0544, пп. 1.2–1.4) ———
+
+const cands = [
+  { n: 1, source: 'agent_docs/invariants.md', section: 'I-4', score: 0.71, relevance: 2, kept: true },
+  { n: 2, source: 'rag/tools.py', section: '', score: 0.65, relevance: 1, kept: true },
+  { n: 3, source: 'README.md', section: '', score: 0.61, relevance: 0, kept: false },
+]
+
+test('кандидаты разбираются по одному, и порядок не пересортировывается', () => {
+  const parsed = parseResult(result({ mode: 'rerank', candidates: cands }))
+  assert.deepEqual(
+    parsed.candidates.map((c) => c.n),
+    [1, 2, 3],
+  )
+  assert.equal(parsed.candidates[2].kept, false)
+  // Не массив, мусор внутри, поля нет вовсе — пустой список, а не падение.
+  for (const raw of [undefined, null, 'нет', [1, 'два', null]])
+    assert.deepEqual(parseResult(result({ candidates: raw })).candidates.length === 0, true)
+})
+
+test('«не оценивал» и «оценил нулём» — разные вещи, и ноль не подставляется (I-8)', () => {
+  const parsed = parseResult(
+    result({ mode: 'rerank', candidates: [{ n: 1, source: 'a.md', score: 0.5, kept: false }] }),
+  )
+  assert.equal(parsed.candidates[0].relevance, null, 'отсутствие оценки стало нулём')
+  assert.equal(relevanceWord(null), '', 'на месте неоценённого появилось слово')
+  assert.equal(relevanceWord(0), 'не относится')
+  assert.equal(relevanceWord(2), 'отвечает')
+  // Незнакомая оценка показывается как пришла, а не прячется.
+  assert.equal(relevanceWord(7), '7')
+})
+
+test('`kept` приходит полем и не выводится страницей из релевантности', () => {
+  // Агент сказал «отброшен» при релевантности 2 — страница показывает то, что
+  // сказал агент: порог отбора держит он, и второго правила здесь нет.
+  const parsed = parseResult(
+    result({ mode: 'rerank', candidates: [{ n: 1, source: 'a.md', relevance: 2, kept: false }] }),
+  )
+  assert.equal(parsed.candidates[0].kept, false)
+  assert.equal(keptWord(false), 'отброшен')
+  assert.equal(keptWord(true), 'оставлен')
+})
+
+test('строка над таблицей считает по пришедшему, а не по потолку из разметки', () => {
+  const parsed = parseResult(result({ mode: 'rerank', candidates: cands }))
+  assert.equal(selectionNote(parsed), 'Кандидатов: 3. Оставлено отбором: 2.')
+  assert.equal(selectionNote(parseResult(result())), null, 'строка о кандидатах без кандидатов')
+})
+
+test('числа порога на экране нет: агент его не отдаёт, и страница его не выдумывает', () => {
+  // ADR (п. 1.1) называл порог числом на экране, но в контракте запуска такого
+  // поля нет. Печатать литерал значило бы показать число, которого никто не
+  // считал, — и как раз про доверие к отбору.
+  assert.ok(!/\d/.test(PICK_RULE), `в подписи про отбор появилось число: ${PICK_RULE}`)
+  assert.match(PICK_RULE, /не близость/)
+})
+
+test('откуда пришёл кандидат — слово, а незнакомый код показывается как есть', () => {
+  assert.equal(fromWord('original'), 'исходный запрос')
+  assert.equal(fromWord('rewritten'), 'переписанный')
+  assert.equal(fromWord('both'), 'оба запроса')
+  assert.equal(fromWord(null), '')
+  assert.equal(fromWord('что-то'), 'что-то')
+})
+
+test('шаблон «не знаю» называет число найденных и говорит, что модель не звали', () => {
+  assert.match(selectNone(10), /ни один из 10 найденных фрагментов/)
+  assert.match(selectNone(1), /ни один из 1 найденного фрагмента/)
+  assert.match(selectNone(10), /Модель ответа не вызывалась/)
+  // Числа не было — фразы с числом нет, а не «ни один из 0».
+  assert.ok(!/\d/.test(selectNone(null)), selectNone(null))
+})
+
+test('пустой отбор — исход «не знаю», а не отказ и не промах', () => {
+  assert.match(SELECT_NONE, /Не знаю/)
+  assert.match(SELECT_NONE, /исход\s+поиска, а не сбой/)
+  // Ни одного слова про промах, выдумку или поломку: именно их смешение в
+  // одном вердикте и есть долг дня 22, который день 23 закрывает.
+  assert.ok(!/выдум|промах|ошиб|сломал/i.test(SELECT_NONE), SELECT_NONE)
+  // Режим без отбора говорит ровно это, а не молчит и не обещает кандидатов.
+  assert.match(CANDIDATES_RAG, /второй ступени нет/)
+})
+
+test('переписанный вопрос: пустая строка и пробелы — это НЕ переписанный вопрос', () => {
+  assert.equal(parseResult(result({ rewritten: 'инвариант I-4 держатель' })).rewritten, 'инвариант I-4 держатель')
+  for (const raw of ['', '   ', null, undefined, 42])
+    assert.equal(parseResult(result({ rewritten: raw })).rewritten, null, String(raw))
+})
+
+test('режимов ровно три, и чужое значение режимом не становится', () => {
+  assert.deepEqual(Object.keys(MODE_WORD), ['rag', 'rerank', 'rewrite'])
+  for (const m of ['norag', 'RAG', '', null, 7])
+    assert.equal(parseResult(result({ mode: m })).mode, null, String(m))
+})
+
+test('номер фрагмента не перенумеровывается и не выдумывается', () => {
+  // Номера идут С ПРОПУСКАМИ: под ними фрагмент стоит в тексте ответа
+  // (контракт, «Нумерация»). Порядковое место в списке номером не является.
+  const parsed = parseResult(
+    result({
+      sources: [
+        { n: 2, source: 'a.md', section: '', score: 0.7, text: 'т' },
+        { n: 7, source: 'b.md', section: '', score: 0.6, text: 'т' },
+        { n: 3, source: 'c.md', section: '', score: 0.5, text: 'т' },
+      ],
+    }),
+  )
+  assert.deepEqual(
+    parsed.sources.map((s) => s.n),
+    [2, 7, 3],
+  )
+  // Номера не пришло — его нет, а не «первый по счёту».
+  assert.equal(parseResult(result({ sources: [{ source: 'a.md' }] })).sources[0].n, null)
+})
+
+test('исход читается полем, а не выводится из того, что источников нет', () => {
+  assert.equal(parseResult(result({ outcome: 'unknown_filter' })).outcome, 'unknown_filter')
+  assert.equal(parseResult(result({ outcome: 'answered' })).outcome, 'answered')
+  for (const raw of [undefined, null, 'что-то', 7])
+    assert.equal(parseResult(result({ outcome: raw })).outcome, null, String(raw))
+})
+
+// ——— лента: три вызова модели различаются только по `data.purpose` ———
+
+test('вызовы модели подписаны по назначению, а не одинаково', () => {
+  const rows = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rewrite', strategy: 'structural', limit: 10 } },
+    { stage: 'rpc', at: at(1), data: { request: '{}', response: '{}', status: 200 } },
+    { stage: 'planning', at: at(1), data: { sources: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rewrite' } },
+    { stage: 'llm_result', at: at(2), data: { purpose: 'rewrite', usage: { inputTokens: 100, outputTokens: 20 } } },
+    { stage: 'rpc', at: at(3), data: { request: '{"q":"переписанный"}', response: '{}', status: 200 } },
+    { stage: 'planning', at: at(3), data: { rewritten: 'инвариант I-4', found: 7, rewriteSearch: 'ok' } },
+    { stage: 'llm_call', at: at(3), data: { purpose: 'rerank' } },
+    { stage: 'llm_result', at: at(4), data: { purpose: 'rerank', usage: { inputTokens: 900, outputTokens: 60 } } },
+    { stage: 'planning', at: at(4), data: { kept: 3, candidates: 10 } },
+    { stage: 'llm_call', at: at(5), data: {} },
+    { stage: 'llm_result', at: at(7), data: { usage: { inputTokens: 2000, outputTokens: 300 } } },
+  ]).map((r) => r.label)
+
+  assert.deepEqual(rows, [
+    'ПРИНЯТ ВОПРОС',
+    'ПОИСК ПО ПРОЕКТУ',
+    'ФРАГМЕНТЫ ПОЛУЧЕНЫ',
+    'ПЕРЕПИСЫВАНИЕ ВОПРОСА',
+    'ЗАПРОС ПЕРЕПИСАН',
+    'ПОИСК ПО ПЕРЕПИСАННОМУ ЗАПРОСУ',
+    'ИТОГ ВТОРОГО ПОИСКА',
+    'ОЦЕНКА КАНДИДАТОВ',
+    'КАНДИДАТЫ ОЦЕНЕНЫ',
+    'ОТБОР',
+    'СБОРКА ПРОМПТА',
+    'ВЫЗОВ МОДЕЛИ',
+    'ОТВЕТ МОДЕЛИ',
+  ])
+})
+
+test('«сборка промпта» рисуется один раз, а не перед каждым из трёх вызовов', () => {
+  const rows = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
+    { stage: 'planning', at: at(1), data: { sources: [1, 2] } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rerank' } },
+    { stage: 'llm_call', at: at(3), data: {} },
+    { stage: 'llm_call', at: at(4), data: {} },
+  ]).filter((r) => r.label === 'СБОРКА ПРОМПТА')
+  assert.equal(rows.length, 1, `записей сборки промпта ${rows.length}`)
+})
+
+test('итог отбора в ленте называет оба числа', () => {
+  const row = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
+    { stage: 'planning', at: at(1), data: { kept: 3, candidates: 10 } },
+  ]).at(-1)
+  assert.equal(row.label, 'ОТБОР')
+  assert.equal(row.meta, 'оставлено 3 из 10')
+})
+
+test('отказ реранкера по схеме — оплаченный, и страница про деньги не врёт', () => {
+  const f = failure({ code: 'rerank_invalid', message: 'ответ не по схеме', paidNothing: false })
+  assert.match(f.lead, /Вызов модели при этом уже состоялся/)
+  assert.equal(f.words, 'ответ не по схеме')
+  // Отказы поиска остаются своей ветвью — слова службы в них единственное
+  // достоверное число.
+  for (const code of ['search_unavailable', 'search_failed', 'search_empty'])
+    assert.match(failure({ code, message: 'сломалось', paidNothing: true }).lead, /Поиск недоступен/)
+})
+
+// ——— что стоит в блоке «Ответ»: решает правило, а не обработчик ———
+
+/** Ровно то, что отдаёт агент при `unknown_filter`: ответа нет, `refused` стоит. */
+const unknown = (over = {}) =>
+  parseResult(
+    result({
+      mode: 'rerank',
+      outcome: 'unknown_filter',
+      answer: null,
+      refused: true,
+      sources: [],
+      candidates: cands.map((c) => ({ ...c, relevance: 0, kept: false })),
+      ...over,
+    }),
+  )
+
+test('при невызванной модели блок ответа НЕ говорит, что вызов состоялся', () => {
+  const block = answerBlock(unknown())
+  assert.equal(block.kind, 'unknown_filter')
+  assert.match(block.text, /Модель ответа не вызывалась/)
+  assert.ok(!/Вызов при этом состоялся/.test(block.text), block.text)
+  // И не говорит словами отвечавшего, которого не спрашивали.
+  assert.equal(block.refusedNote, false, 'показан отказ модели, которой не было')
+})
+
+test('исход берётся полем: без него — вывод, с `answered` — обычный ответ', () => {
+  // Поля нет: кандидаты есть, источников нет — другого смысла у пары нет.
+  assert.equal(answerBlock(unknown({ outcome: undefined })).kind, 'unknown_filter')
+  // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: поле говорит «не знаю», а источники в ответе есть.
+  // Запасной вывод здесь сказал бы «ответ есть» — и страница объявила бы
+  // состоявшимся вызов, которого по словам агента не было. Верит полю.
+  assert.equal(
+    answerBlock(
+      unknown({ sources: [{ n: 1, source: 'a.md', section: '', score: 0.5, text: 'т' }] }),
+    ).kind,
+    'unknown_filter',
+    'страница додумала исход вместо того, чтобы прочитать поле',
+  )
+  // Поле говорит «ответили» — страница верит полю, а не своим догадкам.
+  const answered = answerBlock(unknown({ outcome: 'answered', answer: 'Ответ есть.' }))
+  assert.equal(answered.kind, 'answer')
+  assert.equal(answered.text, 'Ответ есть.')
+  assert.equal(answered.refusedNote, true)
+})
+
+test('пустой ответ при состоявшемся вызове — по-прежнему «вызов состоялся»', () => {
+  const block = answerBlock(parseResult(result({ answer: '   ' })))
+  assert.equal(block.kind, 'blank')
+  assert.match(block.text, /Вызов при этом состоялся/)
+})
+
+// ——— число дошедших фрагментов при трёх стадиях `planning` ———
+
+test('ДВА СМЫСЛА событий `planning` не сливаются в одно число', () => {
+  assert.deepEqual(planningReport({ data: { sources: [1, 2, 3] } }), { kind: 'found', found: 3 })
+  assert.deepEqual(planningReport({ data: { kept: 3, candidates: [1, 2, 3, 4, 5] } }), {
+    kind: 'kept',
+    kept: 3,
+    candidates: 5,
+  })
+  // Числа кандидатов не пришло — его нет, а не ноль (I-8).
+  assert.deepEqual(planningReport({ data: { kept: 0 } }), { kind: 'kept', kept: 0, candidates: null })
+  // Событие не про числа выдачи — `null`, то есть «оставить как было».
+  assert.equal(planningReport({ data: { rewritten: 'запрос', found: 7 } }), null)
+  assert.equal(planningReport({ data: { rewritten: null } }), null)
+  assert.equal(planningReport({ data: {} }), null)
+  assert.equal(planningReport({}), null)
+  assert.equal(planningReport(null), null)
+  assert.equal(planningReport({ data: { sources: 'пять' } }), null)
+})
+
+test('ЧИСЛО ОТБОРА НЕ НАЗЫВАЕТСЯ ЧИСЛОМ ПОИСКА', () => {
+  const found = progress({ data: { sources: Array.from({ length: 10 }) } }, 'rerank')
+  assert.match(found.srcs, /Поиск вернул 10/)
+  const kept = progress({ data: { kept: 3, candidates: Array.from({ length: 10 }) } }, 'rerank')
+  // Прежняя редакция печатала здесь «Поиск вернул 3 фрагмента»: поиск вернул
+  // десять, три оставил отбор, и строка висела весь вызов ответа.
+  assert.ok(!/Поиск вернул/.test(kept.srcs), kept.srcs)
+  assert.match(kept.srcs, /Отбор оставил 3 из 10/)
+  assert.match(kept.pick, /Отбор кончился: оставлено 3 из 10/)
+})
+
+test('после поиска в режимах с отбором модель ещё не спрашивают', () => {
+  const withFilter = progress({ data: { sources: Array.from({ length: 10 }) } }, 'rerank')
+  assert.ok(!/Спрашиваю модель/.test(withFilter.status), withFilter.status)
+  assert.match(withFilter.status, /Отбираю/)
+  assert.equal(withFilter.pick, PICK_SELECTING)
+  const plain = progress({ data: { sources: [1, 2, 3, 4, 5] } }, 'rag')
+  assert.match(plain.status, /Фрагментов: 5\. Спрашиваю модель…/)
+  assert.equal(plain.pick, null, 'режиму без отбора обещан отбор')
+})
+
+test('ПРИ ПУСТОМ ОТБОРЕ строка состояния не обещает вызова модели', () => {
+  const none = progress({ data: { kept: 0, candidates: Array.from({ length: 10 }) } }, 'rerank')
+  assert.ok(!/Спрашиваю модель/.test(none.status), none.status)
+  assert.match(none.status, /Модель ответа не вызываю/)
+  assert.match(none.srcs, /Отбор не оставил ни одного фрагмента из 10/)
+  assert.ok(!/Поиск вернул/.test(none.srcs), none.srcs)
+  const some = progress({ data: { kept: 2, candidates: Array.from({ length: 10 }) } }, 'rerank')
+  assert.match(some.status, /Фрагментов: 2\. Спрашиваю модель…/)
+})
+
+test('событие, не меняющее числа выдачи, экран не переписывает', () => {
+  assert.equal(progress({ data: { rewritten: 'запрос', found: 7 } }, 'rewrite'), null)
+  assert.equal(progress({ data: {} }, 'rerank'), null)
+})
+
+test('тексты секций различны для поиска и для отбора', () => {
+  assert.notEqual(SRCS_FOUND(3), SRCS_KEPT(3, 10))
+  assert.notEqual(PICK_SELECTING, PICK_SELECTED(3, 10))
+  // Числа кандидатов не пришло — его в словах нет, а не «из null».
+  assert.ok(!/null/.test(SRCS_KEPT(3, null)), SRCS_KEPT(3, null))
+  assert.ok(!/null/.test(PICK_SELECTED(3, null)), PICK_SELECTED(3, null))
+})
+
+test('ОБРЫВ ПОСЛЕ ОТБОРА не превращается в «поиск ничего не вернул»', () => {
+  // Воспроизведение блокирующей `reviewer` к PR #313: режим `rerank`, поток
+  // обрывается после итога отбора. Прежняя редакция затирала число последними
+  // двумя стадиями `planning`, и секция источников говорила
+  // SRCS_TORN_BEFORE — «поток оборвался раньше, чем поиск что-то вернул» —
+  // прямо под записью ленты «ФРАГМЕНТЫ ПОЛУЧЕНЫ · 10 фрагментов».
+  const stream = [
+    { stage: 'received', at: at(0), data: { mode: 'rerank', limit: 10 } },
+    { stage: 'planning', at: at(1), data: { sources: Array.from({ length: 10 }, (_, i) => i) } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rerank' } },
+    { stage: 'planning', at: at(3), data: { kept: 3, candidates: Array.from({ length: 10 }) } },
+  ]
+  // Страница ведёт число тем же правилом, что обработчик: для правила обрыва
+  // важно только то, доложился ли ПОИСК.
+  let fragmentsFound = null
+  for (const e of stream) {
+    if (e.stage !== 'planning') continue
+    const report = planningReport(e)
+    if (report !== null && report.kind === 'found') fragmentsFound = report.found
+  }
+  assert.equal(fragmentsFound, 10, 'число выдачи поиска затёрто итогом отбора')
+  assert.equal(
+    tornSrcsNote('rerank', fragmentsFound),
+    SRCS_TORN_AFTER,
+    'экран говорит, что поиск ничего не вернул, а лента — что вернул десять',
+  )
+})
+
+test('«переписывание не дало нового запроса» не рисуется как «ФРАГМЕНТЫ ПОЛУЧЕНЫ»', () => {
+  // Поток ровно как его шлёт агент при `rewriteSearch: "skipped"`: события
+  // `rpc` второго поиска нет, `planning` несёт `rewritten: null`.
+  const rows = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rewrite', limit: 10 } },
+    { stage: 'rpc', at: at(1), data: { request: '{}', response: '{}', status: 200 } },
+    { stage: 'planning', at: at(1), data: { sources: [1, 2, 3] } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rewrite' } },
+    { stage: 'llm_result', at: at(2), data: { purpose: 'rewrite', usage: { inputTokens: 10, outputTokens: 5 } } },
+    { stage: 'planning', at: at(3), level: 'warn', data: { rewritten: null } },
+    { stage: 'llm_call', at: at(4), data: { purpose: 'rerank' } },
+  ]).map((r) => r.label)
+
+  assert.deepEqual(rows, [
+    'ПРИНЯТ ВОПРОС',
+    'ПОИСК ПО ПРОЕКТУ',
+    'ФРАГМЕНТЫ ПОЛУЧЕНЫ',
+    'ПЕРЕПИСЫВАНИЕ ВОПРОСА',
+    'ЗАПРОС ПЕРЕПИСАН',
+    'ПЕРЕПИСЫВАНИЕ НИЧЕГО НЕ ДАЛО',
+    'ОЦЕНКА КАНДИДАТОВ',
+  ])
+  // Второго «ФРАГМЕНТЫ ПОЛУЧЕНЫ» нет: второго поиска не было вовсе.
+  assert.equal(rows.filter((l) => l === 'ФРАГМЕНТЫ ПОЛУЧЕНЫ').length, 1)
+  // И лента не противоречит секции «Отбор», которая про тот же случай
+  // говорит «переписывание нового запроса не дало».
+  const note = rewriteSearchNote(parseResult(result({ mode: 'rewrite', rewriteSearch: 'skipped' })))
+  assert.match(note, /нового запроса не дало/)
+})
+
+test('итог отбора не читается «оставлено 3 из 0» при пустом списке кандидатов', () => {
+  const row = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
+    { stage: 'planning', at: at(1), data: { kept: 0, candidates: [] } },
+  ]).at(-1)
+  assert.equal(row.meta, 'оставлено 0 из 0')
+})
