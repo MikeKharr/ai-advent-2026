@@ -319,17 +319,20 @@ test('отсутствующий файл итогов сервер не вал�
 
 // РЕЖИМ ИЗ ОКРУЖЕНИЯ ПРОВЕРЯЕТСЯ, а не берётся как пришёл: чужое значение
 // уехало бы в сервис и вернулось оттуда отказом, уже заняв слот окна. Умолчание
-// при этом безопасное — дешёвый `rerank`, а не «что дали».
-test('RUN_MODE проверяется по списку, а умолчание — дешёвый режим', () => {
+// при этом не «что дали», а названный правилом режим: `rewrite` по числам
+// прогона дня 23 (ADR 2026-10-05-0544, п. 2.4; MRR@10 после отбора 0,533
+// против 0,436, разница 0,097 ≥ 0,02 — PR #327). Чужое значение откатывается в
+// то же умолчание, то есть в режим, за который день платит по счёту ADR, п. 4.
+test('RUN_MODE проверяется по списку, а умолчание — режим правила ADR', () => {
   assert.deepEqual(MODES, ['rerank', 'rewrite'])
   const base = { AGENT_KEY: 'k' }
-  assert.equal(parseEnv(base).env.RUN_MODE, 'rerank', 'умолчания режима нет')
+  assert.equal(parseEnv(base).env.RUN_MODE, 'rewrite', 'умолчание не режим правила')
   assert.deepEqual(parseEnv(base).errors, [])
-  assert.equal(parseEnv({ ...base, RUN_MODE: 'rewrite' }).env.RUN_MODE, 'rewrite')
+  assert.equal(parseEnv({ ...base, RUN_MODE: 'rerank' }).env.RUN_MODE, 'rerank')
   // `rag` — режим дня 23, и днём 24 он не принимается: отбор здесь обязателен.
-  for (const bad of ['rag', 'norag', 'RERANK', 'оба']) {
+  for (const bad of ['rag', 'norag', 'REWRITE', 'оба']) {
     const parsed = parseEnv({ ...base, RUN_MODE: bad })
-    assert.equal(parsed.env.RUN_MODE, 'rerank', bad)
+    assert.equal(parsed.env.RUN_MODE, 'rewrite', bad)
     assert.deepEqual(parsed.errors, [
       `RUN_MODE: ожидалось rerank или rewrite, получено ${JSON.stringify(bad)}`,
     ])
