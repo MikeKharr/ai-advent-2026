@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createInvariants } from '../src/invariants.js'
+import { estimateTokens, promptSha8 } from '../src/llm.js'
 import { loadServers } from '../src/mcp/servers.js'
 import { STAGED15_MAX_TOKENS, TASK_STATE_CHARS } from '../src/params.js'
 import { createProfilePrompts } from '../src/prompts.js'
@@ -34,6 +35,7 @@ import {
   createRagChat,
   RAG_STAGES,
   readTaskState,
+  TASK_ANSWER_TOKENS,
   TASK_PAIR_CHARS,
   TASK_SYSTEM,
 } from '../src/rag/chat.js'
@@ -107,6 +109,27 @@ const reply = (fields) => ({
   }),
 })
 
+/**
+ * Отказ роутера — той формы, которой отвечает служба (`router/src/service.js`:
+ * 503 и `ok: false`). Нужен затем, что `code` у обрыва ответа по потолку и у
+ * отказа провайдера ОДИН, а различает их только `reasons`.
+ */
+const refusal = (reason) => ({
+  ok: true,
+  status: 503,
+  json: async () => ({
+    ok: false,
+    code: 'all_failed',
+    message: 'все провайдеры класса layered_dialogue недоступны или отказали',
+    reasons: [{ provider: 'claude-haiku-4-5#1', stage: 'call', reason }],
+    // Попытка была, значит вызов оплачен: `paidNothing` смотрит именно сюда.
+    attempts: [{ provider: 'claude-haiku-4-5#1', outcome: 'truncated', reason }],
+  }),
+})
+
+/** Слова обрыва схемного ответа — дословно из `router/src/router.js`. */
+const TRUNCATED = 'ответ обрезан по лимиту токенов, объект не разбирается'
+
 const RATINGS = {
   ratings: [
     { n: 1, relevance: 2 },
@@ -156,7 +179,15 @@ function router({
     const props = body.schema?.properties ?? {}
     if (props.ratings) return reply({ json: ratings })
     if (props.status) return reply({ json: cited, text: JSON.stringify(cited) })
-    if (props.goal) return reply({ json: task })
+    if (props.goal) {
+      // Провайдер не умеет отдать больше, чем просит `answerTokens`: ответ
+      // сверх потолка обрывается, а обрезанный ответ схемного класса роутер
+      // отдаёт отказом и ВТОРОГО провайдера не зовёт (`router.js`, исход
+      // `truncated`). Без этого правила заглушка отдавала бы состояние любого
+      // размера, и потолок шестого вызова не проверял бы ни один тест.
+      if (estimateTokens(JSON.stringify(task)) > body.answerTokens) return refusal(TRUNCATED)
+      return reply({ json: task })
+    }
     if (body.provider === 'kimi-k2.6') {
       // Вердикты по кругам: предмет проверки расхода — ход, в котором
       // проверяющая модель ОТКЛОНИЛА ответ и машина пошла на второй круг.
@@ -434,6 +465,155 @@ test('вход вызова состояния задачи ограничен: 
   assert.ok(input.includes('я'.repeat(TASK_PAIR_CHARS)), 'срез идёт по тексту ответа')
   assert.equal(input.includes('я'.repeat(TASK_PAIR_CHARS + 1)), false)
   assert.ok(input.length < 2 * TASK_PAIR_CHARS + 1000, `вход ${input.length} знаков`)
+})
+
+/**
+ * Состояние ЖИВОГО размера — 976 знаков, та же форма, что сложилась в прогоне
+ * дня 25 (там было 872). Не выдумка про крайний случай: четыре списка по
+ * нескольку записей набегают к третьему-четвёртому ходу обычного разговора.
+ */
+const LONG_TASK = {
+  goal: 'разобраться, как в этом проекте держится расход на модель и кто именно краснеет при снятии держащей строки',
+  constraints: [
+    'без новых зависимостей в runtime',
+    'правки только в единице agents',
+    'потолок ответа не поднимать без обоснования числом',
+    'объяснения на русском, без англицизмов',
+  ],
+  terms: [
+    { term: 'лимитер', meaning: 'слой окон запросов на адрес и суточного потолка вызовов к модели' },
+    {
+      term: 'держатель',
+      meaning: 'тест или шаг CI, который краснеет при снятии правила безопасности или расхода',
+    },
+    { term: 'ход', meaning: 'одна пара реплик диалога со всеми вызовами модели внутри' },
+  ],
+  clarifications: [
+    'интересует именно шестой вызов хода, а не ответ посетителю',
+    'числа нужны со ссылкой на файл и строку, а не пересказом',
+    'сравнение стратегий важнее самого ответа',
+  ],
+  open: [
+    'нужен ли отдельный ADR на изменение потолка ответа',
+    'считается ли потолок ответа решением или его следствием',
+    'чем держится новое правило после мержа',
+    'кто проверяет расход после выкатки',
+  ],
+}
+
+test('состояние живого размера влезает в потолок шестого вызова и записывается', async (t) => {
+  // Предмет: прогон дня 25 записал состояние на 5 ходах из 18, а на 13
+  // сказал «task: all_failed». Причина — потолок ответа шестого вызова ниже
+  // состояния, которое его же промпт требует вернуть ЦЕЛИКОМ.
+  const rag = await fakeRag()
+  t.after(() => rag.close())
+  const chars = JSON.stringify(LONG_TASK).length
+  // Размер назван числом: если состояние измельчает, тест перестанет быть о
+  // том, о чём написан, и это будет видно сразу.
+  assert.ok(chars > 900 && chars < 1100, `состояние ${chars} знаков`)
+  assert.ok(chars < TASK_STATE_CHARS, 'в хранилище такое состояние влезает: дело не в нём')
+
+  const fetchImpl = router({ task: LONG_TASK })
+  const { ask, sessions, sid } = setup({ rag, fetchImpl })
+  const snapshot = await ask()
+
+  assert.equal(snapshot.status, 'succeeded', JSON.stringify(snapshot.error))
+  assert.equal(
+    snapshot.events.some(
+      (e) => e.stage === 'warning' && e.title === 'Состояние задачи не обновлено',
+    ),
+    false,
+    'потолок покрыл состояние: предупреждения нет',
+  )
+  assert.equal(JSON.parse(sessions.taskStateOf(sid).state).goal, LONG_TASK.goal)
+  assert.equal(snapshot.result.task.round, 1)
+  assert.equal(snapshot.result.task.open.length, 4)
+})
+
+test('потолок шестого вызова покрывает состояние под потолок хранилища', () => {
+  // Два числа проекта обязаны сходиться: хранилище берёт состояние до
+  // `TASK_STATE_CHARS` знаков, и ровно такое состояние модель должна успеть
+  // отдать в пределах `TASK_ANSWER_TOKENS`. Счёт — тот же, которым считает
+  // вход сам агент (`estimateTokens`), а не прикидка в уме.
+  const full = readTaskState({
+    goal: 'ц'.repeat(300),
+    constraints: Array.from({ length: 6 }, () => 'о'.repeat(200)),
+    terms: Array.from({ length: 8 }, () => ({ term: 'т'.repeat(80), meaning: 'з'.repeat(200) })),
+    clarifications: Array.from({ length: 6 }, () => 'у'.repeat(200)),
+    open: Array.from({ length: 4 }, () => 'в'.repeat(200)),
+  })
+  const json = JSON.stringify(full)
+  assert.ok(json.length > TASK_STATE_CHARS - 200, `состояние под потолок: ${json.length}`)
+  assert.ok(json.length <= TASK_STATE_CHARS)
+  assert.ok(
+    estimateTokens(json) <= TASK_ANSWER_TOKENS,
+    `состояние ${json.length} знаков — ${estimateTokens(json)} токенов, потолок ${TASK_ANSWER_TOKENS}`,
+  )
+})
+
+test('шестой вызов подписан промптом stage.task, а не промптом пополнения', async (t) => {
+  // Предмет: событие `llm_call` шестого вызова несло `promptId:
+  // stage.replenish` и отпечаток ЧУЖОГО текста — `taskStep` идёт внутри
+  // этапа пополнения и подписи от него не менял. Монитор при этом говорил,
+  // что вызов сделан промптом, которого в запросе не было.
+  const rag = await fakeRag()
+  t.after(() => rag.close())
+  const { ask, sessions, profile } = setup({ rag })
+  const first = await ask()
+  assert.equal(first.status, 'succeeded', JSON.stringify(first.error))
+  const call = first.events.find((e) => e.stage === 'llm_call' && e.data?.purpose === 'task')
+  assert.equal(call.data.promptId, 'stage.task')
+  assert.equal(call.data.promptSha, promptSha8(TASK_SYSTEM))
+  // Подпись пополнения при этом своя: правка не отобрала её у пятого вызова.
+  assert.ok(
+    first.events.some(
+      (e) =>
+        e.stage === 'llm_call' &&
+        e.data?.purpose === undefined &&
+        e.data?.promptId === 'stage.replenish',
+    ),
+  )
+
+  // Отпечаток считается по тексту, который УШЁЛ модели: правка промпта
+  // профиля видна и в подписи, а не только в теле запроса.
+  const text = 'Веди состояние задачи одной строкой.'
+  assert.equal(sessions.savePrompt({ profileId: profile.id, promptId: 'stage.task', text }).ok, true)
+  const second = await ask()
+  const call2 = second.events.find((e) => e.stage === 'llm_call' && e.data?.purpose === 'task')
+  assert.equal(call2.data.promptId, 'stage.task')
+  assert.equal(call2.data.promptSha, promptSha8(text))
+})
+
+test('обрыв ответа по потолку назван словами: предупреждение отличает его от отказа провайдера', async (t) => {
+  // `code` у обоих исходов один — `all_failed`, — поэтому журнал прогона и
+  // говорил «task: all_failed» на всех 13 ходах, не различая гипотезы.
+  const rag = await fakeRag()
+  t.after(() => rag.close())
+  // Состояние, которое не влезет ни в какой разумный потолок: заглушка
+  // отвечает на него тем же отказом, что роутер на обрезанный схемный ответ.
+  const over = {
+    ...TASK,
+    clarifications: Array.from({ length: 6 }, (_, i) => `уточнение ${i}: ${'я'.repeat(500)}`),
+    constraints: Array.from({ length: 6 }, (_, i) => `ограничение ${i}: ${'я'.repeat(500)}`),
+    open: Array.from({ length: 4 }, (_, i) => `вопрос ${i}: ${'я'.repeat(500)}`),
+  }
+  assert.ok(estimateTokens(JSON.stringify(over)) > TASK_ANSWER_TOKENS)
+  const fetchImpl = router({ task: over })
+  const { ask, sessions, sid } = setup({ rag, fetchImpl })
+  const snapshot = await ask()
+
+  // Ход не падает: ответ посетителю уже оплачен и записан.
+  assert.equal(snapshot.status, 'succeeded', JSON.stringify(snapshot.error))
+  const warning = snapshot.events.find(
+    (e) => e.stage === 'warning' && e.title === 'Состояние задачи не обновлено',
+  )
+  assert.ok(warning, 'отказ шестого вызова виден в ленте')
+  assert.equal(warning.data.code, 'all_failed')
+  assert.equal(warning.data.providerReason, TRUNCATED)
+  assert.match(warning.detail, /ответ обрезан по лимиту токенов/)
+  assert.match(warning.detail, /прежнее состояние осталось в силе/)
+  // И состояние действительно не стёрто: его просто нет — ход первый.
+  assert.equal(sessions.taskStateOf(sid), null)
 })
 
 test('переписывание видит прошлые ходы, а не только последнюю реплику', async (t) => {
