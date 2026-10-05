@@ -117,8 +117,18 @@ export function scoreRun(question, result) {
     candidates: candidates.length,
     kept: sources.length,
     empty: result?.outcome === 'unknown_filter',
+    // ЧТО СТАЛО СО ВТОРЫМ ПОИСКОМ режима `rewrite` — без этого поля числа
+    // режима нельзя прочитать. «Переписывание не помогло» и «служба отказала
+    // на втором поиске» дают одинаковые ранги и совершенно разные выводы: в
+    // первом случае мера сказала своё слово, во втором — она мерила `rerank`
+    // под именем `rewrite`. Поле берётся у агента (контракт дня, `rewriteSearch`:
+    // null | skipped | ok | empty | failed), а не выводится из числа кандидатов.
+    rewriteSearch: typeof result?.rewriteSearch === 'string' ? result.rewriteSearch : null,
   }
 }
+
+/** Значения `rewriteSearch` контракта дня. `null` — поля не было вовсе. */
+export const REWRITE_SEARCH = ['skipped', 'ok', 'empty', 'failed']
 
 /** Сводка режима: средние по прогнанным вопросам плюс два числа объёма. */
 export function summarize(rows) {
@@ -253,6 +263,11 @@ export function checkReport(report, questions) {
           if (!inUnit(m?.[side]?.[metric])) problems.push(`${want.id}/${mode}: ${side}.${metric} не доля от 0 до 1`)
       if (!isNum(m.candidates) || !isNum(m.kept)) problems.push(`${want.id}/${mode}: нет чисел кандидатов и оставленных`)
       if (typeof m.empty !== 'boolean') problems.push(`${want.id}/${mode}: empty — не да/нет`)
+      // Поле необязательно: строки приёма 1 дня 23 собраны раннером до его
+      // появления, и дописывать им значение задним числом было бы выдумкой.
+      // Но если оно есть — оно обязано быть из контракта, а не любой строкой.
+      if (m.rewriteSearch !== undefined && m.rewriteSearch !== null && !REWRITE_SEARCH.includes(m.rewriteSearch))
+        problems.push(`${want.id}/${mode}: rewriteSearch ${JSON.stringify(m.rewriteSearch)} вне контракта дня`)
       if (m.empty === true && m.kept !== 0) problems.push(`${want.id}/${mode}: пустой отбор, а оставленных ${m.kept}`)
     }
   }

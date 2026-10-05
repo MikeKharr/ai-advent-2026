@@ -121,6 +121,40 @@ test('пустой отбор берётся ИСХОДОМ запуска, а �
   assert.equal(answered.empty, false)
 })
 
+test('судьба второго поиска записывается полем — иначе числа rewrite не прочитать', () => {
+  // ПОЧЕМУ ЭТО ВАЖНО: «переписывание не помогло» и «служба отказала на втором
+  // поиске» дают ОДИНАКОВЫЕ ранги. Без этого поля режим `rewrite` мог бы
+  // оказаться замером `rerank` под другим именем, и заметить это было бы
+  // нечем. Значение берётся у агента, а не выводится из числа кандидатов.
+  const ok = scoreRun(ask(), { candidates: [frag(1, INV)], sources: [frag(1, INV)], rewriteSearch: 'ok' })
+  assert.equal(ok.rewriteSearch, 'ok')
+  const failed = scoreRun(ask(), { candidates: [frag(1, INV)], sources: [], rewriteSearch: 'failed' })
+  assert.equal(failed.rewriteSearch, 'failed')
+  // Режим без второго поиска поля не несёт — и это `null`, а не «ok».
+  assert.equal(scoreRun(ask(), { candidates: [], sources: [] }).rewriteSearch, null)
+
+  // Значение вне контракта дня сверку валит: опечатка не должна читаться как
+  // состояние поиска.
+  const questions = [ask()]
+  const report = buildReport({
+    questions,
+    runs: new Map([['q01:rewrite', { result: { candidates: [frag(1, INV)], sources: [frag(1, INV)], rewriteSearch: 'ok' } }]]),
+    at: '2026-10-05T09:00:00.000Z',
+    index: { commit: 'c', strategy: 's', chunks: 7 },
+  })
+  assert.deepEqual(checkReport(report, questions), [])
+  const typo = structuredClone(report)
+  typo.questions[0].rewrite.rewriteSearch = 'оk'
+  assert.ok(
+    checkReport(typo, questions).some((p) => p.includes('вне контракта дня')),
+    'значение вне контракта прошло сверку',
+  )
+  // Поля могло не быть вовсе — строки приёма 1 собраны раннером до него.
+  const older = structuredClone(report)
+  delete older.questions[0].rewrite.rewriteSearch
+  assert.deepEqual(checkReport(older, questions), [], 'отсутствие поля объявлено ошибкой формы')
+})
+
 test('сводка — среднее по прогнанным, а «не прогнали» не считается нулём', () => {
   const rows = [
     { before: { recall5: 1, mrr10: 1 }, after: { recall5: 1, mrr10: 1 }, candidates: 10, kept: 2, empty: false },
