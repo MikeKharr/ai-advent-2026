@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Никакого <base>: redir /day24 -> /day24/ на Caddy делает относительные
+     пути верными и в проде, и при локальном запуске (см. README дня 1). -->
+<title>Ответ с цитатами: источники, дословная сверка и честное «не знаю» — AI Advent 2026, день 24</title>
+<!-- style.css — дословный срез <style> дня 16 (days/day16/public/index.html).
+     Совпадение держит тест test/style-copy.test.js. Своих токенов и своих
+     шкал у дня нет; раскладка живёт правилами ниже, в блоке страницы
+     (база — раскладка дня 22 `2026-10-04-1003`, п. 1: копия дня 16 не
+     трогается; страница дня 23 — вторая база; добавки дня 24 —
+     ADR 2026-10-05-0544, п. 5). -->
+<link rel="stylesheet" href="style.css">
+<style>
+  /* Одна колонка (раскладка, п. 2.1): поток на экране один — вопрос, ответ,
+     источники, события. Правило .page копии берётся как есть, перекрытия нет.
+     Значения вне шкал здесь ровно трёх видов: ширины рамок (1px, 2px), вязкие
+     единицы (dvh — не используются) и порог медиазапроса (48rem). Четвёртый —
+     приём визуального скрытия ярлыка колонки (.vh). Шкалой отступов ни то, ни
+     другое не является (п. 1). */
+
+  /* Между смысловыми секциями — --s-5 и больше; между пультом и итогами
+     десяти вопросов — --s-7 (п. 2.1). */
+  .sec { margin:0 0 var(--s-5); }
+  .sec > * + * { margin-top:var(--s-4); }
+  /* Заголовок секции свой отступ уже несёт (`h2 { margin:0 0 var(--s-2) }` в
+     копии), и правило выше добавляло бы к нему второй. Бюджет первого экрана
+     (раскладка, п. 2.3) считает между `h2 ВОПРОС` и полем ровно `--s-2`, и
+     замер показал, почему это не придирка: лишние 16 px уводили низ
+     переключателя режима на 586 px при кадре 568, то есть за первый экран. */
+  .sec > h2 + * { margin-top:0; }
+  .sec-gap { margin-top:var(--s-7); }
+  .wrap { min-width:0; }
+
+  /* Разделитель строки цены переезжает в НАЧАЛО куска: при 320 px строка
+     разваливается на три, и висящая на конце точка читается как оборванная
+     фраза. Приём и довод — дня 20. */
+  .wire span:not(:last-child)::after { content:none; }
+  .wire span:not(:first-child)::before { content:"·\00a0"; }
+
+  /* Поле вопроса. Правила #cmd копии до него НЕ достают: селектор копии — по
+     идентификатору, а поле здесь носит id="q" (раскладка, п. 4.1 называет его
+     дословно). Поэтому пять состояний поля восстановлены здесь теми же
+     токенами, что в копии, а не изобретены: иначе поле получило бы браузерное
+     умолчание — нулевой радиус, чужой шрифт и высоту вдвое меньше кнопки
+     рядом (дефект дня 20, доехавший тогда до ревью).
+     Шрифт при этом НЕ моноширинный, в отличие от копии: там вводили команду
+     протокола, здесь вопрос — проза (п. 4.1). */
+  #q {
+    display:block; width:100%; min-width:0; resize:vertical;
+    font-family:inherit; font-size:var(--t-md); line-height:1.5;
+    padding:var(--s-2) var(--s-3); border-radius:var(--r-sm);
+    border:1px solid var(--line-ctl); background:var(--surface); color:var(--fg);
+    transition:border-color 120ms;
+  }
+  #q:hover { border-color:var(--fg-mut); }
+  #q:active { border-color:var(--fg); }
+  #q[disabled]:hover, #q[disabled]:active { border-color:var(--line-ctl); }
+
+  /* Правил переключателя режима здесь НЕТ, и это следствие решения п. 2.4
+     ADR: выбора режима на экране нет, радиогруппы в разметке нет, и правила
+     для неё были бы мёртвыми. Единственный контрол формы — поле и кнопка. */
+
+  /* Запертая кнопка не светлеет под мышью. Причина — вес селекторов: правило
+     `.send:hover { opacity:.9 }` копии (0,2,0) перебивает её же `[disabled] {
+     opacity:.5 }` (0,1,0), и единственный акцентный элемент экрана во время
+     платного запуска выглядел ЯРЧЕ, чем в покое (замер `design-review` к
+     PR #303: 0.9 под мышью против 0.5 без неё). Копия дня 16 не правится —
+     перекрытие живёт здесь. `cursor` там уже верный.*/
+  .send[disabled]:hover { opacity:.5; }
+
+  .submit-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-3); margin-top:var(--s-4); }
+  .submit-row .hint { margin:0; }
+
+  /* Ответ — главный предмет экрана, поэтому основной размер, а не --t-sm
+     реплик дня 20 (п. 5.2). Разметка из ответа модели не исполняется: текст
+     кладётся textContent. */
+  .answer {
+    margin:0; max-width:68ch; font-size:var(--t-md); line-height:1.6; color:var(--fg);
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .empty + .empty { margin-top:var(--s-3); }
+  /* ПОЛОСА ЧТЕНИЯ у прозы блока ответа и тела вопроса в итогах. Корпус держит
+     её у `.answer` и `.q-ans`, но слова исхода, строка меры и строки механики —
+     тоже проза, и без потолка они тянулись на всю ширину окна (замер
+     `design-review`: 98+ch при 1440). Класс `wrap` полосой не является — это
+     `min-width:0` для сетки. */
+  #answer p.entry-note, #answer p.entry-meta, #eval .q-line { max-width:68ch; }
+  /* Файл итогов не прочитан. П. 10 просит для этого случая `--fg`: это
+     отсутствие файла, а не авария, — но и не полушёпот, поэтому не `--fg-mut`
+     пустых состояний и не `--danger`. */
+  .unread { margin:0; max-width:68ch; font-size:var(--t-sm); line-height:1.5; color:var(--fg); }
+  .notice p { margin:0; }
+  .notice p + p { margin-top:var(--s-2); }
+  /* Слова чужой единицы: своего потолка длины у них нет, и на короткую строку
+     страница не рассчитывает (требование гейтов PR 1). */
+  .words-of {
+    margin:0; font-size:var(--t-sm); line-height:1.5;
+    white-space:pre-wrap; overflow-wrap:anywhere; max-width:68ch;
+  }
+
+  /* ——— Источники (п. 6.3) ——— */
+  .srcs { list-style:none; margin:0; padding:0; }
+  .src { border-top:1px solid var(--line); padding:var(--s-3) 0; min-width:0; }
+  .src-grid { display:grid; grid-template-columns:1fr; gap:var(--s-1); align-items:baseline; }
+  @media (min-width:48rem) {
+    .src-grid { grid-template-columns:2rem minmax(0,1fr) 10rem 5rem; gap:var(--s-3); }
+  }
+  .src-n {
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); font-variant-numeric:tabular-nums;
+  }
+  .src-path {
+    font-family:var(--mono); font-size:var(--t-sm); line-height:1.5;
+    overflow-wrap:anywhere; min-width:0;
+  }
+  .src-path a {
+    color:inherit; text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em; transition:text-decoration-color 120ms;
+  }
+  .src-path a:hover { text-decoration-color:var(--fg); }
+  .src-path a:active { opacity:.7; }
+  .src-sec { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); overflow-wrap:anywhere; }
+  .src-score {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  @media (min-width:48rem) { .src-score { text-align:right; } }
+
+  /* Свёртка текста фрагмента и свёртка протокола — одна форма на обе (пп. 6.3,
+     7.2): свёрнуто по умолчанию, маркер свой, раскрытие не анимировано. */
+  .fold { margin-top:var(--s-2); }
+  .fold > summary {
+    display:flex; align-items:baseline; gap:var(--s-2); list-style:none; cursor:pointer;
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    transition:color 120ms;
+  }
+  .fold > summary::-webkit-details-marker { display:none; }
+  .fold > summary:hover { color:var(--fg); }
+  .fold > summary:active { transform:translateY(1px); }
+  .fold > summary:focus-visible { outline-offset:-2px; }
+  .mark { margin-left:auto; font-variant-numeric:tabular-nums; }
+  .mark::before { content:"+"; }
+  details[open] > summary .mark::before { content:"−"; }
+  /* Текст фрагмента — как отдал сервер: pre-wrap обязателен, иначе код и
+     таблицы читаются как слипшийся абзац, а склеивать их значит истолковывать
+     предмет показа (п. 6.3). */
+  .frag {
+    margin:var(--s-2) 0 0; max-width:68ch;
+    font-size:var(--t-sm); line-height:1.5; color:var(--fg);
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .frag.is-none { color:var(--fg-mut); }
+
+  /* ——— Отбор: кандидаты до отбора (ADR 2026-10-05-0544, п. 5) ——— */
+  /* Форма та же, что у источников: строка-ряд на линии, а не карточка. Своих
+     токенов и своих шкал день не заводит — все значения из копии дня 16. */
+  .cands { list-style:none; margin:0; padding:0; }
+  .cand { border-top:1px solid var(--line); padding:var(--s-2) 0; min-width:0; }
+  .cand-grid { display:grid; grid-template-columns:1fr; gap:var(--s-1); align-items:baseline; }
+  /* КОЛОНОК СТОЛЬКО ЖЕ, СКОЛЬКО ЯЧЕЕК, и это не придирка: ячеек было шесть
+     (номер, путь, раздел, близость, релевантность, итог) на пять колонок, и
+     шестая уезжала на вторую строку сетки — под номер, а не под свой заголовок.
+     Раздел переехал в колонку пути второй строкой: он и в полосе заголовков
+     назван вместе с ним («путь и раздел»). */
+  @media (min-width:48rem) {
+    .cand-grid { grid-template-columns:2rem minmax(0,1fr) 5rem 8rem 6rem; gap:var(--s-3); }
+  }
+  .cand-where { min-width:0; }
+  /* Отброшенный кандидат не прячется и не перечёркивается: он часть предмета
+     показа. Вторичный цвет строки — то же, чем копия дня 16 отличает
+     второстепенное от главного; СЛОВО «отброшен» стоит в строке рядом, то
+     есть смысл несёт не один цвет (корпус, критерий различимости). */
+  .cand.is-out .cand-path, .cand.is-out .cand-sec { color:var(--fg-mut); }
+  .cand-n {
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); font-variant-numeric:tabular-nums;
+  }
+  .cand-path {
+    font-family:var(--mono); font-size:var(--t-sm); line-height:1.5;
+    overflow-wrap:anywhere; min-width:0;
+  }
+  .cand-path a {
+    color:inherit; text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em; transition:text-decoration-color 120ms;
+  }
+  .cand-path a:hover { text-decoration-color:var(--fg); }
+  .cand-path a:active { opacity:.7; }
+  /* Раздел стоит под путём в той же колонке, поэтому несёт свой отступ сам:
+     правило сетки до него уже не достаёт. */
+  .cand-sec {
+    margin:var(--s-1) 0 0; font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); overflow-wrap:anywhere;
+  }
+  .cand-from { margin:var(--s-1) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+  .cand-score, .cand-rel, .cand-kept {
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+    font-variant-numeric:tabular-nums;
+  }
+  /* Ярлык колонки виден на узком экране и видимо скрыт на широком — тот же
+     приём и та же причина, что у `.q-v .lbl` ниже. */
+  .cand .lbl { margin-right:var(--s-2); }
+  @media (min-width:48rem) {
+    .cand .lbl {
+      position:absolute; width:1px; height:1px; overflow:hidden;
+      clip-path:inset(50%); white-space:nowrap;
+    }
+  }
+  @media (min-width:48rem) {
+    /* Вес селектора ДВА КЛАССА, и это не стиль, а починка: правило `.colhead`
+       ниже объявлено позже и при равном весе перебивало это — полоса
+       заголовков кандидатов вставала по сетке списка вопросов (3rem … 2rem) и
+       разъезжалась со строками. */
+    .colhead.colhead-pick { grid-template-columns:2rem minmax(0,1fr) 5rem 8rem 6rem; padding:0 0 var(--s-2); }
+  }
+  /* Переписанный вопрос — предмет показа, и он моноширинный: это поисковый
+     запрос, а не проза. Кладётся textContent. */
+  .rewritten {
+    margin:0; max-width:68ch; font-family:var(--mono); font-size:var(--t-sm);
+    line-height:1.5; color:var(--fg); white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+
+  /* ——— Проверки, цитаты и процитированные источники (день 24) ——— */
+  /* Форма та же, что у кандидатов и источников: строка-ряд на линии. Своих
+     токенов и своих шкал день не заводит — все значения из копии дня 16. */
+  .checks { list-style:none; margin:0; padding:0; display:grid; gap:var(--s-2); }
+  .check {
+    display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-2);
+    font-size:var(--t-sm); line-height:1.5; min-width:0;
+  }
+  /* Значение признака НЕ кодируется цветом: «да» и «нет» различаются словом,
+     и ничем больше (корпус, критерий различимости). */
+  .check-val { color:var(--fg); }
+  .check-name { color:var(--fg-mut); overflow-wrap:anywhere; }
+
+  .quotes { list-style:none; margin:0; padding:0; }
+  .quote { border-top:1px solid var(--line); padding:var(--s-3) 0; min-width:0; }
+  .quote-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-2) var(--s-3); }
+  .quote-n {
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); font-variant-numeric:tabular-nums;
+  }
+  .quote-src {
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); overflow-wrap:anywhere; min-width:0;
+  }
+  /* Результат сверки — СЛОВО, и оно не красится: цитата может не найтись и у
+     верного ответа (фрагмент обрезан на выдаче), поэтому цвет аварии здесь
+     утверждал бы вердикт вместо наблюдения. */
+  .quote-mark { font-size:var(--t-xs); line-height:1.4; color:var(--fg); }
+  /* Текст цитаты — предмет показа, кладётся textContent и не правится. */
+  .quote-text {
+    margin:var(--s-2) 0 0; max-width:68ch; font-size:var(--t-sm); line-height:1.5;
+    color:var(--fg); white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .quote-text.is-none { color:var(--fg-mut); }
+  /* Заявленный моделью путь — моноширинный, как и настоящий: это путь, а не
+     проза. Цветом не кодируется: расхождение несёт слово «модель назвала». */
+  .claimed {
+    margin:var(--s-1) 0 0; font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); overflow-wrap:anywhere;
+  }
+  /* Уточняющий вопрос — проза того же размера, что ответ: он часть исхода,
+     а не примечание под ним. */
+  .clarify {
+    margin:0; max-width:68ch; font-size:var(--t-md); line-height:1.6; color:var(--fg);
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+
+  /* ——— Лента конвейера (п. 7.1) ——— */
+  /* Записи — ряды одной ленты, а не карточки: конвейер детерминированный, и
+     карточка «что решила модель» обещала бы решение, которого не было.
+     Поэтому карточная форма .entry копии здесь перекрыта — линией вместо
+     рамки. Перекрытие, а не правка копии. */
+  .steps { list-style:none; margin:0; padding:0; }
+  .steps .entry {
+    border:0; border-top:1px solid var(--line); border-radius:0;
+    background:transparent; padding:var(--s-2) 0; margin:0;
+  }
+  .steps .entry-head { gap:var(--s-2) var(--s-3); margin:0; }
+  .step-time { font-variant-numeric:tabular-nums; }
+  .steps .entry-note { margin:var(--s-2) 0 0; }
+  .steps .rpc { margin:var(--s-1) 0 var(--s-3); }
+  .steps .trimmed { margin:var(--s-2) 0 0; }
+
+  /* ——— Итоги десяти вопросов (п. 9) ——— */
+  .sum { border-collapse:collapse; margin:0; }
+  .sum th, .sum td { padding:var(--s-1) var(--s-3) var(--s-1) 0; text-align:left; font-weight:400; }
+  .sum thead th {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut); text-align:right;
+  }
+  .sum tbody th { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+  .sum td {
+    font-size:var(--t-sm); line-height:1.5; text-align:right;
+    font-variant-numeric:tabular-nums; min-width:5rem;
+  }
+
+  /* Фраза вывода — проза, и полоса чтения ей нужна: класс `wrap` полосой не
+     является, это `min-width:0` для сетки. Замер design-review к PR #304:
+     98.4ch при 1440 без этого правила, тогда как соседние абзацы секции
+     (`#eval-limits`, `.q-line.is-main`) полосу имеют. */
+  #sum-verdict { margin:0; max-width:68ch; }
+
+  .qs { list-style:none; margin:0; padding:0; }
+  .q { border-top:1px solid var(--line); min-width:0; }
+  .q > summary {
+    position:relative;
+    display:grid; grid-template-columns:1fr; gap:var(--s-1);
+    list-style:none; cursor:pointer; padding:var(--s-3) var(--s-2);
+    transition:background-color 120ms;
+  }
+  @media (min-width:48rem) {
+    .q > summary { grid-template-columns:3rem minmax(0,1fr) 7rem 7rem 2rem; gap:var(--s-3); align-items:baseline; }
+  }
+  /* Маркер раскрытия — те же правила `.mark`, что у свёрток пульта: знак
+     `+` → `−` по `[open]`, `aria-hidden` стоит в разметке. Размер и цвет —
+     вторичные, как у `.q-id`: маркер не содержание строки.
+
+     Место у него разное, и это не прихоть. На широком экране он занимает
+     пятую колонку сетки — своей колонкой, а не перестановкой: порядок на
+     экране остаётся порядком разметки. На узком сетка однополосная, и
+     колонки у знака нет: в потоке он встал бы отдельной строкой под
+     вердиктами, оторванный от всего (замер при 320). Поэтому там он
+     вынимается из потока в верхний правый угол строки — к номеру вопроса,
+     где маркер и ищут. Порядка чтения это не меняет: знак `aria-hidden`,
+     состояние сообщает сам `details`. */
+  .q > summary .mark {
+    position:absolute; top:var(--s-3); right:var(--s-2);
+    font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  }
+  @media (min-width:48rem) { .q > summary .mark { position:static; } }
+  .q > summary::-webkit-details-marker { display:none; }
+  .q > summary:hover { background:var(--bg); }
+  .q[open] > summary { background:var(--bg); }
+  .q > summary:focus-visible { outline-offset:-2px; }
+  .q > summary:active { transform:translateY(1px); }
+  .q-id {
+    font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); font-variant-numeric:tabular-nums;
+  }
+  .q-text { font-size:var(--t-sm); line-height:1.5; overflow-wrap:anywhere; min-width:0; }
+  .q-v { font-size:var(--t-sm); line-height:1.5; }
+  .q-v .lbl { margin-right:var(--s-2); }
+  .lbl {
+    font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-mut);
+  }
+  .q-body { padding:var(--s-3) var(--s-4) var(--s-4); }
+  .q-body > * + * { margin-top:var(--s-3); }
+  .q-sides { display:grid; grid-template-columns:1fr; gap:var(--s-4); }
+  @media (min-width:48rem) { .q-sides { grid-template-columns:1fr 1fr; } }
+  .q-line { margin:0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+  .q-line.is-main { color:var(--fg); max-width:68ch; }
+  .q-src {
+    margin:0; font-family:var(--mono); font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); overflow-wrap:anywhere;
+  }
+  .q-src a {
+    color:inherit; text-decoration:underline; text-decoration-color:var(--line-ctl);
+    text-underline-offset:.15em; transition:text-decoration-color 120ms;
+  }
+  .q-src a:hover { text-decoration-color:var(--fg); }
+  .q-src a:active { opacity:.7; }
+  /* Ответы обоих режимов показываются ЦЕЛИКОМ: это предмет сравнения, и
+     обрезать его «для компактности» значит забрать возможность не поверить
+     вердикту (п. 9.4). */
+  .q-ans {
+    margin:0; max-width:68ch; font-size:var(--t-sm); line-height:1.5; color:var(--fg);
+    white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+
+  /* Полоса заголовков колонок появляется только там, где есть колонки (п. 2.2).
+     Она aria-hidden: колонку в дереве доступности опознаёт ярлык внутри самой
+     строки, а не эта полоса. */
+  .colhead { display:none; }
+  @media (min-width:48rem) {
+    .colhead {
+      /* Пятая колонка — под знак раскрытия строки: без неё заголовки колонок
+         разъезжаются с вердиктами на ширину знака. */
+      display:grid; grid-template-columns:3rem minmax(0,1fr) 7rem 7rem 2rem; gap:var(--s-3);
+      padding:0 var(--s-2) var(--s-2);
+    }
+  }
+  /* ВИДИМО СКРЫТО, а не display:none: ярлык режима уходит с глаз на широком
+     экране, где колонку видно по полосе заголовков, но остаётся в дереве
+     доступности — от полосы она не зависит (пп. 9.4, 13). Значения 1px и
+     clip-path длинами раскладки не являются и места в шкале отступов не
+     занимают (п. 1). */
+  @media (min-width:48rem) {
+    .q-v .lbl {
+      position:absolute; width:1px; height:1px; overflow:hidden;
+      clip-path:inset(50%); white-space:nowrap;
+    }
+  }
+
+  /* Раскрытие свёрток не анимируется вовсе (п. 13.7). */
+  @media (prefers-reduced-motion: reduce) { .fold > summary, .q > summary { transition:none; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Ответ с цитатами: что проверяется механикой</h1>
+  <p class="sub">Вопрос о проекте: модель отвечает по найденным фрагментам в заданной
+    форме — ответ, источники, цитаты. Цитаты сверяются с текстом фрагмента дословно, в
+    коде; не нашлось ответа — так и будет сказано, с уточняющим вопросом.</p>
+
+  <!-- Числа суточного предела в разметке нет намеренно: оно приходит из
+       окружения (MAX_DAILY_CALLS, days/day24/env.js), и вписанное сюда
+       разошлось бы с сервером молча. Достоверное число посетитель видит там,
+       где оно достоверно, — в сообщении отказа 429 от сервера. -->
+  <!-- Куски, кроме последнего, не переносятся по строкам (`.wire span {
+       white-space:nowrap }` в копии дня 16), поэтому каждый обязан влезать в
+       320 px целиком, а самый длинный стоит ПОСЛЕДНИМ — переносится только он.
+       Замер в живом Chrome при 320: с длинным куском вторым страница ехала
+       по горизонтали на 53 px. -->
+  <p class="wire">
+    <span>вызовов модели — <b>2–3</b></span>
+    <span>кандидатов <b>10</b>, в модель — до <b>5</b></span>
+    <span>цитаты сверяются <b>дословно</b>, в коде</span>
+    <span>суточный предел вопросов — общий на всех посетителей этого дня</span>
+  </p>
+
+  <noscript>
+    <p class="notice">Страница спрашивает сервер скриптом, а он отключён. Итоги прогона
+      лежат рядом файлом eval.json, а что делает день, написано в README дня 24.</p>
+  </noscript>
+
+  <section class="sec wrap" aria-labelledby="ask-h">
+    <h2 id="ask-h">Вопрос</h2>
+    <form class="composer" id="ask">
+      <label class="field" for="q">Вопрос о проекте</label>
+      <!-- Атрибута `required` здесь НЕТ, хотя раскладка (п. 4.1) его называет:
+           с ним браузер перехватывает отправку сам, обработчик не вызывается,
+           и строка «Не отправлено: поле пустое.» из п. 8.3 не показалась бы
+           никогда. Из двух пунктов раскладки выбран тот, который посетитель
+           видит. -->
+      <textarea id="q" rows="3" maxlength="600" autocomplete="off"
+                placeholder="где держится инвариант I-4"
+                aria-describedby="status"></textarea>
+      <!-- ВЫБОРА РЕЖИМА НА ЭКРАНЕ НЕТ, и это решение, а не пропажа из дня 23:
+           режим здесь один (ADR 2026-10-05-0544, п. 2.4), называет его сервер
+           дня, и посетителю выбирать нечего. Литерала режима в разметке тоже
+           нет — он приходит в ответе запуска и стоит в строке меры над
+           ответом; вписанный сюда разошёлся бы с сервером молча. -->
+      <p class="hint">Режим отбора задан сервером — он назван в строке над ответом.</p>
+      <div class="submit-row">
+        <button class="send" id="send" type="submit">Спросить</button>
+        <p class="hint">Ответ появится ниже; страница ничего не сохраняет.</p>
+      </div>
+      <p class="cmd-status" id="status" role="status" aria-live="polite">&nbsp;</p>
+    </form>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="answer-h">
+    <h2 id="answer-h">Ответ</h2>
+    <!-- Почему «токенов ответа», а не «токенов»: поле запуска считает только
+         вызов ответа, а отбор и переписывание — отдельные вызовы, которых в
+         этом числе нет. Полного расхода запуска страница не показывает и не
+         делает вида, что показывает. -->
+    <p class="hint">Токены в строке ниже — только вызова ответа: отбор и переписывание
+      вопроса считаются отдельно, и этого числа у страницы нет.</p>
+    <!-- Пустое состояние — три абзаца, которые иначе съели бы первый экран
+         (п. 5.1). Пояснений про режимы в шапке нет намеренно. -->
+    <div id="answer-empty">
+      <p class="empty">Вопроса ещё не было. Ответ появится здесь целиком, без пересказа и
+        без подсветки.</p>
+      <p class="empty">Сначала идёт поиск по этому репозиторию и отбор: десять кандидатов
+        оценивает модель, дальше идут только относящиеся к вопросу, но не больше пяти.
+        Отвечает модель только по ним, и форму ответа держит схема — ответ, источники,
+        цитаты, — а не просьба в промпте.</p>
+      <p class="empty">Каждую цитату страница получает уже сверенной: код искал её в
+        тексте фрагмента дословно. Не нашлась — так и будет написано рядом с ней, и
+        цитата останется на экране.</p>
+      <p class="empty">Ответа в найденном может не оказаться — тогда исходом будет «не
+        знаю» с уточняющим вопросом. Это исход, а не сбой, и дорисовывать выдачу ради
+        симметрии страница не станет.</p>
+    </div>
+    <div id="answer" class="wrap"></div>
+  </section>
+
+  <!-- ЧЕТЫРЕ ПРОВЕРКИ — сразу под ответом: они и есть то, что о нём известно
+       механически (ADR 2026-10-05-0544, п. 2.2). Цветом ни одна не кодируется:
+       значение несёт слово. -->
+  <section class="sec wrap" aria-labelledby="checks-h">
+    <h2 id="checks-h">Четыре проверки</h2>
+    <p class="hint">Проверяет код, а не модель: источники названы; цитаты приведены;
+      каждая цитата найдена в тексте своего фрагмента дословно; путь источника, который
+      назвала модель, совпал с настоящим знак в знак.</p>
+    <div id="checks-note"></div>
+    <ul class="checks" id="checks" aria-labelledby="checks-h"></ul>
+    <p class="hint" id="verbatim-note"></p>
+  </section>
+
+  <!-- НА ЧТО СОСЛАЛАСЬ МОДЕЛЬ — отдельно от того, что ей дали прочитать
+       (контракт дня 24: `cited` против `sources`). Два списка, а не один.
+       Модель называет НОМЕР; путь и раздел агент берёт из отбора по этому
+       номеру, а заявленное ею едет рядом полями `claimed*`. -->
+  <section class="sec wrap" aria-labelledby="cited-h">
+    <h2 id="cited-h">Фрагменты, на которые сослалась модель</h2>
+    <p class="hint">Здесь — только те фрагменты, на которые модель указала сама. Всё, что
+      ей дали прочитать, перечислено ниже, в «Источниках».</p>
+    <!-- Почему путь не из ответа модели: подпись приходит константой из
+         run.js (CITED_RULE) и проверяется на дословность — раскладки у дня
+         нет, и формулировку держит код. -->
+    <p class="hint" id="cited-rule"></p>
+    <div id="cited-note"></div>
+    <ol class="srcs" id="cited" aria-labelledby="cited-h"></ol>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="quotes-h">
+    <h2 id="quotes-h">Цитаты и их сверка</h2>
+    <p class="hint">Цитата сверяется с текстом фрагмента, как его отдала служба поиска:
+      пробелы и регистр приводятся к одному виду, дальше — поиск подстроки. Не нашлась —
+      цитата остаётся на экране с пометкой.</p>
+    <div id="quotes-note"></div>
+    <ol class="quotes" id="quotes" aria-labelledby="quotes-h"></ol>
+    <p class="hint" id="unverified-note"></p>
+  </section>
+
+  <!-- СЕКЦИЯ ДНЯ 23, которой в дне 22 нет (ADR 2026-10-05-0544, п. 5): выдача
+       ДО отбора рядом с выдачей после него. Она стоит ВЫШЕ источников, потому
+       что источники — её результат, а не наоборот. -->
+  <section class="sec wrap" aria-labelledby="pick-h">
+    <h2 id="pick-h">Отбор</h2>
+    <p class="hint">Релевантность ставит модель-реранкер: 0 — не относится, 1 — относится,
+      2 — отвечает на вопрос. Остаются оценки не ниже 1, и не больше пяти штук.</p>
+    <div id="rewritten"></div>
+    <div id="pick-note"></div>
+    <div class="colhead colhead-pick" aria-hidden="true">
+      <span class="lbl">№</span>
+      <span class="lbl">путь и раздел</span>
+      <span class="lbl">близость</span>
+      <span class="lbl">релевантность</span>
+      <span class="lbl">итог</span>
+    </div>
+    <ol class="cands" id="cands" aria-labelledby="pick-h"></ol>
+    <p class="hint" id="threshold-note"></p>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="srcs-h">
+    <div class="feed-head">
+      <h2 id="srcs-h">Источники</h2>
+      <span class="entry-meta" id="index-meta"></span>
+    </div>
+    <p class="hint">Индекс собран из корпуса той выкатки, чей коммит назван. Если в
+      репозитории с тех пор что-то поменялось, поиск этого ещё не видит.</p>
+    <p class="hint">Близость — мера похожести на вопрос, больше значит ближе; шкала у
+      стратегий своя, и сравнивать её между стратегиями нельзя.</p>
+    <p class="hint">Здесь — то, что дошло до модели после отбора, с текстами: именно по
+      этим текстам сверялись цитаты. Что поиск нашёл до отбора, перечислено выше.</p>
+    <div id="srcs-note"></div>
+    <ol class="srcs" id="srcs" aria-labelledby="srcs-h"></ol>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="steps-h">
+    <h2 id="steps-h">Как шёл конвейер</h2>
+    <p class="hint">Порядок шагов задан кодом, а не моделью: поиск идёт всегда и до
+      вызова, инструмента модель не видит и выбрать его не может.</p>
+    <!-- Своего события у шага «сборка промпта» нет: стадии живут в сервисе
+         агентов и общие для дней 6–20 (раскладка, п. 18.1). Сказано это один
+         раз на секцию, а не подписью у каждой записи. -->
+    <p class="hint">Шаг «сборка промпта» своего события не имеет: эту запись рисует
+      страница между «фрагменты получены» и «вызов модели», и время у неё — время вызова.</p>
+    <div id="steps-note"></div>
+    <ol class="steps" id="steps" aria-labelledby="steps-h"></ol>
+  </section>
+
+  <section class="sec sec-gap wrap" aria-labelledby="eval-h">
+    <h2 id="eval-h">Итоги прогона 10 контрольных вопросов</h2>
+    <div id="eval-state"></div>
+    <div id="eval" hidden>
+      <!-- Сводка — настоящая таблица: у каждой клетки есть и заголовок
+           строки, и заголовок столбца. Запрет таблиц из раскладки дня 22
+           (п. 9.4) относится к СПИСКУ ВОПРОСОВ, а не к этим числам. -->
+      <table class="sum" id="sum"></table>
+      <p class="empty" id="sum-partial" hidden></p>
+      <p id="sum-verdict" class="wrap"></p>
+      <!-- Границы метода — ВНУТРИ секции, до списка вопросов и без раскрытия
+           чего-либо (п. 9.3): «насколько уверенно» — часть ответа, а не
+           примечание. -->
+      <p class="empty" id="eval-limits"></p>
+      <div class="notice" id="eval-method"></div>
+      <div class="colhead" aria-hidden="true">
+        <span class="lbl">№</span>
+        <span class="lbl">вопрос</span>
+        <span class="lbl">исход</span>
+        <span class="lbl">верен</span>
+      </div>
+      <ul class="qs" id="qs"></ul>
+    </div>
+  </section>
+
+  <footer>
+    Вопрос и ответ не сохраняются: сессий, cookie и переписки у этого дня нет —
+    перезагрузка страницы стирает всё, что на ней было.
+    Поиск идёт в службу проекта по MCP — тем же инструментом и под тем же ключом, что
+    у редактора владельца. Окно службы одно на всех посетителей этого дня: залп
+    одного отнимает его у остальных.
+    Итоги прогона — через этот же публичный адрес, отдельным запуском; его дата
+    и коммит индекса названы в файле результата.
+    Сверка цитат механическая: она ловит форму, а не правду — подтверждённая цитата
+    не обещает верного пересказа, это уже вердикт судьи в итогах ниже.
+    <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/days/day24/README.md">README дня</a>,
+    <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-05-0544-days23-25-rag-week.md">решение дня</a>,
+    <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/rag/README.md">служба поиска</a>,
+    <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/README.md">журнал работы</a>,
+    <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/days/day24">исходный код</a>.
+    Вопросы: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>
+  </footer>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
