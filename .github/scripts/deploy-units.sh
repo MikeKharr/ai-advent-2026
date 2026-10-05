@@ -54,7 +54,7 @@ fi
 changed=$(set -o pipefail; git diff -z --name-only "$base" "$head" | tr '\n\0' '?\n')
 # Входы графа атласа — явный список в atlas/atlas.config.json; то же правило,
 # что в ci.yml. Версия инструмента — atlas-tool.sh: её смена пересобирает атлас.
-atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
+atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|caddy/Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
 # Корпус индекса — та же роль, что у регулярки atlas выше и та же строка, что
 # в ci.yml: правка документа или кода живой единицы обязана переехать в индекс
 # ВЫКАТКОЙ, а не только пересборкой в CI (ADR 2026-09-29-1639, п. 3). Без неё

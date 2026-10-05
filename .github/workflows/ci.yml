@@ -351,7 +351,7 @@ jobs:
           # rag/test/test_corpus.py::CiRegexTest — он берёт эту регулярку из
           # ci.yml и прогоняет по ней каждый путь corpus.collect().
           rag='^(agent_docs/|AGENTS\.md$|README\.md$|rag/|router/|agents/|mcp/|mcpnews/|mcpstore/|deploy/|\.github/|test/|atlas/README\.md$|site/README\.md$)'
-          atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
+          atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|caddy/Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
           # Исключение из совпадения с deploy-units.sh: дни 13, 14 и 15 работают
           # через службу агентов, и их связку проверяют тесты из единицы
           # agents — agents/test/day13-reconnect.test.js для дня 13 и
@@ -577,7 +577,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Проверка Caddyfile
-        run: docker run --rm -v "$PWD/deploy:/w" -w /w caddy:2-alpine caddy validate --config Caddyfile
+        run: docker run --rm -v "$PWD/deploy/caddy:/w" -w /w caddy:2-alpine caddy validate --config Caddyfile
+
+      # Предмет шага — не синтаксис файла, а то, что правка файла доезжает до
+      # живого процесса Caddy тем же способом, каким это делает выкатка:
+      # обновление репозитория заменяет файл новым inode, после чего идёт
+      # `caddy reload` в уже работающем контейнере.
+      #
+      # Зачем живым прогоном, а не чтением compose.yml. Что монтируется
+      # каталог, держит test/caddy-mount.test.js — он читает текст. Но из
+      # текста не следует, что монтировка каталога действительно показывает
+      # контейнеру новое содержимое: это свойство монтирования и образа, а не
+      # нашего файла, и сменить его может обновление caddy или докера на
+      # раннере, не тронув ни одной нашей строки. Поэтому здесь поднимается
+      # настоящий образ.
+      #
+      # Вторая половина шага — приманка: тот же прогон на ПРЕЖНЕЙ монтировке
+      # одиночным файлом обязан отдать ПРЕЖНЕЕ содержимое при успешном
+      # `reload`. Без неё шаг оставался бы зелёным и в мире, где обе
+      # монтировки работают одинаково, то есть не различал бы гипотезы и не
+      # доказывал бы ничего про дефект.
+      - name: Правка Caddyfile доезжает до живого входа
+        timeout-minutes: 5
+        run: bash .github/scripts/caddy-mount-check.sh
 
   # Границы сетей compose — условие вето compliance (ADR 2026-09-23-1227,
   # п. 5, заменён в части ADR 2026-09-29-0236). Проверяет структуру

@@ -16,7 +16,7 @@ SQLite (`node:sqlite`, поэтому **Node 24**, а не 22). Протокол
 
 Контейнером в закрытую сеть `tools` (`deploy/compose.yml`), с томом
 `mcpstore_data`. **Наружу не публикуется:** опубликованного порта нет,
-маршрута в `deploy/Caddyfile` нет, `caddy` в сеть `tools` не входит.
+маршрута в `deploy/caddy/Caddyfile` нет, `caddy` в сеть `tools` не входит.
 Обращается к серверу только сервис агентов, и замкнутость этого круга держит
 страж `.github/scripts/compose-networks.mjs` — мутация «дать `caddy` сеть
 `tools`» красит прогон.
