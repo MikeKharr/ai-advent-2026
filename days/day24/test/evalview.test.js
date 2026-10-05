@@ -315,7 +315,7 @@ test('ответ без цитат вовсе и ответ с ненайден�
   const v = verdict(t)
   assert.match(v.text, /3 ответа нечем проверить по источникам/)
   assert.match(v.text, /у 1 ответа цитат нет вовсе/)
-  assert.match(v.text, /у 2 цитаты есть, но во фрагментах не нашлись/)
+  assert.match(v.text, /у 2 ответов цитаты есть, но во фрагментах не нашлись/)
 })
 
 test('«источники не названы» — свой случай, а не «цитат нет вовсе»', () => {
@@ -355,7 +355,7 @@ test('встретилась одна причина — названа одна
   assert.match(only.text, /у 1 ответа цитат нет вовсе\./)
   assert.ok(!/во фрагментах не нашлись/.test(only.text), only.text)
   const other = verdict(tally(parseEval(file([bad('q01', true)]))))
-  assert.match(other.text, /у 1 цитаты есть, но во фрагментах не нашлись\./)
+  assert.match(other.text, /у 1 ответа цитаты есть, но во фрагментах не нашлись\./)
   assert.ok(!/цитат нет вовсе/.test(other.text), other.text)
 })
 
@@ -380,4 +380,91 @@ test('подтверждённых ответов хватает — про «н
   const t = tally(parseEval(file([question({ id: 'q01' })])))
   assert.equal(t.unsupported.noQuotes, 0)
   assert.ok(!/нечем проверить/.test(verdict(t).text), verdict(t).text)
+})
+
+test('у обеих причин «нечем проверить» есть существительное и своё склонение', () => {
+  // ЧТО ЭТО ДЕРЖИТ: пропавшее слово. Ветвь про ненайденные цитаты печатала
+  // «у 1 цитаты есть, но во фрагментах не нашлись» — без «ответа» фраза
+  // читается как «у одной цитаты», то есть про цитату, а не про ответ
+  // (находка `design-review` к PR #319). Соседняя ветвь существительное
+  // несла, и разница была видна только на живом тексте.
+  const text = (n, hasQuotes) =>
+    verdict(tally(parseEval(file(Array.from({ length: n }, (unused, i) => bad(`q0${i}`, hasQuotes))))))
+      .text
+  assert.match(text(1, true), /у 1 ответа цитаты есть, но во фрагментах не нашлись/)
+  assert.match(text(3, true), /у 3 ответов цитаты есть, но во фрагментах не нашлись/)
+  // Соседняя причина — тем же складом, и её склонение проверяется рядом,
+  // чтобы правка одной ветви не разошлась с другой.
+  assert.match(text(1, false), /у 1 ответа цитат нет вовсе/)
+  assert.match(text(3, false), /у 3 ответов цитат нет вовсе/)
+})
+
+test('заголовок про подтверждённые цитаты оговаривает чужой документ', () => {
+  // ЧТО ЭТО ДЕРЖИТ: число, которое цитируют наружу. «7 ответов с
+  // подтверждённой цитатой» говорит о ФОРМЕ: цитата дословна, а документ под
+  // ней мог быть и не эталонным — на живом прогоне так вышло у двух из семи
+  // (находка `reviewer` к PR #319, Consider).
+  const answeredWith = (exact) =>
+    question({ id: `q${exact ? 'h' : 'm'}`, run: run({ outcome: 'answered', cited_exact: exact }) })
+  const t = tally(
+    parseEval(
+      file([
+        { ...answeredWith(true), id: 'q01' },
+        { ...answeredWith(false), id: 'q02' },
+        { ...answeredWith(false), id: 'q03' },
+      ]),
+    ),
+  )
+  assert.deepEqual(t.answeredExact, { hit: 1, miss: 2 })
+  const v = verdict(t)
+  assert.match(v.lead, /3 ответа с подтверждённой цитатой/)
+  assert.match(v.text, /у 2 ответов назван не тот документ, что в эталоне/)
+})
+
+test('все назвали эталон — оговорки нет вовсе, а не «у 0»', () => {
+  const t = tally(
+    parseEval(file([question({ id: 'q01', run: run({ outcome: 'answered', cited_exact: true }) })])),
+  )
+  assert.deepEqual(t.answeredExact, { hit: 1, miss: 0 })
+  assert.ok(!/не тот документ/.test(verdict(t).text), verdict(t).text)
+})
+
+test('у общего вопроса эталона нет — он не идёт ни в числитель, ни в знаменатель', () => {
+  // `unknown_filter` с `cited_exact: null`: признака нет, и оговорка про него
+  // молчит. Иначе общий вопрос попал бы в «назван не тот документ».
+  const t = tally(
+    parseEval(
+      file([
+        question({ id: 'm01', set: 'general', expect: [], run: run({ outcome: 'unknown_filter', cited_exact: null }) }),
+        question({ id: 'q01', run: run({ outcome: 'answered', cited_exact: true }) }),
+      ]),
+    ),
+  )
+  assert.deepEqual(t.answeredExact, { hit: 1, miss: 0 })
+})
+
+test('оговорка считает ТОЛЬКО ответивших: без подтверждения в неё не попадает', () => {
+  // ЧТО ЭТО ДЕРЖИТ: слово «из них» в оговорке. Она стоит после «N ответов с
+  // подтверждённой цитатой», значит знаменатель — эти N и только они. Ответ
+  // без подтверждения с чужим путём в оговорку попадать не смеет, иначе число
+  // говорит об одном множестве, а подпись — о другом. Пропуск нашёлся
+  // мутацией: без условия `outcome === 'answered'` прогон оставался зелёным.
+  const t = tally(
+    parseEval(
+      file([
+        question({ id: 'q01', run: run({ outcome: 'answered', cited_exact: true }) }),
+        question({
+          id: 'q02',
+          run: run({
+            outcome: 'unsupported',
+            has_quotes: true,
+            quotes_verified: 'none',
+            cited_exact: false,
+          }),
+        }),
+      ]),
+    ),
+  )
+  assert.deepEqual(t.answeredExact, { hit: 1, miss: 0 }, 'ответ без подтверждения попал в оговорку')
+  assert.ok(!/не тот документ/.test(verdict(t).text), verdict(t).text)
 })

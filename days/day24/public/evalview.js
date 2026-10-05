@@ -167,6 +167,20 @@ export function tally(parsed) {
   //
   // Остаток — прогон не сказал, что с цитатами, — не падает ни в одно ведро:
   // иначе сумма молча расходилась бы с числом ответов без подтверждения.
+  // СРЕДИ ОТВЕТИВШИХ — У СКОЛЬКИХ НАЗВАН ТОТ САМЫЙ ДОКУМЕНТ. Без этого числа
+  // заголовок «N ответов с подтверждённой цитатой» говорит только о форме:
+  // цитата дословна, а документ под ней мог быть и не эталонным. На прогоне
+  // 2026-10-05 так вышло у двух из семи (q72, q94), и наружу цитируют именно
+  // семёрку (находка `reviewer` к PR #319). В строке вопроса это видно, в
+  // сводке — не было.
+  //
+  // Считаются только те, у кого признак ЕСТЬ: у общего вопроса эталона не
+  // бывает, и его `null` ни в числитель, ни в знаменатель не идёт.
+  const withExact = ran.filter((q) => q.run.outcome === 'answered' && q.run.citedExact !== null)
+  const answeredExact = {
+    hit: withExact.filter((q) => q.run.citedExact === true).length,
+    miss: withExact.filter((q) => q.run.citedExact === false).length,
+  }
   const bad = ran.filter((q) => q.run.outcome === 'unsupported')
   const noSources = bad.filter((q) => q.run.hasSources === false)
   const withSources = bad.filter((q) => q.run.hasSources !== false)
@@ -182,6 +196,7 @@ export function tally(parsed) {
     outcomes,
     unknown,
     unsupported,
+    answeredExact,
     judge,
     expectedUnknown: parsed.questions.filter((q) => q.set === 'general' || q.set === 'missed').length,
   }
@@ -204,6 +219,13 @@ export function verdict(t) {
     `${ok} ${plural(ok, 'ответ', 'ответа', 'ответов')} с подтверждённой цитатой, ` +
     `${t.unknown} «не знаю», ` +
     `${bad} без подтверждения.`
+  // Оговорка к заголовку: дословная цитата не обещает эталонного документа.
+  // Печатается только когда расхождение есть — иначе это была бы строка «всё
+  // в порядке», а её на экране и так достаточно.
+  const exact =
+    t.answeredExact.miss === 0
+      ? ''
+      : ` Из них у ${t.answeredExact.miss} ${plural(t.answeredExact.miss, 'ответа', 'ответов', 'ответов')} назван не тот документ, что в эталоне: цитата дословна, а источник другой.`
   const expectation =
     t.expectedUnknown === 0
       ? ''
@@ -222,7 +244,9 @@ export function verdict(t) {
       `у ${t.unsupported.noQuotes} ${plural(t.unsupported.noQuotes, 'ответа', 'ответов', 'ответов')} цитат нет вовсе`,
     )
   if (t.unsupported.unverified > 0)
-    why.push(`у ${t.unsupported.unverified} цитаты есть, но во фрагментах не нашлись`)
+    why.push(
+      `у ${t.unsupported.unverified} ${plural(t.unsupported.unverified, 'ответа', 'ответов', 'ответов')} цитаты есть, но во фрагментах не нашлись`,
+    )
   const restBad =
     bad - t.unsupported.noSources - t.unsupported.noQuotes - t.unsupported.unverified
   if (restBad > 0) why.push(`про ${restBad} прогон не сказал, были ли цитаты`)
@@ -230,7 +254,7 @@ export function verdict(t) {
     bad === 0
       ? ''
       : ` ${bad} ${plural(bad, 'ответ', 'ответа', 'ответов')} нечем проверить по источникам: ${why.join('; ')}.`
-  return { lead: head, text: `${expectation}${unsupported}` }
+  return { lead: head, text: `${exact}${expectation}${unsupported}` }
 }
 
 /** Прогнаны не все вопросы — об этом говорится прямо, числом из файла. */
