@@ -153,8 +153,8 @@ export function summarize(rows) {
  * страница скажет «не прогнали», а причина ляжет в `failures` — иначе отказ
  * службы потерялся бы между прогоном и экраном.
  *
- * `questionsTotal` — размер НАБОРА, а не число прогнанного: прогон в два приёма
- * не вправе уменьшать знаменатель, по которому читают сводку.
+ * `questionsTotal` — размер НАБОРА, а не число прогнанного: прогон в несколько
+ * приёмов не вправе уменьшать знаменатель, по которому читают сводку.
  */
 export function buildReport({ questions, runs, at, index, note = null }) {
   const failures = []
@@ -264,9 +264,10 @@ export function checkReport(report, questions) {
           if (!inUnit(m?.[side]?.[metric])) problems.push(`${want.id}/${mode}: ${side}.${metric} не доля от 0 до 1`)
       if (!isNum(m.candidates) || !isNum(m.kept)) problems.push(`${want.id}/${mode}: нет чисел кандидатов и оставленных`)
       if (typeof m.empty !== 'boolean') problems.push(`${want.id}/${mode}: empty — не да/нет`)
-      // Поле необязательно: строки приёма 1 дня 23 собраны раннером до его
-      // появления, и дописывать им значение задним числом было бы выдумкой.
-      // Но если оно есть — оно обязано быть из контракта, а не любой строкой.
+      // Сверяется ЗНАЧЕНИЕ, а не присутствие: «второго поиска не было» день
+      // выражает значением `null` (так стоит у всех строк `rerank` в файле
+      // дня), и отличать `null` от отсутствия ключа сверке незачем. Но если
+      // значение есть — оно обязано быть из контракта, а не любой строкой.
       if (m.rewriteSearch !== undefined && m.rewriteSearch !== null && !REWRITE_SEARCH.includes(m.rewriteSearch))
         problems.push(`${want.id}/${mode}: rewriteSearch ${JSON.stringify(m.rewriteSearch)} вне контракта дня`)
       if (m.empty === true && m.kept !== 0) problems.push(`${want.id}/${mode}: пустой отбор, а оставленных ${m.kept}`)
