@@ -47,6 +47,14 @@
      фраза. Приём и довод — дня 20. */
   .wire span:not(:last-child)::after { content:none; }
   .wire span:not(:first-child)::before { content:"·\00a0"; }
+  /* ПЕРЕНОС КУСКОВ СТРОКИ ЦЕНЫ. Копия дня 16 держит `.wire span {
+     white-space:nowrap }` и снимает запрет только у последнего куска; дню 22
+     этого хватало, а день 23 удлинил первые два — замер `design-review`:
+     `scrollWidth` первого куска 372 px при полосе содержимого 288 px, и вся
+     страница получала горизонтальную прокрутку (388 при кадре 320). Запрет
+     снимается у всех кусков, кроме последнего, у которого копия сняла его
+     сама; копия при этом не правится. */
+  .wire span:not(:last-child) { white-space:normal; overflow-wrap:anywhere; }
 
   /* Поле вопроса. Правила #cmd копии до него НЕ достают: селектор копии — по
      идентификатору, а поле здесь носит id="q" (раскладка, п. 4.1 называет его
@@ -120,6 +128,11 @@
     white-space:pre-wrap; overflow-wrap:anywhere;
   }
   .empty + .empty { margin-top:var(--s-3); }
+  /* Примечания блока ответа — проза (`COST_PARTIAL`, `REFUSED_NOTE`,
+     `ANSWER_CUT`), и полоса чтения им нужна так же, как самому ответу: замер
+     `design-review` показал 114ch при 1440 рядом с 68ch у `.answer`. Та же
+     находка, что закрывалась для `#sum-verdict` в PR #304. */
+  #answer .entry-note { max-width:68ch; }
   /* Файл итогов не прочитан. П. 10 просит для этого случая `--fg`: это
      отсутствие файла, а не авария, — но и не полушёпот, поэтому не `--fg-mut`
      пустых состояний и не `--danger`. */
@@ -192,8 +205,13 @@
   .cands { list-style:none; margin:0; padding:0; }
   .cand { border-top:1px solid var(--line); padding:var(--s-2) 0; min-width:0; }
   .cand-grid { display:grid; grid-template-columns:1fr; gap:var(--s-1); align-items:baseline; }
+  /* ШЕСТЬ КОЛОНОК, потому что в строке шесть ячеек: номер, путь, раздел,
+     близость, релевантность, итог. Пять колонок сдвигали каждую ячейку на
+     одну колонку влево и выносили «оставлен / отброшен» — то, ради чего
+     таблица и существует, — на неявный второй ряд (замер `design-review` при
+     768 и 1440). */
   @media (min-width:48rem) {
-    .cand-grid { grid-template-columns:2rem minmax(0,1fr) 5rem 8rem 6rem; gap:var(--s-3); }
+    .cand-grid { grid-template-columns:2rem minmax(0,1fr) 6rem 5rem 7rem 6rem; gap:var(--s-3); }
   }
   /* Отброшенный кандидат не прячется и не перечёркивается: он часть предмета
      показа. Вторичный цвет строки — то же, чем копия дня 16 отличает
@@ -229,9 +247,7 @@
       clip-path:inset(50%); white-space:nowrap;
     }
   }
-  @media (min-width:48rem) {
-    .colhead-pick { grid-template-columns:2rem minmax(0,1fr) 5rem 8rem 6rem; padding:0 0 var(--s-2); }
-  }
+
   /* Переписанный вопрос — предмет показа, и он моноширинный: это поисковый
      запрос, а не проза. Кладётся textContent. */
   .rewritten {
@@ -263,10 +279,17 @@
     letter-spacing:.06em; color:var(--fg-mut); text-align:right;
   }
   .sum tbody th { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+  /* Табличный покой колонок — только там, где для него есть место. При 320
+     три колонки по `min-width:5rem` плюс ярлык строки давали таблицу 369 px в
+     полосе содержимого 288 px (замер `design-review`): ширина структурная, от
+     данных не зависящая. Ниже 48rem колонка шириной по содержимому, а ярлык
+     строки переносится. */
   .sum td {
     font-size:var(--t-sm); line-height:1.5; text-align:right;
-    font-variant-numeric:tabular-nums; min-width:5rem;
+    font-variant-numeric:tabular-nums;
   }
+  @media (min-width:48rem) { .sum td { min-width:5rem; } }
+  .sum tbody th { overflow-wrap:anywhere; }
 
   /* Фраза вывода — проза, и полоса чтения ей нужна: класс `wrap` полосой не
      является, это `min-width:0` для сетки. Замер design-review к PR #304:
@@ -366,6 +389,19 @@
     }
   }
 
+  /* Полоса заголовков таблицы кандидатов. Стоит ПОСЛЕ правила `.colhead`
+     выше и несёт собственную специфичность (0,2,0): при равной специфичности
+     и прежнем месте её колонки перебивались позже стоящим `.colhead`, то есть
+     были мёртвым CSS, а заголовки вставали по сетке списка вопросов — «итог»
+     оказывался над чужой ячейкой (замер `design-review`). Колонки те же, что
+     у `.cand-grid`: расхождение здесь и есть разъехавшаяся таблица. */
+  @media (min-width:48rem) {
+    .colhead.colhead-pick {
+      grid-template-columns:2rem minmax(0,1fr) 6rem 5rem 7rem 6rem;
+      padding:0 0 var(--s-2);
+    }
+  }
+
   /* Раскрытие свёрток не анимируется вовсе (п. 13.7). */
   @media (prefers-reduced-motion: reduce) { .mode, .fold > summary, .q > summary { transition:none; } }
 </style>
@@ -454,9 +490,12 @@
       2 — отвечает на вопрос. Остаются оценки не ниже 1, и не больше пяти штук.</p>
     <div id="rewritten"></div>
     <div id="pick-note"></div>
+    <!-- Шесть ярлыков на шесть колонок строки кандидата: пять подписывали
+         ячейки сдвигом на одну, то есть называли чужое своим. -->
     <div class="colhead colhead-pick" aria-hidden="true">
       <span class="lbl">№</span>
-      <span class="lbl">путь и раздел</span>
+      <span class="lbl">путь</span>
+      <span class="lbl">раздел</span>
       <span class="lbl">близость</span>
       <span class="lbl">релевантность</span>
       <span class="lbl">итог</span>

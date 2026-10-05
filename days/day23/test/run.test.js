@@ -26,6 +26,8 @@ import {
   plural,
   answerBlock,
   COST_PARTIAL,
+  COST_UNKNOWN_FILTER,
+  costNote,
   fragmentsReported,
   fromWord,
   PICK_RULE,
@@ -321,6 +323,58 @@ test('полный расход запуска страница не выдаё�
   assert.match(COST_PARTIAL, /только вызова ответа/)
   assert.match(COST_PARTIAL, /полного расхода запуска страница не знает/)
   assert.match(answerMeta(parseResult(result())), /токенов вызова ответа/)
+})
+
+test('ПРИ ИСХОДЕ БЕЗ ВЫЗОВА ОТВЕТА токены не подписаны вызовом ответа', () => {
+  // Замер `design-review`: «токенов вызова ответа: 1870» стояло строкой выше
+  // слов «модель ответа не вызывалась». По контракту при `unknown_filter` это
+  // оценка входа реранкера, а не вызов ответа.
+  const none = parseResult(
+    result({
+      mode: 'rerank',
+      outcome: 'unknown_filter',
+      answer: null,
+      refused: true,
+      sources: [],
+      candidates: cands.map((c) => ({ ...c, relevance: 0, kept: false })),
+      tokens: 1870,
+    }),
+  )
+  const meta = answerMeta(none)
+  assert.ok(!/вызова ответа/.test(meta), meta)
+  assert.match(meta, /на оценку кандидатов, оценка: 1870/)
+  // И примечание о расходе — своё: оно не утверждает состоявшегося вызова.
+  assert.equal(costNote(none), COST_UNKNOWN_FILTER)
+  assert.match(COST_UNKNOWN_FILTER, /Вызова ответа не было/)
+  // Обычный исход — прежнее примечание; режим без отбора — примечания нет.
+  assert.equal(costNote(parseResult(result({ mode: 'rerank' }))), COST_PARTIAL)
+  assert.equal(costNote(parseResult(result({ mode: 'rag' }))), null)
+  assert.equal(costNote(parseResult(result({ mode: 'rerank', tokens: null }))), null)
+})
+
+test('коммит индекса не исчезает с экрана, когда поиск был, а источников нет', () => {
+  // Ссылки кандидатов ведут ровно на этот коммит, и шапка обязана его назвать
+  // (находка `design-review` к PR #313: было пустой строкой).
+  const none = parseResult(
+    result({ mode: 'rerank', outcome: 'unknown_filter', sources: [], candidates: cands }),
+  )
+  const meta = indexMeta(none)
+  assert.match(meta, /индекс 57a5cd7/)
+  assert.match(meta, /фрагментов 0 из 3 кандидатов/)
+})
+
+test('запись второго поиска не выходит с пустой мерой при отказе службы', () => {
+  const row = (data) =>
+    steps([
+      { stage: 'received', at: at(0), data: { mode: 'rewrite' } },
+      { stage: 'planning', at: at(1), data },
+    ]).at(-1)
+  const failed = row({ rewritten: 'запрос', found: 0, rewriteSearch: 'failed', code: 'search_refused' })
+  assert.equal(failed.label, 'ИТОГ ВТОРОГО ПОИСКА')
+  assert.match(failed.meta, /служба отказала/)
+  assert.match(failed.meta, /search_refused/)
+  assert.equal(row({ rewritten: 'запрос', found: 0, rewriteSearch: 'empty' }).meta, 'ничего не нашлось')
+  assert.match(row({ rewritten: 'запрос', found: 7, rewriteSearch: 'ok' }).meta, /7 фрагментов/)
 })
 
 test('переписывание, не добавившее ни одного кандидата, названо словами', () => {

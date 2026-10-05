@@ -512,6 +512,58 @@ test('комментарий бюджета первого экрана не н�
   }
 })
 
+/**
+ * Три замеренные блокирующие `design-review` к PR #313 — структурными
+ * держателями. Поведение браузера ими не доказывается: оно доказано замером,
+ * и числа замера стоят в комментариях. Предмет держателей — чтобы ровно эти
+ * правила не снялись молча следующей копией.
+ */
+test('куски строки цены переносятся: запрет переноса снят у всех, кроме последнего', () => {
+  // Замер до правки: `scrollWidth` первого куска 372 px при полосе содержимого
+  // 288 px, вся страница — 388 px при кадре 320, то есть горизонтальная
+  // прокрутка на любом телефоне. Копия дня 16 держит `white-space:nowrap` и
+  // снимает запрет только у последнего куска.
+  assert.match(
+    own,
+    /\.wire span:not\(:last-child\) \{[^}]*white-space:normal/,
+    'запрет переноса у кусков строки цены не снят — страница скроллится по горизонтали',
+  )
+})
+
+test('у сетки кандидатов столько колонок, сколько ячеек в строке', () => {
+  const app = stripJs(read('app.js'))
+  // Ячейки считаются по коду строки: `grid.append(...)` внутри renderCandidate.
+  const render = app.slice(app.indexOf('function renderCandidate'))
+  const body = render.slice(0, render.indexOf('\n}'))
+  const cells = [...body.matchAll(/grid\.append\(/g)].length
+  assert.equal(cells, 6, `ячеек в строке кандидата ${cells} — проверено не то`)
+
+  const grid = own.match(/\.cand-grid \{ grid-template-columns:([^;]+);/)
+  assert.ok(grid, 'колонок у сетки кандидатов нет вовсе')
+  const columns = grid[1].trim().split(/\s+(?![^(]*\))/).length
+  assert.equal(columns, cells, `колонок ${columns}, ячеек ${cells} — таблица разъезжается`)
+
+  // Полоса заголовков считает по ТОЙ ЖЕ сетке и стоит после `.colhead`: при
+  // равной специфичности и прежнем месте её колонки были мёртвым CSS.
+  const head = own.match(/\.colhead\.colhead-pick \{[\s\S]*?grid-template-columns:([^;]+);/)
+  assert.ok(head, 'полоса заголовков кандидатов не перебивает общий .colhead')
+  assert.equal(head[1].trim(), grid[1].trim(), 'заголовки считают по чужой сетке')
+  assert.ok(own.indexOf('.colhead.colhead-pick') > own.indexOf('.colhead {'), 'полоса стоит до общего правила')
+
+  // Ярлыков в разметке — столько же, сколько колонок.
+  const strip = page.slice(page.indexOf('colhead colhead-pick'), page.indexOf('id="cands"'))
+  assert.equal([...strip.matchAll(/class="lbl"/g)].length, cells, 'ярлыков не столько, сколько колонок')
+})
+
+test('сводка итогов не держит структурную ширину там, где её некуда положить', () => {
+  // Замер до правки: `#sum` 369 px в полосе содержимого 288 px при кадре 320.
+  // Ширина была структурной — три колонки по `min-width:5rem`.
+  const narrow = own.slice(0, own.indexOf('@media (min-width:48rem) { .sum td'))
+  assert.ok(!/\.sum td \{[^}]*min-width/.test(narrow), 'колонки сводки держат ширину и на узком экране')
+  assert.match(own, /@media \(min-width:48rem\) \{ \.sum td \{ min-width:5rem; \} \}/)
+  assert.match(own, /\.sum tbody th \{[^}]*overflow-wrap:anywhere/, 'ярлык строки сводки не переносится')
+})
+
 test('пока запуск идёт, поле, радиокнопки и кнопка запираются АТРИБУТОМ', () => {
   const app = stripJs(read('app.js'))
   assert.match(app, /input\.disabled = on/)
@@ -661,6 +713,17 @@ test('в режиме без отбора секция «Отбор» не об�
     /mode === 'rag' \? CANDIDATES_RAG : PICK_RUNNING/,
     'строка кандидатов ставится без учёта режима',
   )
+})
+
+test('«прогона ещё не было» и «файл не читается» — разные состояния секции итогов', () => {
+  const app = stripJs(read('app.js'))
+  // README дня обещает «пока файла нет, страница говорит это словами». До
+  // правки любой неуспех чтения давал EVAL_UNREAD — «не удалось прочитать»,
+  // то есть сбой на месте «ещё не делали» (находка `reviewer` к PR #313).
+  assert.match(app, /answer\.status === 404/, 'отсутствие файла не отличается от сбоя чтения')
+  const never = app.indexOf('EVAL_NEVER')
+  const unread = app.indexOf('EVAL_UNREAD')
+  assert.ok(never !== -1 && unread !== -1, 'одно из двух состояний секции итогов пропало')
 })
 
 test('состояние загрузки итогов ставится ДО запроса файла', () => {

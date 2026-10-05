@@ -35,7 +35,7 @@ import { clipBody, partialNotes, reindent } from './rpc.js'
 import {
   answerBlock,
   ANSWER_CUT,
-  COST_PARTIAL,
+  costNote,
   ANSWER_TORN,
   answerMeta,
   dayLimitNote,
@@ -58,6 +58,7 @@ import {
   fromWord,
   isUnknownFilter,
   PICK_RULE,
+  plural,
   rewriteGainNote,
   rewriteSearchNote,
   SELECT_NONE,
@@ -140,9 +141,13 @@ showModeHint()
 
 const SRCS_NEVER = 'Вопроса ещё не было: искать было нечего.'
 const SRCS_SEARCHING = 'Ищу фрагменты…'
+/** Поиск доложился, фрагменты ещё не пришли результатом запуска. */
+const SRCS_FOUND = (n) => `Поиск вернул ${n} ${plural(n, 'фрагмент', 'фрагмента', 'фрагментов')}. Жду конца запуска, чтобы показать их с текстом.`
 /** Пустое состояние секции «Отбор» до запуска. */
 const PICK_NEVER = 'Вопроса ещё не было: отбирать было нечего.'
 const PICK_RUNNING = 'Кандидаты появятся здесь, когда поиск вернёт выдачу.'
+/** Поиск вернул выдачу, отбор идёт. */
+const PICK_SELECTING = 'Поиск вернул выдачу; идёт отбор. Оценки появятся, когда он кончится.'
 /** Поток оборвался раньше, чем пришёл результат: кандидатов не будет. */
 const PICK_TORN = 'Кандидаты не дошли: поток событий оборвался раньше результата.'
 const PICK_FAILED = 'Отбора не было — что именно случилось, сказано выше в ответе.'
@@ -324,10 +329,10 @@ function showAnswer(result) {
   const meta = answerMeta(result)
   if (meta) parts.push(node('p', 'entry-meta', meta))
   // Полного расхода запуска по числам экрана не видно, и сказано это словами,
-  // а не умолчанием: в режимах с отбором вызовов модели два-три, а токены в
-  // мере — только от вызова ответа.
-  if (result.tokens !== null && result.mode !== 'rag')
-    parts.push(node('p', 'entry-note', COST_PARTIAL))
+  // а не умолчанием. КАКИМИ именно словами — решает `costNote`: при исходе без
+  // вызова ответа число в мере значит другое, и примечание тоже другое.
+  const cost = costNote(result)
+  if (cost !== null) parts.push(node('p', 'entry-note', cost))
 
   // ЧТО ИМЕННО СТОИТ В БЛОКЕ — решает `answerBlock`, и решает она одна: у
   // правила «не говорить про состоявшийся вызов там, где модель не звали»
@@ -500,10 +505,14 @@ function showSources(result) {
   // ровно это. Прежняя (дня 22) ветвь ставила сюда «Поиск отказал», и честное
   // «не знаю» читалось бы как сбой — тот самый долг, который закрывает день 23
   // (развилка Р8 ADR 2026-10-05-0544).
-  if (result.sources.length === 0)
-    return showSrcsPlaceholder(
-      isUnknownFilter(result) ? selectNone(result.candidates.length) : SRCS_FAILED,
-    )
+  if (result.sources.length === 0) {
+    showSrcsPlaceholder(isUnknownFilter(result) ? selectNone(result.candidates.length) : SRCS_FAILED)
+    // Коммит индекса и имя стратегии с экрана НЕ исчезают, когда поиск был:
+    // ссылки кандидатов ведут ровно на этот коммит, и шапка обязана его
+    // назвать (п. 6.2 раскладки дня 22; находка `design-review` к PR #313).
+    if (isUnknownFilter(result)) indexMetaBox.textContent = indexMeta(result)
+    return
+  }
   indexMetaBox.textContent = indexMeta(result)
   const notes = [shortSearchNote(result), fragmentTextNote(result.sources)].filter(
     (t) => t !== null,
@@ -561,6 +570,11 @@ function onEvent(raw) {
     if (reported !== undefined) {
       fragmentsFound = reported
       setStatus(STATUS.asking(reported))
+      // Поиск уже доложился — секции перестают обещать идущий поиск. Иначе
+      // «Ищу фрагменты…» висит всё время отбора и ответа рядом со строкой
+      // «Фрагментов: 10» (замер `design-review` к PR #313).
+      showSrcsPlaceholder(SRCS_FOUND(reported))
+      if (runMode !== 'rag') showPickPlaceholder(PICK_SELECTING)
     }
   }
   redrawSteps()
@@ -802,8 +816,10 @@ function renderQuestion(q) {
     const mode = q[key]
     // Вердиктов у этого дня нет — есть число. Пустой отбор назван словом, а
     // не нулём: ноль здесь читался бы как «ничего не нашёл».
+    // Прочерка на месте отсутствующих данных нет (п. 16.7 раскладки дня 22):
+    // «не прогнан» — слово, и то же самое слово развёрнуто стоит в теле строки.
     const text =
-      mode === null ? '—' : mode.empty ? 'не знаю' : formatMetric(mode.after.mrr10)
+      mode === null ? 'не прогнан' : mode.empty ? 'не знаю' : formatMetric(mode.after.mrr10)
     cell.append(node('span', undefined, text))
     summary.append(cell)
   }
@@ -883,7 +899,10 @@ function showEval(parsed) {
     ? `Прогон неполон: вопросов в наборе ${parsed.total}, прогнано ${ran.join(' и ')}.`
     : ''
 
-  const v = verdict(parsed)
+  // Фраза вывода при НЕПОЛНОМ прогоне не выводится вовсе — как в дне 22
+  // (п. 10): она говорит про набор, которого ещё не было, и рядом со строкой
+  // «прогон неполон» читалась бы как итог (находка `design-review` к PR #313).
+  const v = short ? null : verdict(parsed)
   const verdictBox = byId('sum-verdict')
   verdictBox.replaceChildren()
   if (v !== null) {
@@ -927,6 +946,14 @@ async function loadEval() {
   evalState.replaceChildren(node('p', 'empty', EVAL_LOADING))
   try {
     const answer = await fetch('eval.json')
+    // ФАЙЛА НЕТ и ФАЙЛ НЕ ЧИТАЕТСЯ — разные случаи, и сливать их нельзя:
+    // пока прогона не было, 404 — это «ещё не делали», а не «сбой чтения».
+    // README дня обещает именно первое, а экран говорил второе (находка
+    // `reviewer` к PR #313).
+    if (answer.status === 404) {
+      evalState.replaceChildren(node('p', 'empty', EVAL_NEVER))
+      return
+    }
     if (!answer.ok) throw new Error(String(answer.status))
     raw = await answer.json()
   } catch {

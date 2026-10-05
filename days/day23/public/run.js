@@ -172,11 +172,20 @@ export function answerMeta(result) {
   if (result.candidates.length > 0)
     parts.push(`кандидатов: ${result.candidates.length} → оставлено: ${result.sources.length}`)
   else parts.push(`фрагментов: ${result.sources.length}`)
-  // ТОКЕНЫ ТОЛЬКО ВЫЗОВА ОТВЕТА, и подпись говорит это прямо: вызовы
-  // переписывания и реранкера в поле не входят (контракт, PR #311). Подписать
-  // их «токенов» значило бы выдать часть расхода за весь — на экране, где
-  // расход и есть предмет доверия.
-  if (result.tokens !== null) parts.push(`токенов вызова ответа: ${result.tokens}`)
+  // ТОКЕНЫ ПОДПИСЫВАЮТСЯ ТЕМ, ЧЕМ ОНИ ЕСТЬ, и это зависит от исхода.
+  //
+  // Обычно поле несёт токены ТОЛЬКО вызова ответа: переписывание и оценку
+  // кандидатов роутер считает отдельно (контракт, PR #311). А при исходе «ни
+  // один фрагмент не относится» вызова ответа НЕ БЫЛО вовсе, и поле несёт
+  // оценку входа реранкера. Прежняя подпись утверждала обратное — «токенов
+  // вызова ответа: 1870» строкой выше слов «модель ответа не вызывалась»
+  // (замер `design-review` к PR #313). Расход — предмет доверия дня.
+  if (result.tokens !== null)
+    parts.push(
+      isUnknownFilter(result)
+        ? `токенов на оценку кандидатов, оценка: ${result.tokens}`
+        : `токенов вызова ответа: ${result.tokens}`,
+    )
   if (result.budgetLeftUsd !== null)
     parts.push(`бюджет дня: остаток ${formatUsd(result.budgetLeftUsd)}`)
   return parts.join(' · ')
@@ -189,7 +198,14 @@ export function indexMeta(result) {
   if (result.index.commit) parts.push(`индекс ${result.index.commit.slice(0, 7)}`)
   const word = strategyWord(result.index.strategy)
   if (word) parts.push(`стратегия ${word}`)
-  parts.push(`фрагментов ${result.sources.length}`)
+  // Коммит индекса обязан быть на экране, когда поиск БЫЛ (п. 6.2 раскладки
+  // дня 22). При исходе «ни один фрагмент не относится» источников нет, а
+  // поиск был, и ссылки кандидатов ведут ровно на этот коммит — поэтому шапка
+  // считает кандидатов, а не исчезает с экрана вместе с нулём источников
+  // (находка `design-review` к PR #313).
+  if (result.sources.length === 0 && result.candidates.length > 0)
+    parts.push(`фрагментов 0 из ${result.candidates.length} кандидатов`)
+  else parts.push(`фрагментов ${result.sources.length}`)
   return parts.join(' · ')
 }
 
@@ -378,12 +394,21 @@ export function steps(events) {
       }
       if (typeof data.rewritten === 'string' && data.rewritten !== '') {
         const found = num(data.found)
-        out.push({
-          label: 'ИТОГ ВТОРОГО ПОИСКА',
-          time: at(e),
-          meta: found === null ? '' : `${found} ${plural(found, 'фрагмент', 'фрагмента', 'фрагментов')}`,
-          kind: 'planning',
-        })
+        // Отказ службы на втором поиске приходит ТЕМ ЖЕ событием, и его
+        // причина лежит в `data.code`. Без неё запись выходила с пустой мерой,
+        // то есть читалась как пройденный шаг без итога, пока секция «Отбор»
+        // говорила про отказ (находка `design-review` к PR #313).
+        const state = str(data.rewriteSearch)
+        const code = str(data.code)
+        const meta =
+          state === 'failed'
+            ? ['служба отказала', code].filter((x) => x !== '').join(' · ')
+            : state === 'empty' || found === 0
+              ? 'ничего не нашлось'
+              : found === null
+                ? ''
+                : `${found} ${plural(found, 'фрагмент', 'фрагмента', 'фрагментов')}`
+        out.push({ label: 'ИТОГ ВТОРОГО ПОИСКА', time: at(e), meta, kind: 'planning' })
         continue
       }
       const sources = Array.isArray(data.sources) ? data.sources.length : null
@@ -557,7 +582,7 @@ export const DAY_LIMIT_NOTE =
  * Что поставить в блоке ответа под отказом 429 сервера дня — или `null`, если
  * ставить нечего.
  *
- * ОТКАЗОВ 429 У ДНЯ ТРИ (`days/day22/limits.js`): суточный потолок, минутное
+ * ОТКАЗОВ 429 У ДНЯ ТРИ (`days/day23/limits.js`): суточный потолок, минутное
  * окно и часовое. Строка про суточный предел верна только для первого, и
  * различитель приходит в ответе сервера: у потолка `retryAfterSec` равен
  * `null` (секунд до повтора у него нет и взяться им неоткуда), у обоих окон —
@@ -592,6 +617,20 @@ export const REFUSED_NOTE =
 export const COST_PARTIAL =
   'Это токены только вызова ответа. Переписывание и оценку кандидатов роутер считает ' +
   'отдельными вызовами, и в это число они не входят — полного расхода запуска страница не знает.'
+/**
+ * То же про расход, но для исхода без вызова ответа: там число в мере — оценка
+ * входа реранкера, а не чей-то состоявшийся вызов.
+ */
+export const COST_UNKNOWN_FILTER =
+  'Вызова ответа не было, и число в мере — оценка того, сколько токенов ушло реранкеру на ' +
+  'вход. Переписывание и оценку кандидатов роутер считает отдельно, поэтому полного расхода ' +
+  'запуска страница не знает и здесь.'
+
+/** Какое примечание о расходе ставить под мерой. `null` — не ставить. */
+export function costNote(result) {
+  if (result.tokens === null || result.mode === 'rag') return null
+  return isUnknownFilter(result) ? COST_UNKNOWN_FILTER : COST_PARTIAL
+}
 
 /** Ответ оборвался потолком токенов (п. 10, частичный результат). */
 export const ANSWER_CUT = 'Ответ оборван: показано то, что успело прийти.'
