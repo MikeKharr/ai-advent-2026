@@ -229,6 +229,13 @@ export async function retrieve({ question, mode, search, ask, emit = () => {} })
   // как поиск доказал, что искать есть где.
   let rewritten = null
   let second = []
+  // Что стало со вторым поиском: `null` — его не было (режим `rerank`),
+  // `skipped` — переписывание не дало нового запроса, дальше `ok`, `empty`,
+  // `failed`. Поле едет в ответ запуска: «кандидаты только исходного
+  // вопроса» и «служба отказала на втором поиске» — разные вещи, и
+  // страница обязана их различать.
+  let rewriteSearch = null
+  let rpcRewrite = null
   if (mode === 'rewrite') {
     const answer = await ask({
       purpose: 'rewrite',
@@ -239,15 +246,37 @@ export async function retrieve({ question, mode, search, ask, emit = () => {} })
     })
     rewritten = parseRewrite(answer.text, question)
     if (rewritten !== null) {
-      const more = await search(rewritten, WIDE_LIMIT)
-      second = more.results
-      emit({
-        stage: 'planning',
-        title: 'Переписал вопрос и поискал ещё раз',
-        detail: `«${rewritten}» — ${second.length} фрагментов`,
-        data: { rewritten, found: second.length },
-      })
+      // ВТОРОЙ ПОИСК ЗАПУСК НЕ ВАЛИТ. Десять кандидатов по исходному вопросу
+      // уже есть, переписывание уже оплачено — уронить на этом месте запуск
+      // значило бы выбросить и найденное, и деньги. Поэтому пустая выдача
+      // законна (`allowEmpty`), а отказ службы ловится здесь и становится
+      // записью ленты и полем `rewriteSearch`, а не отказом (находки
+      // `compliance` и `reviewer` к PR #311, B2).
+      try {
+        const more = await search(rewritten, WIDE_LIMIT, { allowEmpty: true })
+        second = more.results
+        rpcRewrite = more.rpc
+        rewriteSearch = second.length === 0 ? 'empty' : 'ok'
+        emit({
+          stage: 'planning',
+          level: second.length === 0 ? 'warn' : 'info',
+          title: 'Переписал вопрос и поискал ещё раз',
+          detail: `«${rewritten}» — ${second.length} фрагментов`,
+          data: { rewritten, found: second.length, rewriteSearch },
+        })
+      } catch (error) {
+        if (!(error instanceof RetrieveFailure)) throw error
+        rewriteSearch = 'failed'
+        emit({
+          stage: 'planning',
+          level: 'warn',
+          title: 'Поиск по переписанному вопросу не удался',
+          detail: `${error.fields.message} Отвечаем по кандидатам исходного вопроса.`,
+          data: { rewritten, rewriteSearch, code: error.fields.code },
+        })
+      }
     } else {
+      rewriteSearch = 'skipped'
       emit({
         stage: 'planning',
         level: 'warn',
@@ -300,10 +329,12 @@ export async function retrieve({ question, mode, search, ask, emit = () => {} })
 
   return {
     rewritten,
+    rewriteSearch,
     candidates,
     kept,
     index: first.index,
     rpc: first.rpc,
+    rpcRewrite,
     rerankTokens: estimateTokens(RERANK_SYSTEM) + estimateTokens(rerankInput),
   }
 }

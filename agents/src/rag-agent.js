@@ -262,6 +262,8 @@ export function parseSearch(out, limit = SEARCH_LIMIT) {
 function pipelineFields(selection) {
   return {
     rewritten: selection.rewritten,
+    rewriteSearch: selection.rewriteSearch,
+    rpcRewrite: selection.rpcRewrite,
     candidates: selection.candidates.map((item) => ({
       n: item.n,
       source: item.source,
@@ -408,7 +410,13 @@ export function createRagAgent({
         //
         // Замыкание ОДНО на все режимы и на оба поиска режима `rewrite`.
         // Второй держатель этих отказов разъехался бы с первым — и отказ
-        // службы на переписанном запросе доходил бы до модели.
+        // службы на переписанном запросе читался бы иначе, чем на исходном.
+        //
+        // Отказ ЗАПУСКА отсюда возможен только на ПЕРВОМ поиске: второй
+        // поиск режима `rewrite` вызывающий ловит сам и продолжает с
+        // кандидатами исходного вопроса. Поэтому «Модель не вызывалась» в
+        // этих сообщениях — правда: до первого поиска вызовов модели нет ни
+        // в одном режиме.
         const searchOnce = async (query, limit, { allowEmpty = false } = {}) => {
           const server = agentServers.get(RAG_SERVER)
           if (!server)
@@ -482,8 +490,9 @@ export function createRagAgent({
           // пусть будет названа та, которую просили, а не пустое место.
           if (got.index.strategy === null) got.index.strategy = strategy
           // Пустая выдача ПЕРВОГО поиска — отказ запуска: отвечать не по
-          // чему. У второго поиска режима `rewrite` (`allowEmpty`) пустота
-          // законна: кандидаты уже есть от исходного вопроса.
+          // чему. Второй поиск режима `rewrite` зовётся с `allowEmpty: true`
+          // (`rag/retrieve.js`), и его пустота законна: кандидаты уже есть
+          // от исходного вопроса.
           if (got.results.length === 0 && !allowEmpty)
             throw new RetrieveFailure({
               code: 'search_empty',
@@ -725,9 +734,14 @@ export function createRagAgent({
             ...(selection === null ? {} : { outcome: 'answered' }),
             answer: answer.text,
             // Признак отказа строгого промпта — поле, а не задача страницы.
-            // В режиме без RAG фразы отказа в промпте нет вовсе, поэтому там
-            // он всегда `false`: это не «не проверяли», а «проверять нечего».
-            refused: mode === 'rag' ? isRefusal(answer.text) : false,
+            // Фразы отказа нет в промпте ровно одного режима — `norag`,
+            // поэтому там и только там признак всегда `false`: это не «не
+            // проверяли», а «проверять нечего». У `rerank` и `rewrite`
+            // промпт реестра тот же строгий, и сверка обязана идти: иначе
+            // честный отказ модели на отобранных фрагментах терялся бы, а
+            // страница и мера дня считали бы его обычным ответом (находка
+            // `compliance` к PR #311, B1).
+            refused: mode === 'norag' ? false : isRefusal(answer.text),
             // Источники — то же, что ушло модели номерами, и в том же
             // порядке: страница показывает фрагмент под тем номером, которым
             // ответ на него ссылается. Текст фрагмента здесь — РЕШЕНИЕ

@@ -259,6 +259,27 @@ test('режим rewrite: два поиска, объединение выдач
 })
 
 for (const mode of ['rerank', 'rewrite']) {
+  test(`режим ${mode}: честный отказ модели «в фрагментах ответа нет» попадает в поле refused`, async () => {
+    const rag = await fakeRag()
+    const queue = [
+      ratings([
+        [1, 1],
+        [2, 1],
+      ]),
+      { text: 'В найденных фрагментах ответа нет. Нашлось: про DoD.' },
+    ]
+    if (mode === 'rewrite') queue.unshift({ text: 'критерии приёмки' })
+    const router = fakeRouter(queue)
+    const { runs, agent } = build({ rag, fetchImpl: router.fetchImpl })
+    const snapshot = await run(agent, runs, { question: 'сколько стоит билет', mode })
+    await rag.close()
+
+    assert.equal(snapshot.status, 'succeeded', JSON.stringify(snapshot.error))
+    assert.equal(snapshot.result.refused, true, 'отказ модели потерян')
+  })
+}
+
+for (const mode of ['rerank', 'rewrite']) {
   test(`режим ${mode}: отказ поиска — отказ запуска, модель не вызывалась ни разу`, async () => {
     const rag = await fakeRag({
       answer: () => ({
@@ -282,6 +303,53 @@ for (const mode of ['rerank', 'rewrite']) {
     assert.equal(snapshot.error.paidNothing, true)
     assert.equal(routerCalls, 0, 'модель вызвали после отказа поиска')
     assert.ok(snapshot.error.message.includes('Модель не вызывалась'))
+  })
+}
+
+/**
+ * Второй поиск режима `rewrite` запуск НЕ валит: кандидаты исходного
+ * вопроса уже есть, а переписывание уже оплачено. Параметрический тест выше
+ * роняет ПЕРВЫЙ поиск — здесь падает именно второй (находки `compliance` и
+ * `reviewer` к PR #311, B2).
+ */
+for (const [name, second, expected] of [
+  ['пустая выдача', () => packed({ index: INDEX, results: [] }), 'empty'],
+  [
+    'отказ службы',
+    () => ({ isError: true, content: [{ type: 'text', text: 'DAILY_EXHAUSTED: потолок на сутки' }] }),
+    'failed',
+  ],
+]) {
+  test(`режим rewrite: ${name} на втором поиске — запуск идёт дальше по кандидатам исходного вопроса`, async () => {
+    const rag = await fakeRag({
+      answer: (_name, args) =>
+        args.query === 'критерии приёмки' ? second() : packed({ index: INDEX, results: RESULTS }),
+    })
+    const router = fakeRouter([
+      { text: 'критерии приёмки' },
+      ratings([
+        [1, 2],
+        [2, 1],
+      ]),
+      { text: 'По [1] agent_docs/file-1.md — вот ответ.' },
+    ])
+    const { runs, agent } = build({ rag, fetchImpl: router.fetchImpl })
+    const snapshot = await run(agent, runs, { question: 'а что там с DoD?', mode: 'rewrite' })
+    await rag.close()
+
+    assert.equal(snapshot.status, 'succeeded', JSON.stringify(snapshot.error))
+    assert.equal(snapshot.result.rewriteSearch, expected)
+    assert.equal(snapshot.result.rewritten, 'критерии приёмки')
+    // Кандидаты — все десять от исходного вопроса, ответ собран и оплачен
+    // не зря.
+    assert.equal(snapshot.result.candidates.length, WIDE_LIMIT)
+    assert.ok(snapshot.result.candidates.every((item) => item.from === 'original'))
+    assert.equal(router.bodies.length, 3)
+    // Случившееся названо в ленте, а не замолчано.
+    assert.ok(
+      snapshot.events.some((e) => e.level === 'warn' && e.data?.rewriteSearch === expected),
+      'предупреждения о втором поиске нет в ленте',
+    )
   })
 }
 
