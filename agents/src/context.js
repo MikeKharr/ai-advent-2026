@@ -136,6 +136,12 @@ export function assemble({
   // рабочая память. Готовую строку собирает `invariants.js`: политика знает,
   // куда блок ставить, но не знает, как он выглядит. У дней 11 и 13 его нет.
   invariantsBlock = null,
+  // Блоки дня 25 (ADR 2026-10-05-0544, п. 3.3): найденные фрагменты и
+  // состояние задачи. Идут после блоков памяти и перед `<request>` — то есть
+  // ровно туда, где политика и так решает порядок. Готовые строки собирает
+  // `rag/chat.js`: политика знает, куда их ставить, но не знает, как они
+  // выглядят, — тот же шов, что у блока инвариантов. У дней 11–15 список пуст.
+  extraBlocks = [],
   // Потолки блоков. У дня 13 токенные подпотолки правил и темы сняты
   // (ADR 2026-09-21-1747, п. 5, 4а), потолки в строках остаются.
   caps = ASSEMBLE_CAPS,
@@ -195,6 +201,7 @@ export function assemble({
     blocks.push(block)
     stats.reviewTokens = estimateTokens(block)
   }
+  for (const block of extraBlocks) if (block) blocks.push(block)
   blocks.push(requestBlock(prompt))
 
   return { input: blocks.join('\n\n'), warnings, stats }

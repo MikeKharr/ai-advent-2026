@@ -221,7 +221,23 @@ export function applyRerank(candidates, ratings) {
  * наружу нетронутым — этот модуль ничего не «переживает» и ничего не
  * повторяет.
  */
-export async function retrieve({ question, mode, search, ask, emit = () => {} }) {
+export async function retrieve({
+  question,
+  mode,
+  search,
+  ask,
+  emit = () => {},
+  /**
+   * Чем переписывать вопрос, если это не один вопрос без истории: день 25
+   * даёт переписыванию цель задачи и два прошлых хода (ADR 2026-10-05-0544,
+   * п. 3.2), и промпт у него свой. `null` — промпт и вход дня 23.
+   *
+   * Переопределяется ровно пара «система + вход», а не шаг: порядок (поиск
+   * раньше переписывания), разбор ответа и всё остальное остаются общими —
+   * иначе у дней было бы два разных отбора под одним именем.
+   */
+  rewrite = null,
+}) {
   // --- Шаг 1: поиск по исходному вопросу. ДО любого вызова модели (I-4).
   const first = await search(question, WIDE_LIMIT)
 
@@ -239,8 +255,8 @@ export async function retrieve({ question, mode, search, ask, emit = () => {} })
   if (mode === 'rewrite') {
     const answer = await ask({
       purpose: 'rewrite',
-      system: REWRITE_SYSTEM,
-      input: buildRewriteInput(question),
+      system: rewrite?.system ?? REWRITE_SYSTEM,
+      input: rewrite?.input ?? buildRewriteInput(question),
       taskClass: 'summarize',
       answerTokens: REWRITE_ANSWER_TOKENS,
     })
