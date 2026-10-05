@@ -47,6 +47,14 @@ import { McpError } from './mcp/client.js'
 import { payloadOf, rpcEvent } from './mcp/pipeline.js'
 import { pickServers } from './mcp/servers.js'
 import {
+  ANSWER_SCHEMA,
+  buildUnknownInput,
+  CITED_MODES,
+  FormFailure,
+  readCited,
+  UNKNOWN_SYSTEM,
+} from './rag/cited.js'
+import {
   RERANK_MODES,
   retrieve,
   RetrieveFailure,
@@ -66,6 +74,14 @@ export const RAG_AGENT_ID = 'rag-agent'
  * `rag/retrieve.js`, а не скопирован вместе с конвейером.
  */
 export const RERANK_AGENT_ID = 'rerank-agent'
+
+/**
+ * Запись реестра дня 24 — та же машина с `pipeline: 'cited'` (ADR
+ * 2026-10-05-0544, п. 0.2). Отбор у неё дня 23 целиком, отличие — форма
+ * ответа: схема через роутер, механическая сверка цитат и четыре исхода
+ * вместо `refused` (`rag/cited.js`).
+ */
+export const CITED_AGENT_ID = 'cited-agent'
 
 /** Имя сервера MCP, к которому идёт поиск. Один, и он назван в `servers` записи. */
 export const RAG_SERVER = 'rag'
@@ -283,6 +299,13 @@ const RECEIVED_TITLE = {
   rewrite: 'Получил вопрос: переписывание и реранкер',
 }
 
+/**
+ * Что умеет машина сверх дня 22, одной строкой опции (ADR, п. 0.2):
+ * `'rerank'` — второй этап отбора (день 23), `'cited'` — он же плюс ответ по
+ * схеме с проверяемыми цитатами (день 24). `false` — ровно день 22.
+ */
+const MODES_BY_PIPELINE = { rerank: RERANK_MODES, cited: CITED_MODES }
+
 export function createRagAgent({
   agent,
   servers,
@@ -291,7 +314,7 @@ export function createRagAgent({
   fetchImpl = fetch,
   now = Date.now,
   log = () => {},
-  // Опция дня 23: второй этап отбора (`rag/retrieve.js`) и его три режима
+  // Опция дней 23 и 24: второй этап отбора (`rag/retrieve.js`) и его режимы
   // вместо двух. Без неё машина — ровно день 22, и ни одна строка его пути
   // ниже не исполняется иначе.
   pipeline = false,
@@ -307,7 +330,9 @@ export function createRagAgent({
   // в JS разъехалась бы молча. Опечатка видна отказом инструмента
   // («strategy — одно из: …») — то есть отказом поиска до вызова модели.
   const strategy = env.RAG_STRATEGY
-  const modes = pipeline ? RERANK_MODES : MODES
+  const modes = MODES_BY_PIPELINE[pipeline] ?? MODES
+  // День 24: тот же отбор, другая форма ответа.
+  const cited = pipeline === 'cited'
 
   return {
     id: agent.id,
@@ -626,7 +651,12 @@ export function createRagAgent({
         // (десять кандидатов с оценками) и что померить (Recall@5 «до»),
         // а провал унёс бы `result` целиком. Отдельный исход назван полем
         // `outcome`, и день 24 строит на нём «не знаю» (ADR, п. 2.3).
-        if (selection !== null && selection.kept.length === 0) {
+        //
+        // У дня 24 этот исход ДРУГОЙ: модель вызывается (решение владельца
+        // Р5(б), ADR п. 2.3) — без фрагментов, на одних путях отброшенных
+        // кандидатов, чтобы сказать «не знаю» своими словами и задать
+        // уточняющий вопрос. Поэтому ветвь ниже — только при `!cited`.
+        if (!cited && selection !== null && selection.kept.length === 0) {
           const totalMs = now() - startedAt
           return runs.finish(run.id, {
             status: 'succeeded',
@@ -656,9 +686,21 @@ export function createRagAgent({
 
         // --- Шаг 2: единственный вызов модели ОТВЕТА. Ниже поиска — не
         // случайно.
-        const system = mode === 'norag' ? NORAG_SYSTEM : agent.systemPrompt
-        const input =
-          mode === 'norag' ? buildNoRagInput(question) : buildRagInput(question, found.results)
+        //
+        // Ветвь «не знаю» дня 24: фрагментов не осталось, и модель получает
+        // ДРУГОЙ вход — без блока фрагментов. Отвечать по памяти ей нечем, и
+        // `status: "answered"` отсюда — отказ формы (`readCited`).
+        const unknownBranch = cited && found !== null && found.results.length === 0
+        const system = unknownBranch
+          ? UNKNOWN_SYSTEM
+          : mode === 'norag'
+            ? NORAG_SYSTEM
+            : agent.systemPrompt
+        const input = unknownBranch
+          ? buildUnknownInput(question, selection.candidates)
+          : mode === 'norag'
+            ? buildNoRagInput(question)
+            : buildRagInput(question, found.results)
         const needed = estimateTokens(system) + estimateTokens(input)
 
         const llmStarted = now()
@@ -672,12 +714,21 @@ export function createRagAgent({
             requestTokens: needed,
             answerTokens: params.maxTokens,
             mode,
+            // Форма ответа дня 24 — требование к провайдеру, а не просьба в
+            // промпте: страница показывает это строкой ленты.
+            ...(cited ? { schema: true, unknownBranch } : {}),
           },
         })
         let answer
         try {
           answer = await askLayered(
-            { system, taskClass: agent.taskClass, input, params },
+            {
+              system,
+              taskClass: agent.taskClass,
+              input,
+              params,
+              schema: cited ? ANSWER_SCHEMA : null,
+            },
             env,
             { fetchImpl },
           )
@@ -714,6 +765,42 @@ export function createRagAgent({
           })
         }
 
+        // --- Шаг 3 (только день 24): форма ответа и сверка цитат. Разбор
+        // делает роутер (схема), дословность — код здесь. Повтора нет: ответ
+        // не по форме оплачен, и второй такой же стоил бы столько же
+        // (развилка Р4).
+        let read = null
+        if (cited) {
+          try {
+            read = readCited(answer.json, found.results)
+          } catch (error) {
+            if (!(error instanceof FormFailure)) throw error
+            log(`запуск ${run.id}: форма ответа: ${error.reason}`)
+            return fail({
+              code: 'answer_invalid',
+              title: 'Ответ не по форме',
+              message: error.message,
+              // Вызов состоялся и оплачен.
+              paid: true,
+              data: { reason: error.reason },
+            })
+          }
+          if (!read.checks.quotes_verbatim && read.quotes.length > 0) {
+            emit({
+              stage: 'warning',
+              level: 'warn',
+              title: 'Цитата не нашлась во фрагменте',
+              detail: read.quotes
+                .filter((item) => !item.verified)
+                .map((item) => `[${item.n}]`)
+                .join(', '),
+              data: {
+                unverified: read.quotes.filter((item) => !item.verified).map((item) => item.n),
+              },
+            })
+          }
+        }
+
         const totalMs = now() - startedAt
         return runs.finish(run.id, {
           status: 'succeeded',
@@ -722,12 +809,31 @@ export function createRagAgent({
             // нельзя было затереть случайным совпадением имени.
             ...(selection === null ? {} : pipelineFields(selection)),
             mode,
-            ...(selection === null ? {} : { outcome: 'answered' }),
-            answer: answer.text,
+            ...(selection === null ? {} : { outcome: read === null ? 'answered' : read.outcome }),
+            // У дня 24 текст ответа — поле схемы, а не всё тело ответа:
+            // `answer.text` там JSON целиком, и показывать его посетителю
+            // нечем. Остальные поля схемы идут рядом и ниже.
+            answer: read === null ? answer.text : read.answer,
+            ...(read === null
+              ? {}
+              : {
+                  status: read.status,
+                  clarification: read.clarification,
+                  // Список источников САМОЙ МОДЕЛИ — подмножество отобранных
+                  // (чужой номер сюда не доходит: это отказ формы выше).
+                  // Отдельным полем, потому что `sources` ниже — то, что
+                  // ушло модели, а это — то, на что она сослалась.
+                  cited: read.sources,
+                  quotes: read.quotes,
+                  checks: read.checks,
+                }),
             // Признак отказа строгого промпта — поле, а не задача страницы.
             // В режиме без RAG фразы отказа в промпте нет вовсе, поэтому там
             // он всегда `false`: это не «не проверяли», а «проверять нечего».
-            refused: mode === 'rag' ? isRefusal(answer.text) : false,
+            // У дня 24 отказ — не фраза, а поле схемы: сверять подстроку там,
+            // где исход назван моделью по форме, значило бы мерить форму
+            // дважды и хуже.
+            refused: read !== null ? read.status === 'unknown' : mode === 'rag' ? isRefusal(answer.text) : false,
             // Источники — то же, что ушло модели номерами, и в том же
             // порядке: страница показывает фрагмент под тем номером, которым
             // ответ на него ссылается. Текст фрагмента здесь — РЕШЕНИЕ
