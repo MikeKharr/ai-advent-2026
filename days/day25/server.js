@@ -994,6 +994,8 @@ async function handleChat(req, res) {
       pendingTopic: null,
       run: null,
       session: null,
+      // Диалога нет — и состояния задачи нет: оно живёт с диалогом.
+      task: null,
     })
   }
 
@@ -1024,6 +1026,8 @@ async function handleChat(req, res) {
           pendingTopic: null,
           run: null,
           session: null,
+          // «Очистить» уносит и состояние задачи — тем же оператором службы.
+          task: null,
         },
         cookies(dropSession()),
       )
@@ -1049,6 +1053,7 @@ async function handleChat(req, res) {
           run: null,
           session: null,
           expired: true,
+          task: null,
         },
         cookies(dropSession()),
       )
@@ -1073,6 +1078,11 @@ async function handleChat(req, res) {
       // перезагрузки ставит полосу этапов и кнопку паузы в то же положение,
       // в котором стоит сервис. null — запуска нет.
       run: json.run ?? null,
+      // Состояние задачи дня 25 (ADR 2026-10-05-0544, п. 3.4). Приносит его
+      // служба (`GET /v1/sessions/:id`, PR #317), а не результат хода:
+      // панель обязана пережить перезагрузку страницы, а результат запуска к
+      // тому моменту уже недостижим.
+      task: json.task ?? null,
       session: { name: sessionName(sessionId) },
     })
   } catch (error) {
@@ -1439,9 +1449,14 @@ const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
-  // Итоги двух сценариев (ADR 2026-10-05-0544, п. 3.5) лежат рядом файлом и
-  // читаются страницей как обычная статика. Файл появляется прогоном (PR 2);
-  // пока его нет, страница говорит об этом словами, а не пустотой.
+  // Итоги двух сценариев (ADR 2026-10-05-0544, п. 3.5) лягут рядом файлом и
+  // будут читаться как обычная статика. НИ ФАЙЛА, НИ СЕКЦИИ ИТОГОВ НА СТРАНИЦЕ
+  // СЕЙЧАС НЕТ: и то и другое — работа PR 2 этого дня (ADR, п. 6, класс B).
+  // Прежняя редакция этого комментария обещала, что «пока файла нет, страница
+  // говорит об этом словами», и обещание было ложным — говорить об итогах
+  // странице пока нечем (находка `design-review` к PR #318). Строка типа
+  // остаётся: без неё файл, выложенный PR 2, поехал бы как
+  // `application/octet-stream`.
   '.json': 'application/json; charset=utf-8',
 }
 
