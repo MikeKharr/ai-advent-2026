@@ -1057,7 +1057,11 @@ export function createStagedAgent({
             title: error.fields.title,
             message:
               paid && typeof reason === 'string' && reason !== ''
-                ? `${reason}. Ответа не будет, но вызовы этого хода, сделанные до поиска, уже оплачены.`
+                ? // Точка ставится, только если причина ею не кончается: слова
+                  // приходят из чужой единицы (`rag/limits.py`, `rag/tools.py`)
+                  // и бывают и с точкой, и без (находка `reviewer`).
+                  `${reason.replace(/[.\s]+$/, '')}. ` +
+                  'Ответа не будет, но вызовы этого хода, сделанные до поиска, уже оплачены.'
                 : error.fields.message,
             paid,
           })
@@ -1757,9 +1761,7 @@ export function createStagedAgent({
             level: 'warn',
             title: 'Состояние задачи не обновлено',
             detail:
-              (out.error
-                ? `${out.error.message}\n`
-                : 'ответ не разобран: не по схеме либо не уложился в потолок состояния\n') +
+              (out.error ? `${out.error.message}\n` : 'ответ пришёл не по схеме\n') +
               'прежнее состояние осталось в силе',
             data: { code: out.error?.code ?? 'task_invalid', round: ctx.round },
           })

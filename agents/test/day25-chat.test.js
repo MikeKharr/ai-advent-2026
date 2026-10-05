@@ -653,6 +653,44 @@ test('отказ поиска обрывает ход: роутер не выз�
   assert.equal(sessions.taskStateOf(sid), null)
 })
 
+test('оплаченный ход не говорит «Модель не вызывалась»: отказ поиска называет, что уже оплачено', async (t) => {
+  // Предмет: находка `compliance` Б2 к PR #317 и её РЕЦИДИВ — то же
+  // утверждение уже признавалось ложным у дня 23 (находка `reviewer` к
+  // PR #311), и вернулось в дне 25 ровно потому, что у дня 23 держатель есть,
+  // а здесь его не было. Фраза говорит посетителю, списали с него деньги или
+  // нет, поэтому у неё обязан быть тест, а не честное слово следующей правки.
+  //
+  // Оплаченный путь настоящий, а не подстроенный: стратегия «сводка» с
+  // порогом 500 на длинной истории уводит вызов СЖАТИЯ до этапа «Поиск», и
+  // только потом служба отказывает.
+  const rag = await fakeRag({
+    answer: () => ({ content: [{ type: 'text', text: 'DAILY_EXHAUSTED' }], isError: true }),
+  })
+  t.after(() => rag.close())
+  const fetchImpl = router()
+  const { ask, sessions, sid } = setup({ rag, fetchImpl })
+  for (let i = 0; i < 8; i += 1) {
+    sessions.append({ sessionId: sid, role: 'user', text: `реплика ${i} `.repeat(60), tokens: 400 })
+    sessions.append({ sessionId: sid, role: 'agent', text: `ответ ${i} `.repeat(60), tokens: 400 })
+  }
+  const snapshot = await ask({ strategy: 'summary', summarizeAt: 500, window: 10 })
+
+  assert.equal(snapshot.status, 'failed')
+  assert.equal(snapshot.error.code, 'search_refused')
+  // Вызов до поиска состоялся и оплачен — значит хвоста «Модель не
+  // вызывалась» в словах отказа быть не может.
+  assert.ok(fetchImpl.bodies.length > 0, 'сжатие истории ушло вызовом до поиска')
+  assert.doesNotMatch(snapshot.error.message, /Модель не вызывалась/)
+  assert.match(snapshot.error.message, /уже оплачены/)
+  assert.match(snapshot.error.message, /DAILY_EXHAUSTED/, 'слова службы на месте')
+  assert.equal(snapshot.error.paidNothing, false)
+  // И ни одного вызова ОТБОРА при этом не было: отказ поиска по-прежнему
+  // обрывает ход до переписывания и реранкера.
+  assert.equal(fetchImpl.of('rewrite').length, 0)
+  assert.equal(fetchImpl.of('rerank').length, 0)
+  assert.equal(fetchImpl.of('answer').length, 0)
+})
+
 test('поиск недоступен — ход отказан до роутера, даже если фрагменты были бы', async (t) => {
   const fetchImpl = router()
   const { ask } = setup({ rag: null, fetchImpl })
