@@ -17,25 +17,50 @@
 // Повтор прогона тратит столько же ещё раз и даёт другие тексты, поэтому
 // готовый файл результата по умолчанию НЕ ЗАТИРАЕТСЯ: нужен `--force`.
 //
-// ПОЧЕМУ ПРЕДЕЛ КРУГОВ — ЕДИНИЦА, И ЭТО НЕ ЭКОНОМИЯ РАДИ ЭКОНОМИИ. День
+// КЛЮЧ ОПЕРАТОРА (ADR 2026-10-05-1130). Один ключ прогон всё-таки знает —
+// `EVAL_KEY` дня, и только его: ключей к модели, к роутеру, к службе поиска и
+// к сервису агентов у него нет по-прежнему (I-3). Ключ читается из ФАЙЛА, путь
+// которого даёт `EVAL_KEY_FILE` (умолчание `~/.config/advent/eval.key`), и
+// уходит заголовком `x-eval-key` при создании хода. Он снимает окна «в
+// минуту/в час» НА АДРЕС — и только их: СУТОЧНЫЙ ПОТОЛОК ДНЯ ОСТАЁТСЯ. Файла
+// нет — прогон идёт как раньше, под окнами. Значение не печатается ни при
+// каком исходе: в вывод идёт «есть» или «нет».
+//
+// ПОЧЕМУ ПРЕДЕЛ КРУГОВ ПО УМОЛЧАНИЮ — ЕДИНИЦА, А НЕ ДВА, КАК У ДНЯ. День
 // занимает `reviewRounds` слотов НА ХОД, и слоты эти уходят во все три окна
 // сразу (`days/day25/limits.js`, `reserve`): при умолчании 2 окно часа (30)
-// пускает 15 ходов, а прогону нужно 22 — часть набора получила бы 429 и
-// обнулилась. Предел кругов живёт только в настройках профиля, поэтому прогон
-// ставит его ручкой `PUT /api/settings` и пишет в файл. ЧЕСТНАЯ ГРАНИЦА,
-// которую надо называть вместе с этим: при пределе 1 круг всегда один, и
-// признак `rounds` в файле ничего не различает — цикл проверки этот прогон не
-// мерит вовсе.
+// пускает 15 ходов, а прогону нужно 24 — часть набора получила бы 429 и
+// обнулилась. Поэтому предел кругов прогона — флаг `--rounds`, по умолчанию 1,
+// и БОЛЬШЕ ОДНОГО ОН ПРИНИМАЕТ ТОЛЬКО С КЛЮЧОМ ОПЕРАТОРА: без ключа окно часа
+// такой прогон не пустит, и обнаружить это на пятнадцатом ходе — значит
+// заплатить за четырнадцать впустую.
+//
+// ЧЕСТНАЯ ГРАНИЦА, которую надо называть вместе с `--rounds 1`: круг тогда
+// всегда один, и признак `rounds` в файле ничего не различает — цикл проверки
+// такой прогон не мерит вовсе.
+//
+// СУТОЧНЫЙ ПОТОЛОК КЛЮЧ НЕ СНИМАЕТ, и он ОБЩИЙ НА ВСЕХ посетителей дня
+// (`limits.js`, `callsToday` — один счётчик, не по адресам). Поэтому прогон
+// печатает, сколько слотов ему нужно, ДО первого платного хода: 24 хода ×
+// `--rounds`. Сколько уже потрачено сегодня, прогон узнать не может — проба
+// живости дня счётчиков не отдаёт намеренно (решение владельца Р8), — и это
+// названо вслух, а не домыслено.
 //
 // РИТМ. У дня 5 запусков в минуту на адрес и 30 в час (`days/day25/env.js`), у
 // службы `rag` — 10 в минуту на весь хост. Поэтому ходы идут строго по одному
-// с паузой `SPACING_MS`: залп получил бы 429 и обнулил часть набора.
+// с паузой `SPACING_MS`: залп получил бы 429 и обнулил часть набора. С ключом
+// окна дня сняты, но окно службы `rag` остаётся, и паузу задаёт оно: у хода
+// дня 25 ДВА поиска (реплика и переписанный запрос), то есть 10 в минуту — это
+// 5 ходов, 12 с на ход. Ускорения ключ дню 25 почти не даёт, и это сказано
+// числом, а не словом: он нужен ради окна часа, то есть ради `--rounds 2`.
 //
 // ЧЕГО ЗДЕСЬ НЕТ: вердиктов и текстов ответов. Судейство дней 24–25 владелец
 // отложил, и мера дня — механика хода (`mechanics.mjs`, шапка).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseEnv } from '../env.js'
 import { buildReport, checkReport, readFailure, readTurn, summarize } from './mechanics.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -45,15 +70,61 @@ const OUT = join(here, '..', 'public', 'eval.json')
 /** Публичный адрес дня. Прогон идёт по нему и ни по какому другому. */
 export const BASE = 'https://challenge.zpq.ai/day25'
 
-/** Предел кругов проверки на весь прогон — см. шапку. */
+/**
+ * Пределы дня — у ДНЯ, а не второй копией здесь: суточный потолок и окна
+ * читаются из `env.js` умолчаниями (`parseEnv({})`). Второе число в файле
+ * прогона разошлось бы с настоящим молча, и в отчёте стояло бы не то, под чем
+ * прогон шёл (находка `reviewer` к PR #325).
+ *
+ * Ошибки разбора здесь не смотрятся намеренно: ключа сервиса агентов у прогона
+ * нет и быть не должно, а умолчания чисел от него не зависят.
+ */
+export const DAY_LIMITS = parseEnv({}).env
+
+/** Предел кругов проверки по умолчанию — см. шапку. */
 export const REVIEW_ROUNDS = 1
 
 /**
- * Пауза между ходами. 12,0 с хватило бы ровно на 5 в минуту при одном слоте,
- * 13 с оставляет запас на расхождение часов и на то, что окно считает время
- * прихода запроса, а не ухода ответа.
+ * Пауза между ходами БЕЗ ключа оператора. 12,0 с хватило бы ровно на 5 в
+ * минуту при одном слоте, 13 с оставляет запас на расхождение часов и на то,
+ * что окно считает время прихода запроса, а не ухода ответа.
  */
 export const SPACING_MS = 13_000
+
+/**
+ * Пауза С ключом оператора. Окна дня сняты, связывает окно службы `rag`: 10
+ * запросов в минуту на весь хост, два поиска на ход — 5 ходов в минуту.
+ * 12,5 с — те же 12 с плюс запас на расхождение часов.
+ */
+export const SPACING_WITH_KEY_MS = 12_500
+
+/** Заголовок ключа оператора. Тот же, что у дня (ADR 2026-10-05-1130). */
+export const EVAL_HEADER = 'x-eval-key'
+
+/** Умолчание пути к файлу ключа оператора. */
+export const EVAL_KEY_FILE = join(homedir(), '.config', 'advent', 'eval.key')
+
+/**
+ * Ключ оператора из файла, либо `null`, если файла нет, он не читается или
+ * пуст. Отсутствие — НЕ ошибка: прогон тогда идёт под окнами дня.
+ *
+ * Значение из этой функции не печатается нигде: единственный его потребитель —
+ * заголовок запроса. Ошибка чтения глотается молча — текст исключения `fs`
+ * несёт путь, а путь к файлу ключа в выводе не нужен.
+ */
+export function readEvalKey({
+  file = process.env.EVAL_KEY_FILE || EVAL_KEY_FILE,
+  read = readFileSync,
+} = {}) {
+  let text
+  try {
+    text = read(file, 'utf8')
+  } catch {
+    return null
+  }
+  const value = String(text).trim()
+  return value === '' ? null : value
+}
 
 /** Параметры хода. Стратегия «липкие факты» — память разговора без сжатия:
  *  сводка завела бы седьмой вызов сверх формулы хода (контракт хода). */
@@ -95,11 +166,18 @@ export function createJar() {
   }
 }
 
-/** Запрос к дню с cookie. Отказы возвращаются значением, а не исключением. */
-async function call({ base, path, method = 'GET', body, jar, fetchImpl }) {
+/**
+ * Запрос к дню с cookie. Отказы возвращаются значением, а не исключением.
+ *
+ * `key` — ключ оператора; уходит заголовком только там, где его передали, то
+ * есть при создании хода. На чтения он не нужен: окна снимаются у платной
+ * ручки, а лишний заголовок на каждой — лишний путь утечки.
+ */
+async function call({ base, path, method = 'GET', body, jar, fetchImpl, key = null }) {
   const headers = {}
   const cookie = jar.header()
   if (cookie !== '') headers.cookie = cookie
+  if (key !== null) headers[EVAL_HEADER] = key
   if (body !== undefined) headers['content-type'] = 'application/json'
   const response = await fetchImpl(`${base}${path}`, {
     method,
@@ -144,7 +222,7 @@ export function parseEnd(chunkText, state) {
  * отказ поиска, 429 лимитера и обрыв сети это РЕЗУЛЬТАТ прогона, а не его
  * авария, и он обязан доехать до файла.
  */
-export async function runTurn({ base, prompt, jar, fetchImpl = fetch }) {
+export async function runTurn({ base, prompt, jar, fetchImpl = fetch, key = null }) {
   let created
   try {
     created = await call({
@@ -154,6 +232,7 @@ export async function runTurn({ base, prompt, jar, fetchImpl = fetch }) {
       body: { ...PARAMS, prompt },
       jar,
       fetchImpl,
+      key,
     })
   } catch (error) {
     return { failure: { code: 'answer_failed', message: String(error?.message ?? error) } }
@@ -233,7 +312,7 @@ export async function smoke({ base, jar, fetchImpl = fetch }) {
 }
 
 /** Профиль прогона: заводится, выбирается, получает предел кругов. */
-export async function setup({ base, jar, name, fetchImpl = fetch }) {
+export async function setup({ base, jar, name, fetchImpl = fetch, rounds = REVIEW_ROUNDS }) {
   const made = await call({ base, path: '/api/profile', method: 'POST', body: { name }, jar, fetchImpl })
   if (made.status !== 200 || typeof made.json?.profile?.id !== 'string')
     return { ok: false, why: `профиль не создан: ${made.status} ${made.json?.error ?? ''}` }
@@ -250,13 +329,39 @@ export async function setup({ base, jar, name, fetchImpl = fetch }) {
     base,
     path: '/api/settings',
     method: 'PUT',
-    body: { reviewRounds: REVIEW_ROUNDS },
+    body: { reviewRounds: rounds },
     jar,
     fetchImpl,
   })
   if (settings.status !== 200)
     return { ok: false, why: `предел кругов не выставлен: ${settings.status}` }
   return { ok: true, profileId: made.json.profile.id, name }
+}
+
+/**
+ * Профиль прогона убирается за собой. Мест под профиль у дня пять, и каждый
+ * прогон занимал бы одно навсегда: через четыре прогона посетитель не смог бы
+ * создать свой (находка `reviewer` к PR #325).
+ *
+ * Исход возвращается значением и ничего не валит: прогон уже отработал, и
+ * неудавшаяся уборка — повод сказать о ней вслух, а не потерять файл.
+ */
+export async function teardown({ base, jar, profileId, fetchImpl = fetch }) {
+  try {
+    const gone = await call({
+      base,
+      path: '/api/profile',
+      method: 'DELETE',
+      body: { id: profileId },
+      jar,
+      fetchImpl,
+    })
+    return gone.status === 200
+      ? { ok: true }
+      : { ok: false, why: `день ответил ${gone.status} ${gone.json?.error ?? ''}` }
+  } catch (error) {
+    return { ok: false, why: String(error?.message ?? error) }
+  }
 }
 
 /** Новый диалог под сценарий: у каждого сценария своё состояние задачи. */
@@ -282,6 +387,8 @@ export async function runAll({
   fetchImpl = fetch,
   sleep = sleepReal,
   spacingMs = SPACING_MS,
+  rounds = REVIEW_ROUNDS,
+  key = null,
   log = console.log,
   now = () => new Date(),
 }) {
@@ -302,13 +409,13 @@ export async function runAll({
       if (!first) await sleep(spacingMs)
       first = false
       const startedAt = Date.now()
-      const got = await runTurn({ base, prompt: turn.prompt, jar, fetchImpl })
+      const got = await runTurn({ base, prompt: turn.prompt, jar, fetchImpl, key })
       const latencyMs = Date.now() - startedAt
       const record = got.failure
         ? readFailure({ turn, failure: got.failure, latencyMs })
         : readTurn({ turn, result: got.result, latencyMs })
       scenario.turns.push(record)
-      save(buildReport({ ranAt, note, limits: limitsOf(set), params: PARAMS, scenarios }))
+      save(buildReport({ ranAt, note, limits: limitsOf(set, rounds), params: PARAMS, scenarios }))
       if (record.failure)
         log(`${source.id}/${turn.n}: отказ ${record.failure.code} — ${record.failure.message}`)
       else
@@ -323,11 +430,19 @@ export async function runAll({
   return { ranAt, scenarios }
 }
 
-const limitsOf = (set) => ({
-  dailyCap: 50,
+/**
+ * Пределы, под которыми шёл прогон. Числа дня берутся у дня (`DAY_LIMITS`), а
+ * не ставятся здесь второй копией: в отчёте обязано стоять то, под чем прогон
+ * шёл на самом деле.
+ */
+const limitsOf = (set, rounds = REVIEW_ROUNDS) => ({
+  dailyCap: DAY_LIMITS.MAX_DAILY_CALLS,
+  perMinute: DAY_LIMITS.RATE_LIMIT_PER_MIN,
+  perHour: DAY_LIMITS.RATE_LIMIT_PER_HOUR,
   callsPerTurn: '4 + 2×кругов',
-  reviewRounds: REVIEW_ROUNDS,
-  slotsPerTurn: REVIEW_ROUNDS,
+  reviewRounds: rounds,
+  slotsPerTurn: rounds,
+  slotsNeeded: set.scenarios.reduce((n, s) => n + s.turns.length, 0) * rounds,
   minTurns: set.minTurns,
   maxTurns: set.maxTurns,
 })
@@ -340,12 +455,29 @@ const readSet = (file) => JSON.parse(readFileSync(file, 'utf8'))
  * (обрезка длинной цитаты в `agents/`) — значит пометки дословности измерены
  * ДО него, и сравнивать их с числами после выкатки нельзя молча.
  */
-export const NOTE =
-  'Прогон по проду. PR #321 (обрезка длинной цитаты в agents/) на момент прогона НЕ выкачен, ' +
-  'поэтому пометки дословности цитат измерены до него. Предел кругов проверки — 1 на весь ' +
-  'прогон (иначе окно часа не пустило бы 22 хода), поэтому признак rounds здесь ничего не ' +
-  'различает: цикл проверки этот прогон не мерит. Вердиктов и текстов ответов в файле нет — ' +
-  'судейство дней 24–25 владелец отложил, мера дня 25 — механика хода.'
+/**
+ * Чем прод отличается от `main` на момент прогона. ПРАВИТСЯ РУКОЙ ПЕРЕД
+ * ПРОГОНОМ — вывести это из кода нечем: прогон знает адрес дня и больше
+ * ничего, а разницу «что слито, но не выкачено» знает только тот, кто прогон
+ * запускает. Пустая строка здесь означала бы «прод равен main», и проверить
+ * это по файлу было бы нечем.
+ */
+export const PROD_GAP =
+  'На момент прогона в проде нет правки потолка TASK_ANSWER_TOKENS (PR в agents/): ' +
+  'прошлый прогон 2026-10-05T11:38Z намерил именно этот дефект — шестой вызов обрезался, ' +
+  'и цель задачи осталась пустой на 13 ходах из 18.'
+
+export const noteFor = ({ rounds, keyUsed }) =>
+  `Прогон по проду. ${PROD_GAP} ` +
+  (rounds === 1
+    ? 'Предел кругов проверки — 1 на весь прогон (без ключа оператора окно часа не пустило бы 24 хода), ' +
+      'поэтому признак rounds здесь ничего не различает: цикл проверки этот прогон не мерит. '
+    : `Предел кругов проверки — ${rounds}, умолчание дня; окна минуты и часа сняты ключом оператора. `) +
+  (keyUsed
+    ? 'Ход создавался с ключом оператора: окна «в минуту/в час» на адрес сняты, суточный потолок дня — нет. '
+    : 'Ключа оператора не было: прогон шёл под окнами дня. ') +
+  'Вердиктов и текстов ответов в файле нет — судейство дней 24–25 владелец отложил, ' +
+  'мера дня 25 — механика хода.'
 
 /**
  * Точка входа. Два дела и ничего больше:
@@ -358,6 +490,7 @@ export async function main({
   sleep = sleepReal,
   log = console.log,
   now = () => new Date(),
+  readKey = readEvalKey,
 } = {}) {
   const flag = (name) => argv.includes(name)
   const value = (name, fallback) => {
@@ -378,12 +511,32 @@ export async function main({
     return problems.length === 0 ? 0 : 1
   }
 
-  // Готовый файл не затирается молча: повтор прогона — это ещё $0,6 и ещё 44
-  // эмбеддинга, и решение повторить обязано быть сказано вслух.
+  // Готовый файл не затирается молча: повтор прогона — это ещё деньги и ещё
+  // эмбеддинги, и решение повторить обязано быть сказано вслух.
   if (existsSync(out) && !flag('--force')) {
     log(`${out} уже есть — повтор прогона стоит денег; нужен --force`)
     return 1
   }
+
+  // Предел кругов и ключ разбираются ДО единого запроса: оба решают, сколько
+  // прогон потратит, и ошибиться здесь дешевле, чем на пятнадцатом ходе.
+  const key = readKey()
+  const rounds = Number(value('--rounds', REVIEW_ROUNDS))
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > 3) {
+    log(`--rounds должен быть целым от 1 до 3, получено ${JSON.stringify(value('--rounds', null))}`)
+    return 1
+  }
+  if (rounds > 1 && key === null) {
+    // Без ключа окно часа (30 слотов) не пустит 24 хода по два слота. Узнать
+    // это на пятнадцатом ходе — значит заплатить за четырнадцать впустую.
+    log(
+      `--rounds ${rounds} без ключа оператора не пройдёт окно часа ` +
+        `(${DAY_LIMITS.RATE_LIMIT_PER_HOUR} слотов на адрес) — денег не потрачено`,
+    )
+    return 1
+  }
+  const limits = limitsOf(set, rounds)
+  const note = noteFor({ rounds, keyUsed: key !== null })
 
   const base = value('--base', BASE)
   const jar = createJar()
@@ -393,14 +546,22 @@ export async function main({
     return 1
   }
   log(`проба прошла: профилей ${probe.profiles} из ${probe.cap}`)
+  log(`ключ оператора: ${key === null ? 'нет' : 'есть'}`)
+  // Суточный потолок ключ не снимает и он ОБЩИЙ НА ВСЕХ посетителей дня;
+  // сколько уже потрачено сегодня, прогон узнать не может — проба живости
+  // счётчиков не отдаёт намеренно. Поэтому числа названы, а вывод не сделан.
+  log(
+    `нужно слотов суточного потолка: ${limits.slotsNeeded} из ${limits.dailyCap}; ` +
+      'потолок общий на всех, остаток снаружи не виден',
+  )
 
   const name = `замер ${now().toISOString().slice(5, 16).replace('T', ' ')}`
-  const ready = await setup({ base, jar, name, fetchImpl })
+  const ready = await setup({ base, jar, name, fetchImpl, rounds })
   if (!ready.ok) {
     log(`подготовка не прошла: ${ready.why} — денег не потрачено`)
     return 1
   }
-  log(`профиль «${name}»: предел кругов ${REVIEW_ROUNDS}`)
+  log(`профиль «${name}»: предел кругов ${rounds}`)
 
   mkdirSync(dirname(out), { recursive: true })
   const save = (report) => writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`)
@@ -411,17 +572,25 @@ export async function main({
     base,
     set,
     jar,
-    note: NOTE,
+    note,
     save,
     fetchImpl,
     sleep,
+    spacingMs: key === null ? SPACING_MS : SPACING_WITH_KEY_MS,
+    rounds,
+    key,
     log,
     now,
   })
+  // Профиль убирается ЗДЕСЬ, а не после сверки формы: мест под профиль пять, и
+  // уборка не должна зависеть от того, цел ли файл.
+  const swept = await teardown({ base, jar, profileId: ready.profileId, fetchImpl })
+  log(swept.ok ? `профиль «${name}» удалён` : `профиль «${name}» НЕ удалён: ${swept.why}`)
+
   const report = buildReport({
     ranAt: done.ranAt,
-    note: NOTE,
-    limits: limitsOf(set),
+    note,
+    limits,
     params: PARAMS,
     scenarios: done.scenarios,
   })

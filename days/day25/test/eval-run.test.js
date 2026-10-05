@@ -5,8 +5,23 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { checkReport, readFailure, readTurn, summarize } from '../eval/mechanics.mjs'
-import { createJar, main, parseEnd, runAll, runTurn, smoke } from '../eval/run.mjs'
+import {
+  createJar,
+  DAY_LIMITS,
+  EVAL_HEADER,
+  main,
+  parseEnd,
+  readEvalKey,
+  runAll,
+  runTurn,
+  smoke,
+  teardown,
+} from '../eval/run.mjs'
+import { parseEnv } from '../env.js'
 
 const sse = (frames) =>
   frames.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('')
@@ -68,7 +83,13 @@ function fakeDay({ answer = () => ({ status: 202, body: { runId: 'r1' } }), end 
   const seen = []
   const fetchImpl = async (url, init = {}) => {
     const path = new URL(url).pathname
-    seen.push({ path, method: init.method ?? 'GET', cookie: init.headers?.cookie ?? null })
+    seen.push({
+      path,
+      method: init.method ?? 'GET',
+      cookie: init.headers?.cookie ?? null,
+      key: init.headers?.[EVAL_HEADER] ?? null,
+      body: init.body ?? null,
+    })
     const json = (status, body, cookies = []) =>
       new Response(JSON.stringify(body), {
         status,
@@ -78,7 +99,9 @@ function fakeDay({ answer = () => ({ status: 202, body: { runId: 'r1' } }), end 
     if (path.endsWith('/healthz')) return json(200, { ok: true })
     if (path.endsWith('/api/profiles')) return json(200, { profiles: [], cap: 5 })
     if (path.endsWith('/api/profile')) {
-      return json(200, { profile: { id: 'p1', name: 'замер' } })
+      return init.method === 'DELETE'
+        ? json(200, { removed: { rules: 0, facts: 0 } })
+        : json(200, { profile: { id: 'p1', name: 'замер' } })
     }
     if (path.endsWith('/api/profile/select')) {
       const r = new Response(JSON.stringify({ profile: { id: 'p1' }, sessionId: null }), {
@@ -178,6 +201,44 @@ test('файл пишется после каждого хода, а не в к�
   assert.equal(saves[0].scenarios[0].turns.length, 1, 'первая запись уже несёт первый ход')
   assert.equal(done.scenarios.length, 2)
   assert.equal(done.scenarios[1].sessionName, 'диалог 1', 'сценарий не назвал свой диалог')
+  // Суточный потолок в отчёте — ДНЕВНОЙ, а не вписанный в прогон числом:
+  // вторая копия разошлась бы с настоящим молча.
+  assert.equal(saves[0].limits.dailyCap, parseEnv({}).env.MAX_DAILY_CALLS)
+})
+
+test('прогон целиком убирает свой профиль: мест под профиль у дня пять', async () => {
+  // ПРЕДМЕТ — `main`, а не `teardown`: уборка обязана стоять в самом прогоне.
+  // Без этого теста вызов можно было бы убрать из `main`, и четыре прогона
+  // заняли бы все пять мест (находка `reviewer` к PR #325).
+  const day = fakeDay()
+  const dir = mkdtempSync(join(tmpdir(), 'day25-sweep-'))
+  const set = join(dir, 'scenarios.json')
+  writeFileSync(
+    set,
+    JSON.stringify({
+      minTurns: 1,
+      maxTurns: 15,
+      scenarios: [
+        { id: 's1', title: 'раз', turns: [{ n: 1, purpose: 'а', prompt: 'один' }] },
+        { id: 's2', title: 'два', turns: [{ n: 1, purpose: 'б', prompt: 'два' }] },
+      ],
+    }),
+  )
+  try {
+    const lines = []
+    await main({
+      argv: ['--scenarios', set, '--out', join(dir, 'eval.json'), '--base', 'http://day'],
+      fetchImpl: day.fetchImpl,
+      sleep: async () => {},
+      readKey: () => null,
+      log: (line) => lines.push(String(line)),
+    })
+    const gone = day.seen.find((s) => s.method === 'DELETE' && s.path.endsWith('/api/profile'))
+    assert.ok(gone, `прогон не удалил свой профиль: ${lines.join(' | ')}`)
+    assert.ok(lines.some((l) => l.includes('удалён')), `об уборке не сказано: ${lines.join(' | ')}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('отказ лимитера доезжает до файла и говорит, что денег не стоил', async () => {
@@ -235,6 +296,54 @@ test('сменившийся посреди прогона индекс вали
   )
 })
 
+test('пустая цель задачи с хода 2 валит сверку — второе механическое обещание ADR, п. 3.5', () => {
+  // Это обещание и было нарушено прогоном 2026-10-05T11:38Z: шестой вызов
+  // обрезался потолком TASK_ANSWER_TOKENS, и цель осталась пустой. Проверка
+  // обязана краснеть на этом, иначе замер прошёл, а мерить было нечего.
+  const turn = (n, goal) =>
+    readTurn({
+      turn: { n, purpose: 'п', prompt: 'раз' },
+      result: okResult({ task: { ...okResult().task, goal } }),
+      latencyMs: 10,
+    })
+  const scenario = (id, goals) => ({
+    id,
+    title: id,
+    sessionName: 'диалог',
+    turns: goals.map((goal, at) => turn(at + 1, goal)),
+  })
+  const report = (goals) => {
+    const scenarios = [scenario('s1', goals), scenario('s2', goals)]
+    return {
+      ranAt: '2026-10-05T12:00:00.000Z',
+      note: 'проба',
+      limits: { dailyCap: 50, reviewRounds: 1 },
+      index: { commit: 'abc1234', seen: ['abc1234'] },
+      scenarios: scenarios.map((s) => ({ ...s, summary: summarize(s.turns) })),
+    }
+  }
+  const full = Array.from({ length: 12 }, () => 'цель')
+  assert.deepEqual(checkReport(report(full), { minTurns: 12 }), [], 'целая цель валит сверку')
+
+  // Ход 1 без цели — ЗАКОННО: до первого ответа состояния не существует.
+  const firstEmpty = [...full]
+  firstEmpty[0] = ''
+  assert.deepEqual(
+    checkReport(report(firstEmpty), { minTurns: 12 }),
+    [],
+    'пустая цель на ходе 1 посчитана нарушением',
+  )
+
+  // Ход 5 без цели — нарушение, и оно названо.
+  const fifthEmpty = [...full]
+  fifthEmpty[4] = ''
+  const problems = checkReport(report(fifthEmpty), { minTurns: 12 })
+  assert.ok(
+    problems.some((p) => p.includes('ход 5') && p.includes('цель задачи пуста')),
+    `пустая цель с хода 2 прошла молча: ${problems.join('; ')}`,
+  )
+})
+
 test('сводка сценария считает то же, что печатает прогон', () => {
   const turns = [
     readTurn({ turn: { n: 1, purpose: 'п', prompt: 'раз' }, result: okResult(), latencyMs: 20_000 }),
@@ -247,6 +356,98 @@ test('сводка сценария считает то же, что печат�
   assert.equal(s.quotesVerified, 1)
   // Отказ в среднее время не входит: он вернулся за секунду и занижал бы его.
   assert.equal(s.latencyMs, 20_000)
+})
+
+test('пределы дня берутся у дня, а не стоят второй копией в прогоне', () => {
+  // Разойдясь, две копии дали бы в отчёте не то число, под которым прогон шёл.
+  const { env } = parseEnv({})
+  assert.equal(DAY_LIMITS.MAX_DAILY_CALLS, env.MAX_DAILY_CALLS)
+  assert.equal(DAY_LIMITS.RATE_LIMIT_PER_HOUR, env.RATE_LIMIT_PER_HOUR)
+})
+
+test('ключ оператора читается из файла, а отсутствие файла ошибкой не считается', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'day25-key-'))
+  const file = join(dir, 'eval.key')
+  try {
+    assert.equal(readEvalKey({ file }), null, 'нет файла — должно быть null, а не исключение')
+    writeFileSync(file, '  секрет-прогона\n')
+    assert.equal(readEvalKey({ file }), 'секрет-прогона', 'ключ не обрезан по краям')
+    writeFileSync(file, '   \n')
+    assert.equal(readEvalKey({ file }), null, 'пустой файл — не ключ')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ключ уходит заголовком только на создание хода, а не на чтения', async () => {
+  const day = fakeDay()
+  const jar = createJar()
+  await smoke({ base: 'http://day', jar, fetchImpl: day.fetchImpl })
+  await runTurn({ base: 'http://day', prompt: 'раз', jar, fetchImpl: day.fetchImpl, key: 'к-1' })
+  const answer = day.seen.find((s) => s.path.endsWith('/api/answer'))
+  assert.equal(answer.key, 'к-1', 'ключ не доехал до платной ручки')
+  // Лишний заголовок на каждой ручке — лишний путь утечки: окна снимаются у
+  // платной, и только ей он и нужен.
+  for (const seen of day.seen.filter((s) => !s.path.endsWith('/api/answer')))
+    assert.equal(seen.key, null, `ключ ушёл на ${seen.path}`)
+})
+
+test('--rounds больше одного без ключа оператора не начинает прогон вовсе', async () => {
+  // Окно часа (30 слотов на адрес) не пустит 24 хода по два слота, и узнать
+  // это на пятнадцатом ходе — значит заплатить за четырнадцать впустую.
+  const day = fakeDay()
+  const dir = mkdtempSync(join(tmpdir(), 'day25-rounds-'))
+  try {
+    const lines = []
+    const code = await main({
+      argv: ['--rounds', '2', '--out', join(dir, 'eval.json'), '--base', 'http://day'],
+      fetchImpl: day.fetchImpl,
+      sleep: async () => {},
+      readKey: () => null,
+      log: (line) => lines.push(String(line)),
+    })
+    assert.equal(code, 1, 'прогон начался без ключа при пределе кругов 2')
+    assert.ok(lines.some((l) => l.includes('окно часа')), lines.join(' | '))
+    // Главное утверждение: НИ ОДНОГО запроса к дню, то есть денег не потрачено.
+    assert.equal(day.seen.length, 0, `прогон успел сходить в день: ${day.seen.map((s) => s.path)}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('готовый файл не затирается без --force, и запросов к дню при этом нет', async () => {
+  // ДЕРЖАТЕЛЬ ПРАВИЛА О ДЕНЬГАХ: без него повтор прогона тихо стирает
+  // оплаченный файл и тратит столько же ещё раз.
+  const day = fakeDay()
+  const dir = mkdtempSync(join(tmpdir(), 'day25-force-'))
+  const file = join(dir, 'eval.json')
+  writeFileSync(file, '{"уже":"лежит"}\n')
+  try {
+    const lines = []
+    const code = await main({
+      argv: ['--out', file, '--base', 'http://day'],
+      fetchImpl: day.fetchImpl,
+      sleep: async () => {},
+      readKey: () => null,
+      log: (line) => lines.push(String(line)),
+    })
+    assert.equal(code, 1, 'повтор прогона прошёл без --force')
+    assert.ok(lines.some((l) => l.includes('нужен --force')), lines.join(' | '))
+    assert.equal(day.seen.length, 0, 'прогон сходил в день, хотя файл уже лежал')
+    assert.equal(readFileSync(file, 'utf8'), '{"уже":"лежит"}\n', 'лежавший файл изменён')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('профиль прогона удаляется за собой: мест под профиль пять', async () => {
+  const day = fakeDay()
+  const jar = createJar()
+  const swept = await teardown({ base: 'http://day', jar, profileId: 'p1', fetchImpl: day.fetchImpl })
+  assert.equal(swept.ok, true, swept.why)
+  const gone = day.seen.find((s) => s.method === 'DELETE' && s.path.endsWith('/api/profile'))
+  assert.ok(gone, 'удаления профиля не было')
+  assert.match(String(gone.body), /"id":"p1"/, 'удалён не тот профиль')
 })
 
 test('--check на отсутствующем файле падает, а не молчит', async () => {

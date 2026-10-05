@@ -13,8 +13,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+import { parseEnv } from '../env.js'
 import { checkReport, summarize } from '../eval/mechanics.mjs'
-import { main } from '../eval/run.mjs'
+import { main, PROD_GAP } from '../eval/run.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const SET = join(here, '..', 'eval', 'scenarios.json')
@@ -125,7 +126,26 @@ test('--check проходит по лежащему файлу и падает 
 test('заметка файла называет, чего в проде на момент прогона не было', () => {
   // Прогон идёт по ПРОДУ, а прод не равен main. Пустая или общая заметка
   // означала бы «прод равен main», и проверить это по файлу было бы нечем.
-  assert.match(report.note, /PR #321/, 'заметка не называет невыкаченную правку')
+  //
+  // Предмет здесь — СВЯЗЬ заметки с константой `PROD_GAP`, которую правят
+  // рукой перед прогоном, а не номер конкретного PR: номер устаревает в день
+  // выкатки, и тест на него краснел бы от правды.
+  assert.ok(PROD_GAP.trim() !== '', 'PROD_GAP пуст: «прод равен main» проверить нечем')
+  assert.ok(
+    report.note.includes(PROD_GAP),
+    'заметка в файле не несёт разницу прода с main из PROD_GAP',
+  )
   assert.match(report.note, /судейств/, 'заметка не говорит, что вердиктов в файле нет')
-  assert.equal(report.limits.reviewRounds, 1, 'предел кругов прогона в файле не назван')
+  assert.match(report.note, /кругов проверки/, 'заметка не называет предел кругов прогона')
+  assert.ok(Number.isInteger(report.limits.reviewRounds), 'предел кругов в файле не назван числом')
+})
+
+test('пределы в файле — те же, что у дня: суточный потолок не вписан руками', () => {
+  const { env } = parseEnv({})
+  assert.equal(report.limits.dailyCap, env.MAX_DAILY_CALLS)
+  assert.equal(
+    report.limits.slotsNeeded,
+    report.scenarios.reduce((n, s) => n + s.turns.length, 0) * report.limits.reviewRounds,
+    'нужное число слотов в файле не сходится с числом ходов',
+  )
 })

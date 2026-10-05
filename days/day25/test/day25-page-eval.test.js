@@ -24,7 +24,8 @@ const rules = (() => {
   const to = page.indexOf('/* --- конец выделяемого блока итогов --- */', from)
   assert.notEqual(to, -1, 'у блока правил итогов обязан быть конец')
   return new Function(`${page.slice(from, to)}
-    return { EV_WORD, EV_ORDER, EV_UNKNOWN, EV_NONE, EV_BROKEN, evJoin, evShortCommit };`)()
+    return { EV_WORD, EV_ORDER, EV_UNKNOWN, EV_NONE, EV_UNREADABLE, EV_BROKEN, evJoin,
+             evShortCommit };`)()
 })()
 
 test('исходы на экране — те же четыре, что в механике прогона, и ни одним больше', () => {
@@ -43,12 +44,26 @@ test('исход, которого страница не знает, не выд
   assert.notEqual(rules.EV_UNKNOWN, rules.EV_WORD.answered)
 })
 
-test('нет файла и негодный файл — РАЗНЫЕ строки, и обе говорят, что чисел нет', () => {
+test('три пустых состояния — три РАЗНЫЕ строки: нет файла, не прочитан, форма не та', () => {
   // Пустое место под заголовком читается как «всё в порядке» (I-8), а одна
-  // строка на оба случая не дала бы отличить «не прогоняли» от «файл битый».
-  assert.notEqual(rules.EV_NONE, rules.EV_BROKEN)
+  // строка на три случая врала бы в двух из трёх: «не прогоняли» и «сборка
+  // отдала файл с ошибкой» — разные новости для посетителя.
+  assert.equal(new Set([rules.EV_NONE, rules.EV_UNREADABLE, rules.EV_BROKEN]).size, 3)
   assert.match(rules.EV_NONE, /не прогоняли/)
+  assert.match(rules.EV_UNREADABLE, /не прочитан/)
   assert.match(rules.EV_BROKEN, /форма не та/)
+})
+
+test('404 и прочие отказы ведут к РАЗНЫМ строкам, а не к одной', () => {
+  // Предмет — развилка в коде, а не наличие двух строк: пока ветвь по 404 не
+  // стояла, оба случая приходили в EV_NONE и «файл битый» читался как
+  // «не прогоняли» (находка `reviewer` к PR #325).
+  assert.match(
+    page,
+    /if \(r\.status === 404\) \{\s*\n\s*say\(\$\('ev-state'\), EV_NONE\);/,
+    'ветвь по 404 обязана отдавать именно EV_NONE',
+  )
+  assert.match(page, /\} catch \(error\) \{\s*\n\s*say\(\$\('ev-state'\), EV_UNREADABLE\);/)
 })
 
 test('строка механики не печатает пустых мест на месте непришедшего', () => {
