@@ -363,3 +363,110 @@ test('четвёртая проверка — поле службы, а не с�
   // Страница зовёт правило ровно с полем службы и ничем больше.
   assert.match(page, /checkLine\(rag\.checks\)/)
 })
+
+/*
+ * Обрезка цитаты (день 25, PR пары к #321). Правило живёт в DOM-функции
+ * `quoteLine`, выделяемый блок правил её не содержит — поэтому она ВЫРЕЗАЕТСЯ
+ * ИЗ СТРАНИЦЫ и исполняется с поддельным `document` тем же способом, которым
+ * `day25-page-prompts.test.js` исполняет `applyMaxCap` с поддельным `$`.
+ * Проверяется исходный текст страницы, а не копия правила в тесте.
+ *
+ * Поддельный узел держит ровно то, что `quoteLine` трогает: класс, текст и
+ * список добавленного. Среди добавленного бывают строки (многоточие), поэтому
+ * `flat` умеет и их.
+ */
+const fakeDocument = () => ({
+  createElement: (tag) => {
+    const el = { tag, className: '', textContent: '', kids: [] }
+    el.append = (...parts) => el.kids.push(...parts)
+    return el
+  },
+})
+const flat = (el) =>
+  typeof el === 'string' ? el : [el.textContent, ...el.kids.map(flat)].join('')
+const notes = (el) =>
+  typeof el === 'string'
+    ? []
+    : el.kids.flatMap((kid) => [
+        ...(typeof kid !== 'string' && kid.className === 'entry-note' ? [kid.textContent] : []),
+        ...notes(kid),
+      ])
+
+const pageFn = (name, source, deps) => {
+  const found = page.match(source)
+  assert.notEqual(found, null, `${name} обязано остаться отдельной функцией страницы`)
+  return new Function(...Object.keys(deps), `${found[0]} return ${name};`)(...Object.values(deps))
+}
+
+const fmtIntSource = /const fmtInt = \(n\) => [^\n]*\n/
+const pluralSource = /const plural = \(n, one, few, many\) => \{[\s\S]*?\n {2}\};/
+const cutNoteSource = /const quoteCutNote = \(chars\) =>[\s\S]*?;\n/
+const quoteLineSource = /const quoteLine = \(quote\) => \{[\s\S]*?\n {2}\};/
+
+/** Строка об обрезке — со своими же `fmtInt` и `plural` из страницы. */
+const cutNote = () =>
+  pageFn('quoteCutNote', cutNoteSource, {
+    fmtInt: pageFn('fmtInt', fmtIntSource, {}),
+    plural: pageFn('plural', pluralSource, {}),
+  })
+
+const renderQuote = (quote) =>
+  pageFn('quoteLine', quoteLineSource, {
+    document: fakeDocument(),
+    QUOTE_WORD: rules.QUOTE_WORD,
+    quoteCutNote: cutNote(),
+  })(quote)
+
+test('обрезанная цитата говорит об обрезке дословно и числом из самой цитаты', () => {
+  // Число знаков — из цитаты, а не из потолка 300: потолок держит агент
+  // (`MAX_QUOTE_CHARS` в `agents/src/rag/cited.js`), и вторая его копия на
+  // странице разошлась бы с первой молча. Поэтому цитата здесь короче 300.
+  const box = renderQuote({ n: 3, text: 'а'.repeat(12), verified: true, truncated: true })
+  assert.deepEqual(notes(box), ['Цитату обрезал агент при сверке: показаны первые 12 знаков.'])
+  // Многоточие стоит ПОСЛЕ текста цитаты, а не внутри него: сам текст остаётся
+  // тем, что служба сверила с фрагментом.
+  assert.match(flat(box), new RegExp(`${'а'.repeat(12)}…Цитату обрезал агент`))
+  // Пометка сверки остаётся прежней: обрезанная цитата проверена дословно, и
+  // строка об обрезке не ставит её в сомнение.
+  assert.match(flat(box), /проверена дословно/)
+  assert.equal(box.className, 'quote')
+})
+
+test('знаки цитаты считаются знаками, а не единицами UTF-16', () => {
+  // `length` насчитал бы здесь вдвое больше: пара surrogate — один знак, и
+  // агент режет тем же счётом (`Array.from` в `clipQuote`).
+  const box = renderQuote({ n: 1, text: '😀😀😀', verified: true, truncated: true })
+  assert.deepEqual(notes(box), ['Цитату обрезал агент при сверке: показаны первые 3 знака.'])
+})
+
+test('число знаков согласовано с числом: знак, знака, знаков', () => {
+  const note = cutNote()
+  assert.match(note(1), /первые 1 знак\./)
+  assert.match(note(2), /первые 2 знака\./)
+  assert.match(note(5), /первые 5 знаков\./)
+  assert.match(note(11), /первые 11 знаков\./)
+  assert.match(note(300), /первые 300 знаков\./)
+})
+
+test('поля обрезки нет — страница о ней молчит, а не отрицает её', () => {
+  // Старая служба поля не присылает вовсе. Дорисовать «не обрезана» значило бы
+  // утверждать то, чего ход не сообщал.
+  const old = renderQuote({ n: 2, text: 'целая цитата', verified: true })
+  assert.deepEqual(notes(old), [])
+  assert.equal(/…/.test(flat(old)), false, 'многоточие появилось без признака обрезки')
+  // `false` новой службы — то же молчание.
+  const whole = renderQuote({ n: 2, text: 'целая цитата', verified: true, truncated: false })
+  assert.deepEqual(notes(whole), [])
+  assert.equal(/…/.test(flat(whole)), false)
+  // Неподтверждённая цитата приходит целиком (`truncated: false`) — и строки
+  // об обрезке у неё нет: она показана такой, какой её привела модель.
+  const bad = renderQuote({ n: 4, text: 'выдумка', verified: false, truncated: false })
+  assert.deepEqual(notes(bad), [])
+  assert.equal(bad.className, 'quote is-bad')
+})
+
+test('строка об обрезке оформлена тем же классом, что у дня 24', () => {
+  // `entry-note` — класс строки дня 24 «Фрагмент обрезала служба поиска при
+  // выдаче.». Без правила в стилях класс остался бы без отбивки и цвета.
+  assert.match(page, /\.quote \.entry-note \{[^}]*color:var\(--fg-mut\)/)
+})
