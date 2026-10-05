@@ -13,6 +13,10 @@
 // роутер — поддельный `fetchImpl`, который в части тестов обязан не быть
 // вызванным ни разу. Настоящего API не зовёт ни один тест.
 //
+// Сервер поиска снимается в `t.after`, а не строкой в конце теста: иначе
+// УПАВШИЙ тест оставлял бы открытый сокет, прогон не завершался бы вовсе, и
+// мутационная проверка показывала бы зависание вместо красного теста.
+//
 // Требует Node 24 или флага --experimental-sqlite.
 
 import assert from 'node:assert/strict'
@@ -207,10 +211,10 @@ function setup({ rag, fetchImpl = router(), file = tmp('sessions.db') } = {}) {
 
 // --- Этапы ----------------------------------------------------------------
 
-test('восемь этапов, и «Поиск» стоит до подготовки промпта и вызова модели', async () => {
+test('восемь этапов, и «Поиск» стоит до подготовки промпта и вызова модели', async (t) => {
   const rag = await fakeRag()
+  t.after(() => rag.close())
   const described = await setup({ rag }).agent.describe()
-  await rag.close()
   assert.deepEqual(
     described.stages.map((s) => s.id),
     ['intake', 'assemble', 'retrieve', 'prepare', 'answer', 'verify', 'replenish', 'deliver'],
@@ -225,11 +229,11 @@ test('восемь этапов, и «Поиск» стоит до подгот�
 
 // --- Обещание 1: источники всегда ----------------------------------------
 
-test('у ответа хода есть источники и дословная цитата, вызовов модели шесть', async () => {
+test('у ответа хода есть источники и дословная цитата, вызовов модели шесть', async (t) => {
   const rag = await fakeRag()
+  t.after(() => rag.close())
   const { ask, fetchImpl, sessions, sid } = setup({ rag })
   const snapshot = await ask()
-  await rag.close()
 
   assert.equal(snapshot.status, 'succeeded', JSON.stringify(snapshot.error))
   // Источники — то, что ушло модели номерами: реранкер оставил два.
@@ -263,13 +267,13 @@ test('у ответа хода есть источники и дословная
   )
 })
 
-test('фрагменты и состояние задачи попадают в текст промпта круга дословно', async () => {
+test('фрагменты и состояние задачи попадают в текст промпта круга дословно', async (t) => {
   const rag = await fakeRag()
+  t.after(() => rag.close())
   const { ask, sessions, sid } = setup({ rag })
   const first = await ask()
   // Второй ход: состояние задачи уже есть, и блок <task> обязан быть в промпте.
   const second = await ask()
-  await rag.close()
   assert.equal(second.status, 'succeeded', JSON.stringify(second.error))
 
   const texts = sessions.runPromptsOf({ runId: second.id, sessionId: sid })
@@ -289,8 +293,9 @@ test('фрагменты и состояние задачи попадают в 
 
 // --- Обещание 2: состояние задачи переживает ход --------------------------
 
-test('состояние задачи переживает ход, перезапуск и уходит в промпт переписывания', async () => {
+test('состояние задачи переживает ход, перезапуск и уходит в промпт переписывания', async (t) => {
   const rag = await fakeRag()
+  t.after(() => rag.close())
   const { ask, fetchImpl, sessions, file, sid } = setup({ rag })
   await ask()
 
@@ -307,7 +312,6 @@ test('состояние задачи переживает ход, переза�
   again.close()
 
   const second = await ask()
-  await rag.close()
   assert.equal(second.status, 'succeeded', JSON.stringify(second.error))
 
   // И ушло в промпт ПЕРЕПИСЫВАНИЯ следующего хода: иначе поиск второго хода
@@ -322,8 +326,9 @@ test('состояние задачи переживает ход, переза�
   assert.equal(second.result.task.goal, TASK.goal)
 })
 
-test('шестой промпт профиля правит вызов состояния задачи', async () => {
+test('шестой промпт профиля правит вызов состояния задачи', async (t) => {
   const rag = await fakeRag()
+  t.after(() => rag.close())
   const { ask, fetchImpl, sessions, profile } = setup({ rag })
   assert.equal(
     sessions.savePrompt({
@@ -334,20 +339,19 @@ test('шестой промпт профиля правит вызов сост�
     true,
   )
   await ask()
-  await rag.close()
   assert.equal(fetchImpl.of('task')[0].system, 'Веди состояние задачи одной строкой.')
 })
 
 // --- Обещание 3: отказ поиска не оплачивает ответ -------------------------
 
-test('отказ поиска обрывает ход: роутер не вызван ни разу, ход не оплачен', async () => {
+test('отказ поиска обрывает ход: роутер не вызван ни разу, ход не оплачен', async (t) => {
   const rag = await fakeRag({
     answer: () => ({ isError: true, content: [{ type: 'text', text: 'NO_INDEX: индекса нет' }] }),
   })
+  t.after(() => rag.close())
   const fetchImpl = router()
   const { ask, sessions, sid } = setup({ rag, fetchImpl })
   const snapshot = await ask()
-  await rag.close()
 
   assert.equal(snapshot.status, 'failed')
   assert.equal(snapshot.error.code, 'search_refused')
@@ -359,7 +363,7 @@ test('отказ поиска обрывает ход: роутер не выз�
   assert.equal(sessions.taskStateOf(sid), null)
 })
 
-test('поиск недоступен — ход отказан до роутера, даже если фрагменты были бы', async () => {
+test('поиск недоступен — ход отказан до роутера, даже если фрагменты были бы', async (t) => {
   const fetchImpl = router()
   const { ask } = setup({ rag: null, fetchImpl })
   const snapshot = await ask()
@@ -370,14 +374,14 @@ test('поиск недоступен — ход отказан до роуте�
 
 // --- Форма ответа ---------------------------------------------------------
 
-test('ответ со чужим номером источника — отказ формы, повтора вызова нет', async () => {
+test('ответ со чужим номером источника — отказ формы, повтора вызова нет', async (t) => {
   const rag = await fakeRag()
+  t.after(() => rag.close())
   const fetchImpl = router({
     cited: { ...CITED, sources: [{ n: 9, source: 'выдумка.md', section: '—' }] },
   })
   const { ask, sessions, sid } = setup({ rag, fetchImpl })
   const snapshot = await ask()
-  await rag.close()
 
   assert.equal(snapshot.status, 'failed')
   assert.equal(snapshot.error.code, 'answer_invalid')
@@ -390,8 +394,9 @@ test('ответ со чужим номером источника — отка�
 
 // --- Уборка ---------------------------------------------------------------
 
-test('«очистить» и удаление профиля уносят состояние задачи', async () => {
+test('«очистить» и удаление профиля уносят состояние задачи', async (t) => {
   const rag = await fakeRag()
+  t.after(() => rag.close())
   const { ask, sessions, sid, profile } = setup({ rag })
   await ask()
   assert.ok(sessions.taskStateOf(sid))
@@ -405,5 +410,4 @@ test('«очистить» и удаление профиля уносят со�
   )
   assert.equal(sessions.deleteProfile(profile.id).taskState, 1)
   assert.equal(sessions.taskStateOf(other), null, 'удаление профиля унесло состояние')
-  await rag.close()
 })
