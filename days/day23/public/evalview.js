@@ -161,6 +161,11 @@ export const RECALL_EXPECTED = 0.58
  * переписыванием 0,58 перешагнуло. Поэтому про уровень строка говорит отдельным
  * предложением и только когда он взят: взят он не отбором, а тем, что стояло до
  * него.
+ *
+ * ОБА УТВЕРЖДЕНИЯ ОТНОСЯТСЯ ТОЛЬКО К НАЗВАННЫМ РЕЖИМАМ (находка `reviewer` к
+ * тому же PR): «уровень взят не отбором» верно по построению лишь там, где
+ * отбор метрику ОПУСТИЛ. Режим, в котором отбор её поднял, в это предложение
+ * попасть не может — он называется своим, отдельным.
  */
 export function recallText(parsed) {
   const measured = EVAL_MODES.map(([key, word]) => [word, parsed.modes[key]]).filter(
@@ -170,16 +175,21 @@ export function recallText(parsed) {
   if (fell.length === 0) return ''
   const pair = ([word, m]) =>
     `«${word}» ${formatMetric(m.before.recall5)} → ${formatMetric(m.after.recall5)}`
-  const over = measured.filter(([, m]) => m.after.recall5 >= RECALL_EXPECTED)
+  const rose = measured.filter(([, m]) => m.after.recall5 > m.before.recall5)
+  // Уровень — только по УПАВШИМ режимам: «взят не отбором» и «до отбора стояло
+  // больше» по построению верно лишь там, где отбор метрику опустил.
+  const over = fell.filter(([, m]) => m.after.recall5 >= RECALL_EXPECTED)
   return (
     ` Recall@5 отбор при этом опустил: ${fell.map(pair).join(', ')}. Ожидание дня было о` +
     ` направлении: отбор поднимает Recall@5 — примерно с ${formatMetric(RECALL_BASE)} без` +
-    ` него до ${formatMetric(RECALL_EXPECTED)} после. Направления мера не подтвердила.` +
+    ` него до ${formatMetric(RECALL_EXPECTED)} после. В названных режимах направления мера` +
+    ' не подтвердила.' +
+    (rose.length === 0 ? '' : ` Поднял он её в режиме ${rose.map(pair).join(', ')}.`) +
     (over.length === 0
       ? ''
-      : ` Самого уровня ${formatMetric(RECALL_EXPECTED)} выдача после отбора достигает` +
-        ` (${over.map(([word, m]) => `«${word}» ${formatMetric(m.after.recall5)}`).join(', ')}),` +
-        ' но взят он не отбором: до отбора там стояло больше.')
+      : ` Самого уровня ${formatMetric(RECALL_EXPECTED)} выдача после отбора достигает и там,` +
+        ` где отбор её опустил (${over.map(([word, m]) => `«${word}» ${formatMetric(m.after.recall5)}`).join(', ')}),` +
+        ' — но взят он не отбором: до отбора там стояло больше.')
   )
 }
 

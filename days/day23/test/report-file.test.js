@@ -144,7 +144,7 @@ test('упавшую метрику вывод на экране называе�
     // «уровня не достигли», противоречила бы соседним числам на том же экране
     // (находка design-review к PR #327).
     assert.match(said.text, /о направлении/)
-    assert.match(said.text, /Направления мера не подтвердила/)
+    assert.match(said.text, /В названных режимах направления мера не подтвердила/)
     if (m.after.recall5 >= RECALL_EXPECTED)
       assert.ok(
         said.text.includes(`«${label}» ${formatMetric(m.after.recall5)}`),

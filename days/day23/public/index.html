@@ -295,7 +295,7 @@
      является, это `min-width:0` для сетки. Замер design-review к PR #304:
      98.4ch при 1440 без этого правила, тогда как соседние абзацы секции
      (`#eval-limits`, `.q-line.is-main`) полосу имеют. */
-  #sum-verdict { margin:0; max-width:68ch; }
+  #sum-verdict { margin:var(--s-3) 0 0; max-width:68ch; }
 
   .qs { list-style:none; margin:0; padding:0; }
   .q { border-top:1px solid var(--line); min-width:0; }
