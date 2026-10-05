@@ -1474,7 +1474,7 @@
 
   /** Текущее состояние полосы. `id` — запуск, чьи события она показывает. */
   let runState = {
-    view: 'loading',   // loading | idle | running | paused | done | cancelled | lost | partial | error
+    view: 'loading',   // loading | idle | running | paused | done | failed | cancelled | lost | partial | error
     id: null,
     index: 0,          // номер текущего этапа, 1..6; 0 — этапа нет
     done: 0,           // сколько этапов пройдено
@@ -3136,6 +3136,13 @@
         return `${runState.withheld ? 'Ответ не отдан' : 'Готово'} · ` +
           `${runState.done || total} ${plural(runState.done || total, 'этап', 'этапа', 'этапов')}` +
           (runState.durationMs === null ? '' : ` · ${fmtDuration(runState.durationMs)}`);
+      // Отказ хода — НЕ «Готово». У дня 25 это главный путь отказа: поиск по
+      // корпусу обрывает ход до вызова модели, и полоса, поставившая галочки
+      // всем восьми этапам, утверждала бы, что «Поиск» прошёл. Остановка
+      // названа этапом, на котором она случилась, а что случилось — словами
+      // сервиса в переписке и в мониторе.
+      case 'failed':
+        return `Ход отказан · остановился на этапе ${runState.index || 1} из ${total}`;
       case 'cancelled':
         return 'Запуск отменён: пауза дольше 60 минут';
       case 'lost':
@@ -3178,7 +3185,10 @@
     runStateLine.hidden = text === '';
     runStateLine.textContent = text;
     // Отмена и потеря — предупреждение на месте статуса, а не лишняя строка.
-    runStateLine.classList.toggle('warned', view === 'cancelled' || view === 'lost');
+    runStateLine.classList.toggle(
+      'warned',
+      view === 'cancelled' || view === 'lost' || view === 'failed',
+    );
 
     pauseBtn.disabled = !(view === 'running' || view === 'paused');
     // Подпись называет действие, а не состояние кнопки, и потому `aria-pressed`
@@ -5713,6 +5723,10 @@
       if (end.status === 'cancelled') {
         shout('Запуск отменён: пауза дольше 60 минут.');
         finish('cancelled');
+      } else if (end.status === 'failed') {
+        // Галочки всем этапам здесь были бы неправдой: ход встал там, где
+        // встал, и чаще всего — на «Поиске», до единого вызова модели.
+        finish('failed');
       } else {
         finish();
       }
