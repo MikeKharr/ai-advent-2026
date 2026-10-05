@@ -137,11 +137,14 @@ export const hasRun = (parsed) =>
 export const NOTABLE = 0.02
 
 /**
- * Ожидание этого дня, названное ДО прогона: отбор поднимает Recall@5 примерно
- * до 0,58 против 0,48 без него (ADR 2026-10-05-0544, п. 1.2 — счёт по рангам
- * дня 21). Число стоит здесь, чтобы расхождение меры с ожиданием называла сама
- * страница, а не вспоминал читатель.
+ * Ожидание этого дня, названное ДО прогона, — про НАПРАВЛЕНИЕ: отбор ПОДНИМАЕТ
+ * Recall@5, примерно с 0,48 без него до 0,58 после (ADR 2026-10-05-0544,
+ * п. 1.2 — счёт по рангам дня 21). Оба числа стоят здесь, потому что без базы
+ * «0,58» читается как уровень, которого надо достичь, а ожидание было о другом:
+ * вторая ступень должна была метрику поднять, а не довести до числа. Уровня
+ * можно достичь и не отбором — так в этом дне и вышло.
  */
+export const RECALL_BASE = 0.48
 export const RECALL_EXPECTED = 0.58
 
 /**
@@ -151,22 +154,32 @@ export const RECALL_EXPECTED = 0.58
  * то есть «лучший режим» будет назван на фоне падения Recall@5. Строка
  * собирается из чисел файла: называются режимы, в которых `after` ниже
  * `before`, со своими числами; не опустил ни в одном — строки нет вовсе.
+ *
+ * НЕ ПОДТВЕРДИЛОСЬ НАПРАВЛЕНИЕ, А НЕ УРОВЕНЬ, и путать их здесь нельзя
+ * (находка `design-review` к PR #327): ожидание было «отбор поднимает Recall@5
+ * с ≈0,48 до ≈0,58», а отбор его опустил — при этом число «после» у режима с
+ * переписыванием 0,58 перешагнуло. Поэтому про уровень строка говорит отдельным
+ * предложением и только когда он взят: взят он не отбором, а тем, что стояло до
+ * него.
  */
 export function recallText(parsed) {
-  const fell = EVAL_MODES.map(([key, word]) => [word, parsed.modes[key]]).filter(
-    ([, m]) =>
-      m !== null &&
-      m.before.recall5 !== null &&
-      m.after.recall5 !== null &&
-      m.after.recall5 < m.before.recall5,
+  const measured = EVAL_MODES.map(([key, word]) => [word, parsed.modes[key]]).filter(
+    ([, m]) => m !== null && m.before.recall5 !== null && m.after.recall5 !== null,
   )
+  const fell = measured.filter(([, m]) => m.after.recall5 < m.before.recall5)
   if (fell.length === 0) return ''
-  const list = fell
-    .map(([word, m]) => `«${word}» ${formatMetric(m.before.recall5)} → ${formatMetric(m.after.recall5)}`)
-    .join(', ')
+  const pair = ([word, m]) =>
+    `«${word}» ${formatMetric(m.before.recall5)} → ${formatMetric(m.after.recall5)}`
+  const over = measured.filter(([, m]) => m.after.recall5 >= RECALL_EXPECTED)
   return (
-    ` Recall@5 отбор при этом опустил: ${list}. Ожидание дня было обратным — поднять Recall@5` +
-    ` примерно до ${formatMetric(RECALL_EXPECTED)}, — и мера его не подтвердила.`
+    ` Recall@5 отбор при этом опустил: ${fell.map(pair).join(', ')}. Ожидание дня было о` +
+    ` направлении: отбор поднимает Recall@5 — примерно с ${formatMetric(RECALL_BASE)} без` +
+    ` него до ${formatMetric(RECALL_EXPECTED)} после. Направления мера не подтвердила.` +
+    (over.length === 0
+      ? ''
+      : ` Самого уровня ${formatMetric(RECALL_EXPECTED)} выдача после отбора достигает` +
+        ` (${over.map(([word, m]) => `«${word}» ${formatMetric(m.after.recall5)}`).join(', ')}),` +
+        ' но взят он не отбором: до отбора там стояло больше.')
   )
 }
 

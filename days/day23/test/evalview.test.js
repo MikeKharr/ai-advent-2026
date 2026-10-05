@@ -16,6 +16,8 @@ import {
   METRICS,
   NOTABLE,
   parseEval,
+  RECALL_BASE,
+  RECALL_EXPECTED,
   recallText,
   verdict,
 } from '../public/evalview.js'
@@ -148,7 +150,34 @@ test('падение Recall@5 названо числами, а не остав�
   assert.match(both.lead, /поднял MRR@10/)
   assert.match(both.text, /«с отбором» 0,600 → 0,500/)
   assert.match(both.text, /«с переписыванием» 0,700 → 0,600/)
+  // НЕ ПОДТВЕРДИЛОСЬ НАПРАВЛЕНИЕ, А НЕ УРОВЕНЬ: ожидание было «отбор поднимает
+  // Recall@5 с ≈0,48 до ≈0,58», и названы обязаны быть ОБА числа — без базы
+  // 0,580 читается как уровень, которого надо достичь (находка design-review
+  // к PR #327).
+  assert.match(both.text, /о направлении/)
+  assert.match(both.text, /0,480/, 'база ожидания не названа числом')
   assert.match(both.text, /0,580/, 'ожидание дня не названо числом')
+  assert.match(both.text, /Направления мера не подтвердила/)
+
+  // Уровень не взят ни одним режимом — про уровень строка молчит вовсе, а не
+  // объявляет его недостигнутым: предмет ожидания был не в нём.
+  const low = recallText(
+    parseEval(report({ modes: { rerank: mode([0.5, 0.3], [0.4, 0.36]), rewrite: null } })),
+  )
+  assert.match(low, /Направления мера не подтвердила/)
+  assert.ok(!low.includes('уровня'), low)
+
+  // Уровень взят, а направление — нет: ровно случай этого дня у «с
+  // переписыванием» (0,683 → 0,633 при ожидании 0,58). Строка обязана сказать
+  // и то и другое, и сказать, чем уровень взят.
+  const over = recallText(
+    parseEval(report({ modes: { rerank: mode([0.7, 0.3], [0.63, 0.36]), rewrite: null } })),
+  )
+  assert.match(over, /Направления мера не подтвердила/)
+  assert.match(over, /Самого уровня 0,580 выдача после отбора достигает/)
+  assert.match(over, /«с отбором» 0,630/)
+  assert.match(over, /не отбором/)
+  assert.ok(RECALL_BASE < RECALL_EXPECTED, 'ожидание дня перестало быть ростом')
 
   // Не опустил — строки нет вовсе: выдумывать падение страница не вправе.
   assert.equal(recallText(parseEval(report())), '')

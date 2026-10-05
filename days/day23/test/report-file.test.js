@@ -17,7 +17,15 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { formatMetric, hasRun, limitsText, parseEval, verdict } from '../public/evalview.js'
+import {
+  EVAL_MODES,
+  formatMetric,
+  hasRun,
+  limitsText,
+  parseEval,
+  RECALL_EXPECTED,
+  verdict,
+} from '../public/evalview.js'
 import { checkReport, MODES, PICK_COUNT, pendingRuns, selectQuestions } from '../eval/score.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -123,7 +131,7 @@ test('упавшую метрику вывод на экране называе�
   // упали, тест не знает заранее: он считает это по файлу.
   const parsed = parseEval(report)
   const said = verdict(parsed)
-  for (const mode of MODES) {
+  for (const [mode, label] of EVAL_MODES) {
     const m = parsed.modes[mode]
     if (m === null || m.after.recall5 === null || m.after.recall5 >= m.before.recall5) continue
     const numbers = `${formatMetric(m.before.recall5)} → ${formatMetric(m.after.recall5)}`
@@ -131,6 +139,17 @@ test('упавшую метрику вывод на экране называе�
       said.text.includes(numbers),
       `${mode}: Recall@5 упал (${numbers}), а вывод на экране об этом молчит: ${said.text}`,
     )
+    // Не подтвердилось НАПРАВЛЕНИЕ, а не уровень: у этого файла «после» у
+    // режима с переписыванием (0,633) выше ожидания 0,58, и фраза, сказавшая
+    // «уровня не достигли», противоречила бы соседним числам на том же экране
+    // (находка design-review к PR #327).
+    assert.match(said.text, /о направлении/)
+    assert.match(said.text, /Направления мера не подтвердила/)
+    if (m.after.recall5 >= RECALL_EXPECTED)
+      assert.ok(
+        said.text.includes(`«${label}» ${formatMetric(m.after.recall5)}`),
+        `${mode}: уровень ожидания взят (${formatMetric(m.after.recall5)}), а вывод этого не говорит: ${said.text}`,
+      )
   }
 })
 
