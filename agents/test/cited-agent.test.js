@@ -456,10 +456,75 @@ test('смешанные цитаты: одна дословная, одна в�
   assert.equal(result.checks.quotes_verbatim, false)
 })
 
-test('цитата во весь фрагмент сверку не проходит: подстрока, равная строке, ничего не доказывает', () => {
-  const long = 'а'.repeat(400)
+// Потолок цитаты после решения владельца 2026-10-05 (ADR 2026-10-05-1013):
+// длинная цитата не отвергается — сверяются её первые 300 знаков. Предмет
+// этих тестов — обе ветви развилки по исходу сверки: подтвердилась — наружу
+// уходит обрезанный текст (иначе страница показала бы непроверенный хвост с
+// пометкой «найдена дословно»); не подтвердилась — наружу уходит текст
+// модели целиком, иначе пояснение страницы «показана такой, какой её привела
+// модель» становится ложью (находка `compliance`, PR #321).
+test('дословная цитата длиннее 300 знаков подтверждается, но обрезанной до 300', () => {
+  const fragment = `Во фрагменте 1 сказано: ${'слово '.repeat(100)}конец.`
+  const quote = fragment.slice(0, 388)
+  assert.equal(quote.length, 388, 'цитата должна быть длиннее потолка')
+
+  const checked = verifyQuotes([{ n: 1, text: quote }], [{ n: 1, text: fragment }])
+  assert.equal(checked[0].verified, true, 'дословная цитата отвергнута только за длину')
+  assert.equal(checked[0].truncated, true)
+  // Наружу уходит обрезанный текст, а не присланный моделью: пометка
+  // «найдена дословно» относится ровно к тому, что показано.
+  assert.equal(checked[0].text, quote.slice(0, 300))
+  assert.equal(checked[0].text.length, 300)
+})
+
+test('цитата во весь фрагмент целиком наружу не выходит: сверяются и показываются первые 300 знаков', () => {
+  const long = `Во фрагменте 1 сказано: ${'слово '.repeat(100)}конец.`
+  assert.ok(long.length > 300)
   const checked = verifyQuotes([{ n: 1, text: long }], [{ n: 1, text: long }])
+  // Прежнее поведение — `verified: false`. Защита, ради которой стоял
+  // потолок («подстрока, равная строке, не доказывает ничего»), держится
+  // теперь не отказом, а формой: фрагментом во весь экран цитата быть не
+  // может — ни на сверке, ни на странице.
+  assert.notEqual(checked[0].text, long)
+  assert.equal(checked[0].text.length, 300)
+  assert.equal(checked[0].truncated, true)
+})
+
+test('НЕподтверждённая длинная цитата показывается целиком и обрезанной не помечается', () => {
+  // Выдуманная цитата длиннее потолка: первые 300 знаков во фрагменте не
+  // находятся. Показать её обрезанной значило бы соврать пояснением
+  // `UNVERIFIED_NOTE` страницы дня 24 — 400 знаков выдумки под подписью
+  // «показана такой, какой её привела модель» были бы показаны как 300.
+  const fragment = `Во фрагменте 1 сказано: ${'слово '.repeat(100)}конец.`
+  const quote = `Этого во фрагменте нет: ${'выдумка '.repeat(50)}`
+  assert.ok(quote.length > 300, 'цитата должна быть длиннее потолка')
+
+  const checked = verifyQuotes([{ n: 1, text: quote }], [{ n: 1, text: fragment }])
   assert.equal(checked[0].verified, false)
+  assert.equal(checked[0].truncated, false)
+  assert.equal(checked[0].text, quote, 'текст модели ушёл наружу не целиком')
+  assert.equal(checked[0].text.length, quote.length)
+})
+
+test('цитата ровно в потолок не обрезается и обрезанной не помечается', () => {
+  const fragment = `Во фрагменте 1 сказано: ${'слово '.repeat(100)}конец.`
+  const quote = fragment.slice(0, 300)
+  const checked = verifyQuotes([{ n: 1, text: quote }], [{ n: 1, text: fragment }])
+  assert.equal(checked[0].verified, true)
+  assert.equal(checked[0].truncated, false)
+  assert.equal(checked[0].text, quote)
+})
+
+test('обрезка считает знаки, а не единицы UTF-16: цитата с эмодзи не рвётся пополам', () => {
+  // 299 букв плюс эмодзи из двух единиц UTF-16: 300-й знак — целый эмодзи.
+  // Обрезка по `slice` оставила бы половину пары, и дословная цитата
+  // перестала бы находиться во фрагменте.
+  const quote = `${'я'.repeat(299)}🙂`
+  const fragment = `${quote} и дальше текст фрагмента.`
+  const checked = verifyQuotes([{ n: 1, text: `${quote} и дальше` }], [{ n: 1, text: fragment }])
+  assert.equal(checked[0].verified, true)
+  assert.equal(checked[0].text, quote)
+  assert.equal(checked[0].truncated, true)
 })
 
 test('неизвестный pipeline — отказ сборки, а не тихий откат к режимам дня 22', () => {
