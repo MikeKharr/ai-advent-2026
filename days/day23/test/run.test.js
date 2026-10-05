@@ -28,9 +28,14 @@ import {
   COST_PARTIAL,
   COST_UNKNOWN_FILTER,
   costNote,
-  fragmentsReported,
   fromWord,
   PICK_RULE,
+  PICK_SELECTED,
+  PICK_SELECTING,
+  planningReport,
+  progress,
+  SRCS_FOUND,
+  SRCS_KEPT,
   rewriteGainNote,
   rewriteSearchNote,
   relevanceWord,
@@ -768,20 +773,66 @@ test('пустой ответ при состоявшемся вызове — �
 
 // ——— число дошедших фрагментов при трёх стадиях `planning` ———
 
-test('событие, которое про выдачу не говорит, прежнее число НЕ затирает', () => {
-  // Выдача поиска — число есть.
-  assert.equal(fragmentsReported({ data: { sources: [1, 2, 3] } }), 3)
-  // Итог отбора — тоже число дошедших, но уже после отбора.
-  assert.equal(fragmentsReported({ data: { kept: 2, candidates: [1, 2, 3] } }), 2)
-  // Итог переписывания про выдачу поиска не говорит ничего: `undefined`, то
-  // есть «оставить как было». Это и есть различитель с `null`.
-  assert.equal(fragmentsReported({ data: { rewritten: 'запрос', found: 7 } }), undefined)
-  assert.equal(fragmentsReported({ data: { rewritten: null } }), undefined)
-  assert.equal(fragmentsReported({ data: {} }), undefined)
-  assert.equal(fragmentsReported({}), undefined)
-  assert.equal(fragmentsReported(null), undefined)
-  // Поле есть, но не массив — событие про выдачу, а числа в нём нет.
-  assert.equal(fragmentsReported({ data: { sources: 'пять' } }), undefined)
+test('ДВА СМЫСЛА событий `planning` не сливаются в одно число', () => {
+  assert.deepEqual(planningReport({ data: { sources: [1, 2, 3] } }), { kind: 'found', found: 3 })
+  assert.deepEqual(planningReport({ data: { kept: 3, candidates: [1, 2, 3, 4, 5] } }), {
+    kind: 'kept',
+    kept: 3,
+    candidates: 5,
+  })
+  // Числа кандидатов не пришло — его нет, а не ноль (I-8).
+  assert.deepEqual(planningReport({ data: { kept: 0 } }), { kind: 'kept', kept: 0, candidates: null })
+  // Событие не про числа выдачи — `null`, то есть «оставить как было».
+  assert.equal(planningReport({ data: { rewritten: 'запрос', found: 7 } }), null)
+  assert.equal(planningReport({ data: { rewritten: null } }), null)
+  assert.equal(planningReport({ data: {} }), null)
+  assert.equal(planningReport({}), null)
+  assert.equal(planningReport(null), null)
+  assert.equal(planningReport({ data: { sources: 'пять' } }), null)
+})
+
+test('ЧИСЛО ОТБОРА НЕ НАЗЫВАЕТСЯ ЧИСЛОМ ПОИСКА', () => {
+  const found = progress({ data: { sources: Array.from({ length: 10 }) } }, 'rerank')
+  assert.match(found.srcs, /Поиск вернул 10/)
+  const kept = progress({ data: { kept: 3, candidates: Array.from({ length: 10 }) } }, 'rerank')
+  // Прежняя редакция печатала здесь «Поиск вернул 3 фрагмента»: поиск вернул
+  // десять, три оставил отбор, и строка висела весь вызов ответа.
+  assert.ok(!/Поиск вернул/.test(kept.srcs), kept.srcs)
+  assert.match(kept.srcs, /Отбор оставил 3 из 10/)
+  assert.match(kept.pick, /Отбор кончился: оставлено 3 из 10/)
+})
+
+test('после поиска в режимах с отбором модель ещё не спрашивают', () => {
+  const withFilter = progress({ data: { sources: Array.from({ length: 10 }) } }, 'rerank')
+  assert.ok(!/Спрашиваю модель/.test(withFilter.status), withFilter.status)
+  assert.match(withFilter.status, /Отбираю/)
+  assert.equal(withFilter.pick, PICK_SELECTING)
+  const plain = progress({ data: { sources: [1, 2, 3, 4, 5] } }, 'rag')
+  assert.match(plain.status, /Фрагментов: 5\. Спрашиваю модель…/)
+  assert.equal(plain.pick, null, 'режиму без отбора обещан отбор')
+})
+
+test('ПРИ ПУСТОМ ОТБОРЕ строка состояния не обещает вызова модели', () => {
+  const none = progress({ data: { kept: 0, candidates: Array.from({ length: 10 }) } }, 'rerank')
+  assert.ok(!/Спрашиваю модель/.test(none.status), none.status)
+  assert.match(none.status, /Модель ответа не вызываю/)
+  assert.match(none.srcs, /Отбор не оставил ни одного фрагмента из 10/)
+  assert.ok(!/Поиск вернул/.test(none.srcs), none.srcs)
+  const some = progress({ data: { kept: 2, candidates: Array.from({ length: 10 }) } }, 'rerank')
+  assert.match(some.status, /Фрагментов: 2\. Спрашиваю модель…/)
+})
+
+test('событие, не меняющее числа выдачи, экран не переписывает', () => {
+  assert.equal(progress({ data: { rewritten: 'запрос', found: 7 } }, 'rewrite'), null)
+  assert.equal(progress({ data: {} }, 'rerank'), null)
+})
+
+test('тексты секций различны для поиска и для отбора', () => {
+  assert.notEqual(SRCS_FOUND(3), SRCS_KEPT(3, 10))
+  assert.notEqual(PICK_SELECTING, PICK_SELECTED(3, 10))
+  // Числа кандидатов не пришло — его в словах нет, а не «из null».
+  assert.ok(!/null/.test(SRCS_KEPT(3, null)), SRCS_KEPT(3, null))
+  assert.ok(!/null/.test(PICK_SELECTED(3, null)), PICK_SELECTED(3, null))
 })
 
 test('ОБРЫВ ПОСЛЕ ОТБОРА не превращается в «поиск ничего не вернул»', () => {
@@ -796,15 +847,15 @@ test('ОБРЫВ ПОСЛЕ ОТБОРА не превращается в «по
     { stage: 'llm_call', at: at(2), data: { purpose: 'rerank' } },
     { stage: 'planning', at: at(3), data: { kept: 3, candidates: Array.from({ length: 10 }) } },
   ]
-  // Страница ведёт число тем же правилом, что обработчик: сохраняем последнее
-  // не-`undefined`.
+  // Страница ведёт число тем же правилом, что обработчик: для правила обрыва
+  // важно только то, доложился ли ПОИСК.
   let fragmentsFound = null
   for (const e of stream) {
     if (e.stage !== 'planning') continue
-    const reported = fragmentsReported(e)
-    if (reported !== undefined) fragmentsFound = reported
+    const report = planningReport(e)
+    if (report !== null && report.kind === 'found') fragmentsFound = report.found
   }
-  assert.equal(fragmentsFound, 3, 'число дошедших фрагментов затёрто итогом отбора')
+  assert.equal(fragmentsFound, 10, 'число выдачи поиска затёрто итогом отбора')
   assert.equal(
     tornSrcsNote('rerank', fragmentsFound),
     SRCS_TORN_AFTER,

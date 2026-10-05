@@ -54,11 +54,11 @@ import {
   relevanceWord,
   REWRITE_NOTE,
   REWRITTEN_NONE,
-  fragmentsReported,
   fromWord,
   isUnknownFilter,
   PICK_RULE,
-  plural,
+  planningReport,
+  progress,
   rewriteGainNote,
   rewriteSearchNote,
   SELECT_NONE,
@@ -141,13 +141,9 @@ showModeHint()
 
 const SRCS_NEVER = 'Вопроса ещё не было: искать было нечего.'
 const SRCS_SEARCHING = 'Ищу фрагменты…'
-/** Поиск доложился, фрагменты ещё не пришли результатом запуска. */
-const SRCS_FOUND = (n) => `Поиск вернул ${n} ${plural(n, 'фрагмент', 'фрагмента', 'фрагментов')}. Жду конца запуска, чтобы показать их с текстом.`
 /** Пустое состояние секции «Отбор» до запуска. */
 const PICK_NEVER = 'Вопроса ещё не было: отбирать было нечего.'
 const PICK_RUNNING = 'Кандидаты появятся здесь, когда поиск вернёт выдачу.'
-/** Поиск вернул выдачу, отбор идёт. */
-const PICK_SELECTING = 'Поиск вернул выдачу; идёт отбор. Оценки появятся, когда он кончится.'
 /** Поток оборвался раньше, чем пришёл результат: кандидатов не будет. */
 const PICK_TORN = 'Кандидаты не дошли: поток событий оборвался раньше результата.'
 const PICK_FAILED = 'Отбора не было — что именно случилось, сказано выше в ответе.'
@@ -561,20 +557,20 @@ function onEvent(raw) {
     showSrcsPlaceholder(SRCS_SEARCHING)
   }
   if (event.stage === 'planning') {
-    // Стадий `planning` в дне 23 до трёх, и у двух из них поля `sources` нет.
-    // Что считать числом дошедших фрагментов, решает `fragmentsReported`:
-    // `undefined` значит «событие про выдачу не говорит», и прежнее число
-    // ОСТАЁТСЯ прежним. Безусловное присваивание обнуляло его, и при обрыве
-    // потока секция источников врала (блокирующая `reviewer` к PR #313).
-    const reported = fragmentsReported(event)
-    if (reported !== undefined) {
-      fragmentsFound = reported
-      setStatus(STATUS.asking(reported))
-      // Поиск уже доложился — секции перестают обещать идущий поиск. Иначе
-      // «Ищу фрагменты…» висит всё время отбора и ответа рядом со строкой
-      // «Фрагментов: 10» (замер `design-review` к PR #313).
-      showSrcsPlaceholder(SRCS_FOUND(reported))
-      if (runMode !== 'rag') showPickPlaceholder(PICK_SELECTING)
+    // Стадий `planning` в дне 23 до трёх, и говорят они о РАЗНОМ. Что при этом
+    // показывать — решает `progress`, и решает она одна: три текста, стоявшие
+    // здесь, держателя не имели и врали дважды (блокирующая `reviewer`,
+    // второй круг). `null` значит «это событие числа выдачи не меняет», и
+    // прежнее состояние остаётся прежним — на этом стоит правило обрыва.
+    const report = planningReport(event)
+    if (report !== null) {
+      // Для правила обрыва важно ТОЛЬКО то, доложился ли поиск: число отбора
+      // этого не говорит и сюда не попадает.
+      if (report.kind === 'found') fragmentsFound = report.found
+      const shown = progress(event, runMode)
+      setStatus(shown.status)
+      showSrcsPlaceholder(shown.srcs)
+      if (shown.pick !== null) showPickPlaceholder(shown.pick)
     }
   }
   redrawSteps()
