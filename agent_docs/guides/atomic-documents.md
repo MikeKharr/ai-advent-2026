@@ -23,7 +23,7 @@
 - `agent_docs/glossary.md`
 - `agent_docs/invariants.md`
 - `agent_docs/snapshot.md`
-- `agent_docs/backlog.md`
+- `agent_docs/backlog.md`, `agent_docs/backlog/*.md`
 - `agent_docs/guides/*.md`
 
 Такие документы остаются canonical state: их читают как актуальное состояние, а не как журнал событий.

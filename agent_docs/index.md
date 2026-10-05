@@ -6,7 +6,7 @@
 
 - `agent_docs/snapshot.md` — где сейчас работа. Первый файл, а не история.
 - `agent_docs/invariants.md` — жёсткие ограничения, нарушение = баг.
-- `agent_docs/backlog.md` — очередь задач: Next / Soon / Later / Won't do.
+- `agent_docs/backlog.md` — оглавление очереди задач и раздел Won't do; сами пункты — в `agent_docs/backlog/` (`days.md`, `infra.md`, `rag.md`, `process.md`), в каждом свои Next / Soon / Later.
 
 ## Контекст
 

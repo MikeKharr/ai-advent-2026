@@ -18,7 +18,7 @@
 
 - [ ] agent_docs/architecture.md (если применимо)
 - [ ] agent_docs/snapshot.md
-- [ ] agent_docs/backlog.md / backlog-closed.md
+- [ ] agent_docs/backlog/*.md / backlog-closed.md
 - [ ] agent_docs/adr/YYYY-MM-DD-HHMM-title.md (если принято важное решение)
 - [ ] Тесты (если применимо)
 - [ ] Документация
