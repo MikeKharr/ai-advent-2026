@@ -46,11 +46,26 @@ import {
 import { McpError } from './mcp/client.js'
 import { payloadOf, rpcEvent } from './mcp/pipeline.js'
 import { pickServers } from './mcp/servers.js'
+import {
+  RERANK_MODES,
+  retrieve,
+  RetrieveFailure,
+  SNIPPET_CHARS,
+  WIDE_LIMIT,
+} from './rag/retrieve.js'
 import { TERMINAL } from './runs.js'
 import { explainRouterError, paidNothing, seconds } from './shared.js'
 
 /** Идентификатор записи реестра: по нему сервис находит агента дня 22. */
 export const RAG_AGENT_ID = 'rag-agent'
+
+/**
+ * Запись реестра дня 23 — та же машина с опцией `pipeline` (ADR
+ * 2026-10-05-0544, п. 0.2), как дни 13–15 на одной машине этапов. Отдельного
+ * модуля у неё нет намеренно: отличие — второй этап отбора, и он вынесен в
+ * `rag/retrieve.js`, а не скопирован вместе с конвейером.
+ */
+export const RERANK_AGENT_ID = 'rerank-agent'
 
 /** Имя сервера MCP, к которому идёт поиск. Один, и он назван в `servers` записи. */
 export const RAG_SERVER = 'rag'
@@ -120,7 +135,10 @@ function fragmentLines(results) {
     ]
       .filter((part) => part !== '')
       .join(' · ')
-    const head = `[${at + 1}] ${parts}`
+    // Номер — тот, что присвоил отбор (`rag/retrieve.js`), а при его
+    // отсутствии (день 22) порядковый: нумерация одна на промпт, ответ
+    // модели и список источников страницы.
+    const head = `[${item.n ?? at + 1}] ${parts}`
     // Текст — как отдал сервер: он уже режет до 2000 знаков (`MAX_TEXT`).
     // Обезвреживается только закрывающая метка блока: без этого фрагмент
     // корпуса, в котором она встретится, вывел бы остаток текста из области
@@ -189,7 +207,7 @@ export function rpcErrorMessage(trace) {
 }
 
 /** Разбор выдачи `project.search`: что из ответа инструмента идёт в промпт. */
-export function parseSearch(out) {
+export function parseSearch(out, limit = SEARCH_LIMIT) {
   const payload = payloadOf(out)
   const raw = Array.isArray(payload.results) ? payload.results : []
   const results = raw
@@ -200,7 +218,7 @@ export function parseSearch(out) {
     // проверки `limit` там уехала бы сюда входом модели вдвое дороже
     // расчётного и шестой строкой источников на странице (находка
     // `reviewer` к PR #302).
-    .slice(0, SEARCH_LIMIT)
+    .slice(0, limit)
     .map((item) => ({
       source: typeof item.source === 'string' ? item.source : '',
       section: typeof item.section === 'string' ? item.section : '',
@@ -231,6 +249,40 @@ export function parseSearch(out) {
   }
 }
 
+/**
+ * Поля ответа запуска, которых нет у дня 22: переписанный вопрос и все
+ * кандидаты ДО отбора с оценками реранкера. Это и есть то, ради чего день
+ * 23 существует — страница показывает «до» и «после» рядом.
+ *
+ * Текста кандидата здесь нет целиком, есть `snippet` — ровно тот срез,
+ * который видел реранкер. Причина числом: десять текстов по 2 000 знаков
+ * добавили бы к ответу запуска ~20 КБ сверх тех ~45 КБ, что он уже несёт
+ * (шапка файла), а тексты оставшихся и так едут в `sources`.
+ */
+function pipelineFields(selection) {
+  return {
+    rewritten: selection.rewritten,
+    candidates: selection.candidates.map((item) => ({
+      n: item.n,
+      source: item.source,
+      section: item.section,
+      score: item.score,
+      relevance: item.relevance,
+      kept: item.kept,
+      from: item.from,
+      snippet: item.text.slice(0, SNIPPET_CHARS),
+    })),
+  }
+}
+
+/** Заголовок первого события по режиму: он и называет посетителю, что сравнивают. */
+const RECEIVED_TITLE = {
+  rag: 'Получил вопрос: режим с RAG',
+  norag: 'Получил вопрос: режим без RAG',
+  rerank: 'Получил вопрос: поиск с реранкером',
+  rewrite: 'Получил вопрос: переписывание и реранкер',
+}
+
 export function createRagAgent({
   agent,
   servers,
@@ -239,6 +291,10 @@ export function createRagAgent({
   fetchImpl = fetch,
   now = Date.now,
   log = () => {},
+  // Опция дня 23: второй этап отбора (`rag/retrieve.js`) и его три режима
+  // вместо двух. Без неё машина — ровно день 22, и ни одна строка его пути
+  // ниже не исполняется иначе.
+  pipeline = false,
 }) {
   // `servers` — полный реестр хоста; агенту достаётся его список
   // (ADR 2026-09-29-0236, п. 6). Сужение здесь, а не в сборке процесса:
@@ -251,6 +307,7 @@ export function createRagAgent({
   // в JS разъехалась бы молча. Опечатка видна отказом инструмента
   // («strategy — одно из: …») — то есть отказом поиска до вызова модели.
   const strategy = env.RAG_STRATEGY
+  const modes = pipeline ? RERANK_MODES : MODES
 
   return {
     id: agent.id,
@@ -277,7 +334,7 @@ export function createRagAgent({
         tools: [...agent.tools],
         servers: [...(agent.servers ?? [])],
         defaults: { ...agent.defaults },
-        modes: [...MODES],
+        modes: [...modes],
       }
     },
 
@@ -293,8 +350,8 @@ export function createRagAgent({
       // режимов, и запуск, в котором режим не назван, означал бы, что
       // сравнение идёт неизвестно с чем.
       const mode = body.mode
-      if (!MODES.includes(mode))
-        return { ok: false, message: `Поле mode должно быть одним из: ${MODES.join(', ')}` }
+      if (!modes.includes(mode))
+        return { ok: false, message: `Поле mode должно быть одним из: ${modes.join(', ')}` }
       return {
         ok: true,
         input: {
@@ -332,26 +389,30 @@ export function createRagAgent({
       try {
         emit({
           stage: 'received',
-          title: mode === 'rag' ? 'Получил вопрос: режим с RAG' : 'Получил вопрос: режим без RAG',
+          title: RECEIVED_TITLE[mode] ?? 'Получил вопрос',
           detail: `модель ${params.model}, ответ до ${params.maxTokens}`,
           data: {
             mode,
             model: params.model,
             maxTokens: params.maxTokens,
             questionChars: question.length,
-            ...(mode === 'rag' ? { strategy, limit: SEARCH_LIMIT } : {}),
+            ...(mode === 'norag' ? {} : { strategy, limit: mode === 'rag' ? SEARCH_LIMIT : WIDE_LIMIT }),
           },
         })
 
         // --- Шаг 1: поиск. Он СТОИТ ДО вызова модели, и это читается сверху
         // вниз (I-4, граничное правило роли backend). Любой его отказ —
-        // `return fail(...)` здесь же, то есть выход из функции до единого
+        // исключение `RetrieveFailure`, которое ниже, в единственном
+        // `catch`, становится `fail(...)`: выход из функции до единого
         // обращения к роутеру.
-        let found = null
-        if (mode === 'rag') {
+        //
+        // Замыкание ОДНО на все режимы и на оба поиска режима `rewrite`.
+        // Второй держатель этих отказов разъехался бы с первым — и отказ
+        // службы на переписанном запросе доходил бы до модели.
+        const searchOnce = async (query, limit, { allowEmpty = false } = {}) => {
           const server = agentServers.get(RAG_SERVER)
           if (!server)
-            return fail({
+            throw new RetrieveFailure({
               code: 'search_unavailable',
               title: 'Поиск недоступен',
               message:
@@ -361,11 +422,7 @@ export function createRagAgent({
           const searchStarted = now()
           let out
           try {
-            out = await server.client.callTool(SEARCH_TOOL, {
-              query: question,
-              limit: SEARCH_LIMIT,
-              strategy,
-            })
+            out = await server.client.callTool(SEARCH_TOOL, { query, limit, strategy })
           } catch (error) {
             if (error instanceof McpError && error.trace)
               emit(rpcEvent(error.trace, 'Поиск не выполнен', 'error'))
@@ -386,13 +443,13 @@ export function createRagAgent({
             // редакция этого комментария считала «по 30 знаков» и давала
             // неверный порядок запаса).
             if (words !== null)
-              return fail({
+              throw new RetrieveFailure({
                 code: 'search_refused',
                 title: 'Поиск отказал',
                 message: `${words} Модель не вызывалась.`,
                 data: { status: 429, reason: error.reason ?? 'http' },
               })
-            return fail({
+            throw new RetrieveFailure({
               code: 'search_failed',
               title: 'Поиск не ответил',
               message: `${error.message} Модель не вызывалась.`,
@@ -408,24 +465,27 @@ export function createRagAgent({
           // `reviewer` к PR #302). Для запуска исход всё равно один: искать
           // не по чему, значит и спрашивать не о чем.
           if (out.isError)
-            return fail({
+            throw new RetrieveFailure({
               code: 'search_refused',
               title: 'Поиск отказал',
               message: `${out.text || 'поиск отказал без объяснения'}. Модель не вызывалась.`,
             })
 
-          found = parseSearch(out)
+          const got = parseSearch(out, limit)
           // Запись трейса — тела запроса и ответа, имя сервера, метод,
           // статус и миллисекунды. Ровно то же, что уходит событием стадии
           // `rpc` выше; в результате запуска оно живёт для свёрнутого блока
           // страницы, который переживёт поток событий.
-          found.rpc = out.trace
+          got.rpc = out.trace
           // Стратегия в ответе инструмента есть всегда (`rag/tools.py`), но
           // показывает её страница, а не сервер: если поле вдруг не придёт,
           // пусть будет названа та, которую просили, а не пустое место.
-          if (found.index.strategy === null) found.index.strategy = strategy
-          if (found.results.length === 0)
-            return fail({
+          if (got.index.strategy === null) got.index.strategy = strategy
+          // Пустая выдача ПЕРВОГО поиска — отказ запуска: отвечать не по
+          // чему. У второго поиска режима `rewrite` (`allowEmpty`) пустота
+          // законна: кандидаты уже есть от исходного вопроса.
+          if (got.results.length === 0 && !allowEmpty)
+            throw new RetrieveFailure({
               code: 'search_empty',
               title: 'Поиск не нашёл фрагментов',
               message: 'Поиск вернул пустую выдачу — отвечать не по чему. Модель не вызывалась.',
@@ -440,16 +500,18 @@ export function createRagAgent({
           // новых полей от сервера ей для этого не нужно.
           emit({
             stage: 'planning',
-            title: `Нашёл ${found.results.length} фрагментов`,
+            title: `Нашёл ${got.results.length} фрагментов`,
             detail:
-              `индекс ${found.index.commit ?? 'неизвестного коммита'}, стратегия ` +
-              `${found.index.strategy ?? strategy}, ${seconds(now() - searchStarted)}`,
+              `индекс ${got.index.commit ?? 'неизвестного коммита'}, стратегия ` +
+              `${got.index.strategy ?? strategy}, ${seconds(now() - searchStarted)}`,
             data: {
-              index: found.index,
+              index: got.index,
+              query,
+              limit,
               // В событии — без текстов фрагментов: тела поиска уже уехали
               // событием стадии `rpc`, а лента показывает «что нашлось»
               // строкой, не фрагментом.
-              sources: found.sources.map(({ n, source, section, score }) => ({
+              sources: got.sources.map(({ n, source, section, score }) => ({
                 n,
                 source,
                 section,
@@ -457,12 +519,146 @@ export function createRagAgent({
               })),
             },
           })
+          return got
         }
 
-        // --- Шаг 2: единственный вызов модели. Ниже поиска — не случайно.
-        const system = mode === 'rag' ? agent.systemPrompt : NORAG_SYSTEM
+        /**
+         * Вызовы модели ВТОРОГО ЭТАПА — переписывание и реранкер. Они живут
+         * здесь, а не в `retrieve.js`, по той же причине, что и поиск: про
+         * роутер, события и `params` знает агент.
+         *
+         * Потолок ответа у каждого свой и меньше потолка ответа запуска
+         * (`params.maxTokens`): реранкеру хватает десяти строк оценок.
+         */
+        const askStage = async ({
+          purpose,
+          system,
+          input,
+          taskClass,
+          answerTokens,
+          schema = null,
+        }) => {
+          const title = purpose === 'rewrite' ? 'Переписываю вопрос' : 'Оцениваю фрагменты реранкером'
+          const needed = estimateTokens(system) + estimateTokens(input)
+          const started = now()
+          emit({
+            stage: 'llm_call',
+            title,
+            detail: `${params.model}, ${needed} токенов входа, ответ до ${answerTokens}`,
+            data: {
+              purpose,
+              provider: params.model,
+              taskClass,
+              requestTokens: needed,
+              answerTokens,
+              schema: schema !== null,
+            },
+          })
+          let out
+          try {
+            out = await askLayered(
+              {
+                system,
+                taskClass,
+                input,
+                params: {
+                  model: params.model,
+                  maxTokens: answerTokens,
+                  temperature: params.temperature,
+                  stopSequences: [],
+                },
+                schema,
+              },
+              env,
+              { fetchImpl },
+            )
+          } catch (error) {
+            log(`запуск ${run.id}: ${purpose}: ${error.code ?? ''} ${error.message}`)
+            throw new RetrieveFailure({
+              code: error.code ?? (error.status === 429 ? 'rate_limited' : 'router_error'),
+              title: purpose === 'rewrite' ? 'Переписывание не удалось' : 'Реранкер не ответил',
+              message: explainRouterError(error),
+              paid: !paidNothing(error),
+              data: { purpose, status: error.status ?? null },
+            })
+          }
+          const ms = now() - started
+          emit({
+            stage: 'llm_result',
+            title: purpose === 'rewrite' ? 'Запрос переписан' : 'Оценки получены',
+            detail: `${out.provider?.model ?? params.model}, ${seconds(ms)}, ${out.usage.inputTokens ?? '?'} → ${out.usage.outputTokens ?? '?'} токенов`,
+            data: { purpose, provider: out.provider, usage: out.usage, truncated: out.truncated },
+            durationMs: ms,
+          })
+          return out
+        }
+
+        let found = null
+        let selection = null
+        if (mode !== 'norag') {
+          try {
+            // Режим `rag` — ровно день 22: один поиск на пять фрагментов и
+            // никакого отбора. Он и есть «до», с которым сравнивают.
+            if (mode === 'rag') found = await searchOnce(question, SEARCH_LIMIT)
+            else {
+              selection = await retrieve({
+                question,
+                mode,
+                search: searchOnce,
+                ask: askStage,
+                emit,
+              })
+              found = {
+                results: selection.kept,
+                sources: selection.kept,
+                index: selection.index,
+                rpc: selection.rpc,
+              }
+            }
+          } catch (error) {
+            if (error instanceof RetrieveFailure) return fail(error.fields)
+            throw error
+          }
+        }
+
+        // --- Исход «отбор не оставил ничего»: модель ответа НЕ вызывается.
+        // Запуск при этом УСПЕШЕН, а не провален: у него есть что показать
+        // (десять кандидатов с оценками) и что померить (Recall@5 «до»),
+        // а провал унёс бы `result` целиком. Отдельный исход назван полем
+        // `outcome`, и день 24 строит на нём «не знаю» (ADR, п. 2.3).
+        if (selection !== null && selection.kept.length === 0) {
+          const totalMs = now() - startedAt
+          return runs.finish(run.id, {
+            status: 'succeeded',
+            result: {
+              ...pipelineFields(selection),
+              mode,
+              outcome: 'unknown_filter',
+              answer: null,
+              refused: true,
+              sources: [],
+              index: selection.index,
+              rpc: selection.rpc,
+              tokens: selection.rerankTokens,
+              budgetLeftUsd: null,
+              truncated: false,
+              model: null,
+              durationMs: totalMs,
+            },
+            event: {
+              stage: 'done',
+              title: 'Ни один фрагмент к вопросу не относится',
+              detail: `модель ответа не вызывалась, весь запуск ${seconds(totalMs)}`,
+              durationMs: totalMs,
+            },
+          })
+        }
+
+        // --- Шаг 2: единственный вызов модели ОТВЕТА. Ниже поиска — не
+        // случайно.
+        const system = mode === 'norag' ? NORAG_SYSTEM : agent.systemPrompt
         const input =
-          mode === 'rag' ? buildRagInput(question, found.results) : buildNoRagInput(question)
+          mode === 'norag' ? buildNoRagInput(question) : buildRagInput(question, found.results)
         const needed = estimateTokens(system) + estimateTokens(input)
 
         const llmStarted = now()
@@ -522,7 +718,11 @@ export function createRagAgent({
         return runs.finish(run.id, {
           status: 'succeeded',
           result: {
+            // Поля второго этапа — первыми, чтобы `mode` и `answer` ниже
+            // нельзя было затереть случайным совпадением имени.
+            ...(selection === null ? {} : pipelineFields(selection)),
             mode,
+            ...(selection === null ? {} : { outcome: 'answered' }),
             answer: answer.text,
             // Признак отказа строгого промпта — поле, а не задача страницы.
             // В режиме без RAG фразы отказа в промпте нет вовсе, поэтому там

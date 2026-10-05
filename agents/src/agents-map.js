@@ -10,7 +10,7 @@ import { createLayeredAgent, LAYERED_AGENT_ID } from './layered.js'
 import { createMcpAgent, MCP_AGENT_ID } from './mcp/agent.js'
 import { createPipelineAgent, PIPELINE_AGENT_ID } from './mcp/pipeline-agent.js'
 import { STAGED15_MAX_TOKENS } from './params.js'
-import { createRagAgent, RAG_AGENT_ID } from './rag-agent.js'
+import { createRagAgent, RAG_AGENT_ID, RERANK_AGENT_ID } from './rag-agent.js'
 import {
   createStagedAgent,
   INVARIANT_AGENT_ID,
@@ -53,6 +53,10 @@ export function createAgents({
       continue
     } else if (entry.id === RAG_AGENT_ID)
       agent = createRagAgent({ agent: entry, servers, runs, env, log })
+    // День 23 — та же машина со вторым этапом отбора (ADR 2026-10-05-0544,
+    // п. 0.2): опция `pipeline` даёт ей три режима вместо двух.
+    else if (entry.id === RERANK_AGENT_ID)
+      agent = createRagAgent({ agent: entry, servers, runs, env, log, pipeline: true })
     else if (entry.id === MCP_AGENT_ID)
       agent = createMcpAgent({ agent: entry, servers, runs, sessions, env, log })
     else if (entry.id === LAYERED_AGENT_ID)

@@ -586,7 +586,7 @@ export function answerTimeoutMs(env, { maxTokens, inputTokens = 0 }) {
 }
 
 export async function askLayered(
-  { system, taskClass, input, params },
+  { system, taskClass, input, params, schema = null },
   env,
   { fetchImpl = fetch, signal = null } = {},
 ) {
@@ -597,6 +597,12 @@ export async function askLayered(
     system,
     input,
   }
+  // Схема ответа — требование возможности `json_schema` у провайдера
+  // (`router/src/router.js`): роутер кладёт её в запрос провайдера и
+  // возвращает РАЗОБРАННЫЙ объект полем `json`, а неразобравшийся ответ —
+  // отказом `invalid_json`/`truncated`. Поле необязательное: без него всё
+  // прежнее поведение (день 22 и дни 11–15) не меняется ни байтом.
+  if (schema !== null) body.schema = schema
   if (params.stopSequences.length > 0) body.stop = params.stopSequences
   // Несдвинутую температуру не отправляем вовсе — как в дне 6.
   if (params.temperature !== undefined && params.temperature !== 1)
@@ -922,6 +928,10 @@ async function postRoute(body, env, fetchImpl, signal = null, timeoutMs = null) 
 
   return {
     text: json.text ?? '',
+    // Разобранный объект ответа по схеме — его отдаёт роутер, вызывающий
+    // второй раз не разбирает. Без схемы роутер его не присылает, и поле
+    // остаётся `null`.
+    json: json.json ?? null,
     usage: {
       inputTokens: json.usage?.inputTokens ?? null,
       outputTokens: json.usage?.outputTokens ?? null,
