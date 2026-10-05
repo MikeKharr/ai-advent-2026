@@ -24,10 +24,12 @@ import {
   MODE_WORD,
   parseResult,
   plural,
+  fromWord,
+  PICK_RULE,
   relevanceWord,
   SELECT_NONE,
   selectionNote,
-  thresholdNote,
+  selectNone,
   repoUrl,
   shortSearchNote,
   sourceUrl,
@@ -441,16 +443,33 @@ test('строка над таблицей считает по пришедше�
   assert.equal(selectionNote(parseResult(result())), null, 'строка о кандидатах без кандидатов')
 })
 
-test('порог косинуса — число для сверки, и подпись говорит это прямо', () => {
-  const note = thresholdNote(0.55)
-  assert.match(note, /0,550/)
-  assert.match(note, /ничего не отсекает/)
-  assert.equal(thresholdNote(null), null, 'порог выдуман там, где его не прислали')
+test('числа порога на экране нет: агент его не отдаёт, и страница его не выдумывает', () => {
+  // ADR (п. 1.1) называл порог числом на экране, но в контракте запуска такого
+  // поля нет. Печатать литерал значило бы показать число, которого никто не
+  // считал, — и как раз про доверие к отбору.
+  assert.ok(!/\d/.test(PICK_RULE), `в подписи про отбор появилось число: ${PICK_RULE}`)
+  assert.match(PICK_RULE, /не близость/)
+})
+
+test('откуда пришёл кандидат — слово, а незнакомый код показывается как есть', () => {
+  assert.equal(fromWord('original'), 'исходный запрос')
+  assert.equal(fromWord('rewritten'), 'переписанный')
+  assert.equal(fromWord('both'), 'оба запроса')
+  assert.equal(fromWord(null), '')
+  assert.equal(fromWord('что-то'), 'что-то')
+})
+
+test('шаблон «не знаю» называет число найденных и говорит, что модель не звали', () => {
+  assert.match(selectNone(10), /ни один из 10 найденных фрагментов/)
+  assert.match(selectNone(1), /ни один из 1 найденного фрагмента/)
+  assert.match(selectNone(10), /Модель ответа не вызывалась/)
+  // Числа не было — фразы с числом нет, а не «ни один из 0».
+  assert.ok(!/\d/.test(selectNone(null)), selectNone(null))
 })
 
 test('пустой отбор — исход «не знаю», а не отказ и не промах', () => {
-  assert.match(SELECT_NONE, /не знаю/)
-  assert.match(SELECT_NONE, /исход поиска, а не сбой/)
+  assert.match(SELECT_NONE, /Не знаю/)
+  assert.match(SELECT_NONE, /исход\s+поиска, а не сбой/)
   // Ни одного слова про промах, выдумку или поломку: именно их смешение в
   // одном вердикте и есть долг дня 22, который день 23 закрывает.
   assert.ok(!/выдум|промах|ошиб|сломал/i.test(SELECT_NONE), SELECT_NONE)
@@ -468,4 +487,93 @@ test('режимов ровно три, и чужое значение режи�
   assert.deepEqual(Object.keys(MODE_WORD), ['rag', 'rerank', 'rewrite'])
   for (const m of ['norag', 'RAG', '', null, 7])
     assert.equal(parseResult(result({ mode: m })).mode, null, String(m))
+})
+
+test('номер фрагмента не перенумеровывается и не выдумывается', () => {
+  // Номера идут С ПРОПУСКАМИ: под ними фрагмент стоит в тексте ответа
+  // (контракт, «Нумерация»). Порядковое место в списке номером не является.
+  const parsed = parseResult(
+    result({
+      sources: [
+        { n: 2, source: 'a.md', section: '', score: 0.7, text: 'т' },
+        { n: 7, source: 'b.md', section: '', score: 0.6, text: 'т' },
+        { n: 3, source: 'c.md', section: '', score: 0.5, text: 'т' },
+      ],
+    }),
+  )
+  assert.deepEqual(
+    parsed.sources.map((s) => s.n),
+    [2, 7, 3],
+  )
+  // Номера не пришло — его нет, а не «первый по счёту».
+  assert.equal(parseResult(result({ sources: [{ source: 'a.md' }] })).sources[0].n, null)
+})
+
+test('исход читается полем, а не выводится из того, что источников нет', () => {
+  assert.equal(parseResult(result({ outcome: 'unknown_filter' })).outcome, 'unknown_filter')
+  assert.equal(parseResult(result({ outcome: 'answered' })).outcome, 'answered')
+  for (const raw of [undefined, null, 'что-то', 7])
+    assert.equal(parseResult(result({ outcome: raw })).outcome, null, String(raw))
+})
+
+// ——— лента: три вызова модели различаются только по `data.purpose` ———
+
+test('вызовы модели подписаны по назначению, а не одинаково', () => {
+  const rows = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rewrite', strategy: 'structural', limit: 10 } },
+    { stage: 'rpc', at: at(1), data: { request: '{}', response: '{}', status: 200 } },
+    { stage: 'planning', at: at(1), data: { sources: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rewrite' } },
+    { stage: 'llm_result', at: at(2), data: { purpose: 'rewrite', usage: { inputTokens: 100, outputTokens: 20 } } },
+    { stage: 'planning', at: at(3), data: { rewritten: 'инвариант I-4', found: 7 } },
+    { stage: 'llm_call', at: at(3), data: { purpose: 'rerank' } },
+    { stage: 'llm_result', at: at(4), data: { purpose: 'rerank', usage: { inputTokens: 900, outputTokens: 60 } } },
+    { stage: 'planning', at: at(4), data: { kept: 3, candidates: 10 } },
+    { stage: 'llm_call', at: at(5), data: {} },
+    { stage: 'llm_result', at: at(7), data: { usage: { inputTokens: 2000, outputTokens: 300 } } },
+  ]).map((r) => r.label)
+
+  assert.deepEqual(rows, [
+    'ПРИНЯТ ВОПРОС',
+    'ПОИСК ПО ПРОЕКТУ',
+    'ФРАГМЕНТЫ ПОЛУЧЕНЫ',
+    'ПЕРЕПИСЫВАНИЕ ВОПРОСА',
+    'ЗАПРОС ПЕРЕПИСАН',
+    'ПОИСК ПО ПЕРЕПИСАННОМУ',
+    'ОЦЕНКА КАНДИДАТОВ',
+    'КАНДИДАТЫ ОЦЕНЕНЫ',
+    'ОТБОР',
+    'СБОРКА ПРОМПТА',
+    'ВЫЗОВ МОДЕЛИ',
+    'ОТВЕТ МОДЕЛИ',
+  ])
+})
+
+test('«сборка промпта» рисуется один раз, а не перед каждым из трёх вызовов', () => {
+  const rows = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
+    { stage: 'planning', at: at(1), data: { sources: [1, 2] } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rerank' } },
+    { stage: 'llm_call', at: at(3), data: {} },
+    { stage: 'llm_call', at: at(4), data: {} },
+  ]).filter((r) => r.label === 'СБОРКА ПРОМПТА')
+  assert.equal(rows.length, 1, `записей сборки промпта ${rows.length}`)
+})
+
+test('итог отбора в ленте называет оба числа', () => {
+  const row = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
+    { stage: 'planning', at: at(1), data: { kept: 3, candidates: 10 } },
+  ]).at(-1)
+  assert.equal(row.label, 'ОТБОР')
+  assert.equal(row.meta, 'оставлено 3 из 10')
+})
+
+test('отказ реранкера по схеме — оплаченный, и страница про деньги не врёт', () => {
+  const f = failure({ code: 'rerank_invalid', message: 'ответ не по схеме', paidNothing: false })
+  assert.match(f.lead, /вызов модели при этом состоялся/)
+  assert.equal(f.words, 'ответ не по схеме')
+  // Отказы поиска — наоборот: они наступают ДО первого вызова модели.
+  for (const code of ['search_unavailable', 'search_failed', 'search_empty'])
+    assert.match(failure({ code, message: 'сломалось', paidNothing: true }).lead, /Поиск недоступен/)
 })

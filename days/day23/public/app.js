@@ -54,9 +54,12 @@ import {
   relevanceWord,
   REWRITE_NOTE,
   REWRITTEN_NONE,
+  fromWord,
+  PICK_RULE,
   SELECT_NONE,
   selectionNote,
-  thresholdNote,
+  selectNone,
+  snippetSummary,
   REFUSED_NOTE,
   repoUrl,
   RPC_ABSENT,
@@ -316,6 +319,19 @@ function showAnswer(result) {
   const parts = []
   const meta = answerMeta(result)
   if (meta) parts.push(node('p', 'entry-meta', meta))
+
+  // ИСХОД «НИ ОДИН ФРАГМЕНТ НЕ ОТНОСИТСЯ» — отдельная ветвь, и она обязана
+  // быть первой. При нём `answer` равен `null`, а `refused` — `true`, то есть
+  // обе ветви дня 22 сказали бы неправду: «Модель вернула пустой ответ. Вызов
+  // при этом состоялся» — вызова не было вовсе, а «фрагменты нашлись, ответа
+  // на вопрос в них не оказалось» — это сказал бы отвечавший, которого не
+  // спрашивали. Решил здесь реранкер, и сказано это его словами.
+  if (isUnknownFilter(result)) {
+    parts.push(node('p', 'answer', selectNone(result.candidates.length)))
+    answerBox.replaceChildren(...parts)
+    return
+  }
+
   // Пустой ответ при удачном запуске — не пустое место, а сказанная словами
   // пустота: строка меры остаётся, потому что токены потратились.
   if (isBlank(result.answer)) parts.push(node('p', 'empty', ANSWER_BLANK))
@@ -336,7 +352,11 @@ function showAnswer(result) {
 function renderSource(src, commit, id) {
   const li = node('li', 'src')
   const grid = node('div', 'src-grid')
-  grid.append(node('span', 'src-n', `[${src.n}]`))
+  // Номер — тот, что присвоил агент при объединении выдач, и он НЕ
+  // перенумеровывается: под ним фрагмент стоит в тексте ответа. У оставшихся
+  // после отбора номера идут с пропусками, и это верно. Поля нет — скобок
+  // нет: порядковое место в списке номером фрагмента не является (I-8).
+  grid.append(node('span', 'src-n', src.n === null ? '' : `[${src.n}]`))
 
   const path = node('span', 'src-path')
   const url = sourceUrl(src.source, commit)
@@ -381,7 +401,7 @@ function renderSource(src, commit, id) {
 function renderCandidate(cand, commit) {
   const li = node('li', `cand${cand.kept ? '' : ' is-out'}`)
   const grid = node('div', 'cand-grid')
-  grid.append(node('span', 'cand-n', `[${cand.n}]`))
+  grid.append(node('span', 'cand-n', cand.n === null ? '' : `[${cand.n}]`))
 
   const path = node('span', 'cand-path')
   const url = sourceUrl(cand.source, commit)
@@ -417,6 +437,29 @@ function renderCandidate(cand, commit) {
   )
   grid.append(cell('cand-kept', 'ИТОГ', keptWord(cand.kept)))
   li.append(grid)
+
+  // Откуда кандидат пришёл — в режиме `rewrite` это и есть ответ на вопрос
+  // «что дало переписывание». В режиме `rerank` поля нет, и строки нет.
+  const from = fromWord(cand.from)
+  if (from !== '') li.append(node('p', 'cand-from', `нашёл: ${from}`))
+
+  // Выдержка — РОВНО ТО, что видел реранкер (400 знаков). Полного текста у
+  // кандидата нет, и страница его не достраивает: показывать длиннее значило
+  // бы показать не то, по чему он решал.
+  const summaryText = snippetSummary(cand.snippet)
+  if (summaryText !== null) {
+    const fold = node('details', 'fold')
+    const summary = node('summary')
+    summary.append(node('span', undefined, summaryText))
+    const mark = node('span', 'mark')
+    mark.setAttribute('aria-hidden', 'true')
+    summary.append(mark)
+    fold.append(
+      summary,
+      node('p', `frag${cand.snippet === '' ? ' is-none' : ''}`, cand.snippet === '' ? FRAGMENT_EMPTY : cand.snippet),
+    )
+    li.append(fold)
+  }
   return li
 }
 
@@ -440,11 +483,23 @@ function showPick(result) {
   const notes = [selectionNote(result)].filter((t) => t !== null)
   // Пустой отбор — ИСХОД, и слова о нём стоят здесь, над таблицей, а не
   // только в секции источников: решение приняла эта секция, ей и отвечать.
-  if (result.sources.length === 0) notes.push(SELECT_NONE)
+  if (isUnknownFilter(result)) notes.push(selectNone(result.candidates.length))
   pickNote.replaceChildren(...notes.map((t) => node('p', 'empty', t)))
   const commit = result.index?.commit ?? null
   candsList.replaceChildren(...result.candidates.map((c) => renderCandidate(c, commit)))
-  thresholdBox.textContent = thresholdNote(result.threshold) ?? ''
+  thresholdBox.textContent = PICK_RULE
+}
+
+/**
+ * Исход «ни один фрагмент не относится». Берётся ПОЛЕМ `outcome` — модель
+ * ответа при нём не вызывалась, и утверждать это за агента по косвенным
+ * признакам страница не станет. Запасной вывод оставлен на случай ответа без
+ * поля: кандидаты есть, источников нет — другого смысла у такой пары нет.
+ */
+function isUnknownFilter(result) {
+  if (result.outcome === 'unknown_filter') return true
+  if (result.outcome === 'answered') return false
+  return result.candidates.length > 0 && result.sources.length === 0
 }
 
 function showSources(result) {
@@ -453,7 +508,9 @@ function showSources(result) {
   // «не знаю» читалось бы как сбой — тот самый долг, который закрывает день 23
   // (развилка Р8 ADR 2026-10-05-0544).
   if (result.sources.length === 0)
-    return showSrcsPlaceholder(result.candidates.length > 0 ? SELECT_NONE : SRCS_FAILED)
+    return showSrcsPlaceholder(
+      isUnknownFilter(result) ? selectNone(result.candidates.length) : SRCS_FAILED,
+    )
   indexMetaBox.textContent = indexMeta(result)
   const notes = [shortSearchNote(result), fragmentTextNote(result.sources)].filter(
     (t) => t !== null,

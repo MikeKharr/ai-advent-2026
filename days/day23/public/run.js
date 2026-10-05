@@ -55,14 +55,13 @@ const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 /**
  * Разбор результата запуска (`agents/src/rag/retrieve.js` через
  * `rerank-agent`, `runs.finish`): поля дня 22 плюс три поля дня 23 —
- * `candidates` (выдача ДО отбора: `n, source, section, score, relevance,
- * kept`), `rewritten` (строка или `null`) и `threshold` (порог косинуса —
- * ЧИСЛО НА ЭКРАНЕ, не фильтр: ADR 2026-10-05-0544, п. 1.1 отверг его как
- * фильтр счётом, а не вкусом).
+ * `candidates` (выдача ДО отбора), `rewritten` и `outcome`. Форма — контракт
+ * `agent_docs/guides/day23-rerank-contract.md` (ветка `feat/day23-agent`).
  *
- * Чего тут нет: поля «исход отбора». Пустая выдача при непустых кандидатах
- * видна из самих полей, и заводить для неё четвёртое поле значило бы поверить
- * агенту на слово там, где можно посмотреть.
+ * ПОРОГА КОСИНУСА СРЕДИ ПОЛЕЙ НЕТ, и страница его не рисует. ADR (п. 1.1)
+ * называл его числом на экране, но агент этого числа не отдаёт; выставить
+ * сюда литерал значило бы показать число, которое никто не считал, — а оно
+ * как раз про доверие к отбору. Поэтому строки нет вовсе.
  *
  * Поля проверяются по одному: результат приходит с сервера, но ответ модели и
  * текст фрагментов внутри него — недоверенные данные, и разбор их не обязан
@@ -78,10 +77,17 @@ export function parseResult(raw) {
     refused: d.refused === true,
     sources: Array.isArray(d.sources)
       ? d.sources.filter(isObject).map((s, at) => ({
-          n: num(s.n) ?? at + 1,
+          // Номер НЕ перенумеровывается и не выдумывается: он присвоен при
+          // объединении выдач и под ним же стоит в тексте ответа (контракт,
+          // «Нумерация»). У оставшихся после отбора номера идут с пропусками —
+          // `[2], [7], [3]` — и это верно. Поля нет — номера нет: порядковое
+          // место в списке номером фрагмента не является.
+          n: num(s.n),
           source: str(s.source),
           section: str(s.section),
           score: num(s.score),
+          relevance: num(s.relevance),
+          from: str(s.from) || null,
           // `null` и пустая строка — РАЗНЫЕ случаи, и они не сливаются:
           // поля не было вовсе (свёртки нет, п. 10) против пустого текста
           // (свёртка есть, внутри слова о пустоте).
@@ -99,8 +105,8 @@ export function parseResult(raw) {
     // ДО отбора. Порядок не пересортировывается: агент отдал его в порядке
     // косинуса, и менять его здесь значило бы показать не то, что он видел.
     candidates: Array.isArray(d.candidates)
-      ? d.candidates.filter(isObject).map((c, at) => ({
-          n: num(c.n) ?? at + 1,
+      ? d.candidates.filter(isObject).map((c) => ({
+          n: num(c.n),
           source: str(c.source),
           section: str(c.section),
           score: num(c.score),
@@ -111,10 +117,19 @@ export function parseResult(raw) {
           // порог «не меньше 1 и не больше пяти» держит агент, и повторять
           // его здесь значило бы завести второе правило отбора.
           kept: c.kept === true,
+          // Откуда кандидат пришёл: исходный запрос, переписанный или оба.
+          // В режиме `rewrite` это и есть ответ на вопрос «что дало
+          // переписывание».
+          from: str(c.from) || null,
+          // Первые 400 знаков — РОВНО ТО, что видел реранкер. Полного текста
+          // у кандидата нет намеренно, и страница его не достраивает.
+          snippet: typeof c.snippet === 'string' ? c.snippet : null,
         }))
       : [],
     rewritten: typeof d.rewritten === 'string' && d.rewritten.trim() !== '' ? d.rewritten : null,
-    threshold: num(d.threshold),
+    // Исход приходит ПОЛЕМ. Вывести его из «кандидаты есть, источников нет»
+    // можно, но тогда страница утверждала бы за агента, вызывалась ли модель.
+    outcome: d.outcome === 'answered' || d.outcome === 'unknown_filter' ? d.outcome : null,
     rpc: isObject(d.rpc) ? d.rpc : null,
     tokens: num(d.tokens),
     budgetLeftUsd: num(d.budgetLeftUsd),
@@ -301,6 +316,32 @@ export function steps(events) {
       continue
     }
     if (e.stage === 'planning') {
+      // Стадия `planning` в дне 23 приходит ТРИ раза и говорит разное
+      // (контракт, «Стадии и события»): выдача поиска, итог переписывания,
+      // итог отбора. Различаются они по тому, какие поля в них лежат, —
+      // новых стадий агент не заводил.
+      const kept = num(data.kept)
+      if (kept !== null) {
+        const total = num(data.candidates) ?? (Array.isArray(data.candidates) ? data.candidates.length : null)
+        fragments = kept
+        out.push({
+          label: 'ОТБОР',
+          time: at(e),
+          meta: total === null ? `оставлено ${kept}` : `оставлено ${kept} из ${total}`,
+          kind: 'planning',
+        })
+        continue
+      }
+      if (typeof data.rewritten === 'string' && data.rewritten !== '') {
+        const found = num(data.found)
+        out.push({
+          label: 'ПОИСК ПО ПЕРЕПИСАННОМУ',
+          time: at(e),
+          meta: found === null ? '' : `${found} ${plural(found, 'фрагмент', 'фрагмента', 'фрагментов')}`,
+          kind: 'planning',
+        })
+        continue
+      }
       const sources = Array.isArray(data.sources) ? data.sources.length : null
       fragments = sources
       out.push({
@@ -315,11 +356,22 @@ export function steps(events) {
       continue
     }
     if (e.stage === 'llm_call') {
-      // Вызовов модели в дне 23 бывает больше одного: реранкер, переписывание
-      // и ответ — разные вызовы (ADR 2026-10-05-0544, п. 4). Запись «сборка
-      // промпта» рисуется ОДИН раз, перед первым вызовом после получения
-      // фрагментов: второй её экземпляр объявил бы пройденным шаг, которого
-      // не было.
+      // Вызовов модели в дне 23 до трёх, и различает их ТОЛЬКО `data.purpose`
+      // (контракт, «Стадии и события»): у вызова ответа этого поля нет.
+      // Подписать их одинаково значило бы показать три одинаковых шага там,
+      // где произошли три разных, — и скрыть, за что именно заплачено.
+      const purpose = str(data.purpose)
+      if (purpose === 'rewrite' || purpose === 'rerank') {
+        out.push({
+          label: purpose === 'rewrite' ? 'ПЕРЕПИСЫВАНИЕ ВОПРОСА' : 'ОЦЕНКА КАНДИДАТОВ',
+          time: at(e),
+          meta: '',
+          kind: 'llm_call',
+        })
+        continue
+      }
+      // Запись «сборка промпта» рисуется ОДИН раз, перед вызовом ответа:
+      // второй её экземпляр объявил бы пройденным шаг, которого не было.
       if (fragments !== null) {
         out.push({
           label: 'СБОРКА ПРОМПТА',
@@ -333,11 +385,17 @@ export function steps(events) {
       continue
     }
     if (e.stage === 'llm_result') {
+      const purpose = str(data.purpose)
       const usage = isObject(data.usage) ? data.usage : {}
       const input = num(usage.inputTokens)
       const output = num(usage.outputTokens)
       out.push({
-        label: 'ОТВЕТ МОДЕЛИ',
+        label:
+          purpose === 'rewrite'
+            ? 'ЗАПРОС ПЕРЕПИСАН'
+            : purpose === 'rerank'
+              ? 'КАНДИДАТЫ ОЦЕНЕНЫ'
+              : 'ОТВЕТ МОДЕЛИ',
         time: at(e),
         meta: input === null || output === null ? '' : `токенов ${input + output}`,
         kind: 'llm_result',
@@ -552,10 +610,20 @@ export function tornSrcsNote(mode, fragmentsFound) {
  * попадали в дне 22 в один вердикт). Разделение исходов на мере — день 24
  * (ADR, п. 2.3); на экране оно начинается здесь.
  */
-export const SELECT_NONE =
-  'Отбор не оставил ни одного фрагмента: ни один из найденных кандидатов реранкер не ' +
-  'признал относящимся к вопросу. Это честное «не знаю» — исход поиска, а не сбой: ' +
-  'кандидаты со своими оценками перечислены выше, их можно не принять на веру.'
+export function selectNone(found) {
+  const n = typeof found === 'number' && Number.isFinite(found) ? found : null
+  const head =
+    n === null
+      ? 'Не знаю: ни один из найденных фрагментов к вопросу не относится.'
+      : `Не знаю: ни один из ${n} ${plural(n, 'найденного фрагмента', 'найденных фрагментов', 'найденных фрагментов')} к вопросу не относится.`
+  return (
+    `${head} Модель ответа не вызывалась — отвечать было не по чему. Это честный исход ` +
+    'поиска, а не сбой: кандидаты со своими оценками перечислены выше, их можно не ' +
+    'принять на веру.'
+  )
+}
+/** Тот же исход там, где числа кандидатов под рукой нет. */
+export const SELECT_NONE = selectNone(null)
 
 /** Режим без отбора: кандидатов нет по построению, и это не пропажа. */
 export const CANDIDATES_RAG =
@@ -587,16 +655,26 @@ export function selectionNote(result) {
 }
 
 /**
- * Порог косинуса — ЧИСЛО ДЛЯ СВЕРКИ, и подпись говорит это прямо. Фильтром он
- * не служит: ADR 2026-10-05-0544, п. 1.1 отверг его счётом по 100 вопросам
- * дня 21 — порог 0,55 срезает 32 промаха из 40 и 19 попаданий из 31.
- * Не пришёл — строки нет.
+ * Подпись под таблицей кандидатов: чем отбирали. Порога косинуса среди чисел
+ * ЗДЕСЬ НЕТ и быть не может — агент его не отдаёт, а ADR (п. 1.1) отверг его
+ * как фильтр счётом по 100 вопросам дня 21: 0,55 срезает 32 промаха из 40 и
+ * 19 попаданий из 31. Сказать это словами можно, напечатать число — нет.
  */
-export function thresholdNote(threshold) {
-  if (threshold === null) return null
-  return (
-    `Порог косинуса ${formatScore(threshold)} показан для сверки и ничего не отсекает: ` +
-    'на эталоне дня 21 он резал верные ответы наравне с промахами. Отбирает релевантность ' +
-    'реранкера, а не близость.'
-  )
+export const PICK_RULE =
+  'Отбирает релевантность реранкера, а не близость: по близости порог резал верные ' +
+  'ответы наравне с промахами, и фильтром он здесь не служит.'
+
+/** Откуда кандидат пришёл — слово. Незнакомый код показывается как пришёл. */
+const FROM_WORD = { original: 'исходный запрос', rewritten: 'переписанный', both: 'оба запроса' }
+export function fromWord(code) {
+  if (code === null) return ''
+  return FROM_WORD[code] ?? code
+}
+
+/** Сводка свёртки выдержки кандидата: ровно то, что видел реранкер. */
+export function snippetSummary(text) {
+  if (typeof text !== 'string') return null
+  if (text === '') return 'выдержка для реранкера · пусто'
+  const n = [...text].length
+  return `выдержка для реранкера · ${n} ${plural(n, 'знак', 'знака', 'знаков')}`
 }
