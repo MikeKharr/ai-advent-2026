@@ -45,6 +45,7 @@ import {
   citedNote,
   CLARIFY_LABEL,
   dayLimitNote,
+  fragmentsFromPlanning,
   failure,
   formatScore,
   fragmentSummary,
@@ -440,8 +441,13 @@ function renderCandidate(cand, commit) {
   } else {
     path.textContent = cand.source
   }
-  grid.append(path)
-  grid.append(node('span', 'cand-sec', cand.section))
+  // Раздел — ВТОРОЙ СТРОКОЙ В КОЛОНКЕ ПУТИ, а не шестой ячейкой: колонок пять,
+  // и шестая ячейка уезжала на вторую строку сетки, под чужой заголовок.
+  // Полоса заголовков называет эту колонку «путь и раздел» — теперь честно.
+  const where = node('div', 'cand-where')
+  where.append(path)
+  if (cand.section !== '') where.append(node('p', 'cand-sec', cand.section))
+  grid.append(where)
 
   // Ярлык колонки внутри строки: на узком экране колонок нет, и число без
   // подписи не читается. Имя ячейки не выдумывается — оно то же, что в полосе
@@ -663,7 +669,10 @@ function onEvent(raw) {
     showSrcsPlaceholder(SRCS_SEARCHING)
   }
   if (event.stage === 'planning') {
-    fragmentsFound = Array.isArray(event.data?.sources) ? event.data.sources.length : null
+    // Сколько фрагментов известно — решает ПРАВИЛО, а не строка здесь: стадия
+    // `planning` приходит до трёх раз, и прежняя строка стирала уже известное
+    // число каждым следующим событием (см. `fragmentsFromPlanning`).
+    fragmentsFound = fragmentsFromPlanning(event.data, fragmentsFound)
     setStatus(fragmentsFound === null ? STATUS.askingPlain : STATUS.asking(fragmentsFound))
   }
   redrawSteps()

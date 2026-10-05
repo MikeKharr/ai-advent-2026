@@ -207,7 +207,11 @@ export function answerMeta(result) {
   if (result.candidates.length > 0)
     parts.push(`кандидатов: ${result.candidates.length} → оставлено: ${result.sources.length}`)
   else parts.push(`фрагментов: ${result.sources.length}`)
-  if (result.tokens !== null) parts.push(`токенов: ${result.tokens}`)
+  // ТОКЕНЫ ТОЛЬКО ВЫЗОВА ОТВЕТА, и подпись говорит это словом «ответа»:
+  // поле `tokens` не считает ни реранкер, ни переписывание (контракт дня 23,
+  // «Результат успешного запуска»), а подпись «токенов: N» читалась бы как
+  // весь расход запуска — то есть называла бы меньшее число полным.
+  if (result.tokens !== null) parts.push(`токенов ответа: ${result.tokens}`)
   if (result.budgetLeftUsd !== null)
     parts.push(`бюджет дня: остаток ${formatUsd(result.budgetLeftUsd)}`)
   return parts.join(' · ')
@@ -367,12 +371,19 @@ export function steps(events) {
         })
         continue
       }
-      if (typeof data.rewritten === 'string' && data.rewritten !== '') {
+      // ИТОГ ПЕРЕПИСЫВАНИЯ различается полем `rewriteSearch`, а НЕ наличием
+      // строки `rewritten` (контракт дня 23, «Стадии и события»). Разница не
+      // косметическая: когда переписывание не дало нового запроса, событие
+      // приходит с `rewriteSearch: "skipped"` и БЕЗ `rewritten`, и прежняя
+      // ветвь роняла его в «ФРАГМЕНТЫ ПОЛУЧЕНЫ» с пустой подписью — лента
+      // объявляла пройденным шаг, которого не было, и теряла шаг, который был.
+      const rewriteSearch = str(data.rewriteSearch)
+      if (rewriteSearch !== '' || (typeof data.rewritten === 'string' && data.rewritten !== '')) {
         const found = num(data.found)
         out.push({
-          label: 'ПОИСК ПО ПЕРЕПИСАННОМУ',
+          label: 'ИТОГ ПЕРЕПИСЫВАНИЯ',
           time: at(e),
-          meta: found === null ? '' : `${found} ${plural(found, 'фрагмент', 'фрагмента', 'фрагментов')}`,
+          meta: rewriteSearchWord(rewriteSearch, found),
           kind: 'planning',
         })
         continue
@@ -868,3 +879,47 @@ export const VERBATIM_NOTE =
 
 /** Уточняющий вопрос посетителю — часть исхода «не знаю», а не утешение. */
 export const CLARIFY_LABEL = 'ЧТО УТОЧНИТЬ'
+
+/**
+ * Что стало со ВТОРЫМ поиском, словом (контракт дня 23, поле `rewriteSearch`).
+ * Каждое состояние названо своим словом, и ни одно не прячется: «запроса не
+ * вышло» и «нашёл ноль» — разные вещи, и обе — не сбой запуска.
+ *
+ * Незнакомый код не переводится и не прячется: показывается как пришёл.
+ */
+const REWRITE_SEARCH_WORD = {
+  skipped: 'нового запроса не вышло — искали только исходный',
+  empty: 'по переписанному не нашлось ничего',
+  failed: 'поиск по переписанному не удался',
+}
+export function rewriteSearchWord(code, found = null) {
+  if (code === 'ok' || code === '') {
+    if (found === null) return ''
+    return `${found} ${plural(found, 'фрагмент', 'фрагмента', 'фрагментов')}`
+  }
+  return REWRITE_SEARCH_WORD[code] ?? code
+}
+
+/**
+ * Сколько фрагментов УСПЕЛ назвать конвейер — по стадии `planning`.
+ *
+ * ВЫНЕСЕНО РАДИ ДЕРЖАТЕЛЯ, и причина названа дефектом. Стадия `planning` в дне
+ * 24 приходит до трёх раз и говорит разное: выдача поиска (`sources`), итог
+ * переписывания (`rewriteSearch`) и итог отбора (`kept`). Пока правило жило
+ * одной строкой в обработчике страницы — `fragmentsFound = Array.isArray(
+ * data.sources) ? data.sources.length : null`, — каждое следующее событие
+ * СТИРАЛО уже известное число обратно в `null`. Последствие видно на экране:
+ * поток, оборванный после ОТБОРА, получал строку «Фрагменты не дошли: поток
+ * оборвался раньше, чем поиск что-то вернул» — ложь про шаг, который прошёл.
+ *
+ * Правило: число только РАСТЁТ в знании. Событие без своих чисел прежнее не
+ * трогает; итог отбора число уточняет — после него в контекст ушло именно
+ * столько.
+ */
+export function fragmentsFromPlanning(data, previous = null) {
+  const d = isObject(data) ? data : {}
+  const kept = num(d.kept)
+  if (kept !== null) return kept
+  if (Array.isArray(d.sources)) return d.sources.length
+  return previous
+}

@@ -1,5 +1,6 @@
-// Лимитер дня 22 — копия days/day20/limits.js без окна записей. Держатели
-// здесь свои: тест дня 20 не краснеет при правке days/day22/limits.js — это
+// Лимитер дня 24 — копия days/day20/limits.js без окна записей, плюс возврат
+// суточного слота (решение владельца Р8(б), ADR 2026-10-05-0544). Держатели
+// здесь свои: тест дня 20 не краснеет при правке days/day24/limits.js — это
 // разные файлы, и «доказано тестами дня 20» было бы неправдой.
 
 import assert from 'node:assert/strict'
@@ -127,4 +128,65 @@ test('отметки чтений тоже не переживают своё о
 test('окна записей у лимитера дня нет', () => {
   const limiter = createLimiter(seam, { now: () => 1_700_000_000_000 })
   assert.equal(limiter.reserveWrite, undefined)
+})
+
+// ВОЗВРАТ СУТОЧНОГО СЛОТА (решение владельца Р8(б), ADR 2026-10-05-0544, п. 6).
+// Порядок «лимитер до сервиса» занимает слот до разбора тела, поэтому пустой
+// вопрос стоил денег, которых никто не потратил. Возврат чинит именно это — и
+// ровно это: окна на адрес он не трогает.
+
+test('возвращённый суточный слот снова доступен, и потолок не обойдён', () => {
+  const limiter = createLimiter(env, { now: () => Date.UTC(2026, 9, 4, 10) })
+  const slot = limiter.reserve('1.1.1.1')
+  assert.equal(slot.ok, true)
+  assert.equal(limiter.stats().callsToday, 1)
+  assert.equal(limiter.releaseDaily(slot), true)
+  assert.equal(limiter.stats().callsToday, 0)
+  // Потолок остался потолком: три запуска после возврата всё так же упираются.
+  for (let i = 0; i < 3; i += 1) assert.equal(limiter.reserve('1.1.1.1').ok, true)
+  assert.equal(limiter.reserve('1.1.1.1').ok, false)
+})
+
+test('слот возвращается ОДИН раз: вторым вызовом чужого в минус не списать', () => {
+  const limiter = createLimiter(env, { now: () => Date.UTC(2026, 9, 4, 10) })
+  const mine = limiter.reserve('1.1.1.1')
+  limiter.reserve('2.2.2.2')
+  assert.equal(limiter.stats().callsToday, 2)
+  assert.equal(limiter.releaseDaily(mine), true)
+  // Второй вызов — мимо: иначе одна ручка с двумя ветвями отказа списала бы
+  // слот соседа.
+  assert.equal(limiter.releaseDaily(mine), false)
+  assert.equal(limiter.stats().callsToday, 1)
+  // Чего лимитер не выдавал, слотом не становится: ручка вне окна (`open`)
+  // получает `slot === null`, и возврат по нему списал бы чужой слот.
+  for (const bad of [null, undefined, {}, { ok: false, reason: 'daily' }])
+    assert.equal(limiter.releaseDaily(bad), false, JSON.stringify(bad))
+  assert.equal(limiter.stats().callsToday, 1)
+})
+
+test('после полуночи слот не возвращается: счётчик уже чужой', () => {
+  let t = Date.UTC(2026, 9, 4, 23, 59)
+  const limiter = createLimiter(env, { now: () => t })
+  const slot = limiter.reserve('1.1.1.1')
+  t = Date.UTC(2026, 9, 5, 0, 1)
+  limiter.reserve('1.1.1.1') // новые сутки, счётчик уже обнулён и равен 1
+  assert.equal(limiter.stats().callsToday, 1)
+  // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: вернись слот вчерашних суток, сегодняшний счётчик ушёл
+  // бы в ноль, и сутки получили бы лишний платный запуск.
+  assert.equal(limiter.releaseDaily(slot), false)
+  assert.equal(limiter.stats().callsToday, 1)
+})
+
+test('возврат суточного слота НЕ возвращает окна на адрес: они про частоту', () => {
+  const tight = { RATE_LIMIT_PER_MIN: 2, RATE_LIMIT_PER_HOUR: 100, MAX_DAILY_CALLS: 1000 }
+  const limiter = createLimiter(tight, { now: () => Date.UTC(2026, 9, 4, 10) })
+  const a = limiter.reserve('1.1.1.1')
+  const b = limiter.reserve('1.1.1.1')
+  limiter.releaseDaily(a)
+  limiter.releaseDaily(b)
+  // Запрос БЫЛ сделан, и залп пустых тел обязан упираться в минутное окно так
+  // же, как залп настоящих вопросов, — иначе возврат слота сам стал бы дырой.
+  const third = limiter.reserve('1.1.1.1')
+  assert.equal(third.ok, false)
+  assert.equal(third.reason, 'minute')
 })

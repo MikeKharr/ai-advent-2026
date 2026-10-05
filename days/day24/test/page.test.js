@@ -691,3 +691,28 @@ test('сторонних запросов у страницы нет: ни шр�
   const loaded = [...full.matchAll(/<(?:link|script)[^>]*(?:href|src)="([^"]+)"/g)].map((m) => m[1])
   assert.deepEqual(loaded, ['style.css', 'app.js'])
 })
+
+// НАХОДКИ `design-review` ДНЯ 23, перенесённые сюда копией. Обе — про сетку, и
+// обе были невидимы прогону: правила CSS никто не исполнял. Живой замер в
+// Chrome при 768 и 1440 после правки даёт `.cand-grid` и `.colhead-pick` одни и
+// те же колонки (32px 352px 80px 128px 96px при 768); здесь — страж от
+// возврата правки, который исполняется в CI.
+test('у строки кандидата ячеек столько же, сколько колонок, и заголовки не перебиты', () => {
+  const app = stripJs(read('app.js'))
+  // Ячеек ровно пять: номер, «путь и раздел», близость, релевантность, итог.
+  // Шестая уезжала на вторую строку сетки — под чужой заголовок.
+  const body = app.slice(app.indexOf('function renderCandidate'))
+  const cell = body.slice(0, body.indexOf('\n}'))
+  const appends = [...cell.matchAll(/grid\.append\(/g)].length
+  assert.equal(appends, 5, `ячеек строки кандидата ${appends}, а колонок пять`)
+  // Раздел стоит В КОЛОНКЕ ПУТИ, а не своей ячейкой: полоса заголовков
+  // называет эту колонку «путь и раздел», и это должно быть правдой.
+  assert.match(cell, /where\.append\(node\('p', 'cand-sec'/, 'раздел снова отдельной ячейкой')
+  // Полоса заголовков кандидатов весит два класса: правило `.colhead` ниже
+  // объявлено позже и при равном весе перебивало её сеткой списка вопросов.
+  assert.match(own, /\.colhead\.colhead-pick \{/, 'полосу заголовков кандидатов снова перебьёт .colhead')
+  const pick = own.indexOf('.colhead.colhead-pick')
+  const generic = own.indexOf('.colhead {')
+  assert.ok(pick !== -1 && generic !== -1)
+  assert.ok(pick < generic, 'порядок правил изменился — вес стал единственным держателем')
+})

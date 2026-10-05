@@ -154,9 +154,15 @@
   .cands { list-style:none; margin:0; padding:0; }
   .cand { border-top:1px solid var(--line); padding:var(--s-2) 0; min-width:0; }
   .cand-grid { display:grid; grid-template-columns:1fr; gap:var(--s-1); align-items:baseline; }
+  /* КОЛОНОК СТОЛЬКО ЖЕ, СКОЛЬКО ЯЧЕЕК, и это не придирка: ячеек было шесть
+     (номер, путь, раздел, близость, релевантность, итог) на пять колонок, и
+     шестая уезжала на вторую строку сетки — под номер, а не под свой заголовок.
+     Раздел переехал в колонку пути второй строкой: он и в полосе заголовков
+     назван вместе с ним («путь и раздел»). */
   @media (min-width:48rem) {
     .cand-grid { grid-template-columns:2rem minmax(0,1fr) 5rem 8rem 6rem; gap:var(--s-3); }
   }
+  .cand-where { min-width:0; }
   /* Отброшенный кандидат не прячется и не перечёркивается: он часть предмета
      показа. Вторичный цвет строки — то же, чем копия дня 16 отличает
      второстепенное от главного; СЛОВО «отброшен» стоит в строке рядом, то
@@ -176,7 +182,12 @@
   }
   .cand-path a:hover { text-decoration-color:var(--fg); }
   .cand-path a:active { opacity:.7; }
-  .cand-sec { font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); overflow-wrap:anywhere; }
+  /* Раздел стоит под путём в той же колонке, поэтому несёт свой отступ сам:
+     правило сетки до него уже не достаёт. */
+  .cand-sec {
+    margin:var(--s-1) 0 0; font-size:var(--t-xs); line-height:1.4;
+    color:var(--fg-mut); overflow-wrap:anywhere;
+  }
   .cand-from { margin:var(--s-1) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
   .cand-score, .cand-rel, .cand-kept {
     font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
@@ -192,7 +203,11 @@
     }
   }
   @media (min-width:48rem) {
-    .colhead-pick { grid-template-columns:2rem minmax(0,1fr) 5rem 8rem 6rem; padding:0 0 var(--s-2); }
+    /* Вес селектора ДВА КЛАССА, и это не стиль, а починка: правило `.colhead`
+       ниже объявлено позже и при равном весе перебивало это — полоса
+       заголовков кандидатов вставала по сетке списка вопросов (3rem … 2rem) и
+       разъезжалась со строками. */
+    .colhead.colhead-pick { grid-template-columns:2rem minmax(0,1fr) 5rem 8rem 6rem; padding:0 0 var(--s-2); }
   }
   /* Переписанный вопрос — предмет показа, и он моноширинный: это поисковый
      запрос, а не проза. Кладётся textContent. */
@@ -429,6 +444,12 @@
 
   <section class="sec wrap" aria-labelledby="answer-h">
     <h2 id="answer-h">Ответ</h2>
+    <!-- Почему «токенов ответа», а не «токенов»: поле запуска считает только
+         вызов ответа, а отбор и переписывание — отдельные вызовы, которых в
+         этом числе нет. Полного расхода запуска страница не показывает и не
+         делает вида, что показывает. -->
+    <p class="hint">Токены в строке ниже — только вызова ответа: отбор и переписывание
+      вопроса считаются отдельно, и этого числа у страницы нет.</p>
     <!-- Пустое состояние — три абзаца, которые иначе съели бы первый экран
          (п. 5.1). Пояснений про режимы в шапке нет намеренно. -->
     <div id="answer-empty">

@@ -14,6 +14,7 @@ import {
   dayLimitNote,
   failure,
   formatScore,
+  fragmentsFromPlanning,
   fragmentSummary,
   fragmentTextNote,
   indexMeta,
@@ -45,6 +46,7 @@ import {
   quotesTally,
   quoteWord,
   relevanceWord,
+  rewriteSearchWord,
   selectionNote,
   selectNone,
   repoUrl,
@@ -116,7 +118,7 @@ test('признак отказа берётся ПОЛЕМ, а не поиск�
 
 test('строка меры называет остаток бюджета остатком, а не ценой запроса', () => {
   const meta = answerMeta(parseResult(result()))
-  assert.equal(meta, 'режим: с отбором · фрагментов: 2 · токенов: 4312 · бюджет дня: остаток $9,87')
+  assert.equal(meta, 'режим: с отбором · фрагментов: 2 · токенов ответа: 4312 · бюджет дня: остаток $9,87')
 })
 
 test('строка меры режима с отбором называет ОБА числа: сколько было и сколько осталось', () => {
@@ -551,7 +553,7 @@ test('вызовы модели подписаны по назначению, а
     'ФРАГМЕНТЫ ПОЛУЧЕНЫ',
     'ПЕРЕПИСЫВАНИЕ ВОПРОСА',
     'ЗАПРОС ПЕРЕПИСАН',
-    'ПОИСК ПО ПЕРЕПИСАННОМУ',
+    'ИТОГ ПЕРЕПИСЫВАНИЯ',
     'ОЦЕНКА КАНДИДАТОВ',
     'КАНДИДАТЫ ОЦЕНЕНЫ',
     'ОТБОР',
@@ -723,4 +725,82 @@ test('пустые cited и quotes при пустом отборе объясн
   assert.equal(quotesNote(parseResult(result())), null)
   assert.equal(citedNote(parseResult(result())), null)
   assert.ok(CLARIFY_LABEL.length > 0)
+})
+
+// ДЕФЕКТ, НАЙДЕННЫЙ ГЕЙТАМИ ДНЯ 23 И ПЕРЕНЕСЁННЫЙ СЮДА КОПИЕЙ. Событие итога
+// переписывания приходит БЕЗ поля `rewritten`, когда нового запроса не вышло
+// (контракт дня 23: `rewriteSearch: "skipped"`). Прежняя ветвь различала эти
+// события по наличию строки `rewritten` и роняла такое событие в
+// «ФРАГМЕНТЫ ПОЛУЧЕНЫ» с пустой подписью: лента объявляла пройденным шаг,
+// которого не было, и теряла шаг, который был.
+test('итог переписывания без нового запроса не выдаётся за выдачу поиска', () => {
+  const rows = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rewrite', strategy: 'structural', limit: 10 } },
+    { stage: 'planning', at: at(1), data: { sources: [1, 2, 3] } },
+    { stage: 'planning', at: at(2), data: { rewritten: null, rewriteSearch: 'skipped' } },
+  ])
+  assert.deepEqual(
+    rows.map((r) => r.label),
+    ['ПРИНЯТ ВОПРОС', 'ФРАГМЕНТЫ ПОЛУЧЕНЫ', 'ИТОГ ПЕРЕПИСЫВАНИЯ'],
+  )
+  // И подпись говорит, ЧТО именно случилось, а не молчит пустотой.
+  assert.equal(rows[2].meta, 'нового запроса не вышло — искали только исходный')
+})
+
+test('каждое состояние второго поиска названо своим словом', () => {
+  assert.equal(rewriteSearchWord('skipped'), 'нового запроса не вышло — искали только исходный')
+  // «Нашёл ноль» и «запроса не вышло» — РАЗНЫЕ вещи, и обе не сбой запуска.
+  assert.equal(rewriteSearchWord('empty'), 'по переписанному не нашлось ничего')
+  assert.equal(rewriteSearchWord('failed'), 'поиск по переписанному не удался')
+  assert.equal(rewriteSearchWord('ok', 7), '7 фрагментов')
+  assert.equal(rewriteSearchWord('ok', 1), '1 фрагмент')
+  // Числа не пришло — подписи нет, а не «0 фрагментов» (I-8).
+  assert.equal(rewriteSearchWord('ok', null), '')
+  // Незнакомый код показывается как пришёл: выдумывать ему перевод нельзя.
+  assert.equal(rewriteSearchWord('что-то'), 'что-то')
+})
+
+// ДЕФЕКТ ТОЙ ЖЕ ПАРТИИ: стадия `planning` приходит до трёх раз, и прежняя
+// строка обработчика стирала уже известное число фрагментов каждым следующим
+// событием. Последствие видно на экране: поток, оборванный ПОСЛЕ отбора,
+// получал «поток оборвался раньше, чем поиск что-то вернул» — ложь про шаг,
+// который прошёл.
+test('число фрагментов не стирается событиями, у которых своих чисел нет', () => {
+  // Выдача поиска: число стало известно.
+  assert.equal(fragmentsFromPlanning({ sources: [1, 2, 3] }, null), 3)
+  // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: итог переписывания своих `sources` не несёт, и прежнее
+  // число обязано уцелеть — иначе строка обрыва солжёт.
+  assert.equal(fragmentsFromPlanning({ rewritten: 'запрос', found: 7 }, 3), 3)
+  assert.equal(fragmentsFromPlanning({ rewriteSearch: 'skipped' }, 3), 3)
+  // Итог отбора число УТОЧНЯЕТ: именно столько ушло в контекст.
+  assert.equal(fragmentsFromPlanning({ kept: 2, candidates: 10 }, 3), 2)
+  // Ноль оставленных — это ноль, а не «неизвестно»: исход «не знаю» тоже факт.
+  assert.equal(fragmentsFromPlanning({ kept: 0, candidates: 10 }, 3), 0)
+  // Ничего не пришло — прежнее знание не меняется, в том числе `null`.
+  assert.equal(fragmentsFromPlanning({}, 3), 3)
+  assert.equal(fragmentsFromPlanning(undefined, null), null)
+})
+
+test('оборванный после отбора поток говорит, что поиск УСПЕЛ доложиться', () => {
+  // Та самая сцена дефекта, собранная из событий: поиск доложился, отбор
+  // доложился, поток оборвался.
+  let found = null
+  for (const data of [{ sources: [1, 2, 3] }, { rewriteSearch: 'skipped' }, { kept: 2, candidates: 3 }])
+    found = fragmentsFromPlanning(data, found)
+  assert.equal(found, 2)
+  assert.equal(tornSrcsNote('rewrite', found), SRCS_TORN_AFTER)
+  // А оборвись поток до выдачи поиска — слова были бы другими, и это
+  // различающий случай, а не та же строка на оба.
+  assert.equal(tornSrcsNote('rewrite', fragmentsFromPlanning({}, null)), SRCS_TORN_BEFORE)
+})
+
+// НАХОДКА `design-review` ДНЯ 23, перенесённая сюда копией: подпись «токенов»
+// называла полным расходом число, которое считает только вызов ответа.
+test('подпись токенов говорит, что это токены ОТВЕТА, а не всего запуска', () => {
+  const meta = answerMeta(parseResult(result()))
+  assert.match(meta, /токенов ответа: 4312/)
+  // Старая подпись не должна вернуться: именно она читалась как весь расход.
+  assert.ok(!/·\s*токенов: /.test(meta), meta)
+  // Числа не пришло — куска нет вовсе, а не «токенов ответа: 0» (I-8).
+  assert.ok(!/токенов/.test(answerMeta(parseResult(result({ tokens: undefined })))))
 })
