@@ -82,8 +82,11 @@ const day = http.createServer(async (req, res) => {
     inFlight -= 1
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
     // Кадры отдаются ровно теми куска́ми, какие назвал тест: границы кусков —
-    // предмет проверки разбора, и склеивать их здесь нельзя.
-    for (const piece of plan.pieces ?? [succeeded()]) res.write(piece)
+    // предмет проверки разбора, и склеивать их здесь нельзя. `piecesByCall`
+    // задаёт поток по счёту открытия: прогон по проду чередует отказы и
+    // удачи, и воспроизвести это чередование надо так же.
+    const opened = seen.filter((r) => r.url.endsWith('/events')).length
+    for (const piece of plan.piecesByCall?.[opened] ?? plan.pieces ?? [succeeded()]) res.write(piece)
     return res.end()
   }
 
@@ -391,6 +394,72 @@ test('--resume дописывает недостающее и за измере�
     !posted.some((p) => p.question === 'вопрос q01' && p.mode === 'rerank'),
     'измеренная приёмом 1 пара прогнана и оплачена второй раз',
   )
+})
+
+test('индекс сменился — приём отказывается дописывать и файл НЕ ТРОГАЕТ', async () => {
+  // ЧТО ЭТО ДЕРЖИТ, и повод не выдуманный: приём 1 дня 23 шёл во время
+  // пересборки корпуса и мерил индекс `1d4a85f8` (3337 чанков structural), а
+  // после неё живым стал `37ff5e8e` (3365). Числа с двух индексов несравнимы
+  // (ADR, п. 1.5), а `--resume` слил бы их МОЛЧА: уже измеренные пары он
+  // пропускает, и в одном отчёте оказались бы половины с разных индексов —
+  // под одной строкой `index.commit`.
+  // Приём 1 обрывается суточным потолком на одной паре — иначе дописывать
+  // было бы нечего и сверка индекса не сработала бы вовсе.
+  reset({ createByCall: { 2: { status: 429, body: { error: 'Суточный предел исчерпан.' } } } })
+  const { dir, file } = queriesFile(['q01', 'q04'])
+  const out = join(dir, 'eval.json')
+  await main({ argv: ['--base', base, '--out', out, '--queries', file], sleep: async () => {}, log: () => {} })
+  const before = readFileSync(out, 'utf8')
+  assert.match(before, /стенд-коммит/, 'приём 1 не записал индекс — проверено не то')
+  assert.ok(JSON.parse(before).questions[0].rerank, 'приём 1 не измерил ни одной пары — проверено не то')
+
+  // Стенд начинает отдавать ДРУГОЙ индекс: ровно то, что делает пересборка.
+  reset({ pieces: [succeeded({ index: { commit: 'другой-коммит', strategy: 'structural', chunks: 9 } })] })
+  const said = []
+  const code = await main({
+    argv: ['--base', base, '--out', out, '--queries', file, '--resume'],
+    sleep: async () => {},
+    log: (m) => said.push(String(m)),
+  })
+  assert.equal(code, 1, 'дописывание по другому индексу прошло успехом')
+  assert.equal(readFileSync(out, 'utf8'), before, 'файл тронут, хотя дописывать было нельзя')
+  assert.ok(
+    said.some((m) => m.includes('индекс сменился')),
+    `причина не названа вслух: ${said.join(' | ')}`,
+  )
+  // Обрыв — на ПЕРВОМ же запуске: потолок не тратится на весь набор впустую.
+  assert.equal(seen.filter((r) => r.url === '/api/runs').length, 1, 'приём продолжил платить после смены индекса')
+})
+
+test('отказ ПЕРЕД сменой индекса не даёт тронуть файл раньше сверки', async () => {
+  // ЧТО ЭТО ДЕРЖИТ: гарантию «файл не тронут» из проверки выше. Там первый же
+  // запуск приёма 2 удачен, поэтому обрыв случается до всякой записи, и
+  // гарантия держалась сама собой. На проде так не бывает: в этот день отказы
+  // чередовались с удачами постоянно, а ОТКАЗ в файл пишется (он попадает в
+  // `failures`). Без ожидания сверки приём успел бы записать файл заново — с
+  // новой датой и чужими `failures`, — и строка «файл не тронут» стала бы
+  // неправдой при зелёном прогоне.
+  reset({ createByCall: { 2: { status: 429, body: { error: 'Суточный предел исчерпан.' } } } })
+  const { dir, file } = queriesFile(['q01', 'q04'])
+  const out = join(dir, 'eval.json')
+  await main({ argv: ['--base', base, '--out', out, '--queries', file], sleep: async () => {}, log: () => {} })
+  const before = readFileSync(out, 'utf8')
+
+  // Приём 2: СНАЧАЛА отказ, потом удача с другим индексом.
+  reset({
+    piecesByCall: {
+      1: [endFrame({ status: 'failed', error: { code: 'search_failed', message: 'служба молчит' } })],
+      2: [succeeded({ index: { commit: 'другой-коммит', strategy: 'structural', chunks: 9 } })],
+    },
+  })
+  const code = await main({
+    argv: ['--base', base, '--out', out, '--queries', file, '--resume'],
+    sleep: async () => {},
+    log: () => {},
+  })
+  assert.equal(code, 1, 'дописывание по другому индексу прошло успехом')
+  assert.equal(seen.filter((r) => r.url === '/api/runs').length, 2, 'отказ и удача — проверено не то')
+  assert.equal(readFileSync(out, 'utf8'), before, 'файл тронут отказом до сверки индекса')
 })
 
 test('--check сверяет форму лежащего файла и называет недостающее', async () => {

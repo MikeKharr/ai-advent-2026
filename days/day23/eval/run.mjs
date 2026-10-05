@@ -212,11 +212,19 @@ export async function runAll({
   spacing = SPACING_MS,
   maxWaitMs = MAX_WAIT_MS,
   save = null,
+  previousIndex = null,
   log = console.log,
 }) {
   const runs = new Map()
   let stopped = null
   let first = true
+  /**
+   * Сверен ли живой индекс с индексом файла. Пока не сверен, записи НЕ ИДЁТ:
+   * иначе отказ по смене индекса оставил бы файл уже тронутым, и строка «файл
+   * не тронут» была бы неправдой. Без прошлого файла сверять нечего — считаем
+   * сверенным сразу.
+   */
+  let indexChecked = !previousIndex?.commit
   for (const mode of MODES) {
     for (const question of questions) {
       const key = `${question.id}:${mode}`
@@ -244,6 +252,27 @@ export async function runAll({
           log(`${key}: ${stopped.message}`)
           break
         }
+        // ИНДЕКС СМЕНИЛСЯ — приём обрывается на первом же запуске, и это не
+        // перестраховка. Ранги считаются по конкретному индексу: сборка корпуса
+        // меняет и число чанков, и их границы, поэтому числа с двух индексов
+        // несравнимы (ADR, п. 1.5: «на другом индексе числа будут другими»).
+        // Проверено делом: приём 1 дня 23 шёл во время пересборки и мерил
+        // индекс `1d4a85f8` (3337 чанков structural), а после неё живым стал
+        // `37ff5e8e` (3365) — то есть измеренное относилось к индексу, которого
+        // больше нет. Слить такие строки с новыми значило бы выпустить один
+        // отчёт, половины которого посчитаны по разным индексам, и `--resume`
+        // сделал бы это МОЛЧА: уже измеренные пары он пропускает.
+        const live = got.result?.index?.commit
+        if (previousIndex?.commit && typeof live === 'string' && live !== previousIndex.commit) {
+          stopped = {
+            at: key,
+            reason: 'index_changed',
+            message: `индекс сменился: в файле ${previousIndex.commit.slice(0, 7)}, живой ${live.slice(0, 7)}`,
+          }
+          log(`${key}: ${stopped.message} — дописывать нельзя, нужен прогон заново (--force)`)
+          break
+        }
+        if (typeof live === 'string') indexChecked = true
         runs.set(key, got)
         if (got.failure) log(`${key}: отказ ${got.failure.code} — ${got.failure.message}`)
         else {
@@ -257,12 +286,12 @@ export async function runAll({
         // Запись сразу, а не в конце: см. `save` в шапке. Отказ записи валит
         // прогон намеренно — молча тратить потолок, не сохраняя результат,
         // хуже, чем остановиться.
-        if (save) await save(runs, stopped)
+        if (save && indexChecked) await save(runs, stopped)
         break
       }
     }
   }
-  if (save) await save(runs, stopped)
+  if (save && indexChecked) await save(runs, stopped)
   return { runs, stopped }
 }
 
@@ -366,7 +395,28 @@ export async function main({
     return report
   }
 
-  const { runs, stopped } = await runAll({ base, questions, done, fetchImpl, sleep, save: writeOut, log })
+  const { runs, stopped } = await runAll({
+    base,
+    questions,
+    done,
+    fetchImpl,
+    sleep,
+    // Запись после каждого запуска — только когда дописывать вообще законно.
+    // При смене индекса первый же успешный запуск обрывает приём, и писать
+    // нечего: прошлый файл остаётся целым, а не получает строку с чужого
+    // индекса.
+    save: writeOut,
+    previousIndex: previous?.index ?? null,
+    log,
+  })
+
+  if (stopped?.reason === 'index_changed') {
+    log(`${stopped.message}`)
+    log(`${out} не тронут: строки прошлого приёма посчитаны по другому индексу.`)
+    log('дописать нельзя — нужен прогон заново: --force (и прошлые числа уйдут).')
+    return 1
+  }
+
   const report = writeOut(runs, stopped)
 
   const problems = checkReport(report, questions)
