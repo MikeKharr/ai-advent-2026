@@ -35,6 +35,7 @@ import { clipBody, partialNotes, reindent } from './rpc.js'
 import {
   answerBlock,
   ANSWER_CUT,
+  COST_PARTIAL,
   ANSWER_TORN,
   answerMeta,
   dayLimitNote,
@@ -56,6 +57,8 @@ import {
   fromWord,
   isUnknownFilter,
   PICK_RULE,
+  rewriteGainNote,
+  rewriteSearchNote,
   SELECT_NONE,
   selectionNote,
   selectNone,
@@ -319,6 +322,11 @@ function showAnswer(result) {
   const parts = []
   const meta = answerMeta(result)
   if (meta) parts.push(node('p', 'entry-meta', meta))
+  // Полного расхода запуска по числам экрана не видно, и сказано это словами,
+  // а не умолчанием: в режимах с отбором вызовов модели два-три, а токены в
+  // мере — только от вызова ответа.
+  if (result.tokens !== null && result.mode !== 'rag')
+    parts.push(node('p', 'entry-note', COST_PARTIAL))
 
   // ЧТО ИМЕННО СТОИТ В БЛОКЕ — решает `answerBlock`, и решает она одна: у
   // правила «не говорить про состоявшийся вызов там, где модель не звали»
@@ -472,7 +480,11 @@ function showPick(result) {
       ? []
       : [node('p', 'lbl', 'ПЕРЕПИСАННЫЙ ЗАПРОС'), node('p', 'rewritten', rewritten)]),
   )
-  const notes = [selectionNote(result)].filter((t) => t !== null)
+  // Что стало со вторым поиском — ПЕРВОЙ строкой секции: от этого зависит,
+  // полна ли выдача, которую посетитель ниже увидит.
+  const notes = [rewriteSearchNote(result), selectionNote(result), rewriteGainNote(result)].filter(
+    (t) => t !== null,
+  )
   // Пустой отбор — ИСХОД, и слова о нём стоят здесь, над таблицей, а не
   // только в секции источников: решение приняла эта секция, ей и отвечать.
   if (isUnknownFilter(result)) notes.push(selectNone(result.candidates.length))

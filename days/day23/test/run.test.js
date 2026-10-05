@@ -25,8 +25,11 @@ import {
   parseResult,
   plural,
   answerBlock,
+  COST_PARTIAL,
   fromWord,
   PICK_RULE,
+  rewriteGainNote,
+  rewriteSearchNote,
   relevanceWord,
   SELECT_NONE,
   selectionNote,
@@ -93,7 +96,10 @@ test('признак отказа берётся ПОЛЕМ, а не поиск�
 
 test('строка меры называет остаток бюджета остатком, а не ценой запроса', () => {
   const meta = answerMeta(parseResult(result()))
-  assert.equal(meta, 'режим: без отбора · фрагментов: 2 · токенов: 4312 · бюджет дня: остаток $9,87')
+  assert.equal(
+    meta,
+    'режим: без отбора · фрагментов: 2 · токенов вызова ответа: 4312 · бюджет дня: остаток $9,87',
+  )
 })
 
 test('строка меры режима с отбором называет ОБА числа: сколько было и сколько осталось', () => {
@@ -260,14 +266,86 @@ test('окно службы поиска: названо общим, и сказ
   assert.equal(f.paidNothing, true)
 })
 
-test('поиск недоступен: слова службы показаны, и сказано про режим без RAG', () => {
+test('поиск недоступен: слова службы показаны как есть', () => {
   for (const code of ['search_refused', 'search_failed', 'search_unavailable', 'search_empty']) {
     const f = failure({ code, message: 'NO_STRATEGY_INDEX: индекс стратегии не собран.', paidNothing: true })
     assert.equal(f.kind, 'search_down', code)
     assert.equal(f.words, 'NO_STRATEGY_INDEX: индекс стратегии не собран.')
-    assert.match(f.tail, /модель не вызывалась/)
-    assert.match(f.tail, /без RAG/)
+    assert.match(f.tail, /Вызова модели не случилось/)
+    // Про «режим без RAG» речи нет: такого режима у дня 23 не бывает, и
+    // предлагать его значило бы послать посетителя туда, где ничего нет.
+    assert.ok(!/без RAG/.test(f.tail), f.tail)
   }
+})
+
+test('ОТКАЗ ПОИСКА ПОСЛЕ ОПЛАЧЕННОГО ВЫЗОВА про деньги не врёт', () => {
+  // В режиме `rewrite` второй поиск идёт ПОСЛЕ оплаченного переписывания
+  // (правка контракта в PR #311), и его отказ приходит с `paidNothing: false`.
+  // Фраза дня 22 «модель не вызывалась» здесь была бы ложью.
+  const paid = failure({ code: 'search_failed', message: 'сервер не ответил', paidNothing: false })
+  assert.match(paid.tail, /Вызов модели при этом уже состоялся/)
+  assert.ok(!/не случилось|денег не стоил/.test(paid.tail), paid.tail)
+  // Окно службы — та же развилка и тот же источник слов.
+  const window = failure({ code: 'search_refused', message: 'окно', paidNothing: false }, { status: 429 })
+  assert.match(window.lead, /Вызов модели при этом уже состоялся/)
+  // Третий случай остаётся третьим: не знаем — не утверждаем.
+  const silent = failure({ code: 'search_failed', message: 'нет связи' })
+  assert.match(silent.tail, /сервер не сказал/)
+})
+
+test('пять состояний второго поиска РАЗЛИЧАЮТСЯ, а чужое значение им не становится', () => {
+  const note = (v) => rewriteSearchNote(parseResult(result({ mode: 'rewrite', rewriteSearch: v })))
+
+  // Главное различие: «искали только исходный вопрос, потому что переписывание
+  // ничего не дало» против «служба отказала на втором поиске». В первом случае
+  // выдача полна, во втором — урезана чужим отказом.
+  assert.match(note('skipped'), /нового запроса не дало/)
+  assert.ok(!/отказ/i.test(note('skipped')), note('skipped'))
+  assert.match(note('failed'), /Служба отказала/)
+  assert.match(note('failed'), /беднее, чем могла быть/)
+  // Пусто — это не отказ, и сказано это прямо.
+  assert.match(note('empty'), /ничего не нашёл/)
+  assert.match(note('empty'), /не отказ/)
+  assert.match(note('ok'), /прошёл/)
+
+  // Все четыре формулировки РАЗНЫЕ: иначе различать было бы нечем.
+  const all = ['skipped', 'ok', 'empty', 'failed'].map(note)
+  assert.equal(new Set(all).size, 4, 'два состояния второго поиска сказаны одними словами')
+
+  // Значения нет — строки нет: в режимах `rag` и `rerank` второго поиска не бывает.
+  for (const v of [undefined, null, 'что-то', 7]) assert.equal(note(v), null, String(v))
+})
+
+test('полный расход запуска страница не выдаёт за токены вызова ответа', () => {
+  assert.match(COST_PARTIAL, /только вызова ответа/)
+  assert.match(COST_PARTIAL, /полного расхода запуска страница не знает/)
+  assert.match(answerMeta(parseResult(result())), /токенов вызова ответа/)
+})
+
+test('переписывание, не добавившее ни одного кандидата, названо словами', () => {
+  const only = (from) => cands.map((c) => ({ ...c, from }))
+  assert.match(
+    rewriteGainNote(
+      parseResult(result({ mode: 'rewrite', rewriteSearch: 'ok', candidates: only('original') })),
+    ),
+    /не добавил в выдачу ни одного кандидата/,
+  )
+  // Второй поиск отказал или был пуст — об этом уже сказано своей строкой, и
+  // второй раз теми же словами страница не повторяется.
+  for (const v of ['failed', 'empty', 'skipped'])
+    assert.equal(
+      rewriteGainNote(
+        parseResult(result({ mode: 'rewrite', rewriteSearch: v, candidates: only('original') })),
+      ),
+      null,
+      v,
+    )
+  // Добавил — строки нет.
+  assert.equal(rewriteGainNote(parseResult(result({ mode: 'rewrite', candidates: only('both') }))), null)
+  // Режим не тот — строки нет: переписывания в нём не было.
+  assert.equal(rewriteGainNote(parseResult(result({ mode: 'rerank', candidates: only('original') }))), null)
+  // Поля `from` нет ни у кого — считать нечего, и страница не утверждает (I-8).
+  assert.equal(rewriteGainNote(parseResult(result({ mode: 'rewrite', candidates: only(undefined) }))), null)
 })
 
 test('отказ службы на 429 и отказ инструмента различаются, хотя код у них один', () => {
@@ -526,7 +604,8 @@ test('вызовы модели подписаны по назначению, а
     { stage: 'planning', at: at(1), data: { sources: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] } },
     { stage: 'llm_call', at: at(2), data: { purpose: 'rewrite' } },
     { stage: 'llm_result', at: at(2), data: { purpose: 'rewrite', usage: { inputTokens: 100, outputTokens: 20 } } },
-    { stage: 'planning', at: at(3), data: { rewritten: 'инвариант I-4', found: 7 } },
+    { stage: 'rpc', at: at(3), data: { request: '{"q":"переписанный"}', response: '{}', status: 200 } },
+    { stage: 'planning', at: at(3), data: { rewritten: 'инвариант I-4', found: 7, rewriteSearch: 'ok' } },
     { stage: 'llm_call', at: at(3), data: { purpose: 'rerank' } },
     { stage: 'llm_result', at: at(4), data: { purpose: 'rerank', usage: { inputTokens: 900, outputTokens: 60 } } },
     { stage: 'planning', at: at(4), data: { kept: 3, candidates: 10 } },
@@ -540,7 +619,8 @@ test('вызовы модели подписаны по назначению, а
     'ФРАГМЕНТЫ ПОЛУЧЕНЫ',
     'ПЕРЕПИСЫВАНИЕ ВОПРОСА',
     'ЗАПРОС ПЕРЕПИСАН',
-    'ПОИСК ПО ПЕРЕПИСАННОМУ',
+    'ПОИСК ПО ПЕРЕПИСАННОМУ ЗАПРОСУ',
+    'ИТОГ ВТОРОГО ПОИСКА',
     'ОЦЕНКА КАНДИДАТОВ',
     'КАНДИДАТЫ ОЦЕНЕНЫ',
     'ОТБОР',
@@ -572,9 +652,10 @@ test('итог отбора в ленте называет оба числа', (
 
 test('отказ реранкера по схеме — оплаченный, и страница про деньги не врёт', () => {
   const f = failure({ code: 'rerank_invalid', message: 'ответ не по схеме', paidNothing: false })
-  assert.match(f.lead, /вызов модели при этом состоялся/)
+  assert.match(f.lead, /Вызов модели при этом уже состоялся/)
   assert.equal(f.words, 'ответ не по схеме')
-  // Отказы поиска — наоборот: они наступают ДО первого вызова модели.
+  // Отказы поиска остаются своей ветвью — слова службы в них единственное
+  // достоверное число.
   for (const code of ['search_unavailable', 'search_failed', 'search_empty'])
     assert.match(failure({ code, message: 'сломалось', paidNothing: true }).lead, /Поиск недоступен/)
 })
