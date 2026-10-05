@@ -1,14 +1,14 @@
 // Что страница дня 25 говорит о ходе: исход, цитаты, расход и состояние
 // задачи (ADR 2026-10-05-0544, п. 2.3, 3.4 и 5).
 //
-// ПОЧЕМУ ДОСЛОВНОСТЬ ДЕРЖИТ ТЕСТ, А НЕ ДОКУМЕНТ РАСКЛАДКИ: правило «без
-// отдельной фазы раскладки» распространено на день 25 поправкой владельца
-// [2026-10-05] к ADR 2026-10-05-0544, п. 5. Прежняя редакция того же пункта
-// требовала раскладку у дня 25 («у дня 25 раскладка нужна»), поэтому ссылка
-// просто на «п. 5» без поправки была бы ссылкой на отменённое утверждение.
-// Экран взят от раскладки дня 15 (design/2026-09-21-1852-staged-run-layout.md);
-// дословные формулировки новых блоков держит ЭТОТ ТЕСТ — иначе их правка
-// прошла бы незамеченной (урок п. 10 раскладки дня 22).
+// ПОЧЕМУ ДОСЛОВНОСТЬ ДЕРЖИТ ТЕСТ, А НЕ ДОКУМЕНТ РАСКЛАДКИ: отдельной фазы
+// раскладки у дня 25 нет — решение владельца, ADR
+// `2026-10-05-0942-day25-owner-amendments`. На п. 5 ADR `2026-10-05-0544`
+// ссылаться нельзя: там требуется раскладка у дня 25, и это ровно то
+// утверждение, которое владелец отменил. Экран взят от раскладки дня 15
+// (`design/2026-09-21-1852-staged-run-layout.md`); дословные формулировки
+// новых блоков держит ЭТОТ ТЕСТ — иначе их правка прошла бы незамеченной
+// (урок п. 10 раскладки дня 22).
 //
 // Метод тот же, что в `day25-page-prompts.test.js`: правила вынесены в
 // странице в выделяемый блок без DOM, тест ВЫРЕЗАЕТ ЭТОТ БЛОК ИЗ СТРАНИЦЫ и
@@ -34,7 +34,7 @@ const rules = (() => {
   return new Function(`${page.slice(from, to)}
     return { OUTCOME_TEXT, OUTCOME_UNKNOWN, WEAK_OUTCOMES, QUOTE_WORD, MONEY_TEXT,
              moneyWord, httpMoneyWord, outcomeText, weakOutcome, searchLine, orphanQuotes,
-             fragmentOf, claimedNote, citedExact, checkLine, CLAIMED_PREFIX, CHECK_LABEL };`)()
+             claimedNote, checkLine, CLAIMED_PREFIX, CHECK_LABEL };`)()
 })()
 
 test('четыре исхода хода названы дословно и различимы между собой', () => {
@@ -122,9 +122,22 @@ test('каждый вызывающий говорит о деньгах ров�
   // если его ЗОВУТ в нужных местах и НЕ зовут в остальных.
   //
   // 1. поток событий — единственный источник `paidNothing`;
-  assert.match(page, /money: moneyWord\(end\.error\.paidNothing\),/)
-  // 2. отказ дня по HTTP — из кода ответа;
-  assert.match(page, /money: httpMoneyWord\(response\.status\),/)
+  assert.match(page, /const word = moneyWord\(end\.error\.paidNothing\);/)
+  assert.match(page, /answered\(text, \{ error: true, money: word \}\);/)
+  // 2. отказ дня по HTTP — из кода ответа, но слово самого дня сильнее: на
+  //    отказе ДО резерва слота день ставит `slot: 'free'`, и «считаем занятым»
+  //    было бы неправдой (находка `reviewer` к PR #318).
+  assert.match(
+    page,
+    /money: data\.slot === 'free' \? 'none' : httpMoneyWord\(response\.status\),/,
+  )
+  const server = readFileSync(new URL('../server.js', import.meta.url), 'utf8')
+  assert.match(server, /return send\(res, 502, \{ error: AGENT_DOWN, slot: 'free' \}\)/)
+  // И это ровно тот 502, который случается до `ctx.run.take`: ниже по тексту
+  // обработчика, не выше.
+  const atSlot = server.indexOf("slot: 'free'")
+  const atTake = server.indexOf('const slot = ctx.run.take(rounds)')
+  assert.ok(atSlot > 0 && atTake > atSlot, 'отказ со свободным слотом стоит уже после резерва')
   // 3. остальные три вызывающих молчат: ни `money`, ни `paidNothing`.
   const silent = [
     "answered('поток закрылся без ответа', { error: true });",
@@ -137,6 +150,42 @@ test('каждый вызывающий говорит о деньгах ров�
   assert.equal(page.includes('paidNothing: end.error.paidNothing'), false)
   // Рендер не печатает строку без слова.
   assert.match(page, /const money = moneyLine\(meta\.money\);\n\s+if \(money\) li\.append\(money\);/)
+})
+
+test('слово о деньгах переживает перечитывание переписки, а не живёт один кадр', () => {
+  // Находка `design-review` к PR #318: признак `paidNothing` приходит один
+  // раз — в `end` потока, — а служба хранит реплику отказа как
+  // `{ error: true, code }` без признака расхода. Карточка перерисовывается из
+  // чтения переписки, и строка о деньгах исчезала через секунду после показа.
+  //
+  // Связь — по тексту отказа и только у ПОСЛЕДНЕЙ реплики: идентификатора
+  // запуска у сохранённой реплики нет вовсе.
+  assert.match(page, /let lastRefusal = null;/)
+  assert.match(page, /lastRefusal = word === null \? null : \{ text, word \};/)
+  assert.match(page, /fresh\.meta = \{ \.\.\.fresh\.meta, money: lastRefusal\.word \};/)
+  // Правило переноса, выписанное из страницы: слово достаётся только свежей
+  // реплике агента с тем же текстом и без своего слова.
+  const carry = (refusal, fresh) =>
+    refusal !== null &&
+    fresh !== undefined &&
+    fresh.role === 'agent' &&
+    fresh.meta?.error === true &&
+    fresh.meta.money === undefined &&
+    fresh.text === refusal.text
+  const refusal = { text: 'Поиск отказал. Модель не вызывалась.', word: 'free' }
+  const stored = { role: 'agent', text: refusal.text, meta: { error: true, code: 'search_refused' } }
+  assert.equal(carry(refusal, stored), true)
+  // Чужой текст — не переносим: это другой отказ.
+  assert.equal(carry(refusal, { ...stored, text: 'другое' }), false)
+  // Не отказ и не реплика агента — тоже нет.
+  assert.equal(carry(refusal, { ...stored, meta: {} }), false)
+  assert.equal(carry(refusal, { ...stored, role: 'user' }), false)
+  // Своё слово не перебиваем.
+  assert.equal(carry(refusal, { ...stored, meta: { error: true, money: 'paid' } }), false)
+  // Нет памяти — нет переноса.
+  assert.equal(carry(null, stored), false)
+  // Память уходит вместе с диалогом: чужое слово не достаётся новой переписке.
+  assert.match(page, /taskUnstored = false;\n\s+lastRefusal = null;/)
 })
 
 test('строка поиска называет переписанный запрос, а молчание — словами', () => {
@@ -178,7 +227,10 @@ test('панель состояния задачи переживает пере
   assert.equal(/не отдаёт/.test(empty[1]), false, 'в тексте осталась снятая граница')
   // И состояние действительно берётся из чтения переписки, а не только из
   // результата хода: иначе обещание «переживёт перезагрузку» было бы ложью.
-  assert.match(page, /if \(!\(born && d\.task === undefined\)\) taskState = d\.task \?\? null;/)
+  assert.match(page, /\n    taskState = d\.task \?\? null;/)
+  // Ветви «а если поля нет вовсе» быть не должно: ручка ставит `task` во всех
+  // ответах, и прежняя такая ветвь была мёртвой (находка `reviewer`).
+  assert.equal(page.includes('born'), false, 'мёртвая ветвь первого хода вернулась')
   // Сервер проносит поле от службы и не достраивает его сам.
   const server = readFileSync(new URL('../server.js', import.meta.url), 'utf8')
   assert.match(server, /task: json\.task \?\? null,/)
@@ -186,30 +238,21 @@ test('панель состояния задачи переживает пере
   assert.equal((server.match(/task: null,/g) ?? []).length, 3, 'пустых ветвей переписки три')
 })
 
-test('состояние задачи меняется вместе с диалогом, а первый ход не гасит панель', () => {
-  // Правило из страницы: панель показывает то, что лежит у службы, но
-  // ПЕРВЫЙ ход нового диалога — исключение: имя диалога появляется как раз
-  // им, а чтение переписки могло опередить запись состояния у службы.
-  const guard = page.match(/const born = sessionName === null && nextSession !== null;/)
-  assert.notEqual(guard, null, 'правило первого хода переписано')
-  const adopt = (sessionName, nextSession, task, before) => {
-    const born = sessionName === null && nextSession !== null
-    return born && task === undefined ? before : (task ?? null)
-  }
-  // Первый ход: имя появилось, поля ещё нет — состояние из результата хода
-  // остаётся на экране.
-  assert.deepEqual(adopt(null, 'синий-кит-7', undefined, { goal: 'цель' }), { goal: 'цель' })
-  // Служба назвала состояние — оно и есть истина, именно оно уйдёт в поиск.
-  assert.deepEqual(adopt('синий-кит-7', 'синий-кит-7', { goal: 'из службы' }), { goal: 'из службы' })
-  // Диалог сменился — чужая цель с экрана уходит.
-  assert.equal(adopt('синий-кит-7', 'тихий-лис-3', null, { goal: 'чужая' }), null)
-  // «Очистить»: диалога нет, состояния нет.
-  assert.equal(adopt('синий-кит-7', null, null, { goal: 'прежняя' }), null)
+test('состояние задачи показывается то, что лежит у службы', () => {
+  // Панель не достраивает состояние: пришло — показывает, `null` — пусто.
+  // Второго источника истины здесь быть не должно: в поиск следующего хода
+  // уйдёт именно то, что лежит у службы.
+  const adopt = (task) => task ?? null
+  assert.deepEqual(adopt({ goal: 'из службы' }), { goal: 'из службы' })
+  assert.equal(adopt(null), null)
+  assert.equal(adopt(undefined), null)
 
   // Предупреждение «не сохранено» живёт отдельно от состояния: в панели стоит
   // то, что у службы, а предупреждение — про неудавшуюся правку.
   assert.match(page, /taskUnstored = r\.task\.stored === false;/)
   assert.match(page, /warn\.hidden = !taskUnstored;/)
+  // И оно не переезжает в другой диалог вместе с состоянием.
+  assert.match(page, /taskUnstored = false;\n\s+lastRefusal = null;/)
 })
 
 test('недоверенный текст хода попадает на экран только через textContent', () => {
@@ -243,76 +286,67 @@ test('отказанный ход не выдаётся полосой за «Г
 
 // --- путь источника и четвёртая проверка (находка `compliance` к PR #318) ---
 
-test('путь источника берётся из отбора, а не из ответа модели', () => {
-  // Под подтверждённой дословно цитатой иначе стоял бы путь, который модель
-  // придумала: номер её, путь наш (образец — день 24).
-  const sources = [
-    { n: 1, source: 'agent_docs/invariants.md', section: 'I-4' },
-    { n: 4, source: 'days/day25/server.js', section: 'диспетчер' },
-  ]
-  assert.equal(rules.fragmentOf(1, sources).source, 'agent_docs/invariants.md')
-  assert.equal(rules.fragmentOf(9, sources), null, 'чужой номер пути не получает')
-  assert.equal(rules.fragmentOf(1, undefined), null)
-  // И рендер строки источника действительно зовёт отбор, а не поле ответа.
-  assert.match(page, /const real = fragmentOf\(src\.n, sources\);/)
-  assert.match(page, /head\.append\(n, ' ', String\(real\?\.source \?\? src\.source \?\? ''\)\);/)
-})
-
-test('расхождение пути не прячется: «модель назвала» стоит рядом', () => {
-  const sources = [{ n: 1, source: 'agent_docs/invariants.md', section: 'I-4' }]
+test('что назвала модель, страница читает из claimedSource, а не из source', () => {
+  // БЛОКИРУЮЩАЯ НАХОДКА `compliance` к PR #318. По контракту хода
+  // (`agent_docs/guides/day25-chat-contract.md`, «Результат хода») у записи
+  // `cited[]` путь и раздел УЖЕ из отбора, а заявленное моделью лежит рядом в
+  // `claimedSource`/`claimedSection` (`agents/src/rag/cited.js`). Прежняя
+  // редакция страницы читала `cited[].source` как заявленное и сравнивала его
+  // с отбором сама: поля совпадали по построению, поэтому «модель назвала»
+  // не показывалось НИКОГДА.
   assert.equal(rules.CLAIMED_PREFIX, 'модель назвала: ')
-  // Совпало — строки нет: лишняя пометка под каждым источником обесценила бы её.
-  assert.equal(rules.claimedNote({ n: 1, source: 'agent_docs/invariants.md' }, sources), null)
+  // Совпало — строки нет: пометка под каждым источником обесценила бы её.
+  assert.equal(
+    rules.claimedNote({ n: 1, source: 'agent_docs/invariants.md', claimedSource: 'agent_docs/invariants.md' }),
+    null,
+  )
   // Разошлось — названо имя, а не только признак.
   assert.equal(
-    rules.claimedNote({ n: 1, source: 'AGENTS.md' }, sources),
+    rules.claimedNote({ n: 1, source: 'agent_docs/invariants.md', claimedSource: 'AGENTS.md' }),
     'модель назвала: AGENTS.md',
   )
-  // Нет поля, пустая строка и неизвестный номер — тоже молчание: сравнивать
-  // не с чем, а выдуманный путь показывать нечего.
-  assert.equal(rules.claimedNote({ n: 1, source: '' }, sources), null)
-  assert.equal(rules.claimedNote({ n: 1 }, sources), null)
-  assert.equal(rules.claimedNote({ n: 7, source: 'AGENTS.md' }, sources), null)
+  // Пустое и отсутствующее заявленное — молчание: сравнивать не с чем.
+  assert.equal(rules.claimedNote({ n: 1, source: 'AGENTS.md', claimedSource: '' }), null)
+  assert.equal(rules.claimedNote({ n: 1, source: 'AGENTS.md' }), null)
+  assert.equal(rules.claimedNote(undefined), null)
+  // Мутация, на которой тест краснеет: вернуть чтение `cited.source` вместо
+  // `cited.claimedSource` — тогда расхождение снова не покажется никогда.
+  assert.match(page, /const claimed = cited\?\.claimedSource;/)
+  // И путь в строке источника берётся как есть: он уже из отбора, второй
+  // сверки страница не делает.
+  assert.match(page, /head\.append\(n, ' ', String\(src\.source \?\? ''\)\);/)
 })
 
-test('четвёртая проверка считается точным сравнением и помечена как сверка страницы', () => {
-  const sources = [
-    { n: 1, source: 'agent_docs/invariants.md', section: 'I-4' },
-    { n: 4, source: 'days/day25/server.js', section: 'диспетчер' },
-  ]
-  const exact = [
-    { n: 1, source: 'agent_docs/invariants.md' },
-    { n: 4, source: 'days/day25/server.js' },
-  ]
-  assert.equal(rules.citedExact(exact, sources), true)
-  // Точное сравнение, а не по подстроке — находка дня 22 про q72/q57.
-  assert.equal(
-    rules.citedExact([{ n: 1, source: 'invariants.md' }], sources),
-    false,
-    'подстрока прошла за точное совпадение',
-  )
-  assert.equal(rules.citedExact([{ n: 1, source: 'agent_docs/invariants.md' }, { n: 4, source: 'нет' }], sources), false)
-  // Ни одного названного источника — считать не по чему, и это не «нет».
-  assert.equal(rules.citedExact([], sources), null)
-  assert.equal(rules.citedExact(undefined, sources), null)
-
-  // Поля `cited_exact` в контракте дня 25 нет: три проверки от службы,
-  // четвёртая — сверка страницы, и в ярлыке это сказано.
-  assert.match(rules.CHECK_LABEL.cited_exact, /сверка страницы/)
+test('четвёртая проверка — поле службы, а не счёт страницы', () => {
+  // `checks.cited_exact` считает служба точным сравнением (не по подстроке —
+  // находка дня 22 про q72/q57). Второй счёт на странице разошёлся бы с
+  // первым молча, поэтому его нет вовсе.
   assert.deepEqual(Object.keys(rules.CHECK_LABEL), [
     'sources_present', 'quotes_present', 'quotes_verbatim', 'cited_exact',
   ])
-
-  // Непришедшая проверка — «не пришло», а не «нет» (I-8).
-  const line = rules.checkLine({ sources_present: true, quotes_present: true }, exact, sources)
-  assert.match(line, /источники названы — да/)
-  assert.match(line, /цитаты найдены дословно — не пришло/)
-  assert.match(line, /путь источника назван моделью точно \(сверка страницы\) — да/)
-  const bad = rules.checkLine(
-    { sources_present: true, quotes_present: true, quotes_verbatim: false },
-    [{ n: 1, source: 'AGENTS.md' }],
-    sources,
+  assert.equal(rules.CHECK_LABEL.cited_exact, 'путь источника назван моделью точно')
+  assert.equal(
+    /сверка страницы/.test(rules.CHECK_LABEL.cited_exact),
+    false,
+    'ярлык всё ещё обещает счёт страницы',
   )
-  assert.match(bad, /цитаты найдены дословно — нет/)
-  assert.match(bad, /точно \(сверка страницы\) — нет/)
+  // Все четыре клетки читаются из `checks` одной формулой.
+  const line = rules.checkLine({
+    sources_present: true,
+    quotes_present: true,
+    quotes_verbatim: false,
+    cited_exact: false,
+  })
+  assert.match(line, /источники названы — да/)
+  assert.match(line, /цитаты приведены — да/)
+  assert.match(line, /цитаты найдены дословно — нет/)
+  assert.match(line, /путь источника назван моделью точно — нет/)
+  // Непришедшая проверка — «не пришло», а не «нет» (I-8): страница не
+  // называет непришедшее проваленным.
+  const partial = rules.checkLine({ sources_present: true })
+  assert.match(partial, /цитаты приведены — не пришло/)
+  assert.match(partial, /путь источника назван моделью точно — не пришло/)
+  assert.match(rules.checkLine(undefined), /источники названы — не пришло/)
+  // Страница зовёт правило ровно с полем службы и ничем больше.
+  assert.match(page, /checkLine\(rag\.checks\)/)
 })

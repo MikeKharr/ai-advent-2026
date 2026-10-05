@@ -22,8 +22,9 @@
        решением владельца 2026-09-23 (ADR 2026-09-23-0726): наследование экрана
        само исключения не даёт, каждый день — отдельное решение.
 
-       ДЛЯ ДНЯ 25 РЕШЕНИЕ ЕСТЬ: владелец распространил это именное исключение
-       на день 25 (2026-10-05, по PR #318) — на тех же условиях, что у дня 15.
+       ДЛЯ ДНЯ 25 РЕШЕНИЕ ЕСТЬ, и оно записано отдельным ADR:
+       2026-10-05-0942-day25-owner-amendments — владелец распространил это
+       именное исключение на день 25 на тех же условиях, что у дня 15.
        Применено оно в одном месте, унаследованном вместе с экраном: обводка
        значка настроек. Корпус и прошлые дни не трогаются, и следующему дню
        исключение снова не достанется по наследству — каждый день отдельное
@@ -3991,13 +3992,13 @@
 
   /* --- Выделяемый блок: его извлекает и исполняет test/day25-page-rag.test.js.
          Всё, что решает, ЧТО написано о ходе, живёт здесь и не трогает DOM.
-         ОТКУДА ЗДЕСЬ ТЕКСТЫ, А НЕ ИЗ ДОКУМЕНТА РАСКЛАДКИ: правило «без
-         отдельной фазы раскладки» распространено на день 25 поправкой
-         владельца [2026-10-05] к ADR 2026-10-05-0544, п. 5 — прежняя
-         редакция того же пункта говорила обратное («у дня 25 раскладка
-         нужна»), и ссылаться на неё было бы неправдой. Экран взят от
-         раскладки дня 15 (design/2026-09-21-1852-staged-run-layout.md), а
-         дословные формулировки новых блоков держит тест
+         ОТКУДА ЗДЕСЬ ТЕКСТЫ, А НЕ ИЗ ДОКУМЕНТА РАСКЛАДКИ: отдельной фазы
+         раскладки у дня 25 нет — решение владельца, ADR
+         2026-10-05-0942-day25-owner-amendments. Ссылаться на п. 5 ADR
+         2026-10-05-0544 нельзя: там сказано обратное («у дня 25 раскладка
+         нужна»), и это ровно то утверждение, которое владелец отменил. Экран
+         взят от раскладки дня 15 (design/2026-09-21-1852-staged-run-layout.md),
+         а дословные формулировки новых блоков держит тест
          test/day25-page-rag.test.js — как у дней 23 и 24. --- */
 
   /**
@@ -4059,6 +4060,12 @@
    *     есть 4xx значит «слот не занят», а 5xx — «считаем занятым». Чего
    *     страница не знает (запрос не ушёл, поток оборвался), остаётся
    *     молчанием.
+   *
+   * ПРЕМИСА ПРАВИЛА О ПЯТИСОТЫХ названа прямо: «мог быть вызов» верно не для
+   * всякого 502 — ручка хода отвечает им и ДО резерва слота, когда не удалось
+   * прочитать предел кругов. Такой отказ день помечает полем `slot: 'free'`,
+   * и оно сильнее кода ответа: знает об этом только он (находка `reviewer` к
+   * PR #318).
    */
   const MONEY_TEXT = {
     free: 'Денег отказ не стоил: ни один вызов модели не состоялся, слот суточного лимита возвращён.',
@@ -4105,78 +4112,51 @@
   };
 
   /**
-   * ПУТЬ ФРАГМЕНТА БЕРЁТСЯ ИЗ ОТБОРА, А НЕ ИЗ ОТВЕТА МОДЕЛИ (образец — день
-   * 24, `days/day24/public/run.js`). Это не придирка к формулировке: модель
-   * возвращает `sources[]` сама, и под подтверждённой дословно цитатой иначе
-   * стоял бы путь, который она придумала. Номер — её, путь — наш.
+   * ЧТО НАЗВАЛА САМА МОДЕЛЬ, когда это расходится с путём фрагмента.
    *
-   * `null` — номера нет среди ушедших модели фрагментов. Такого быть не
-   * должно (чужой номер служба отвергает как отказ формы), но если случится,
-   * показывать нечего, и выдумывать путь нельзя.
-   */
-  const fragmentOf = (n, sources) => (sources ?? []).find((item) => item?.n === n) ?? null;
-
-  /**
-   * Что назвала сама модель, когда это расходится с настоящим путём. Прятать
-   * расхождение нельзя: иначе его видно только одним признаком, то есть
-   * клеткой «нет» без имени.
+   * По контракту хода (`agent_docs/guides/day25-chat-contract.md`, «Результат
+   * хода») у записи `cited[]` путь и раздел УЖЕ ИЗ ОТБОРА, а заявленное
+   * моделью едет рядом полями `claimedSource` и `claimedSection`
+   * (`agents/src/rag/cited.js`). То есть сверять поля страница не должна и не
+   * вправе: сверку делает служба, а здесь — только показ.
+   *
+   * Прежняя редакция этого места читала `cited[].source` как «что назвала
+   * модель» и сравнивала его с отбором сама. Поля совпадали по построению,
+   * поэтому расхождение не показывалось НИКОГДА, а четвёртая проверка всегда
+   * говорила «да» — блокирующая находка `compliance` к PR #318.
    */
   const CLAIMED_PREFIX = 'модель назвала: ';
-  const claimedNote = (cited, sources) => {
-    const claimed = cited?.source;
+  const claimedNote = (cited) => {
+    const claimed = cited?.claimedSource;
     if (typeof claimed !== 'string' || claimed === '') return null;
-    const real = fragmentOf(cited?.n, sources);
-    if (real === null || claimed === real.source) return null;
+    if (claimed === cited?.source) return null;
     return `${CLAIMED_PREFIX}${claimed}`;
   };
 
   /**
-   * Точно ли модель назвала пути всех источников, на которые сослалась.
-   * Сравнение ТОЧНОЕ, а не по подстроке — находка дня 22 про q72/q57.
-   *
-   * Поля `cited_exact` в контракте хода дня 25 НЕТ: служба присылает три
-   * проверки (`sources_present`, `quotes_present`, `quotes_verbatim`), а эту
-   * считает страница — по тем же данным, из которых её считал бы сервис
-   * (`cited` против `sources`). Поэтому в строке проверок она помечена как
-   * сверка страницы: выдавать свой счёт за ответ службы нельзя.
-   *
-   * `null` — считать не по чему: модель не назвала ни одного источника.
-   */
-  const citedExact = (cited, sources) => {
-    const named = (cited ?? []).filter((item) => typeof item?.source === 'string');
-    if (named.length === 0) return null;
-    return named.every((item) => {
-      const real = fragmentOf(item.n, sources);
-      return real !== null && real.source === item.source;
-    });
-  };
-
-  /**
-   * ЧЕТЫРЕ ПРОВЕРКИ в строке под источниками. Три первых — поля службы, и
+   * ЧЕТЫРЕ ПРОВЕРКИ в строке под источниками — все четыре поля службы, и
    * страница рисует ровно то, что пришло: `null` значит «проверки не пришло»,
-   * а не «нет» (I-8). Четвёртая — сверка страницы (см. `citedExact`), и без
-   * неё три первых врут вместе: при расхождении путей три «да» читались бы
-   * как «всё сошлось».
+   * а не «нет» (I-8). Своего счёта здесь нет ни одного: `cited_exact` считает
+   * служба точным сравнением (не по подстроке — находка дня 22 про q72/q57), и
+   * второй счёт на странице разошёлся бы с первым молча.
+   *
+   * Четвёртая нужна рядом с тремя первыми: без неё при расхождении путей три
+   * «да» читались бы как «всё сошлось».
    */
   const CHECK_LABEL = {
     sources_present: 'источники названы',
     quotes_present: 'цитаты приведены',
     quotes_verbatim: 'цитаты найдены дословно',
-    cited_exact: 'путь источника назван моделью точно (сверка страницы)',
+    cited_exact: 'путь источника назван моделью точно',
   };
   const CHECK_WORD = { true: 'да', false: 'нет', null: 'не пришло' };
-  const checkLine = (checks, cited, sources) => {
-    const values = {
-      sources_present: typeof checks?.sources_present === 'boolean' ? checks.sources_present : null,
-      quotes_present: typeof checks?.quotes_present === 'boolean' ? checks.quotes_present : null,
-      quotes_verbatim:
-        typeof checks?.quotes_verbatim === 'boolean' ? checks.quotes_verbatim : null,
-      cited_exact: citedExact(cited, sources),
-    };
-    return Object.entries(CHECK_LABEL)
-      .map(([key, label]) => `${label} — ${CHECK_WORD[String(values[key])]}`)
+  const checkLine = (checks) =>
+    Object.entries(CHECK_LABEL)
+      .map(([key, label]) => {
+        const value = typeof checks?.[key] === 'boolean' ? checks[key] : null;
+        return `${label} — ${CHECK_WORD[String(value)]}`;
+      })
       .join(' · ');
-  };
 
   /* --- конец выделяемого блока --- */
 
@@ -4193,7 +4173,7 @@
     return box;
   };
 
-  const sourceRow = (src, quotes, sources) => {
+  const sourceRow = (src, quotes) => {
     const item = document.createElement('li');
     item.className = 'src';
     const head = document.createElement('p');
@@ -4203,19 +4183,18 @@
     // Номер тот же, под которым фрагмент ушёл модели: номера идут с
     // пропусками, и переназывать их страница не вправе.
     n.textContent = `[${src.n}]`;
-    // Путь и раздел — ИЗ ОТБОРА по этому номеру, а не из ответа модели.
-    const real = fragmentOf(src.n, sources);
-    head.append(n, ' ', String(real?.source ?? src.source ?? ''));
-    const section = real?.section ?? src.section;
-    if (section) {
+    // Путь и раздел здесь УЖЕ из отбора — так их складывает служба
+    // (контракт хода, «Результат хода»): показ, а не выбор.
+    head.append(n, ' ', String(src.source ?? ''));
+    if (src.section) {
       const sec = document.createElement('span');
       sec.className = 'src-sec';
-      sec.textContent = ` · ${section}`;
+      sec.textContent = ` · ${src.section}`;
       head.append(sec);
     }
     item.append(head);
     // Что назвала сама модель, если это расходится: расхождение не прячется.
-    const claimed = claimedNote(src, sources);
+    const claimed = claimedNote(src);
     if (claimed !== null) {
       const note = document.createElement('p');
       note.className = 'src-claimed';
@@ -4262,7 +4241,7 @@
       const list = document.createElement('ol');
       list.className = 'srcs';
       for (const src of cited)
-        list.append(sourceRow(src, quotes.filter((q) => q.n === src.n), rag.sources));
+        list.append(sourceRow(src, quotes.filter((q) => q.n === src.n)));
       box.append(list);
     }
     const orphans = orphanQuotes(quotes, cited);
@@ -4286,11 +4265,11 @@
       box.append(ask);
     }
 
-    // Четыре проверки одной строкой: три от службы и одна — сверка страницы.
+    // Четыре проверки одной строкой, и все четыре — поля службы.
     if (cited.length > 0 || quotes.length > 0) {
       const checks = document.createElement('p');
       checks.className = 'sum';
-      checks.textContent = `проверки: ${checkLine(rag.checks, cited, rag.sources)}`;
+      checks.textContent = `проверки: ${checkLine(rag.checks)}`;
       box.append(checks);
     }
 
@@ -4814,6 +4793,24 @@
    */
   let taskUnstored = false;
 
+  /**
+   * Слово о деньгах последнего ОТКАЗАННОГО хода: `{ text, word }` или `null`.
+   *
+   * Зачем хранить. Признак `paidNothing` приходит один раз — в `end` потока
+   * событий, — и карточка отказа живёт ровно до следующего чтения переписки:
+   * служба хранит реплику отказа как `{ error: true, code }`, без признака
+   * расхода (`agents/src/staged.js`, `fail`). Прежняя редакция теряла строку о
+   * деньгах через секунду после показа (находка `design-review` к PR #318).
+   *
+   * Почему не трогаем службу: это PR страницы, и поле в `messages.meta` — её
+   * работа, не наша. Связываем по ТЕКСТУ отказа и только у ПОСЛЕДНЕЙ реплики:
+   * идентификатора запуска у сохранённой реплики нет вовсе, а слово относится
+   * к свежему ходу. Два отказа с одинаковым текстом подряд: слово достанется
+   * свежему, а у прежней карточки строки не будет — молчание вместо чужого
+   * расхода.
+   */
+  let lastRefusal = null;
+
   const TASK_EMPTY =
     'Состояние задачи ведёт отдельный вызов на этапе «Пополнение памяти»: цель разговора, '
     + 'ограничения, термины и уточнения. Оно появится здесь после первого ответа агента и '
@@ -4899,19 +4896,39 @@
     headId = Number.isInteger(d.head) ? d.head : null;
     activeTopic = d.topic ?? null;
     pendingTopic = d.pendingTopic ?? null;
+    // Слово о деньгах последнего отказа переносится на перечитанную реплику:
+    // служба признака расхода не хранит, а показывать его один кадр — то же,
+    // что не показывать.
+    const fresh = messages.at(-1);
+    if (
+      lastRefusal !== null &&
+      fresh !== undefined &&
+      fresh.role === 'agent' &&
+      fresh.meta?.error === true &&
+      fresh.meta.money === undefined &&
+      fresh.text === lastRefusal.text
+    ) {
+      fresh.meta = { ...fresh.meta, money: lastRefusal.word };
+    }
+
     const nextSession = d.session?.name ?? null;
-    // Состояние задачи живёт с диалогом, и его приносит сама служба. Поле
-    // отсутствует (старый сервис) или `null` (строки нет) — панель пуста:
-    // достраивать её по репликам значило бы придумать цель.
+    // Состояние задачи живёт с диалогом, и его приносит сама служба: `null`
+    // значит «строки нет», и панель пуста — достраивать её по репликам
+    // значило бы придумать цель.
     //
-    // Первый ход нового диалога — единственное исключение: имя диалога
-    // появляется как раз этим ходом, а состояние уже пришло в его результате,
-    // и чтение переписки могло опередить запись у службы.
-    const born = sessionName === null && nextSession !== null;
-    if (!(born && d.task === undefined)) taskState = d.task ?? null;
-    // Диалог сменился или исчез — чужое предупреждение не переносится.
-    if (nextSession === null || (sessionName !== null && nextSession !== sessionName))
+    // Ветви «а если поля нет вовсе» здесь НЕТ, и это не упущение: ручка
+    // `/api/chat` ставит `task` во всех своих ответах — и у живого диалога, и
+    // у трёх пустых (нет диалога, истёк, очищен). Прежняя редакция держала
+    // такую ветвь «на первый ход нового диалога», и она была мёртвой:
+    // состояние к тому моменту уже записано службой на этапе пополнения, до
+    // конца хода (находка `reviewer` к PR #318).
+    taskState = d.task ?? null;
+    // Диалог сменился или исчез — чужое предупреждение и чужое слово о
+    // деньгах не переносятся.
+    if (nextSession === null || (sessionName !== null && nextSession !== sessionName)) {
       taskUnstored = false;
+      lastRefusal = null;
+    }
     sessionName = nextSession;
     renderTask();
     // Полоса встаёт в то же положение, в котором стоит сервис. Пока запуск в
@@ -5926,10 +5943,11 @@
       } else if (end.error) {
         // Единственный источник признака `paidNothing` — этот `end`. Нет
         // признака — `moneyWord` вернёт `null`, и строки о деньгах не будет.
-        answered(end.error.message ?? 'агент не ответил', {
-          error: true,
-          money: moneyWord(end.error.paidNothing),
-        });
+        const text = end.error.message ?? 'агент не ответил';
+        const word = moneyWord(end.error.paidNothing);
+        // Слово запоминается, только если оно есть: молчание переносить нечем.
+        lastRefusal = word === null ? null : { text, word };
+        answered(text, { error: true, money: word });
       }
       setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
         ? end.status
@@ -6053,7 +6071,10 @@
         // берётся из кода ответа, потому что по нему же день ведёт учёт.
         answered(data.error ?? `ответ ${response.status}`, {
           error: true,
-          money: httpMoneyWord(response.status),
+          // Слово самого дня сильнее кода ответа: у пятисотых правило
+          // «считаем занятым» верно не всегда — отказ до резерва слота день
+          // помечает `slot: 'free'`, и это знает только он.
+          money: data.slot === 'free' ? 'none' : httpMoneyWord(response.status),
         });
         return finish('idle');
       }
