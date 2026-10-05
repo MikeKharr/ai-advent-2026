@@ -102,10 +102,8 @@ export function createLimiter(env, { now = () => Date.now() } = {}) {
       callsToday += 1
       hits.set(ip, [...times, t])
       // Со слотом уезжают отметка суток (по ней `release` узнаёт, те ли это
-      // сутки) и два флага: `spent` ставит обработчик, когда до сервиса
-      // агентов что-то ушло, `returned` — сам `release`, чтобы вернуть один
-      // раз.
-      return { ok: true, day, spent: false, returned: false }
+      // сутки) и флаг `returned`, которым сам `release` гасит второй вызов.
+      return { ok: true, day, returned: false }
     },
 
     /**
@@ -118,10 +116,12 @@ export function createLimiter(env, { now = () => Date.now() } = {}) {
      * меняется: `reserve` остаётся до работы, резервирование не переезжает в
      * обработчик — держатель шва цел.
      *
-     * РЕШАЕТ ЭТА ФУНКЦИЯ, А ЗНАЕТ ОБРАБОТЧИК: факт обращения к сервису
-     * помечает `slot.spent`, и помеченный слот не отпускается. Границу «ничего
-     * не было потрачено» кодом держит пометка, а не внимательность читателя
-     * комментария (`server.js`, `dispatch` и `handleRun`).
+     * ЧТО СЧИТАТЬ ОТКАЗОМ БЕЗ ВЫЗОВА, решает не этот метод, а диспетчер по
+     * коду ответа (`server.js`, `dispatch`): 4xx — слот обратно, 5xx —
+     * сгорает. Граница названа там же вместе со своей ценой. Пометки на слоте
+     * здесь нет намеренно: единственная ветвь, ради которой её ставили, по
+     * решению владельца слот как раз возвращает, и пометка оказалась мёртвой —
+     * мутация «не ставить её» не красила ни одного теста.
      *
      * ОКНА НА АДРЕС НЕ ТРОГАЮТСЯ, и это не упущение: они про ЧАСТОТУ, а не про
      * деньги. Запрос был сделан, и залп пустых тел обязан упираться в минутное
@@ -136,7 +136,7 @@ export function createLimiter(env, { now = () => Date.now() } = {}) {
     release(slot) {
       rollDay()
       if (slot === null || typeof slot !== 'object') return false
-      if (slot.ok !== true || slot.returned === true || slot.spent === true) return false
+      if (slot.ok !== true || slot.returned === true) return false
       if (slot.day !== day) return false
       if (callsToday <= 0) return false
       callsToday -= 1
