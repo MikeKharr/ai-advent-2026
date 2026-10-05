@@ -22,12 +22,12 @@
        решением владельца 2026-09-23 (ADR 2026-09-23-0726): наследование экрана
        само исключения не даёт, каждый день — отдельное решение.
 
-       ДЛЯ ДНЯ 25 ТАКОГО РЕШЕНИЯ НЕТ. Экран дня 25 — копия экрана дня 15, и
-       токен приехал вместе с единственным местом, где он применён: обводкой
-       значка настроек. Молча считать исключение распространённым нельзя —
-       правило выше запрещает это прямо, — поэтому отклонение названо здесь и
-       в описании PR, и закрыть его может только владелец. Корпус и прошлые
-       дни не трогаются. Контраст пересчитан по правилу корпуса:
+       ДЛЯ ДНЯ 25 РЕШЕНИЕ ЕСТЬ: владелец распространил это именное исключение
+       на день 25 (2026-10-05, по PR #318) — на тех же условиях, что у дня 15.
+       Применено оно в одном месте, унаследованном вместе с экраном: обводка
+       значка настроек. Корпус и прошлые дни не трогаются, и следующему дню
+       исключение снова не достанется по наследству — каждый день отдельное
+       решение. Контраст пересчитан по правилу корпуса:
        5.87:1 к --surface и 5.67:1 к --bg — тот же диапазон, что у --acc (5.99)
        и --danger (6.54). */
     --attn:#8a5b00;
@@ -313,6 +313,10 @@
   }
   .src-n { font-weight:600; }
   .src-sec { color:var(--fg-mut); }
+  .src-claimed {
+    margin:var(--s-1) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--danger);
+    overflow-wrap:anywhere;
+  }
   .quote {
     margin:var(--s-1) 0 0; padding-left:var(--s-3);
     border-left:2px solid var(--line-ctl);
@@ -843,7 +847,7 @@
     </button>
 
     <div class="head-row">
-      <h1>Агент с инвариантами профиля</h1>
+      <h1>Чат по проекту с состоянием задачи</h1>
       <span class="pid" id="pid"><span class="pid-label">Профиль:</span><span
         class="pid-name" id="pid-name"></span><button class="clear" id="switch-profile"
         type="button">сменить профиль</button></span>
@@ -960,9 +964,23 @@
       с последнего действия в нём — чьего угодно; переписка — 30 часов</span> и удаляется
       кнопкой «очистить». Правила и факты записывает Claude Haiku 4.5 из ваших диалогов:
       они <strong>не проверены</strong>, и у факта стоит дата записи и имя диалога, а не
-      издание. Архива статей и белого списка ссылок у этого агента нет —
-      <strong>ссылки и числа в его ответах ничем не подтверждены</strong>. События монитора
-      живут до перезагрузки страницы.
+      издание.
+      <!-- Текст дня 15 («ссылки и числа ничем не подтверждены») для дня 25
+           неправда в одну сторону и правда в другую, и обе половины названы
+           отдельно — находка `compliance` к PR #318. Цитаты здесь сверяет
+           КОД: дословность каждой проверена подстрокой в тексте фрагмента, и
+           пометка под цитатой — вывод этой сверки. А вот путей в тексте
+           ответа не сверяет ничто: это прямо сказано в контракте хода
+           («чего не держит ничто»), и инварианты I-7 и I-9 к дню 25 не
+           применяются. Поэтому путь в списке источников берётся из отбора, а
+           не из ответа модели, и расхождение показано рядом. -->
+      Ответы агента опираются на фрагменты корпуса проекта, найденные поиском:
+      <strong>дословность каждой цитаты проверена кодом</strong> — пометка под
+      ней и есть результат сверки. Но <strong>пути файлов и числа в самом
+      тексте ответа не сверяет ничто</strong>: путь в списке источников взят из
+      отбора по номеру фрагмента, а не из ответа модели, и если она назвала
+      другой — это показано рядом. События монитора живут до перезагрузки
+      страницы.
       Вопросы: <a href="mailto:admin@zpq.ai">admin@zpq.ai</a>.
     </footer>
   </div>
@@ -3956,8 +3974,22 @@
     unknown_model: 'Ответа в найденных фрагментах нет — так сказала сама модель.',
   };
   const OUTCOME_UNKNOWN = 'Исход хода страница не узнала: сервис назвал его иначе.';
-  /** Исходы, у которых ответ на корпус не опирается: пометка и цвет тревоги. */
+  /**
+   * Исходы, у которых ответ на корпус не опирается: пометка и цвет тревоги.
+   * Список — для чтения глазами; решает же правило ниже, и оно смотрит с
+   * другой стороны.
+   */
   const WEAK_OUTCOMES = ['unsupported', 'unknown_filter', 'unknown_model'];
+  /** Единственный исход, при котором ответ стоит на корпусе. */
+  const CALM_OUTCOME = 'answered';
+  /**
+   * Спокойным считается ТОЛЬКО `answered`, а не «всё, кроме трёх названных».
+   * Разница видна на исходе, которого страница не знает: по списку он попадал
+   * бы в спокойные и выглядел как ответ по корпусу — то есть страница
+   * ручалась бы за то, чего не понимает (находка `reviewer` к PR #318: в
+   * тесте об этом стояло неверное утверждение).
+   */
+  const weakOutcome = (outcome) => outcome !== CALM_OUTCOME;
 
   /** Пометка цитаты. «Проверена дословно» — вывод кода, а не мнение модели. */
   const QUOTE_WORD = {
@@ -3966,23 +3998,44 @@
   };
 
   /**
-   * Что сказать о деньгах при отказе хода. Берётся ТОЛЬКО из признака
-   * `paidNothing`, который ставит сервис: отказ поиска денег не стоит, отказ
-   * реранкера стоит, и выводить это из кода отказа на странице значило бы
-   * угадывать расход. Признака нет вовсе — так и говорим, а не домысливаем в
-   * свою пользу.
+   * Что сказать о деньгах при отказе хода — и КОГДА НЕЛЬЗЯ СКАЗАТЬ НИЧЕГО.
+   *
+   * Блокирующая находка `reviewer` к PR #318: прежняя редакция печатала строку
+   * под КАЖДЫМ отказом, а признак `paidNothing` приходит только в `end`
+   * потока событий. У отказа лимитера (429), у 4xx самого дня и у оборванного
+   * потока признака нет вовсе, и строка «слот считаем занятым» появлялась там,
+   * где слот не занимали вовсе: страница пугала расходом, которого не было.
+   *
+   * Поэтому правил два, и каждое знает, ОТКУДА у него сведения:
+   *
+   *   `moneyWord` — из признака сервиса `paidNothing` (поток событий). Нет
+   *     признака — `null`, то есть молчание: домысливать расход нечем;
+   *   `httpMoneyWord` — из кода ответа САМОГО ДНЯ, и это не догадка: учёт
+   *     слота у дня идёт по коду ответа (см. `runLedger` в `server.js`), то
+   *     есть 4xx значит «слот не занят», а 5xx — «считаем занятым». Чего
+   *     страница не знает (запрос не ушёл, поток оборвался), остаётся
+   *     молчанием.
    */
   const MONEY_TEXT = {
     free: 'Денег отказ не стоил: ни один вызов модели не состоялся, слот суточного лимита возвращён.',
     paid: 'Отказ оплачен: вызов модели состоялся, слот суточного лимита занят.',
+    none: 'Денег отказ не стоил: до модели запрос не дошёл, слот суточного лимита не занят.',
     unknown:
-      'Был ли вызов модели оплачен, сервис не сказал — слот суточного лимита считаем занятым.',
+      'Был ли вызов модели оплачен, неизвестно: слот суточного лимита считаем занятым.',
   };
+  /** Признак сервиса → слово о деньгах. `null` — сервис не сказал, молчим. */
   const moneyWord = (paidNothing) =>
-    paidNothing === true ? 'free' : paidNothing === false ? 'paid' : 'unknown';
+    paidNothing === true ? 'free' : paidNothing === false ? 'paid' : null;
+  /** Код ответа дня → слово о деньгах. `null` — код неизвестен, молчим. */
+  const httpMoneyWord = (status) => {
+    if (!Number.isInteger(status)) return null;
+    if (status >= 400 && status < 500) return 'none';
+    if (status >= 500) return 'unknown';
+    return null;
+  };
 
   const outcomeText = (outcome) => OUTCOME_TEXT[outcome] ?? OUTCOME_UNKNOWN;
-  const weakOutcome = (outcome) => WEAK_OUTCOMES.includes(outcome);
+
 
   /**
    * Строка о поиске хода: переписанный запрос и коммит индекса. Переписывание
@@ -4007,6 +4060,80 @@
     return (quotes ?? []).filter((item) => !named.has(item?.n));
   };
 
+  /**
+   * ПУТЬ ФРАГМЕНТА БЕРЁТСЯ ИЗ ОТБОРА, А НЕ ИЗ ОТВЕТА МОДЕЛИ (образец — день
+   * 24, `days/day24/public/run.js`). Это не придирка к формулировке: модель
+   * возвращает `sources[]` сама, и под подтверждённой дословно цитатой иначе
+   * стоял бы путь, который она придумала. Номер — её, путь — наш.
+   *
+   * `null` — номера нет среди ушедших модели фрагментов. Такого быть не
+   * должно (чужой номер служба отвергает как отказ формы), но если случится,
+   * показывать нечего, и выдумывать путь нельзя.
+   */
+  const fragmentOf = (n, sources) => (sources ?? []).find((item) => item?.n === n) ?? null;
+
+  /**
+   * Что назвала сама модель, когда это расходится с настоящим путём. Прятать
+   * расхождение нельзя: иначе его видно только одним признаком, то есть
+   * клеткой «нет» без имени.
+   */
+  const CLAIMED_PREFIX = 'модель назвала: ';
+  const claimedNote = (cited, sources) => {
+    const claimed = cited?.source;
+    if (typeof claimed !== 'string' || claimed === '') return null;
+    const real = fragmentOf(cited?.n, sources);
+    if (real === null || claimed === real.source) return null;
+    return `${CLAIMED_PREFIX}${claimed}`;
+  };
+
+  /**
+   * Точно ли модель назвала пути всех источников, на которые сослалась.
+   * Сравнение ТОЧНОЕ, а не по подстроке — находка дня 22 про q72/q57.
+   *
+   * Поля `cited_exact` в контракте хода дня 25 НЕТ: служба присылает три
+   * проверки (`sources_present`, `quotes_present`, `quotes_verbatim`), а эту
+   * считает страница — по тем же данным, из которых её считал бы сервис
+   * (`cited` против `sources`). Поэтому в строке проверок она помечена как
+   * сверка страницы: выдавать свой счёт за ответ службы нельзя.
+   *
+   * `null` — считать не по чему: модель не назвала ни одного источника.
+   */
+  const citedExact = (cited, sources) => {
+    const named = (cited ?? []).filter((item) => typeof item?.source === 'string');
+    if (named.length === 0) return null;
+    return named.every((item) => {
+      const real = fragmentOf(item.n, sources);
+      return real !== null && real.source === item.source;
+    });
+  };
+
+  /**
+   * ЧЕТЫРЕ ПРОВЕРКИ в строке под источниками. Три первых — поля службы, и
+   * страница рисует ровно то, что пришло: `null` значит «проверки не пришло»,
+   * а не «нет» (I-8). Четвёртая — сверка страницы (см. `citedExact`), и без
+   * неё три первых врут вместе: при расхождении путей три «да» читались бы
+   * как «всё сошлось».
+   */
+  const CHECK_LABEL = {
+    sources_present: 'источники названы',
+    quotes_present: 'цитаты приведены',
+    quotes_verbatim: 'цитаты найдены дословно',
+    cited_exact: 'путь источника назван моделью точно (сверка страницы)',
+  };
+  const CHECK_WORD = { true: 'да', false: 'нет', null: 'не пришло' };
+  const checkLine = (checks, cited, sources) => {
+    const values = {
+      sources_present: typeof checks?.sources_present === 'boolean' ? checks.sources_present : null,
+      quotes_present: typeof checks?.quotes_present === 'boolean' ? checks.quotes_present : null,
+      quotes_verbatim:
+        typeof checks?.quotes_verbatim === 'boolean' ? checks.quotes_verbatim : null,
+      cited_exact: citedExact(cited, sources),
+    };
+    return Object.entries(CHECK_LABEL)
+      .map(([key, label]) => `${label} — ${CHECK_WORD[String(values[key])]}`)
+      .join(' · ');
+  };
+
   /* --- конец выделяемого блока --- */
 
   const quoteLine = (quote) => {
@@ -4022,7 +4149,7 @@
     return box;
   };
 
-  const sourceRow = (src, quotes) => {
+  const sourceRow = (src, quotes, sources) => {
     const item = document.createElement('li');
     item.className = 'src';
     const head = document.createElement('p');
@@ -4032,14 +4159,25 @@
     // Номер тот же, под которым фрагмент ушёл модели: номера идут с
     // пропусками, и переназывать их страница не вправе.
     n.textContent = `[${src.n}]`;
-    head.append(n, ' ', String(src.source ?? ''));
-    if (src.section) {
+    // Путь и раздел — ИЗ ОТБОРА по этому номеру, а не из ответа модели.
+    const real = fragmentOf(src.n, sources);
+    head.append(n, ' ', String(real?.source ?? src.source ?? ''));
+    const section = real?.section ?? src.section;
+    if (section) {
       const sec = document.createElement('span');
       sec.className = 'src-sec';
-      sec.textContent = ` · ${src.section}`;
+      sec.textContent = ` · ${section}`;
       head.append(sec);
     }
     item.append(head);
+    // Что назвала сама модель, если это расходится: расхождение не прячется.
+    const claimed = claimedNote(src, sources);
+    if (claimed !== null) {
+      const note = document.createElement('p');
+      note.className = 'src-claimed';
+      note.textContent = claimed;
+      item.append(note);
+    }
     for (const quote of quotes) item.append(quoteLine(quote));
     return item;
   };
@@ -4080,7 +4218,7 @@
       const list = document.createElement('ol');
       list.className = 'srcs';
       for (const src of cited)
-        list.append(sourceRow(src, quotes.filter((q) => q.n === src.n)));
+        list.append(sourceRow(src, quotes.filter((q) => q.n === src.n), rag.sources));
       box.append(list);
     }
     const orphans = orphanQuotes(quotes, cited);
@@ -4104,6 +4242,14 @@
       box.append(ask);
     }
 
+    // Четыре проверки одной строкой: три от службы и одна — сверка страницы.
+    if (cited.length > 0 || quotes.length > 0) {
+      const checks = document.createElement('p');
+      checks.className = 'sum';
+      checks.textContent = `проверки: ${checkLine(rag.checks, cited, rag.sources)}`;
+      box.append(checks);
+    }
+
     const line = document.createElement('p');
     line.className = 'sum';
     line.textContent = searchLine(rag);
@@ -4111,11 +4257,16 @@
     li.append(box);
   };
 
-  /** Строка о расходе отказанного хода: словами сервиса, а не догадкой. */
-  const moneyLine = (paidNothing) => {
+  /**
+   * Строка о расходе отказанного хода — или `null`, если сказать нечего.
+   * Слово приносит вызывающий: он один знает, откуда у него сведения.
+   */
+  const moneyLine = (word) => {
+    const text = MONEY_TEXT[word];
+    if (!text) return null;
     const row = document.createElement('p');
     row.className = 'sum';
-    row.textContent = MONEY_TEXT[moneyWord(paidNothing)];
+    row.textContent = text;
     return row;
   };
 
@@ -4320,8 +4471,10 @@
     li.append(head, text);
     if (meta.error) {
       // Отказ хода: что случилось — словами сервиса выше, а стоил ли он
-      // денег — его же признаком `paidNothing`.
-      li.append(moneyLine(meta.paidNothing));
+      // денег — строкой, которую принёс вызывающий. Слова нет — нет и строки:
+      // молчание честнее догадки (находка `reviewer` к PR #318).
+      const money = moneyLine(meta.money);
+      if (money) li.append(money);
       return li;
     }
 
@@ -5709,11 +5862,11 @@
           renderTask();
         }
       } else if (end.error) {
-        // Признак расхода уходит в карточку как есть: страница о деньгах
-        // ничего не выводит сама.
+        // Единственный источник признака `paidNothing` — этот `end`. Нет
+        // признака — `moneyWord` вернёт `null`, и строки о деньгах не будет.
         answered(end.error.message ?? 'агент не ответил', {
           error: true,
-          paidNothing: end.error.paidNothing,
+          money: moneyWord(end.error.paidNothing),
         });
       }
       setStatus(run, end.status === 'succeeded' || end.status === 'failed' || end.status === 'cancelled'
@@ -5742,10 +5895,13 @@
       // «готово» о запуске, который, возможно, идёт, нельзя.
       if (run.events.length > 0) {
         failRun(run, 'Агент не завершил запуск', 'поток закрылся без ответа', FROM_STREAM);
+        // О деньгах — молчание: запуск создан и, возможно, идёт, а его
+        // `end` мы не дочитали. Сказать «занят» или «возвращён» нечем.
         answered('поток закрылся без ответа', { error: true });
         finish('partial');
       } else {
         failRun(run, 'Связь с агентом прервана', 'поток событий не открылся', FROM_STREAM);
+        // Тоже молчание, и по той же причине: запуск был создан.
         answered('связь с агентом прервана', { error: true });
         finish('idle');
       }
@@ -5830,7 +5986,13 @@
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         failRun(run, 'Сервер отклонил запрос', data.error ?? `ответ ${response.status}`);
-        answered(data.error ?? `ответ ${response.status}`, { error: true });
+        // Отказ самого дня: ни одного вызова модели за ним не стоит, если это
+        // 4xx (в том числе 429 от лимитера — слот тогда и не занимали). Слово
+        // берётся из кода ответа, потому что по нему же день ведёт учёт.
+        answered(data.error ?? `ответ ${response.status}`, {
+          error: true,
+          money: httpMoneyWord(response.status),
+        });
         return finish('idle');
       }
       runId = data.runId;
@@ -5839,6 +6001,7 @@
       pickedTopicId = null;
     } catch {
       failRun(run, 'Связь с агентом прервана', 'запрос не отправлен');
+      // Запрос мог уйти и потеряться в ответе: о слоте сказать нечего.
       answered('запрос не отправлен', { error: true });
       return finish('idle');
     }

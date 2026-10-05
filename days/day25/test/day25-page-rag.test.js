@@ -28,7 +28,8 @@ const rules = (() => {
   assert.notEqual(to, -1, 'у блока правил хода обязан быть конец')
   return new Function(`${page.slice(from, to)}
     return { OUTCOME_TEXT, OUTCOME_UNKNOWN, WEAK_OUTCOMES, QUOTE_WORD, MONEY_TEXT,
-             moneyWord, outcomeText, weakOutcome, searchLine, orphanQuotes };`)()
+             moneyWord, httpMoneyWord, outcomeText, weakOutcome, searchLine, orphanQuotes,
+             fragmentOf, claimedNote, citedExact, checkLine, CLAIMED_PREFIX, CHECK_LABEL };`)()
 })()
 
 test('четыре исхода хода названы дословно и различимы между собой', () => {
@@ -54,9 +55,16 @@ test('исход, которого страница не знает, не выд
   assert.equal(rules.outcomeText(undefined), rules.OUTCOME_UNKNOWN)
   assert.match(rules.OUTCOME_UNKNOWN, /не узнала/)
   // И он не выглядит как «ответ по корпусу»: пометка тревоги у него остаётся.
+  // Это и есть причина, по которой правило смотрит со стороны `answered`, а
+  // не со стороны списка трёх слабых исходов: по списку неизвестный исход
+  // попадал бы в спокойные (находка `reviewer` к PR #318 — прежняя редакция
+  // этого теста утверждала обратное, и утверждение было ложным).
   assert.equal(rules.weakOutcome('answered'), false)
-  for (const outcome of ['unsupported', 'unknown_filter', 'unknown_model'])
+  assert.equal(rules.weakOutcome('какой-то_новый'), true, 'неизвестный исход выдан за спокойный')
+  assert.equal(rules.weakOutcome(undefined), true)
+  for (const outcome of rules.WEAK_OUTCOMES)
     assert.equal(rules.weakOutcome(outcome), true, `${outcome} выдан за ответ по корпусу`)
+  assert.deepEqual(rules.WEAK_OUTCOMES, ['unsupported', 'unknown_filter', 'unknown_model'])
 })
 
 test('цитата помечена результатом сверки кода, а не старательностью модели', () => {
@@ -64,22 +72,66 @@ test('цитата помечена результатом сверки кода
   assert.equal(rules.QUOTE_WORD.bad, 'не найдена во фрагменте')
 })
 
-test('о деньгах сказано ровно то, что сказал сервис признаком paidNothing', () => {
-  // Три случая, и третий — главный: признака нет. Домыслить «не оплачено»
-  // здесь значило бы обещать посетителю возврат, которого не было.
+test('о деньгах молчим, когда сведений нет, и говорим, когда они есть', () => {
+  // БЛОКИРУЮЩАЯ НАХОДКА `reviewer` к PR #318: строка о расходе печаталась под
+  // каждым отказом, а признак `paidNothing` приходит только в `end` потока
+  // событий. У отказа лимитера (429), у 4xx самого дня и у оборванного потока
+  // признака нет, и страница говорила «слот считаем занятым» там, где слот не
+  // занимали вовсе.
+  //
+  // Поэтому `null` — полноправный ответ правила: он означает «строки не
+  // будет». Тест держит именно его: домысел в пользу бюджета пугал бы
+  // посетителя расходом, которого не было, а домысел в его пользу обещал бы
+  // возврат, которого не было.
   assert.equal(rules.moneyWord(true), 'free')
   assert.equal(rules.moneyWord(false), 'paid')
-  assert.equal(rules.moneyWord(undefined), 'unknown')
-  assert.equal(rules.moneyWord(null), 'unknown')
+  assert.equal(rules.moneyWord(undefined), null, 'нет признака — обязано быть молчание')
+  assert.equal(rules.moneyWord(null), null)
   // Код отказа на расход не влияет: отказ поиска денег не стоит, отказ
   // реранкера стоит, и вывести это из названия нельзя.
-  assert.equal(rules.moneyWord('search_refused'), 'unknown')
+  assert.equal(rules.moneyWord('search_refused'), null)
+
+  // Второе правило — про отказы САМОГО ДНЯ, и это не догадка: учёт слота у
+  // дня идёт по коду ответа (`runLedger`), поэтому 4xx значит «не занят».
+  assert.equal(rules.httpMoneyWord(429), 'none', 'отказ лимитера слота не занимал')
+  assert.equal(rules.httpMoneyWord(400), 'none')
+  assert.equal(rules.httpMoneyWord(409), 'none')
+  assert.equal(rules.httpMoneyWord(502), 'unknown')
+  assert.equal(rules.httpMoneyWord(503), 'unknown')
+  assert.equal(rules.httpMoneyWord(202), null, 'успех о расходе не говорит')
+  assert.equal(rules.httpMoneyWord(undefined), null)
+
   assert.deepEqual(rules.MONEY_TEXT, {
     free: 'Денег отказ не стоил: ни один вызов модели не состоялся, слот суточного лимита возвращён.',
     paid: 'Отказ оплачен: вызов модели состоялся, слот суточного лимита занят.',
-    unknown:
-      'Был ли вызов модели оплачен, сервис не сказал — слот суточного лимита считаем занятым.',
+    none: 'Денег отказ не стоил: до модели запрос не дошёл, слот суточного лимита не занят.',
+    unknown: 'Был ли вызов модели оплачен, неизвестно: слот суточного лимита считаем занятым.',
   })
+  // Четыре текста — четыре разных утверждения: «не занят» и «возвращён» это
+  // разные вещи, и 429 не должен говорить про возврат.
+  assert.equal(new Set(Object.values(rules.MONEY_TEXT)).size, 4)
+})
+
+test('каждый вызывающий говорит о деньгах ровно то, что знает', () => {
+  // Проверка по исходнику страницы с номерами ветвей: правило верно только
+  // если его ЗОВУТ в нужных местах и НЕ зовут в остальных.
+  //
+  // 1. поток событий — единственный источник `paidNothing`;
+  assert.match(page, /money: moneyWord\(end\.error\.paidNothing\),/)
+  // 2. отказ дня по HTTP — из кода ответа;
+  assert.match(page, /money: httpMoneyWord\(response\.status\),/)
+  // 3. остальные три вызывающих молчат: ни `money`, ни `paidNothing`.
+  const silent = [
+    "answered('поток закрылся без ответа', { error: true });",
+    "answered('связь с агентом прервана', { error: true });",
+    "answered('запрос не отправлен', { error: true });",
+  ]
+  for (const call of silent) assert.ok(page.includes(call), `вызывающий изменился: ${call}`)
+  // И ни один вызывающий не кладёт `paidNothing` в карточку напрямую: поле
+  // карточки одно — `money`, уже разобранное слово.
+  assert.equal(page.includes('paidNothing: end.error.paidNothing'), false)
+  // Рендер не печатает строку без слова.
+  assert.match(page, /const money = moneyLine\(meta\.money\);\n\s+if \(money\) li\.append\(money\);/)
 })
 
 test('строка поиска называет переписанный запрос, а молчание — словами', () => {
@@ -164,4 +216,80 @@ test('отказанный ход не выдаётся полосой за «Г
   // Строка статуса при этом помечена как предупреждение, а не нейтральна:
   // цвет не единственный носитель смысла, но и он обязан совпадать со словами.
   assert.match(page, /view === 'cancelled' \|\| view === 'lost' \|\| view === 'failed',/)
+})
+
+// --- путь источника и четвёртая проверка (находка `compliance` к PR #318) ---
+
+test('путь источника берётся из отбора, а не из ответа модели', () => {
+  // Под подтверждённой дословно цитатой иначе стоял бы путь, который модель
+  // придумала: номер её, путь наш (образец — день 24).
+  const sources = [
+    { n: 1, source: 'agent_docs/invariants.md', section: 'I-4' },
+    { n: 4, source: 'days/day25/server.js', section: 'диспетчер' },
+  ]
+  assert.equal(rules.fragmentOf(1, sources).source, 'agent_docs/invariants.md')
+  assert.equal(rules.fragmentOf(9, sources), null, 'чужой номер пути не получает')
+  assert.equal(rules.fragmentOf(1, undefined), null)
+  // И рендер строки источника действительно зовёт отбор, а не поле ответа.
+  assert.match(page, /const real = fragmentOf\(src\.n, sources\);/)
+  assert.match(page, /head\.append\(n, ' ', String\(real\?\.source \?\? src\.source \?\? ''\)\);/)
+})
+
+test('расхождение пути не прячется: «модель назвала» стоит рядом', () => {
+  const sources = [{ n: 1, source: 'agent_docs/invariants.md', section: 'I-4' }]
+  assert.equal(rules.CLAIMED_PREFIX, 'модель назвала: ')
+  // Совпало — строки нет: лишняя пометка под каждым источником обесценила бы её.
+  assert.equal(rules.claimedNote({ n: 1, source: 'agent_docs/invariants.md' }, sources), null)
+  // Разошлось — названо имя, а не только признак.
+  assert.equal(
+    rules.claimedNote({ n: 1, source: 'AGENTS.md' }, sources),
+    'модель назвала: AGENTS.md',
+  )
+  // Нет поля, пустая строка и неизвестный номер — тоже молчание: сравнивать
+  // не с чем, а выдуманный путь показывать нечего.
+  assert.equal(rules.claimedNote({ n: 1, source: '' }, sources), null)
+  assert.equal(rules.claimedNote({ n: 1 }, sources), null)
+  assert.equal(rules.claimedNote({ n: 7, source: 'AGENTS.md' }, sources), null)
+})
+
+test('четвёртая проверка считается точным сравнением и помечена как сверка страницы', () => {
+  const sources = [
+    { n: 1, source: 'agent_docs/invariants.md', section: 'I-4' },
+    { n: 4, source: 'days/day25/server.js', section: 'диспетчер' },
+  ]
+  const exact = [
+    { n: 1, source: 'agent_docs/invariants.md' },
+    { n: 4, source: 'days/day25/server.js' },
+  ]
+  assert.equal(rules.citedExact(exact, sources), true)
+  // Точное сравнение, а не по подстроке — находка дня 22 про q72/q57.
+  assert.equal(
+    rules.citedExact([{ n: 1, source: 'invariants.md' }], sources),
+    false,
+    'подстрока прошла за точное совпадение',
+  )
+  assert.equal(rules.citedExact([{ n: 1, source: 'agent_docs/invariants.md' }, { n: 4, source: 'нет' }], sources), false)
+  // Ни одного названного источника — считать не по чему, и это не «нет».
+  assert.equal(rules.citedExact([], sources), null)
+  assert.equal(rules.citedExact(undefined, sources), null)
+
+  // Поля `cited_exact` в контракте дня 25 нет: три проверки от службы,
+  // четвёртая — сверка страницы, и в ярлыке это сказано.
+  assert.match(rules.CHECK_LABEL.cited_exact, /сверка страницы/)
+  assert.deepEqual(Object.keys(rules.CHECK_LABEL), [
+    'sources_present', 'quotes_present', 'quotes_verbatim', 'cited_exact',
+  ])
+
+  // Непришедшая проверка — «не пришло», а не «нет» (I-8).
+  const line = rules.checkLine({ sources_present: true, quotes_present: true }, exact, sources)
+  assert.match(line, /источники названы — да/)
+  assert.match(line, /цитаты найдены дословно — не пришло/)
+  assert.match(line, /путь источника назван моделью точно \(сверка страницы\) — да/)
+  const bad = rules.checkLine(
+    { sources_present: true, quotes_present: true, quotes_verbatim: false },
+    [{ n: 1, source: 'AGENTS.md' }],
+    sources,
+  )
+  assert.match(bad, /цитаты найдены дословно — нет/)
+  assert.match(bad, /точно \(сверка страницы\) — нет/)
 })

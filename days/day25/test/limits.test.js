@@ -148,7 +148,7 @@ test('часовое окно отпускает по сроку, суточны
 
 /* ---------- возврат слотов ---------- */
 
-test('вернуть больше, чем занято, нельзя — ни адресу, ни суткам', () => {
+test('вернуть больше, чем занято, нельзя: суточный счётчик не уходит ниже нуля', () => {
   const c = clock()
   const limiter = createLimiter(env({ MAX_DAILY_CALLS: 5 }), { now: c.now })
 
@@ -158,27 +158,61 @@ test('вернуть больше, чем занято, нельзя — ни а
   // Пометка агента «кругов было ноль» не должна чинить счётчик чужих запусков.
   limiter.release('10.4.0.1', 99)
   assert.equal(limiter.stats().callsToday, 0, 'счётчик не уходит ниже нуля')
-  assert.equal(limiter.stats().trackedIps, 0, 'адрес без слотов не хранится дольше нужного')
 
   // И потолок после этого прежний, а не раздутый возвратом.
   assert.equal(limiter.reserve('10.4.0.2', 5).ok, true)
   assert.equal(limiter.reserve('10.4.0.3', 1).reason, 'daily')
 })
 
+test('возврат трогает ТОЛЬКО сутки: отметки минуты и часа остаются', () => {
+  // Находка `compliance` к PR #318: решение владельца по Р8(б) — про деньги.
+  // Отказ 4xx не стоил денег, поэтому суточный потолок он занимать не должен;
+  // но ПОПЫТКА была, и окна частоты считают именно попытки. Возвращая и их,
+  // день дал бы бесплатный способ стучать в ручку без предела.
+  const c = clock()
+  const limiter = createLimiter(
+    env({ MAX_DAILY_CALLS: 50, RATE_LIMIT_PER_MIN: 2, RATE_LIMIT_PER_HOUR: 3 }),
+    { now: c.now },
+  )
+
+  assert.equal(limiter.reserve('10.4.1.1', 1).ok, true)
+  limiter.release('10.4.1.1', 1)
+  // Сутки свободны: денег не потрачено.
+  assert.equal(limiter.stats().callsToday, 0, 'суточный счётчик не вернулся')
+  // Минута — нет: отметка попытки осталась, и адрес по-прежнему помнится.
+  assert.equal(limiter.stats().trackedIps, 1, 'отметка адреса стёрлась вместе со слотом')
+
+  assert.equal(limiter.reserve('10.4.1.1', 1).ok, true, 'второй в минуту ещё можно')
+  limiter.release('10.4.1.1', 1)
+  const third = limiter.reserve('10.4.1.1', 1)
+  assert.equal(third.ok, false, 'возврат слота вернул и право стучать в ручку')
+  assert.equal(third.reason, 'minute')
+  // Час считает так же: через минуту минутное окно свободно, часовое — нет.
+  c.tick(MINUTE + 1000)
+  assert.equal(limiter.reserve('10.4.1.1', 1).ok, true, 'через минуту окно минуты свободно')
+  limiter.release('10.4.1.1', 1)
+  const fourth = limiter.reserve('10.4.1.1', 1)
+  assert.equal(fourth.ok, false)
+  assert.equal(fourth.reason, 'hour', 'часовое окно тоже чинилось возвратом')
+  // И всё это время суточный счётчик пуст: ни один из ходов не оплачен.
+  assert.equal(limiter.stats().callsToday, 0)
+})
+
 test('возврат лишних кругов освобождает ровно столько, сколько вернули', () => {
   const c = clock()
-  const limiter = createLimiter(env({ MAX_DAILY_CALLS: 10, RATE_LIMIT_PER_MIN: 4 }), {
+  const limiter = createLimiter(env({ MAX_DAILY_CALLS: 10, RATE_LIMIT_PER_MIN: 40 }), {
     now: c.now,
   })
 
   assert.equal(limiter.reserve('10.5.0.1', 3).ok, true)
-  // Круг был один — два слота назад.
+  // Круг был один — два слота назад. Наблюдается это СУТОЧНЫМ счётчиком:
+  // окна частоты возврат не трогает (тест выше).
   limiter.release('10.5.0.1', 2)
   assert.equal(limiter.stats().callsToday, 1)
 
-  // В минутном окне снова свободно три из четырёх.
-  assert.equal(limiter.reserve('10.5.0.1', 3).ok, true)
-  assert.equal(limiter.reserve('10.5.0.1', 1).ok, false, 'больше, чем вернули, не появилось')
+  // Суточного потолка снова хватает на девять, но не на десять.
+  assert.equal(limiter.reserve('10.5.0.2', 9).ok, true)
+  assert.equal(limiter.reserve('10.5.0.3', 1).reason, 'daily', 'больше, чем вернули, не появилось')
 })
 
 /* ---------- негодные значения ---------- */

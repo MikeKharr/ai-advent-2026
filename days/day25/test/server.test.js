@@ -9,6 +9,7 @@
 // сдвинул.
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import http from 'node:http'
 import { after, before, test } from 'node:test'
 
@@ -390,26 +391,6 @@ test('тема во вход запуска не уходит, прочие по
   assert.equal(input.prompt, 'да')
 })
 
-test('при одном состоявшемся круге лишние слоты возвращаются по end', async () => {
-  const ip = '10.3.0.1'
-  endRounds = 1
-  const cookie = withSession()
-  profileRounds = 3
-  const r = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  assert.equal(r.status, 202)
-  profileRounds = 1
-  await drain(RUN, cookie)
-
-  // Три слота заняты, два вернулись — остался один. Минутное окно 4, значит
-  // ещё три сообщения по одному кругу должны пройти.
-  for (let i = 0; i < 3; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-    assert.equal(next.status, 202, `сообщение ${i + 2} после возврата слотов`)
-  }
-  const over = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  assert.equal(over.status, 429, 'возвращено ровно два слота, не больше')
-})
-
 test('состоявшиеся круги слотов не возвращают', async () => {
   const ip = '10.3.0.2'
   endRounds = 3
@@ -423,61 +404,6 @@ test('состоявшиеся круги слотов не возвращают
   assert.equal(next.status, 429, 'три круга съели три слота, четвёртый не найдётся')
   profileRounds = 2
   endRounds = 1
-})
-
-test('упавший запуск возвращает слоты кругов, до которых не дошёл', async () => {
-  const ip = '10.3.0.3'
-  const cookie = withSession()
-  // Запуск падает на первом круге: `end` несёт ошибку, числа кругов в нём нет.
-  streamMode = 'failed'
-  streamRounds = 1
-  profileRounds = 3
-  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  profileRounds = 1
-  await drain(RUN, cookie)
-  // Занятым остаётся один слот из трёх — минутное окно в 4 пускает ещё троих.
-  for (let i = 0; i < 3; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-    assert.equal(next.status, 202, `сообщение ${i + 2} после падения`)
-  }
-  const over = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  assert.equal(over.status, 429, 'за состоявшийся круг слот удержан')
-  streamMode = 'ok'
-})
-
-test('падение до первого этапа возвращает все слоты', async () => {
-  const ip = '10.3.0.4'
-  const cookie = withSession()
-  // Ни одного события `state`: запуск не дошёл ни до какого круга.
-  streamMode = 'failed'
-  streamRounds = 0
-  profileRounds = 3
-  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  profileRounds = 1
-  await drain(RUN, cookie)
-  for (let i = 0; i < 4; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-    assert.equal(next.status, 202, `сообщение ${i + 2}: все три слота вернулись`)
-  }
-  streamMode = 'ok'
-  streamRounds = 1
-})
-
-test('отказ без трат возвращает все слоты, даже если круги начинались', async () => {
-  const ip = '10.3.0.5'
-  const cookie = withSession()
-  streamMode = 'free'
-  streamRounds = 2
-  profileRounds = 3
-  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  profileRounds = 1
-  await drain(RUN, cookie)
-  for (let i = 0; i < 4; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-    assert.equal(next.status, 202, `сообщение ${i + 2}: paidNothing вернул всё`)
-  }
-  streamMode = 'ok'
-  streamRounds = 1
 })
 
 test('оборванный поток слотов не возвращает: запуск, возможно, идёт', async () => {
@@ -502,23 +428,27 @@ test('оборванный поток слотов не возвращает: з
   }
 })
 
-test('слово агента о кругах важнее наблюдения дня', async () => {
-  const ip = '10.3.0.7'
-  const cookie = withSession()
-  // Событий `state` два, но агент говорит, что круг был один.
-  streamRounds = 2
-  endRounds = 1
-  profileRounds = 3
-  await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  profileRounds = 1
-  await drain(RUN, cookie)
-  for (let i = 0; i < 3; i++) {
-    const next = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-    assert.equal(next.status, 202, `сообщение ${i + 2}: вернулись два слота по слову агента`)
-  }
-  const over = await call('POST', '/api/answer', { prompt: 'да' }, { ip, cookie })
-  assert.equal(over.status, 429)
-  streamRounds = 1
+test('возврат слотов не чинит окно частоты: попытка остаётся попыткой', () => {
+  // КУДА ПЕРЕЕХАЛА ПРОВЕРКА. Четыре теста дня 15 наблюдали возврат слотов
+  // кругов через МИНУТНОЕ окно: день 15 стирал вместе со слотом и отметку
+  // адреса. По находке `compliance` к PR #318 возврат трогает только суточный
+  // счётчик, и этот канал о деньгах больше ничего не говорит. Сами
+  // утверждения («агент назвал круги», «упал, не дойдя до круга»,
+  // «paidNothing», «слово агента важнее наблюдения») никуда не делись — они
+  // держатся в `test/round-slots.test.js`, где суточный потолок равен шести и
+  // виден напрямую.
+  //
+  // Здесь остаётся вторая половина правила, которой у дня 15 не было вовсе:
+  // окна минуты и часа возврат НЕ чинит. Проверяется она на самом лимитере
+  // (`test/limits.test.js`, «возврат трогает ТОЛЬКО сутки»), а здесь — что
+  // день не завёл себе второго возврата мимо него.
+  const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8')
+  const calls = source.match(/limiter\.release\(/g) ?? []
+  assert.equal(calls.length, 3, `возвратов в дне стало ${calls.length}: проверьте каждый`)
+  // Два — учёт по кругам в потоке событий, один — диспетчер по коду ответа.
+  assert.match(source, /if \(end\.error\?\.paidNothing\) \{\n\s+limiter\.release\(slot\.ip, slot\.reserved\)/)
+  assert.match(source, /if \(extra > 0\) limiter\.release\(slot\.ip, extra\)/)
+  assert.match(source, /limiter\.release\(ip, back\)/)
 })
 
 /* ---------- критерии 3 и 5: пауза ---------- */
@@ -571,17 +501,32 @@ test('живого запуска нет — «Продолжить» объяс
   assert.match(body.message, /заверш/i, 'объяснение словами, а не код')
 })
 
-test('запуск завершился между чтением диалога и ручкой паузы: объяснение и возврат слота', async () => {
+test('запуск завершился между чтением диалога и ручкой паузы: объяснение, а не отказ', async () => {
   const ip = '10.4.1.5'
   interruptedCall = true
   const cookie = withSession(FIN_SID)
-  // Шесть попыток при минутном окне в 4: слот под повтор вызова каждый раз
-  // возвращается, потому что повтора не было.
-  for (let i = 0; i < 6; i++) {
+  // «Продолжить» у завершившегося запуска — объяснение, а не отказ
+  // (требование владельца 2026-09-22), и повтора прерванного вызова не было:
+  // слот суточного потолка возвращается по слову службы (`ctx.run.refund`,
+  // см. шапку `runLedger`).
+  //
+  // ЧТО ИЗМЕНИЛОСЬ ПРОТИВ ДНЯ 15 и названо прямо: возврат трогает только
+  // суточный счётчик (находка `compliance` к PR #318), а отметка минутного
+  // окна остаётся — попытка была. Поэтому четыре попытки при окне в 4
+  // проходят, а пятая упирается в ОКНО ЧАСТОТЫ, не в деньги; сверяется это
+  // его собственными словами.
+  for (let i = 0; i < 4; i++) {
     const r = await call('POST', '/api/run/pause', { paused: false }, { ip, cookie })
     assert.equal(r.status, 200, `попытка ${i + 1}`)
     assert.equal((await r.json()).finished, true)
   }
+  const over = await call('POST', '/api/run/pause', { paused: false }, { ip, cookie })
+  assert.equal(over.status, 429)
+  assert.equal(
+    (await over.json()).error,
+    'Слишком часто. Подождите минуту.',
+    'отказал не минутный лимитер, а что-то другое',
+  )
   interruptedCall = false
 })
 
