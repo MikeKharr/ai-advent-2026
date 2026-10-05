@@ -102,28 +102,37 @@ export const TASK_SYSTEM = [
 /**
  * Схема состояния задачи. Все поля обязательны и `additionalProperties:
  * false` — «почти та» форма обязана быть отказом формы, а не тихо потерянным
- * полем. Потолки строк — в схеме, а не в разборе: иначе состояние росло бы
- * входом каждого следующего хода.
+ * полем.
+ *
+ * КОНСТРУКЦИИ — ТОЛЬКО ТЕ, ЧТО ПРОВЕРЕНЫ ЖИВЫМ ПРОВАЙДЕРОМ, по тому же
+ * решению, что у схемы ответа дня 24 (`cited.js`, `ANSWER_SCHEMA`): `type`
+ * object/array/string, `properties`, `required`, `additionalProperties`.
+ * `maxLength` здесь НЕ стоит — в строгих подмножествах JSON Schema
+ * ограничения строк обычно не поддерживаются, и 400 от провайдера на первом
+ * живом вызове был бы оплаченным отказом там, где его можно не заводить
+ * (находка `reviewer` к PR дня 24). Потолки строк и число записей держит
+ * РАЗБОР (`readTaskState`), а общий потолок состояния — хранилище
+ * (`saveTaskState`, 4000 знаков): два держателя кодом вместо одного схемой.
  */
 export const TASK_SCHEMA = {
   type: 'object',
   properties: {
-    goal: { type: 'string', maxLength: 300 },
-    constraints: { type: 'array', items: { type: 'string', maxLength: 200 } },
+    goal: { type: 'string' },
+    constraints: { type: 'array', items: { type: 'string' } },
     terms: {
       type: 'array',
       items: {
         type: 'object',
         properties: {
-          term: { type: 'string', maxLength: 80 },
-          meaning: { type: 'string', maxLength: 200 },
+          term: { type: 'string' },
+          meaning: { type: 'string' },
         },
         required: ['term', 'meaning'],
         additionalProperties: false,
       },
     },
-    clarifications: { type: 'array', items: { type: 'string', maxLength: 200 } },
-    open: { type: 'array', items: { type: 'string', maxLength: 200 } },
+    clarifications: { type: 'array', items: { type: 'string' } },
+    open: { type: 'array', items: { type: 'string' } },
   },
   required: ['goal', 'constraints', 'terms', 'clarifications', 'open'],
   additionalProperties: false,

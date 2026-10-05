@@ -1220,7 +1220,7 @@ export function createStagedAgent({
             emit({
               stage: 'warning',
               level: 'warn',
-              title: 'Цитата не нашлась во фрагменте',
+              title: 'Цитата не подтверждена',
               detail: parsed.read.quotes
                 .filter((item) => !item.verified)
                 .map((item) => `[${item.n}]`)

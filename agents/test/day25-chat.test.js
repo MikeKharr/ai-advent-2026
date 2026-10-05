@@ -245,6 +245,17 @@ test('у ответа хода есть источники и дословная
   assert.equal(snapshot.result.outcome, 'answered')
   assert.deepEqual(snapshot.result.quotes, [{ n: 1, text: 'лимитер и расход', verified: true }])
   assert.equal(snapshot.result.checks.quotes_verbatim, true)
+  assert.equal(snapshot.result.checks.cited_exact, true)
+  // Путь источника взят из ОТБОРА, а не из ответа модели (день 24, находка
+  // `compliance`): поля `source`/`section` — настоящие, заявленное моделью
+  // едет рядом.
+  assert.deepEqual(snapshot.result.cited[0], {
+    n: 1,
+    source: 'agent_docs/file-1.md',
+    section: 'Раздел 1',
+    claimedSource: 'agent_docs/file-1.md',
+    claimedSection: 'Раздел 1',
+  })
   // Текст реплики — поле схемы, а не тело JSON целиком.
   assert.equal(snapshot.result.answer, CITED.answer)
 
@@ -289,6 +300,27 @@ test('фрагменты и состояние задачи попадают в 
   // воздуха.
   const firstText = sessions.runPromptsOf({ runId: first.id, sessionId: sid })[0]
   assert.equal(firstText.input.includes('<task>'), false)
+})
+
+test('путь источника берётся из отбора: выдуманный путь модели виден, но не подменяет настоящий', async (t) => {
+  const rag = await fakeRag()
+  t.after(() => rag.close())
+  const { ask } = setup({
+    rag,
+    fetchImpl: router({
+      cited: {
+        ...CITED,
+        sources: [{ n: 1, source: 'agent_docs/выдумка.md', section: 'Выдуманный раздел' }],
+      },
+    }),
+  })
+  const snapshot = await ask()
+  assert.equal(snapshot.status, 'succeeded', JSON.stringify(snapshot.error))
+  assert.equal(snapshot.result.cited[0].source, 'agent_docs/file-1.md')
+  assert.equal(snapshot.result.cited[0].claimedSource, 'agent_docs/выдумка.md')
+  assert.equal(snapshot.result.checks.cited_exact, false)
+  // И то же — у реплики: карточка покажет расхождение после перезагрузки.
+  assert.equal(snapshot.result.outcome, 'answered')
 })
 
 // --- Обещание 2: состояние задачи переживает ход --------------------------
