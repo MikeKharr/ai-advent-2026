@@ -42,7 +42,9 @@ import {
   CHECK_ROWS,
   CHECKS_NONE,
   checkWord,
+  CITED_RULE,
   citedNote,
+  claimedNote,
   CLARIFY_LABEL,
   dayLimitNote,
   fragmentsFromPlanning,
@@ -96,6 +98,7 @@ const stepsList = byId('steps')
 const checksNote = byId('checks-note')
 const checksList = byId('checks')
 const verbatimBox = byId('verbatim-note')
+const citedRuleBox = byId('cited-rule')
 const citedNoteBox = byId('cited-note')
 const citedList = byId('cited')
 const quotesNoteBox = byId('quotes-note')
@@ -557,7 +560,16 @@ function showCited(result) {
   citedNoteBox.replaceChildren()
   const commit = result.index?.commit ?? null
   citedList.replaceChildren(
-    ...result.cited.map((src, i) => renderSource({ ...src, score: null, text: null, truncated: false }, commit, `c${i + 1}`)),
+    ...result.cited.map((src, i) => {
+      const li = renderSource({ ...src, score: null, text: null, truncated: false }, commit, `c${i + 1}`)
+      // ЧТО НАЗВАЛА САМА МОДЕЛЬ — рядом с настоящим путём, и только когда это
+      // расходится. Без этой строки расхождение видно одной клеткой «нет» в
+      // проверках, без имени: экран показывал бы чужой путь как названный ею.
+      // Решает `claimedNote`, а не условие здесь: правило должно исполняться.
+      const claimed = claimedNote(src)
+      if (claimed !== null) li.append(node('p', 'claimed', claimed))
+      return li
+    }),
   )
 }
 
@@ -1025,6 +1037,11 @@ async function loadEval() {
   }
   showEval(parseEval(raw))
 }
+
+// Подпись «откуда взят путь» ставится ОДИН раз, на загрузке: она не зависит от
+// запуска и верна ещё до первого вопроса — в разметке её нет, чтобы правило и
+// его слова жили в одном месте (`run.js`, `CITED_RULE`).
+citedRuleBox.textContent = CITED_RULE
 
 resetRun()
 setStatus('')

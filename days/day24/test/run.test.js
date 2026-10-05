@@ -22,6 +22,9 @@ import {
   MAX_QUESTION,
   CHECK_ROWS,
   CHECKS_NONE,
+  CITED_RULE,
+  claimedNote,
+  CLAIMED_PREFIX,
   checkWord,
   citedNote,
   CITED_NONE,
@@ -69,9 +72,17 @@ const result = (over = {}) => ({
   status: 'answered',
   answer: 'Ответ модели.',
   clarification: null,
-  cited: [{ n: 1, source: 'agent_docs/invariants.md', section: 'Расход средств › I-4' }],
+  cited: [
+    {
+      n: 1,
+      source: 'agent_docs/invariants.md',
+      section: 'Расход средств › I-4',
+      claimedSource: 'agent_docs/invariants.md',
+      claimedSection: 'Расход средств › I-4',
+    },
+  ],
   quotes: [{ n: 1, text: 'строка', verified: true }],
-  checks: { sources_present: true, quotes_present: true, quotes_verbatim: true },
+  checks: { sources_present: true, quotes_present: true, quotes_verbatim: true, cited_exact: true },
   refused: false,
   sources: [
     { n: 1, source: 'agent_docs/invariants.md', section: 'Расход средств › I-4', score: 0.7142, text: 'строка\nвторая', truncated: false },
@@ -656,13 +667,20 @@ test('поля схемы разбираются по одному, и чужо�
   const parsed = parseResult(result())
   assert.equal(parsed.status, 'answered')
   assert.deepEqual(parsed.cited, [
-    { n: 1, source: 'agent_docs/invariants.md', section: 'Расход средств › I-4' },
+    {
+      n: 1,
+      source: 'agent_docs/invariants.md',
+      section: 'Расход средств › I-4',
+      claimedSource: 'agent_docs/invariants.md',
+      claimedSection: 'Расход средств › I-4',
+    },
   ])
   assert.deepEqual(parsed.quotes, [{ n: 1, text: 'строка', verified: true }])
   assert.deepEqual(parsed.checks, {
     sources_present: true,
     quotes_present: true,
     quotes_verbatim: true,
+    cited_exact: true,
   })
   for (const bad of ['refused', '', null, 7])
     assert.equal(parseResult(result({ status: bad })).status, null, String(bad))
@@ -676,6 +694,7 @@ test('поля схемы разбираются по одному, и чужо�
     sources_present: null,
     quotes_present: null,
     quotes_verbatim: null,
+    cited_exact: null,
   })
   // `verified` приходит полем и строго `true`: всё прочее — «не нашлась».
   for (const bad of ['true', 1, undefined])
@@ -690,7 +709,7 @@ test('признак проверки знает ТРИ состояния, а �
   assert.equal(checkWord(null), 'сервер не сказал')
   assert.deepEqual(
     CHECK_ROWS.map(([key]) => key),
-    ['sources_present', 'quotes_present', 'quotes_verbatim'],
+    ['sources_present', 'quotes_present', 'quotes_verbatim', 'cited_exact'],
   )
   assert.match(VERBATIM_NOTE, /все цитаты до единой/)
   assert.ok(CHECKS_NONE.length > 10)
@@ -803,4 +822,54 @@ test('подпись токенов говорит, что это токены �
   assert.ok(!/·\s*токенов: /.test(meta), meta)
   // Числа не пришло — куска нет вовсе, а не «токенов ответа: 0» (I-8).
   assert.ok(!/токенов/.test(answerMeta(parseResult(result({ tokens: undefined })))))
+})
+
+// БЛОКИРУЮЩАЯ `compliance` к PR #315. Контракт агента (#314) отдаёт путь из
+// ОТБОРА по номеру, а заявленное моделью — отдельными полями `claimed*` с
+// признаком `checks.cited_exact`. Страница их роняла: при `cited_exact: false`
+// экран показывал три «да» и выдавал чужой путь за названный моделью.
+
+test('четвёртая проверка есть, и без неё три первых врут вместе', () => {
+  assert.deepEqual(
+    CHECK_ROWS.map(([key]) => key),
+    ['sources_present', 'quotes_present', 'quotes_verbatim', 'cited_exact'],
+  )
+  // Ярлык называет, КТО назвал путь: признак про ответ модели, а не про отбор.
+  assert.match(CHECK_ROWS[3][1], /назван моделью точно/)
+  // Признак приходит полем и знает те же три состояния, что остальные.
+  assert.equal(parseResult(result({ checks: { cited_exact: false } })).checks.cited_exact, false)
+  assert.equal(parseResult(result({ checks: { cited_exact: 'нет' } })).checks.cited_exact, null)
+  // И подпись под проверками говорит, что сравнение ТОЧНОЕ, а не по подстроке:
+  // подстрочная механика дня 22 ошибалась в обе стороны (q72, q57).
+  assert.match(VERBATIM_NOTE, /сравнивает пути точно, знак в знак/)
+  assert.ok(!/подстрок/.test(VERBATIM_NOTE.replace('а не ищет путь подстрокой в тексте ответа.', '')))
+})
+
+test('заявленный моделью путь едет рядом и показывается ТОЛЬКО при расхождении', () => {
+  const parsed = parseResult(result())
+  // Совпало — строки нет: «модель назвала: тот же путь» было бы шумом.
+  assert.equal(claimedNote(parsed.cited[0]), null)
+  // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: модель назвала чужой путь. Без этой строки расхождение
+  // видно одной клеткой «нет» в проверках — без имени.
+  const wrong = parseResult(
+    result({
+      cited: [{ n: 1, source: 'agent_docs/invariants.md', section: '', claimedSource: 'agent_docs/выдумка.md' }],
+    }),
+  )
+  assert.equal(claimedNote(wrong.cited[0]), `${CLAIMED_PREFIX}agent_docs/выдумка.md`)
+  // Поля не было или оно пусто — это НЕ «совпало», но и показывать нечего:
+  // «модель пути не называла» и «назвала тот же» — разные вещи (I-8).
+  for (const bad of [undefined, null, '', 7]) {
+    const q = parseResult(result({ cited: [{ n: 1, source: 'a.md', section: '', claimedSource: bad }] }))
+    assert.equal(q.cited[0].claimedSource, typeof bad === 'string' ? bad : null, String(bad))
+    assert.equal(claimedNote(q.cited[0]), null, String(bad))
+  }
+})
+
+test('подпись секции говорит, откуда взят путь, и не обещает ответа модели', () => {
+  assert.match(CITED_RULE, /Модель называет номер фрагмента/)
+  assert.match(CITED_RULE, /взяты из отбора по этому номеру, а не из её ответа/)
+  // И названа причина, а не правило без причины: иначе подтверждённая цитата
+  // стояла бы под придуманным путём.
+  assert.match(CITED_RULE, /стояла бы под путём, который модель\s+придумала/)
 })

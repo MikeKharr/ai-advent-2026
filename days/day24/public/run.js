@@ -151,13 +151,23 @@ export function parseResult(raw) {
     // поля: показывать пустой «вопрос» нечем.
     clarification:
       typeof d.clarification === 'string' && d.clarification.trim() !== '' ? d.clarification : null,
-    // НА ЧТО СОСЛАЛАСЬ МОДЕЛЬ. Это не `sources`: там всё, что ушло модели.
-    // Два списка, а не один, — и страница их не сливает.
+    // НА ЧТО СОСЛАЛАСЬ МОДЕЛЬ — НОМЕРАМИ. Это не `sources`: там всё, что ушло
+    // модели. Два списка, а не один, — и страница их не сливает.
+    //
+    // `source`/`section` агент берёт ИЗ ОТБОРА по номеру, а не из ответа
+    // модели (контракт, «Сверка цитат»): сверять один номер мало — иначе
+    // подтверждённая цитата стояла бы под выдуманным путём, и экран показывал
+    // бы «дословно из agent_docs/выдумка.md». Заявленное моделью не
+    // выбрасывается и едет рядом полями `claimed*`.
     cited: Array.isArray(d.cited)
       ? d.cited.filter(isObject).map((c) => ({
           n: num(c.n),
           source: str(c.source),
           section: str(c.section),
+          // Поля не было — `null`, и это НЕ «совпало»: «модель пути не
+          // называла» и «назвала тот же» — разные вещи (I-8).
+          claimedSource: typeof c.claimedSource === 'string' ? c.claimedSource : null,
+          claimedSection: typeof c.claimedSection === 'string' ? c.claimedSection : null,
         }))
       : [],
     // Цитаты с результатом МЕХАНИЧЕСКОЙ сверки. `verified` приходит полем:
@@ -178,6 +188,7 @@ export function parseResult(raw) {
           sources_present: typeof d.checks.sources_present === 'boolean' ? d.checks.sources_present : null,
           quotes_present: typeof d.checks.quotes_present === 'boolean' ? d.checks.quotes_present : null,
           quotes_verbatim: typeof d.checks.quotes_verbatim === 'boolean' ? d.checks.quotes_verbatim : null,
+          cited_exact: typeof d.checks.cited_exact === 'boolean' ? d.checks.cited_exact : null,
         }
       : null,
     rpc: isObject(d.rpc) ? d.rpc : null,
@@ -853,6 +864,10 @@ export const CHECK_ROWS = [
   ['sources_present', 'источники названы'],
   ['quotes_present', 'цитаты приведены'],
   ['quotes_verbatim', 'цитаты найдены дословно'],
+  // ЧЕТВЁРТАЯ, и без неё три первых врут вместе: при `cited_exact: false`
+  // модель назвала чужой путь, а экран из трёх «да» читался как «всё сошлось».
+  // Сравнение точное, не по подстроке — находка дня 22 про q72/q57.
+  ['cited_exact', 'путь источника назван моделью точно'],
 ]
 
 /**
@@ -875,7 +890,8 @@ export const CHECKS_NONE = 'Проверок в этом ответе не пр�
  */
 export const VERBATIM_NOTE =
   'Третья проверка истинна только тогда, когда дословно нашлись все цитаты до единой: она ' +
-  'обязана гаснуть от первой же несовпавшей.'
+  'обязана гаснуть от первой же несовпавшей. Четвёртая сравнивает пути точно, знак в ' +
+  'знак, а не ищет путь подстрокой в тексте ответа.'
 
 /** Уточняющий вопрос посетителю — часть исхода «не знаю», а не утешение. */
 export const CLARIFY_LABEL = 'ЧТО УТОЧНИТЬ'
@@ -923,3 +939,31 @@ export function fragmentsFromPlanning(data, previous = null) {
   if (Array.isArray(d.sources)) return d.sources.length
   return previous
 }
+
+/**
+ * ЧТО НАЗВАЛА САМА МОДЕЛЬ, когда это расходится с настоящим путём фрагмента.
+ *
+ * Путь в списке — из отбора по номеру, и это не придирка к формулировке: под
+ * подтверждённой цитатой иначе стоял бы путь, который модель придумала. Но
+ * заявленное ею не прячется — иначе расхождение видно только признаком
+ * `cited_exact`, то есть одной клеткой «нет» без имени.
+ *
+ * Строки нет в трёх случаях, и все три — не «совпало»: поля не было
+ * (`null` — модель пути не называла), пустая строка и точное совпадение.
+ */
+export const CLAIMED_PREFIX = 'модель назвала: '
+export function claimedNote(cited) {
+  const claimed = cited.claimedSource
+  if (claimed === null || claimed === '') return null
+  if (claimed === cited.source) return null
+  return `${CLAIMED_PREFIX}${claimed}`
+}
+
+/**
+ * Почему путь берётся из отбора, а не из ответа. Текст стоит подписью секции и
+ * проверяется на дословность: раскладки у дня нет, и формулировку держит код.
+ */
+export const CITED_RULE =
+  'Модель называет номер фрагмента. Путь и раздел здесь взяты из отбора по этому номеру, ' +
+  'а не из её ответа: иначе подтверждённая цитата стояла бы под путём, который модель ' +
+  'придумала. Что назвала она сама, показано рядом — когда это расходится.'
