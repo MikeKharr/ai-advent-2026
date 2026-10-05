@@ -1,0 +1,312 @@
+// Сервер дня 23 — исполнением, через живой http и стенд сервиса агентов.
+//
+// Стенд ≠ прод: подменён ТОЛЬКО сервис агентов (`AGENT_URL` указывает на
+// локальный http-сервер этого файла). Что запрос дошёл именно до стенда,
+// доказывает ЕГО ЖУРНАЛ `seen` — путь, метод, заголовок и тело, — а не код
+// ответа: код 202 день отдал бы и сходив в настоящий сервис. Службы `rag`
+// здесь нет вовсе, и это верно: день до неё не ходит ни в тесте, ни в проде —
+// поиск зовёт сервис агентов.
+
+import assert from 'node:assert/strict'
+import http from 'node:http'
+import { connect } from 'node:net'
+import { sep } from 'node:path'
+import { after, before, test } from 'node:test'
+
+const KEY = 'agent-key-secret-day23-do-not-leak'
+
+/** @type {{method:string,url:string,auth:string|undefined,body:string}[]} журнал стенда */
+const seen = []
+/** Что стенд ответит на следующий `POST /v1/runs`. */
+let next = { status: 202, body: { runId: 'run-22' } }
+
+const agents = http.createServer(async (req, res) => {
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  seen.push({
+    method: req.method,
+    url: req.url,
+    auth: req.headers.authorization,
+    body: Buffer.concat(chunks).toString('utf8'),
+  })
+  if (req.url.endsWith('/events')) {
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+    res.write('event: event\ndata: {"stage":"received","title":"Получил вопрос"}\n\n')
+    return res.end('event: end\ndata: {"status":"succeeded","result":{"mode":"rag"}}\n\n')
+  }
+  if (next.status === 0) {
+    // Сервис не ответил вовсе: соединение рвётся.
+    return req.destroy()
+  }
+  res.writeHead(next.status, { 'content-type': 'application/json' })
+  res.end(JSON.stringify(next.body))
+})
+
+await new Promise((resolve) => agents.listen(0, '127.0.0.1', resolve))
+
+process.env.NODE_ENV = 'test'
+process.env.AGENT_KEY = KEY
+process.env.AGENT_URL = `http://127.0.0.1:${agents.address().port}`
+process.env.RATE_LIMIT_PER_MIN = '1000'
+process.env.RATE_LIMIT_PER_HOUR = '1000'
+process.env.RATE_LIMIT_READS_PER_HOUR = '1000'
+// Потолок заведомо недостижим: свой тест на него стоит отдельно и ставит своё
+// значение через лимитер напрямую (limits.test.js).
+process.env.MAX_DAILY_CALLS = '1000'
+
+const { env, MAX_QUESTION, resolveStatic, server } = await import('../server.js')
+let base = ''
+let ip = 0
+/** Свой адрес каждому запросу: окна на адрес не должны мешать проверке ручек. */
+const head = () => ({ 'x-forwarded-for': `10.22.0.${(ip += 1)}` })
+
+before(async () => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  base = `http://127.0.0.1:${server.address().port}`
+})
+after(() => {
+  server.close()
+  agents.close()
+})
+
+const ask = (body, extra = {}) =>
+  fetch(`${base}/api/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...head(), ...extra },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  })
+
+test('страница отдаётся и ключа в ней нет (I-1)', async () => {
+  const res = await fetch(`${base}/`, { headers: head() })
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('content-type'), /text\/html/)
+  const html = await res.text()
+  assert.ok(html.includes('<h1>Отбор второй ступенью: что нашлось и что дошло до модели</h1>'))
+  assert.ok(!html.includes(KEY), 'ключ в разметке')
+})
+
+test('модули страницы отдаются как javascript — иначе браузер их не исполняет', async () => {
+  for (const name of ['app.js', 'run.js', 'evalview.js', 'rpc.js']) {
+    const res = await fetch(`${base}/${name}`, { headers: head() })
+    assert.equal(res.status, 200, name)
+    assert.match(res.headers.get('content-type'), /text\/javascript/, name)
+  }
+})
+
+/**
+ * Выход за пределы `public` — СЫРЫМ СОКЕТОМ, а не через `fetch`.
+ *
+ * Находка `reviewer` к PR #303: с `fetch` этот тест был зелёным и при
+ * вырезанной защите — клиент нормализует `..` ДО отправки, и до сервера
+ * `/../server.js` не доходит вовсе. Проверка, зелёная на сломанном коде,
+ * держателем не является, поэтому путь пишется в запрос буквально.
+ */
+function rawGet(path) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(server.address().port, '127.0.0.1', () => {
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`)
+    })
+    let data = ''
+    socket.setEncoding('utf8')
+    socket.on('data', (chunk) => (data += chunk))
+    socket.on('end', () => resolve(data))
+    socket.on('error', reject)
+  })
+}
+
+test('чужой файл не отдаётся: путь с .. уходит в запрос буквально', async () => {
+  for (const path of ['/../server.js', '/../env.js', '/..%2fserver.js', '/public/../../server.js']) {
+    const raw = await rawGet(path)
+    const status = Number(raw.slice(9, 12))
+    assert.ok([400, 403, 404].includes(status), `${path}: получено ${status}`)
+    // Улика различает гипотезы: не только код, но и отсутствие содержимого
+    // файла. Код 404 сервер отдал бы и прочитав чужой файл не до конца.
+    assert.ok(!raw.includes('createLimiter'), `${path}: тело сервера утекло в ответ`)
+    assert.ok(!raw.includes('AGENT_KEY'), `${path}: имя ключа утекло в ответ`)
+  }
+})
+
+/**
+ * Граница каталога — ПРЯМЫМ вызовом, и это единственный способ дать ей
+ * держателя.
+ *
+ * Замер, из которого это следует (`node -e` с `new URL`): `/../server.js`
+ * приходит в `dispatch` уже как `/server.js`, `/public/../../x.js` — как
+ * `/x.js`. То есть через HTTP до проверки `..` не доходит вовсе, и мутация
+ * «убрать проверку» оставляла прогон зелёным даже с сырым сокетом. Тест выше
+ * держит наблюдаемое свойство (чужой файл не отдаётся), а этот — саму
+ * проверку, которую он держать не может.
+ */
+test('resolveStatic отбивает выход за public, минуя нормализатор URL', () => {
+  const inside = resolveStatic('/app.js')
+  assert.ok(inside !== null && inside.endsWith(`public${sep}app.js`), String(inside))
+  assert.ok(resolveStatic('/') !== null, 'корень обязан отдавать index.html')
+  // Пути, которые `new URL` до этой функции не донесёт, — зовём напрямую.
+  for (const path of ['/../server.js', '/../../etc/passwd', '/a/../../env.js', '/..']) {
+    assert.equal(resolveStatic(path), null, `${path} не отбит`)
+  }
+})
+
+test('/healthz отвечает, не раскрывает ключ (I-1) и не печатает остаток суточного потолка', async () => {
+  const res = await fetch(`${base}/healthz`, { headers: head() })
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  assert.equal(json.ok, true)
+  assert.ok(!JSON.stringify(json).includes(KEY), 'ключ в ответе пробы')
+
+  // ДОЛГ ДНЯ 22, ЗАКРЫТЫЙ ЗДЕСЬ (развилка Р8 ADR 2026-10-05-0544; пункт
+  // «Владельцу» в agent_docs/backlog.md). Ручка объявлена `open` и доступна
+  // анонимно: в дне 22 она отдавала `limiter.stats()` целиком, то есть любой
+  // снаружи видел `callsToday` и `dailyLimit` и мог выбирать момент залпа.
+  //
+  // Проверяется не отсутствие одного поля, а отсутствие ЛЮБОГО счётчика окна:
+  // иначе правило обходится переименованием. Число потолка ищется отдельно —
+  // оно и есть то, что не должно уходить наружу.
+  assert.equal('limiter' in json, false, 'проба снова отдаёт счётчики окон')
+  const body = JSON.stringify(json)
+  for (const name of ['callsToday', 'dailyLimit', 'trackedIps', 'readIps', 'perMin', 'perHour'])
+    assert.ok(!body.includes(name), `проба печатает счётчик ${name}`)
+  assert.ok(
+    !body.includes(String(env.MAX_DAILY_CALLS)),
+    'число суточного потолка видно снаружи',
+  )
+})
+
+test('пустой вопрос — отказ страницы, и до сервиса он не доходит', async () => {
+  seen.length = 0
+  const res = await ask({ question: '   ', mode: 'rag' })
+  assert.equal(res.status, 400)
+  assert.equal((await res.json()).error, 'Вопрос пустой.')
+  assert.deepEqual(seen, [], 'пустой вопрос всё-таки ушёл в сервис')
+})
+
+test('вопрос длиннее предела — отказ с числом, а не обрезка молчком', async () => {
+  seen.length = 0
+  const res = await ask({ question: 'я'.repeat(MAX_QUESTION + 1), mode: 'rag' })
+  assert.equal(res.status, 400)
+  assert.equal((await res.json()).error, `Вопрос длиннее ${MAX_QUESTION} знаков.`)
+  assert.deepEqual(seen, [])
+})
+
+test('режим обязателен и умолчания у него нет: без него запуска не будет', async () => {
+  seen.length = 0
+  for (const body of [{ question: 'вопрос' }, { question: 'вопрос', mode: 'оба' }, { question: 'вопрос', mode: '' }]) {
+    const res = await ask(body)
+    assert.equal(res.status, 400, JSON.stringify(body))
+    assert.equal((await res.json()).error, 'Режим не назван.')
+  }
+  assert.deepEqual(seen, [], 'запуск без режима ушёл в сервис')
+})
+
+test('тело не JSON — отказ, а не падение', async () => {
+  const res = await ask('{не json')
+  assert.equal(res.status, 400)
+  assert.equal((await res.json()).error, 'тело не JSON')
+})
+
+// Потолок тела — 16 КБ. НАБЛЮДАЕМОЕ поведение названо как есть: чтение
+// обрывается на превышении и соединение рвётся (`req.destroy()` в `readBody`),
+// поэтому клиент видит разрыв, а неJSON с текстом отказа. Утверждать «отвечает
+// 400» было бы ложью о механизме; предмет защиты здесь другой — что тело
+// такого размера НЕ ДОХОДИТ до сервиса агентов.
+test('тело больше 16 КБ до сервиса не доходит: чтение обрывается', async () => {
+  seen.length = 0
+  await assert.rejects(() => ask(JSON.stringify({ question: 'я'.repeat(20_000), mode: 'rag' })))
+  assert.deepEqual(seen, [], 'тело больше потолка всё-таки ушло в сервис')
+})
+
+test('запуск уходит в сервис с именем агента, вопросом, режимом и ключом', async () => {
+  seen.length = 0
+  next = { status: 202, body: { runId: 'run-22' } }
+  const res = await ask({ question: '  где держится I-4  ', mode: 'rerank' })
+  assert.equal(res.status, 202)
+  assert.deepEqual(await res.json(), { runId: 'run-22' })
+  // Журнал стенда — улика того, что запрос дошёл именно до него и каким.
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].url, '/v1/runs')
+  assert.equal(seen[0].auth, `Bearer ${KEY}`, 'ключ не предъявлен сервису')
+  const sent = JSON.parse(seen[0].body)
+  assert.equal(sent.agent, 'rerank-agent')
+  // Вопрос подрезан по краям, но не изменён внутри.
+  assert.deepEqual(sent.input, { question: 'где держится I-4', mode: 'rerank' })
+  // Сессии у дня нет: её идентификатор не выдумывается и в сервис не уходит.
+  assert.equal('sessionId' in sent.input, false)
+  assert.equal(res.headers.get('set-cookie'), null, 'день 23 ставит cookie, которых у него нет')
+})
+
+test('отказ сервиса словами сервиса, а отказ без слов — общей фразой', async () => {
+  next = { status: 400, body: { message: 'Поле mode должно быть одним из: rag, rerank, rewrite' } }
+  const spoken = await ask({ question: 'вопрос', mode: 'rag' })
+  assert.equal(spoken.status, 400)
+  assert.equal((await spoken.json()).error, 'Поле mode должно быть одним из: rag, rerank, rewrite')
+
+  next = { status: 503, body: { code: 'no_agent' } }
+  const mute = await ask({ question: 'вопрос', mode: 'rag' })
+  assert.equal(mute.status, 502)
+  const json = await mute.json()
+  assert.equal(json.error, 'Сервис агентов недоступен. Попробуйте позже.')
+  // Код и подробности чужой единицы наружу не уходят.
+  assert.equal(JSON.stringify(json).includes('no_agent'), false)
+})
+
+test('сервис не ответил вовсе — 502 и ключа в ответе нет', async () => {
+  next = { status: 0, body: null }
+  const res = await ask({ question: 'вопрос', mode: 'rag' })
+  assert.equal(res.status, 502)
+  assert.ok(!(await res.text()).includes(KEY))
+  next = { status: 202, body: { runId: 'run-22' } }
+})
+
+test('поток событий идёт насквозь и под ключом, а чужая форма идентификатора — 404', async () => {
+  seen.length = 0
+  const res = await fetch(`${base}/api/runs/run-22/events`, { headers: head() })
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('content-type'), /text\/event-stream/)
+  const text = await res.text()
+  // Байт в байт: день ничего не разбирает и не переписывает.
+  assert.ok(text.includes('event: event\ndata: {"stage":"received","title":"Получил вопрос"}'))
+  assert.ok(text.includes('event: end\ndata: {"status":"succeeded","result":{"mode":"rag"}}'))
+  assert.equal(seen.at(-1).auth, `Bearer ${KEY}`)
+  assert.equal(seen.at(-1).url, '/v1/runs/run-22/events')
+
+  seen.length = 0
+  const bad = await fetch(`${base}/api/runs/run%2F..%2Fsecret/events`, { headers: head() })
+  assert.equal(bad.status, 404)
+  assert.deepEqual(seen, [], 'чужой идентификатор всё-таки ушёл в сервис')
+})
+
+test('ключ не появляется ни в одном ответе сервера дня (I-1)', async () => {
+  const bodies = []
+  for (const [path, init] of [
+    ['/', {}],
+    ['/app.js', {}],
+    ['/healthz', {}],
+    ['/eval.json', {}],
+    ['/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }],
+    ['/api/runs/run-22/events', {}],
+  ]) {
+    const res = await fetch(`${base}${path}`, { ...init, headers: { ...head(), ...(init.headers ?? {}) } })
+    bodies.push(await res.text())
+  }
+  for (const body of bodies) assert.ok(!body.includes(KEY), 'ключ в ответе сервера дня')
+})
+
+// Файла итогов на момент этого PR нет: его пишет прогон (PR 3 дня 23).
+//
+// Находка `reviewer` к PR #303: прежняя форма принимала «200 или 404», то есть
+// не держала ничего и после PR 3 продолжала бы не держать. Держимое свойство
+// здесь одно и верно в обоих мирах: отсутствие файла НЕ валит сервер, а
+// страница на таком ответе говорит словами (её сторона — page.test.js и живая
+// проверка). Поэтому проверяется отсутствие 5xx, и это сказано в имени.
+test('отсутствующий файл итогов сервер не валит: ответ 404, а не 5xx', async () => {
+  const res = await fetch(`${base}/eval.json`, { headers: head() })
+  assert.ok(res.status < 500, `получено ${res.status}`)
+  // И тип отдаётся верный, когда файл всё-таки появится (PR 3).
+  if (res.status === 200) assert.match(res.headers.get('content-type'), /application\/json/)
+  else
+    assert.equal(
+      res.status,
+      404,
+      'страница различает «прогона не было» и «файл не читается» по 404 — другой код сломает это',
+    )
+})
