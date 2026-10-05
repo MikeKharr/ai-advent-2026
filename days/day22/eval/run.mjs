@@ -2,11 +2,19 @@
 // Прогон 10 контрольных вопросов × 2 режима ЧЕРЕЗ ПУБЛИЧНЫЙ API ДНЯ (ADR
 // 2026-10-04-0735, п. 6). Node 22, без зависимостей.
 //
-// ПОЧЕМУ ЧЕРЕЗ ПУБЛИЧНЫЙ АДРЕС, А НЕ МИМО. Локальной связки с ключом у прогона
-// нет и не будет (I-3): он ходит тем же путём, что посетитель, — `POST
-// /api/runs` и поток событий, — поэтому мерит то, что видит посетитель, и не
-// заводит ни четвёртой копии ключа, ни второго способа позвать модель. Ключей
-// этот скрипт не читает вовсе: единственное, что он знает, — адрес страницы.
+// ПОЧЕМУ ЧЕРЕЗ ПУБЛИЧНЫЙ АДРЕС, А НЕ МИМО. Пути мимо дня у прогона нет и не
+// будет: он ходит тем же путём, что посетитель, — `POST /api/runs` и поток
+// событий, — поэтому мерит то, что видит посетитель, и не заводит второго
+// способа позвать модель.
+//
+// КЛЮЧ ОПЕРАТОРА (ADR 2026-10-05-1130). Один ключ прогон всё-таки знает —
+// `EVAL_KEY` дня, и только его: ключей к модели, к роутеру, к службе поиска и к
+// сервису агентов у него нет по-прежнему (I-3). Ключ читается из ФАЙЛА, путь
+// которого даёт `EVAL_KEY_FILE` (умолчание `~/.config/advent/eval.key`), и
+// уходит заголовком `x-eval-key` при создании запуска. Он снимает окна «в
+// минуту/в час» НА АДРЕС — и только их: суточный потолок дня и бюджет
+// приложения остаются. Файла нет — прогон идёт как раньше, под окнами.
+// Значение не печатается ни при каком исходе: в вывод идёт «есть» или «нет».
 //
 // ЭТО СТОИТ ДЕНЕГ, и числа названы до запуска: 20 запусков, 10 из них с
 // поиском, около $0,14 по ценам router/config/providers.json, 10 эмбеддингов
@@ -16,15 +24,17 @@
 //
 // РИТМ. У дня 5 запусков в минуту на адрес (`days/day22/env.js`), у службы
 // `rag` — 10 в минуту на весь хост (ADR, п. 4, развилка Р6(а)). Поэтому
-// запуски идут строго по одному с паузой `SPACING_MS` между ними: залп получил
-// бы 429 и обнулил часть набора. 20 запусков × 13 с ≈ 4,5 минуты плюс время
-// ответов модели.
+// запуски идут строго по одному с паузой между ними: залп получил бы 429 и
+// обнулил часть набора. Без ключа оператора пауза `SPACING_MS` — 20 запусков ×
+// 13 с ≈ 4,5 минуты плюс время ответов модели. С ключом окна дня сняты, но
+// окно службы `rag` остаётся, и паузу задаёт оно: `SPACING_WITH_KEY_MS`.
 //
 // ЧЕГО ЗДЕСЬ НЕТ: вердиктов. Прогон собирает механику и тексты ответов, а
 // вердикт 0/1/2 по рубрике ставит отдельный экземпляр роли `reviewer` после
 // прогона (ADR, п. 6, развилка Р4(а)) — он же вписывает своё имя в
 // `judge.name`. `--check` после этого сверяет форму файла.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildReport, checkReport, MODES, pendingVerdicts, scoreRun } from './score.mjs'
@@ -37,11 +47,52 @@ const OUT = join(here, '..', 'public', 'eval.json')
 export const BASE = 'https://challenge.zpq.ai/day22'
 
 /**
- * Пауза между запусками. 12,0 с хватило бы ровно на 5 в минуту, 13 с оставляет
- * запас на расхождение часов и на то, что окно считает время прихода запроса,
- * а не ухода ответа.
+ * Пауза между запусками БЕЗ ключа оператора. 12,0 с хватило бы ровно на 5 в
+ * минуту, 13 с оставляет запас на расхождение часов и на то, что окно считает
+ * время прихода запроса, а не ухода ответа.
  */
 export const SPACING_MS = 13_000
+
+/**
+ * Пауза между запусками С ключом оператора (ADR 2026-10-05-1130, п. 9). Окна
+ * дня сняты, и связывает теперь окно службы `rag` — 10 запросов в минуту на
+ * весь хост, то есть 6,0 с на запрос с поиском. Запуск с поиском в наборе
+ * КАЖДЫЙ ВТОРОЙ (режимы `rag` и `norag` идут парой), поэтому 6,5 с паузы дают
+ * 13 с между обращениями к службе — тот же запас, что и раньше.
+ *
+ * Это не «быстрее в любом месте»: прогон ускоряется вдвое, а не становится
+ * мгновенным, и причина названа числом, а не словом.
+ */
+export const SPACING_WITH_KEY_MS = 6_500
+
+/** Заголовок ключа оператора. Тот же, что у дня (`days/day22/limits.js`). */
+export const EVAL_HEADER = 'x-eval-key'
+
+/** Умолчание пути к файлу ключа оператора. */
+export const EVAL_KEY_FILE = join(homedir(), '.config', 'advent', 'eval.key')
+
+/**
+ * Ключ оператора из файла, либо `null`, если файла нет, он не читается или
+ * пуст. Отсутствие — НЕ ошибка: прогон тогда идёт под окнами, как до ADR
+ * 2026-10-05-1130.
+ *
+ * Значение из этой функции не печатается нигде: единственный его потребитель —
+ * заголовок запроса. Поэтому и ошибка чтения глотается молча — текст
+ * исключения `fs` несёт путь, а путь к файлу ключа в выводе не нужен.
+ */
+export function readEvalKey({
+  file = process.env.EVAL_KEY_FILE || EVAL_KEY_FILE,
+  read = readFileSync,
+} = {}) {
+  let text
+  try {
+    text = read(file, 'utf8')
+  } catch {
+    return null
+  }
+  const value = String(text).trim()
+  return value === '' ? null : value
+}
 
 /** Создание запуска — быстрый вызов. Ответ модели ждём отдельно, в потоке. */
 const CREATE_TIMEOUT_MS = 15_000
@@ -85,12 +136,15 @@ export function parseEnd(chunkText, state) {
  * никогда не бросает: отказ службы поиска, 429 лимитера и обрыв сети это
  * РЕЗУЛЬТАТ прогона, а не его авария, и он обязан доехать до файла.
  */
-export async function runOne({ base, question, mode, fetchImpl = fetch }) {
+export async function runOne({ base, question, mode, fetchImpl = fetch, key = null }) {
   let created
   try {
     created = await fetchImpl(`${base}/api/runs`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      // Ключ оператора — только здесь, у создания запуска: окна «в минуту/в
+      // час» стоят на нём. Поток событий идёт под окном чтений (600 в час), и
+      // прогону из 20 чтений оно не мешает — предъявлять там нечего.
+      headers: { 'content-type': 'application/json', ...(key ? { [EVAL_HEADER]: key } : {}) },
       body: JSON.stringify({ question: question.question, mode }),
       signal: AbortSignal.timeout(CREATE_TIMEOUT_MS),
     })
@@ -151,7 +205,10 @@ export async function runAll({
   questions,
   fetchImpl = fetch,
   sleep = sleepReal,
-  spacingMs = SPACING_MS,
+  key = null,
+  // Пауза задаётся КЛЮЧОМ, а не вызывающим: с ключом связывает окно службы
+  // `rag`, без ключа — окно дня, и это две разные величины, а не настройка.
+  spacingMs = key ? SPACING_WITH_KEY_MS : SPACING_MS,
   log = console.log,
 }) {
   const runs = new Map()
@@ -160,7 +217,7 @@ export async function runAll({
     for (const mode of MODES) {
       if (!first) await sleep(spacingMs)
       first = false
-      const got = await runOne({ base, question, mode, fetchImpl })
+      const got = await runOne({ base, question, mode, fetchImpl, key })
       runs.set(`${question.id}:${mode}`, got)
       if (got.failure) log(`${question.id}/${mode}: отказ ${got.failure.code} — ${got.failure.message}`)
       else {
@@ -198,6 +255,9 @@ export async function main({
   sleep = sleepReal,
   log = console.log,
   now = () => new Date(),
+  // Ключ оператора читается здесь, а не внутри прогона: тесту нужно уметь
+  // сказать «ключа нет», не завися от того, что лежит на машине запуска.
+  key = readEvalKey(),
 } = {}) {
   const flag = (name) => argv.includes(name)
   const value = (name, fallback) => {
@@ -233,8 +293,10 @@ export async function main({
   }
 
   const base = value('--base', BASE)
+  // В вывод идёт ФАКТ, а не значение: «есть» или «нет».
   log(`прогон: ${questions.length} вопросов × ${MODES.length} режима через ${base}`)
-  const runs = await runAll({ base, questions, fetchImpl, sleep, log })
+  log(`ключ оператора: ${key ? 'есть — окна дня на адрес сняты' : 'нет — прогон идёт под окнами дня'}`)
+  const runs = await runAll({ base, questions, fetchImpl, sleep, key, log })
   const report = buildReport({
     questions,
     runs,

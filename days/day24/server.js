@@ -30,7 +30,7 @@ import http from 'node:http'
 import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MODES, parseEnv } from './env.js'
-import { createLimiter } from './limits.js'
+import { createLimiter, EVAL_HEADER, isOperator } from './limits.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const PUBLIC = join(here, 'public')
@@ -347,7 +347,10 @@ checkRoutes(routes)
 
 /** Окно → чем занимается слот. `open` сюда не попадает по построению. */
 const RESERVE = {
-  run: (ip) => limiter.reserve(ip),
+  // Ключ оператора доходит ТОЛЬКО до окна запусков (ADR 2026-10-05-1130, п. 7):
+  // окно чтений он не снимает, и `read` его не принимает вовсе — 600 чтений в
+  // час прогону не мешают, а снятое окно пришлось бы держать тестом.
+  run: (ip, operator) => limiter.reserve(ip, { operator }),
   read: (ip) => limiter.reserveRead(ip),
 }
 
@@ -400,9 +403,13 @@ async function dispatch(req, res) {
   if (!found) return serveStatic(url, res)
 
   const ip = clientIp(req)
+  // Ключ оператора (ADR 2026-10-05-1130). Ни значение заголовка, ни сам факт
+  // его присутствия в журнал не пишутся: иначе ключ приезжал бы в логи
+  // контейнера, а «ключ предъявлен» стало бы оракулом для перебирающего.
+  const operator = isOperator(env, req.headers[EVAL_HEADER])
   let slot = null
   if (found.route.limit !== 'open') {
-    slot = RESERVE[found.route.limit](ip)
+    slot = RESERVE[found.route.limit](ip, operator)
     if (!slot.ok)
       return send(
         res,
