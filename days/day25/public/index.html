@@ -209,6 +209,16 @@
      столбцы, и таблица из одной колонки чисел читалась бы скринридером
      медленнее списка. Числа — tabular-nums, чтобы колонка держалась глазом. */
   .ev { display:flex; flex-direction:column; gap:var(--s-4); }
+  /* Строка о смешанном индексе — ПО ИДЕНТИФИКАТОРУ, а не правкой общего
+     `.warned`: тот носят короткие предупреждения всей страницы, и полоса
+     чтения им не нужна. Здесь абзац в несколько строк (причина плюс
+     перечисление ходов), и без потолка он шёл на 76ch — замер
+     `design-review` к PR #325.
+     Начертание 600 снято у ПРОЗЫ и оставлено у маркера: жирные пять строк
+     читаются хуже, а сигнал «предупреждение» несут маркер и скрытый префикс
+     для скринридера, а не вес текста. */
+  #ev-mixed { max-width:68ch; font-weight:400; }
+  #ev-mixed .mark { font-weight:600; }
   .ev-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:var(--s-5); }
   .ev-title { margin:0; font-size:var(--t-md); line-height:1.5; font-weight:600; }
   .ev-sum { margin:var(--s-2) 0 0; max-width:52ch; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
