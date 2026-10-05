@@ -361,6 +361,10 @@ test('круг проверки не платит за отбор заново: 
     [3, 10],
   ]) {
     const rag = await fakeRag()
+    // Снятие сервера в `t.after`, а не строкой в конце витка: упавший виток
+    // иначе оставил бы открытый сокет, и прогон завис бы вместо красного
+    // теста — мутационную проверку это обесценивает.
+    t.after(() => rag.close())
     const fetchImpl = router({ verdicts: [rejected, rejected, rejected] })
     const { ask } = setup({ rag, fetchImpl })
     const snapshot = await ask({ reviewRounds: rounds })
@@ -385,7 +389,6 @@ test('круг проверки не платит за отбор заново: 
     // по-прежнему, обещание контракта целое.
     const { sessions, sid } = setup.last
     assert.equal(sessions.runPromptsOf({ runId: snapshot.id, sessionId: sid }).length, rounds)
-    await rag.close()
   }
 })
 
