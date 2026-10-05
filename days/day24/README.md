@@ -211,7 +211,7 @@
 | `answer` | текст **из поля схемы**, а не всё тело ответа |
 | `clarification` | уточняющий вопрос посетителю, строка или `null` |
 | `cited[]` | `{n, source, section, claimedSource, claimedSection}` — номера, на которые сослалась модель; путь и раздел взяты **из отбора** по номеру, `claimed*` — то, что назвала она |
-| `quotes[]` | `{n, text, verified}` — цитаты с результатом механической сверки |
+| `quotes[]` | `{n, text, verified, truncated}` — цитаты с результатом механической сверки; длиннее 300 знаков обрезаны до первых 300, и `text` — обрезанный (ADR `2026-10-05-1013`) |
 | `checks` | `sources_present`, `quotes_present`, `quotes_verbatim`, `cited_exact` — булевы |
 
 Контракт целиком — `agent_docs/guides/day24-cited-contract.md`; источник истины — код

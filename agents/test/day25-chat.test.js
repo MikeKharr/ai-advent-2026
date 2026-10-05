@@ -268,7 +268,11 @@ test('у ответа хода есть источники и дословная
     [1, 2],
   )
   assert.equal(snapshot.result.outcome, 'answered')
-  assert.deepEqual(snapshot.result.quotes, [{ n: 1, text: 'лимитер и расход', verified: true }])
+  // `truncated: false` — цитата короче потолка; обрезку держит `verifyQuotes`
+  // (ADR 2026-10-05-1013).
+  assert.deepEqual(snapshot.result.quotes, [
+    { n: 1, text: 'лимитер и расход', verified: true, truncated: false },
+  ])
   assert.equal(snapshot.result.checks.quotes_verbatim, true)
   assert.equal(snapshot.result.checks.cited_exact, true)
   // Путь источника взят из ОТБОРА, а не из ответа модели (день 24, находка
