@@ -289,8 +289,21 @@ const bad = (id, hasQuotes) =>
     id,
     run: run({
       outcome: 'unsupported',
+      has_sources: true,
       has_quotes: hasQuotes,
       quotes_verified: hasQuotes ? 'none' : null,
+    }),
+  })
+
+/** Ответ без подтверждения, у которого И ИСТОЧНИКОВ не названо (cited.js:316). */
+const noSrc = (id) =>
+  question({
+    id,
+    run: run({
+      outcome: 'unsupported',
+      has_sources: false,
+      has_quotes: false,
+      quotes_verified: null,
     }),
   })
 
@@ -298,11 +311,43 @@ test('ответ без цитат вовсе и ответ с ненайден�
   // q94 живого прогона: цитат не было вовсе. Прежняя фраза уверяла, что
   // «цитаты в них есть, во фрагментах их нет», — про него это ложь.
   const t = tally(parseEval(file([bad('q01', false), bad('q02', true), bad('q03', true)])))
-  assert.deepEqual(t.unsupported, { noQuotes: 1, unverified: 2 })
+  assert.deepEqual(t.unsupported, { noSources: 0, noQuotes: 1, unverified: 2 })
   const v = verdict(t)
   assert.match(v.text, /3 ответа нечем проверить по источникам/)
   assert.match(v.text, /у 1 ответа цитат нет вовсе/)
   assert.match(v.text, /у 2 цитаты есть, но во фрагментах не нашлись/)
+})
+
+test('«источники не названы» — свой случай, а не «цитат нет вовсе»', () => {
+  // Исход `unsupported` накрывает и это (`agents/src/rag/cited.js`:
+  // `sources.length > 0 && verified > 0 ? 'answered' : 'unsupported'`). Без
+  // своей строки такой ответ назывался бы «цитат нет вовсе» — правдой,
+  // умалчивающей о главном: цитировать было нечего (находка `reviewer`, #319).
+  const t = tally(parseEval(file([noSrc('q01'), bad('q02', false)])))
+  assert.deepEqual(t.unsupported, { noSources: 1, noQuotes: 1, unverified: 0 })
+  const v = verdict(t)
+  assert.match(v.text, /у 1 ответа источники не названы/)
+  assert.match(v.text, /у 1 ответа цитат нет вовсе/)
+  // И такой ответ НЕ посчитан дважды: сумма сходится, остатка нет.
+  assert.ok(!/прогон не сказал/.test(v.text), v.text)
+})
+
+test('«нет цитат» и «ни одна не нашлась» считаются по разным полям', () => {
+  // `unverified` берётся по `quotes_verified === 'none'`, а не по
+  // `has_quotes === true`: расходящийся файл (цитаты есть, а слова сверки нет)
+  // обязан уехать в остаток, а не соврать, будто сверка была и провалилась.
+  const t = tally(
+    parseEval(
+      file([
+        question({
+          id: 'q01',
+          run: run({ outcome: 'unsupported', has_sources: true, has_quotes: true, quotes_verified: null }),
+        }),
+      ]),
+    ),
+  )
+  assert.deepEqual(t.unsupported, { noSources: 0, noQuotes: 0, unverified: 0 })
+  assert.match(verdict(t).text, /про 1 прогон не сказал, были ли цитаты/)
 })
 
 test('встретилась одна причина — названа одна, без пустой половины фразы', () => {
@@ -325,7 +370,7 @@ test('прогон не сказал про цитаты — это третий
       ]),
     ),
   )
-  assert.deepEqual(t.unsupported, { noQuotes: 1, unverified: 0 })
+  assert.deepEqual(t.unsupported, { noSources: 0, noQuotes: 1, unverified: 0 })
   const v = verdict(t)
   assert.match(v.text, /2 ответа нечем проверить/)
   assert.match(v.text, /про 1 прогон не сказал, были ли цитаты/)

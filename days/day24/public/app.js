@@ -61,6 +61,7 @@ import {
   CANDIDATES_NONE,
   keptWord,
   parseResult,
+  quoteCutNote,
   QUOTE_EMPTY,
   quotesNote,
   quotesTally,
@@ -628,6 +629,14 @@ function showQuotes(result) {
       // сказано это словами.
       const empty = q.text === null || q.text === ''
       li.append(node('p', `quote-text${empty ? ' is-none' : ''}`, empty ? QUOTE_EMPTY : q.text))
+      // ОБРЕЗАННАЯ ЦИТАТА НЕ ВЫДАЁТСЯ ЗА ЦЕЛУЮ. Многоточие — отдельным узлом
+      // ПОСЛЕ текста: сам текст остаётся ровно тем, что агент сверил с
+      // фрагментом, и копируется без приписки страницы. Строка под ним
+      // называет, кто обрезал и сколько осталось (образец — день 25).
+      if (q.truncated && !empty) {
+        li.append(node('span', 'quote-cut', '…'))
+        li.append(node('p', 'entry-note', quoteCutNote(Array.from(q.text).length)))
+      }
       return li
     }),
   )

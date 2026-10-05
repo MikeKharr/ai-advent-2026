@@ -256,6 +256,14 @@
     color:var(--fg); white-space:pre-wrap; overflow-wrap:anywhere;
   }
   .quote-text.is-none { color:var(--fg-mut); }
+  /* Многоточие обрезанной цитаты — отдельным узлом после текста, той же шкалой
+     и тем же цветом: это продолжение цитаты, а не пометка о ней. Пометка —
+     строка `entry-note` ниже. */
+  .quote-cut { font-size:var(--t-sm); line-height:1.5; color:var(--fg); }
+  /* Строка об обрезке цитаты — тем же классом `entry-note`, что у фрагмента, и
+     теми же словами, что у дня 25. Служебная строка внутри карточки, поэтому
+     приглушена, а не окрашена тревогой: обрезка — правило сверки, а не беда. */
+  .quote .entry-note { margin:var(--s-1) 0 0; color:var(--fg-mut); }
   /* Заявленный моделью путь — моноширинный, как и настоящий: это путь, а не
      проза. Цветом не кодируется: расхождение несёт слово «модель назвала». */
   .claimed {
@@ -293,9 +301,13 @@
     letter-spacing:.06em; color:var(--fg-mut); text-align:right;
   }
   .sum tbody th { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+  /* `nowrap`, потому что в клетке не всегда число: без судейства там стоит
+     слово «не прогнан», и на 320 оно переносилось на вторую строку, разводя
+     клетку с её заголовком (замер design-review к PR #319). Числам перенос не
+     нужен тем более. */
   .sum td {
     font-size:var(--t-sm); line-height:1.5; text-align:right;
-    font-variant-numeric:tabular-nums; min-width:5rem;
+    font-variant-numeric:tabular-nums; min-width:5rem; white-space:nowrap;
   }
 
   /* Фраза вывода — проза, и полоса чтения ей нужна: класс `wrap` полосой не

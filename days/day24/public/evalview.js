@@ -144,20 +144,37 @@ export function tally(parsed) {
       const v = q.run[key]
       if (v !== null) judge[key][v] += 1
     }
-  // ПОЧЕМУ `unsupported` РАЗБИТ НА ДВА. «Нечем проверить» бывает по двум
-  // разным причинам, и одной фразой они сливались в неправду: у q94 прогона
+  // ПОЧЕМУ `unsupported` РАЗБИТ НА ТРИ. «Нечем проверить» бывает по разным
+  // причинам, и одной фразой они сливались в неправду: у q94 прогона
   // 2026-10-05 цитат не было вовсе, а фраза уверяла, что «цитаты в них есть,
   // во фрагментах их нет» (находка `design-review` к PR #319). Это та же
   // разница, которую пульт одного запуска держит константами `QUOTES_NONE` и
   // `UNVERIFIED_NOTE`, и сводка обязана её держать тоже (I-8).
   //
-  // Третий случай — прогон не сказал, были ли цитаты (`hasQuotes === null`), —
-  // не падает ни в одно ведро: иначе сумма двух чисел молча расходилась бы с
-  // числом ответов без подтверждения.
+  // Случаи, и порядок здесь — от более общей причины к более частной:
+  //   noSources   — источников не названо вовсе. Исход `unsupported` накрывает
+  //       и это: `sources.length > 0 && verified > 0 ? 'answered' : 'unsupported'`
+  //       (`agents/src/rag/cited.js`). Без своей строки такой ответ попадал бы
+  //       в «цитат нет вовсе» — правду, умалчивающую о главном: цитировать было
+  //       нечего, потому что и источника не назвали (находка `reviewer`, #319);
+  //   noQuotes    — источники названы, а цитат нет;
+  //   unverified  — цитаты есть, и ни одна не нашлась дословно. Считается по
+  //       `quotes_verified === 'none'`, а НЕ по `hasQuotes === true`: сегодня
+  //       это одно и то же по контракту (у `unsupported` подтверждённых цитат
+  //       ноль, значит при непустом списке слово ровно `none`), но опираться на
+  //       эту сцепку незачем. По полю, которое прямо об этом и говорит,
+  //       расходящийся файл уедет в остаток, а не соврёт.
+  //
+  // Остаток — прогон не сказал, что с цитатами, — не падает ни в одно ведро:
+  // иначе сумма молча расходилась бы с числом ответов без подтверждения.
   const bad = ran.filter((q) => q.run.outcome === 'unsupported')
+  const noSources = bad.filter((q) => q.run.hasSources === false)
+  const withSources = bad.filter((q) => q.run.hasSources !== false)
   const unsupported = {
-    noQuotes: bad.filter((q) => q.run.hasQuotes === false).length,
-    unverified: bad.filter((q) => q.run.hasQuotes === true).length,
+    noSources: noSources.length,
+    noQuotes: withSources.filter((q) => q.run.hasQuotes === false).length,
+    // Поле файла `quotes_verified` разбор кладёт в `verified` (см. `parseEval`).
+    unverified: withSources.filter((q) => q.run.verified === 'none').length,
   }
   return {
     total: parsed.questions.length,
@@ -196,13 +213,18 @@ export function verdict(t) {
   // Причины «нечем проверить» названы порознь и только те, что встретились:
   // одна фраза на оба случая была бы ложью про один из них.
   const why = []
+  if (t.unsupported.noSources > 0)
+    why.push(
+      `у ${t.unsupported.noSources} ${plural(t.unsupported.noSources, 'ответа', 'ответов', 'ответов')} источники не названы`,
+    )
   if (t.unsupported.noQuotes > 0)
     why.push(
       `у ${t.unsupported.noQuotes} ${plural(t.unsupported.noQuotes, 'ответа', 'ответов', 'ответов')} цитат нет вовсе`,
     )
   if (t.unsupported.unverified > 0)
     why.push(`у ${t.unsupported.unverified} цитаты есть, но во фрагментах не нашлись`)
-  const restBad = bad - t.unsupported.noQuotes - t.unsupported.unverified
+  const restBad =
+    bad - t.unsupported.noSources - t.unsupported.noQuotes - t.unsupported.unverified
   if (restBad > 0) why.push(`про ${restBad} прогон не сказал, были ли цитаты`)
   const unsupported =
     bad === 0
