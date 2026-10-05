@@ -194,6 +194,14 @@ export const isDailyLimit = (failure) =>
  *
  * Возвращает `{runs, stopped}`. `stopped` — суточный потолок кончился: это не
  * авария, а конец приёма, и сделанное обязано доехать до файла.
+ *
+ * `save` — запись файла ПОСЛЕ КАЖДОГО ЗАПУСКА, а не в конце приёма. Причина
+ * названа ценой: прогон идёт больше часа (паузы под окна плюс ожидание
+ * часового окна на границе режимов), и обрыв на середине терял бы ВСЁ
+ * измеренное — то есть десятки оплаченных запусков, которые потом пришлось бы
+ * оплатить заново. Проверено на деле: первый приём дня 23 пришлось прервать на
+ * пятнадцати измеренных вопросах, и они пропали. Теперь обрыв не теряет
+ * ничего: файл цел на любом шаге, а `--resume` продолжает с него.
  */
 export async function runAll({
   base,
@@ -203,6 +211,7 @@ export async function runAll({
   sleep = sleepReal,
   spacing = SPACING_MS,
   maxWaitMs = MAX_WAIT_MS,
+  save = null,
   log = console.log,
 }) {
   const runs = new Map()
@@ -245,10 +254,15 @@ export async function runAll({
               `mrr@10 ${m.before.mrr10}→${m.after.mrr10}`,
           )
         }
+        // Запись сразу, а не в конце: см. `save` в шапке. Отказ записи валит
+        // прогон намеренно — молча тратить потолок, не сохраняя результат,
+        // хуже, чем остановиться.
+        if (save) await save(runs, stopped)
         break
       }
     }
   }
+  if (save) await save(runs, stopped)
   return { runs, stopped }
 }
 
@@ -326,27 +340,37 @@ export async function main({
     `прогон: ${questions.length} вопросов × ${MODES.length} режима через ${base}` +
       (done.size > 0 ? `; ${done.size} пар уже измерено прошлым приёмом` : ''),
   )
-  const { runs, stopped } = await runAll({ base, questions, done, fetchImpl, sleep, log })
-
-  const fresh = buildReport({
-    questions,
-    runs,
-    at: now().toISOString(),
-    index: indexOf(runs, previous?.index),
-    note: value('--note', null),
-  })
-  const report = previous ? mergeReports(previous, fresh) : fresh
-  // Почему приём кончился — В ФАЙЛЕ, а не только в выводе терминала: второй
-  // приём и ревью читают файл, а вывод первого приёма к тому времени потерян.
-  if (stopped) {
-    const [id, mode] = stopped.at.split(':')
-    report.failures.push({ id, mode, code: 'day_limit', message: stopped.message })
+  /**
+   * Сборка и запись файла. Одна дорога и у записи после каждого запуска, и у
+   * записи в конце приёма: двух сборок отчёта в одном раннере быть не должно —
+   * они разъехались бы, и файл на середине прогона отличался бы от итогового.
+   */
+  const note = value('--note', null)
+  const writeOut = (runs, stopped) => {
+    const fresh = buildReport({
+      questions,
+      runs,
+      at: now().toISOString(),
+      index: indexOf(runs, previous?.index),
+      note,
+    })
+    const report = previous ? mergeReports(previous, fresh) : fresh
+    // Почему приём кончился — В ФАЙЛЕ, а не только в выводе терминала: второй
+    // приём и ревью читают файл, а вывод первого приёма к тому времени потерян.
+    if (stopped) {
+      const [id, mode] = stopped.at.split(':')
+      report.failures.push({ id, mode, code: 'day_limit', message: stopped.message })
+    }
+    mkdirSync(dirname(out), { recursive: true })
+    writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`)
+    return report
   }
+
+  const { runs, stopped } = await runAll({ base, questions, done, fetchImpl, sleep, save: writeOut, log })
+  const report = writeOut(runs, stopped)
 
   const problems = checkReport(report, questions)
   for (const problem of problems) log(`форма: ${problem}`)
-  mkdirSync(dirname(out), { recursive: true })
-  writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`)
   log(`записан ${out}: отказов ${report.failures.length}, запусков ещё не сделано ${pendingRuns(report)}`)
   return problems.length === 0 ? 0 : 1
 }

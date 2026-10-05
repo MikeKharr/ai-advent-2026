@@ -311,6 +311,31 @@ test('прогон пишет файл результата с обоими чи
   }
 })
 
+test('файл пишется ПОСЛЕ КАЖДОГО запуска, поэтому обрыв приёма ничего не теряет', async () => {
+  // ЧТО ЭТО ДЕРЖИТ, и цена названа по факту: приём идёт больше часа, и первый
+  // приём дня 23 пришлось прервать на пятнадцати измеренных вопросах — они
+  // пропали вместе с процессом, то есть пятнадцать оплаченных запусков надо
+  // было оплачивать заново. Запись в конце приёма этого не ловит никак.
+  reset()
+  const { dir, file } = queriesFile(['q01', 'q04'])
+  const out = join(dir, 'eval.json')
+  const seenAfterEachRun = []
+  await main({
+    argv: ['--base', base, '--out', out, '--queries', file],
+    // Снимок файла берётся В ПАУЗЕ между запусками, то есть ровно там, где
+    // настоящий прогон живёт большую часть времени и где его обрывают.
+    sleep: async () => seenAfterEachRun.push(JSON.parse(readFileSync(out, 'utf8'))),
+    log: () => {},
+  })
+  assert.equal(seenAfterEachRun.length, 3, 'пауз было не три — проверено не то')
+  // Уже на первой паузе файл цел и несёт первый измеренный вопрос.
+  assert.ok(seenAfterEachRun[0].questions[0].rerank, 'после первого запуска файла ещё нет')
+  assert.equal(seenAfterEachRun[0].modes.rerank.ran, 1)
+  // И дальше он только пополняется — ни один снимок не пуст и не обнулён.
+  const ranByPause = seenAfterEachRun.map((r) => MODES.reduce((s, m) => s + (r.modes[m]?.ran ?? 0), 0))
+  assert.deepEqual(ranByPause, [1, 2, 3], `файл на паузах: ${ranByPause.join(', ')}`)
+})
+
 test('готовый файл результата повтором прогона не затирается без флага', async () => {
   reset()
   const { dir, file } = queriesFile(['q01'])
