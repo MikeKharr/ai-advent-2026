@@ -347,12 +347,31 @@ export function steps(events) {
       // новых стадий агент не заводил.
       const kept = num(data.kept)
       if (kept !== null) {
-        const total = num(data.candidates) ?? (Array.isArray(data.candidates) ? data.candidates.length : null)
+        // `data.candidates` — СПИСОК (контракт: «без текстов»), поэтому берётся
+        // его длина. Прежняя редакция пробовала сначала `num()`, а он на
+        // массиве всегда `null`: ветвь была мёртвой, и при пустом списке мета
+        // читалась «оставлено 3 из 0» (находка `reviewer` к PR #313).
+        const total = Array.isArray(data.candidates) ? data.candidates.length : num(data.candidates)
         fragments = kept
         out.push({
           label: 'ОТБОР',
           time: at(e),
           meta: total === null ? `оставлено ${kept}` : `оставлено ${kept} из ${total}`,
+          kind: 'planning',
+        })
+        continue
+      }
+      // ПЕРЕПИСЫВАНИЕ НЕ ДАЛО НОВОГО ЗАПРОСА. Агент шлёт это событие с
+      // `data.rewritten === null` (`agents/src/rag/retrieve.js`), и прежняя
+      // редакция роняла его в третью ветвь — то есть рисовала «ФРАГМЕНТЫ
+      // ПОЛУЧЕНЫ» на месте шага, которого не было: второго поиска при
+      // `skipped` нет вовсе (блокирующая `reviewer` к PR #313). Различитель —
+      // `'rewritten' in data`: поле названо, значение пустое.
+      if ('rewritten' in data && data.rewritten === null) {
+        out.push({
+          label: 'ПЕРЕПИСЫВАНИЕ НИЧЕГО НЕ ДАЛО',
+          time: at(e),
+          meta: 'запрос остался исходным, второго поиска не было',
           kind: 'planning',
         })
         continue
@@ -439,7 +458,6 @@ export const STATUS = {
   sent: 'Вопрос ушёл…',
   searching: 'Ищу фрагменты по проекту…',
   asking: (n) => `Фрагментов: ${n}. Спрашиваю модель…`,
-  askingPlain: 'Спрашиваю модель…',
   done: (ms) => `Готово за ${formatMs(ms)}.`,
   empty: 'Не отправлено: поле пустое.',
   long: `Не отправлено: вопрос длиннее ${MAX_QUESTION} знаков.`,
@@ -638,6 +656,33 @@ export function tornSrcsNote(mode, fragmentsFound) {
   // выдумывать слова про поиск для режима, которого страница не знает, нельзя.
   if (!MODES.includes(mode)) return null
   return fragmentsFound === null ? SRCS_TORN_BEFORE : SRCS_TORN_AFTER
+}
+
+/**
+ * СКОЛЬКО ФРАГМЕНТОВ УСПЕЛ ДОЛОЖИТЬ ПОИСК — по событию `planning`, и `null`,
+ * если это событие не про выдачу поиска.
+ *
+ * ВЫНЕСЕНО РАДИ ДЕРЖАТЕЛЯ, и дефект был настоящий (блокирующая `reviewer` к
+ * PR #313). В дне 22 стадия `planning` приходила ОДИН раз, и присваивание
+ * «поле `sources` или `null`» было верным. В дне 23 их до трёх: выдача поиска,
+ * итог переписывания, итог отбора, — и у последних двух поля `sources` нет.
+ * Безусловное присваивание обнуляло число к концу любого запуска с отбором, и
+ * при обрыве потока секция источников говорила «поток оборвался раньше, чем
+ * поиск что-то вернул» — прямо под записью ленты «ФРАГМЕНТЫ ПОЛУЧЕНЫ · 10
+ * фрагментов». Два утверждения на одном экране, одно против другого.
+ *
+ * Поэтому возвращается `undefined` там, где событие про выдачу НЕ ГОВОРИТ
+ * ничего: вызывающий обязан оставить прежнее число, а не затереть его. `null`
+ * значит «событие про выдачу, но числа в нём нет» — это другое.
+ */
+export function fragmentsReported(event) {
+  const data = isObject(event?.data) ? event.data : {}
+  if (Array.isArray(data.sources)) return data.sources.length
+  // Итог отбора говорит о выдаче ПОСЛЕ отбора, и это тоже число фрагментов,
+  // которые дошли: оставленных.
+  if (num(data.kept) !== null) return num(data.kept)
+  // Событие не про выдачу — прежнее число остаётся прежним.
+  return undefined
 }
 
 // ——— отбор второй ступенью (ADR 2026-10-05-0544, пп. 1.2–1.4) ———

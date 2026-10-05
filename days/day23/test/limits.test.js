@@ -1,4 +1,5 @@
-// Лимитер дня 22 — копия days/day20/limits.js без окна записей. Держатели
+// Лимитер дня 23 — копия days/day20/limits.js без окна записей, плюс возврат
+// слота на 4xx (ADR 2026-10-05-0544, Р8(б)). Держатели
 // здесь свои: тест дня 20 не краснеет при правке days/day22/limits.js — это
 // разные файлы, и «доказано тестами дня 20» было бы неправдой.
 
@@ -127,4 +128,78 @@ test('отметки чтений тоже не переживают своё о
 test('окна записей у лимитера дня нет', () => {
   const limiter = createLimiter(seam, { now: () => 1_700_000_000_000 })
   assert.equal(limiter.reserveWrite, undefined)
+})
+
+// ——— возврат слота суточного потолка (ADR 2026-10-05-0544, Р8(б)) ———
+//
+// Сквозная проверка через живой сервер — `test/slot-return.test.js`. Здесь
+// границы возврата: что он отдаёт, чего НЕ отдаёт и когда отказывается.
+
+test('возврат отдаёт суточный слот — и его можно занять снова', () => {
+  const limiter = createLimiter(env, { now: () => Date.UTC(2026, 9, 5, 10) })
+  const slot = limiter.reserve('1.1.1.1')
+  assert.equal(limiter.stats().callsToday, 1)
+  assert.equal(limiter.release(slot), true)
+  assert.equal(limiter.stats().callsToday, 0, 'слот не вернулся')
+  // Потолок от этого не исчез: три запуска по-прежнему его исчерпывают.
+  for (let i = 0; i < 3; i += 1) assert.equal(limiter.reserve('1.1.1.1').ok, true)
+  assert.equal(limiter.reserve('1.1.1.1').ok, false)
+})
+
+test('ОТМЕТКИ ОКОН НА АДРЕС возврат НЕ отдаёт — иначе поток 4xx стал бы бесплатным', () => {
+  // Минутное окно по единице: если возврат отдавал бы и отметку адреса,
+  // второй запрос с того же адреса прошёл бы.
+  const tight = { RATE_LIMIT_PER_MIN: 1, RATE_LIMIT_PER_HOUR: 1000, MAX_DAILY_CALLS: 100 }
+  const limiter = createLimiter(tight, { now: () => Date.UTC(2026, 9, 5, 10) })
+  const slot = limiter.reserve('1.1.1.1')
+  assert.equal(slot.ok, true)
+  assert.equal(limiter.release(slot), true)
+  const second = limiter.reserve('1.1.1.1')
+  assert.equal(second.ok, false, 'возврат отдал и отметку окна на адрес')
+  assert.equal(second.reason, 'minute')
+})
+
+test('возврат идемпотентен: второй вызов счётчик не трогает', () => {
+  const limiter = createLimiter(env, { now: () => Date.UTC(2026, 9, 5, 10) })
+  limiter.reserve('1.1.1.1')
+  const slot = limiter.reserve('2.2.2.2')
+  assert.equal(limiter.release(slot), true)
+  assert.equal(limiter.release(slot), false, 'тот же слот вернулся дважды')
+  assert.equal(limiter.stats().callsToday, 1, 'счётчик уехал ниже занятого')
+})
+
+test('возврат не касается ни отказа, ни чужого слота, ни мусора', () => {
+  const limiter = createLimiter(env, { now: () => Date.UTC(2026, 9, 5, 10) })
+  for (let i = 0; i < 3; i += 1) limiter.reserve('1.1.1.1')
+  const denied = limiter.reserve('1.1.1.1')
+  assert.equal(denied.ok, false)
+  // Отказ слота не занимал — возвращать нечего. Иначе потолок отпускал бы
+  // сам себя: каждый отказ 429 дарил бы запуск.
+  assert.equal(limiter.release(denied), false)
+  assert.equal(limiter.stats().callsToday, 3)
+  for (const junk of [null, undefined, {}, { ok: true }, 'слот', 7])
+    assert.equal(limiter.release(junk), false, String(junk))
+  assert.equal(limiter.stats().callsToday, 3)
+})
+
+test('слот ЧУЖИХ СУТОК не возвращается: иначе он дарил бы запуск следующему дню', () => {
+  let t = Date.UTC(2026, 9, 5, 23, 59)
+  const limiter = createLimiter(env, { now: () => t })
+  const slot = limiter.reserve('1.1.1.1')
+  assert.equal(limiter.stats().callsToday, 1)
+  t = Date.UTC(2026, 9, 6, 0, 1) // новые сутки: счётчик уже обнулён
+  assert.equal(limiter.release(slot), false, 'слот прошлых суток уменьшил счётчик новых')
+  assert.equal(limiter.stats().callsToday, 0)
+})
+
+test('слот чтения суточный счётчик не трогает ни при занятии, ни при возврате', () => {
+  const limiter = createLimiter(
+    { ...env, RATE_LIMIT_READS_PER_HOUR: 10 },
+    { now: () => Date.UTC(2026, 9, 5, 10) },
+  )
+  limiter.reserve('1.1.1.1')
+  const read = limiter.reserveRead('1.1.1.1')
+  assert.equal(read.ok, true)
+  assert.equal(limiter.release(read), false, 'возврат чтения уменьшил суточный счётчик')
+  assert.equal(limiter.stats().callsToday, 1)
 })

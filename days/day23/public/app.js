@@ -54,6 +54,7 @@ import {
   relevanceWord,
   REWRITE_NOTE,
   REWRITTEN_NONE,
+  fragmentsReported,
   fromWord,
   isUnknownFilter,
   PICK_RULE,
@@ -542,17 +543,25 @@ function onEvent(raw) {
   if (!event || typeof event.stage !== 'string') return
   events.push(event)
   if (event.stage === 'error') errorData = event.data ?? null
+  // Поиск идёт во ВСЕХ трёх режимах дня 23, поэтому «Ищу фрагменты по
+  // проекту…» верно для любого из них. Ветви «режим без поиска» здесь больше
+  // нет: она была бы мёртвой, а мёртвая ветвь на платном экране однажды
+  // оживает не тем боком.
   if (event.stage === 'received') {
-    if (event.data?.mode === 'rag') {
-      setStatus(STATUS.searching)
-      showSrcsPlaceholder(SRCS_SEARCHING)
-    } else {
-      setStatus(STATUS.askingPlain)
-    }
+    setStatus(STATUS.searching)
+    showSrcsPlaceholder(SRCS_SEARCHING)
   }
   if (event.stage === 'planning') {
-    fragmentsFound = Array.isArray(event.data?.sources) ? event.data.sources.length : null
-    setStatus(fragmentsFound === null ? STATUS.askingPlain : STATUS.asking(fragmentsFound))
+    // Стадий `planning` в дне 23 до трёх, и у двух из них поля `sources` нет.
+    // Что считать числом дошедших фрагментов, решает `fragmentsReported`:
+    // `undefined` значит «событие про выдачу не говорит», и прежнее число
+    // ОСТАЁТСЯ прежним. Безусловное присваивание обнуляло его, и при обрыве
+    // потока секция источников врала (блокирующая `reviewer` к PR #313).
+    const reported = fragmentsReported(event)
+    if (reported !== undefined) {
+      fragmentsFound = reported
+      setStatus(STATUS.asking(reported))
+    }
   }
   redrawSteps()
 }

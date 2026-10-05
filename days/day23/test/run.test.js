@@ -26,6 +26,7 @@ import {
   plural,
   answerBlock,
   COST_PARTIAL,
+  fragmentsReported,
   fromWord,
   PICK_RULE,
   rewriteGainNote,
@@ -709,4 +710,88 @@ test('пустой ответ при состоявшемся вызове — �
   const block = answerBlock(parseResult(result({ answer: '   ' })))
   assert.equal(block.kind, 'blank')
   assert.match(block.text, /Вызов при этом состоялся/)
+})
+
+// ——— число дошедших фрагментов при трёх стадиях `planning` ———
+
+test('событие, которое про выдачу не говорит, прежнее число НЕ затирает', () => {
+  // Выдача поиска — число есть.
+  assert.equal(fragmentsReported({ data: { sources: [1, 2, 3] } }), 3)
+  // Итог отбора — тоже число дошедших, но уже после отбора.
+  assert.equal(fragmentsReported({ data: { kept: 2, candidates: [1, 2, 3] } }), 2)
+  // Итог переписывания про выдачу поиска не говорит ничего: `undefined`, то
+  // есть «оставить как было». Это и есть различитель с `null`.
+  assert.equal(fragmentsReported({ data: { rewritten: 'запрос', found: 7 } }), undefined)
+  assert.equal(fragmentsReported({ data: { rewritten: null } }), undefined)
+  assert.equal(fragmentsReported({ data: {} }), undefined)
+  assert.equal(fragmentsReported({}), undefined)
+  assert.equal(fragmentsReported(null), undefined)
+  // Поле есть, но не массив — событие про выдачу, а числа в нём нет.
+  assert.equal(fragmentsReported({ data: { sources: 'пять' } }), undefined)
+})
+
+test('ОБРЫВ ПОСЛЕ ОТБОРА не превращается в «поиск ничего не вернул»', () => {
+  // Воспроизведение блокирующей `reviewer` к PR #313: режим `rerank`, поток
+  // обрывается после итога отбора. Прежняя редакция затирала число последними
+  // двумя стадиями `planning`, и секция источников говорила
+  // SRCS_TORN_BEFORE — «поток оборвался раньше, чем поиск что-то вернул» —
+  // прямо под записью ленты «ФРАГМЕНТЫ ПОЛУЧЕНЫ · 10 фрагментов».
+  const stream = [
+    { stage: 'received', at: at(0), data: { mode: 'rerank', limit: 10 } },
+    { stage: 'planning', at: at(1), data: { sources: Array.from({ length: 10 }, (_, i) => i) } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rerank' } },
+    { stage: 'planning', at: at(3), data: { kept: 3, candidates: Array.from({ length: 10 }) } },
+  ]
+  // Страница ведёт число тем же правилом, что обработчик: сохраняем последнее
+  // не-`undefined`.
+  let fragmentsFound = null
+  for (const e of stream) {
+    if (e.stage !== 'planning') continue
+    const reported = fragmentsReported(e)
+    if (reported !== undefined) fragmentsFound = reported
+  }
+  assert.equal(fragmentsFound, 3, 'число дошедших фрагментов затёрто итогом отбора')
+  assert.equal(
+    tornSrcsNote('rerank', fragmentsFound),
+    SRCS_TORN_AFTER,
+    'экран говорит, что поиск ничего не вернул, а лента — что вернул десять',
+  )
+})
+
+test('«переписывание не дало нового запроса» не рисуется как «ФРАГМЕНТЫ ПОЛУЧЕНЫ»', () => {
+  // Поток ровно как его шлёт агент при `rewriteSearch: "skipped"`: события
+  // `rpc` второго поиска нет, `planning` несёт `rewritten: null`.
+  const rows = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rewrite', limit: 10 } },
+    { stage: 'rpc', at: at(1), data: { request: '{}', response: '{}', status: 200 } },
+    { stage: 'planning', at: at(1), data: { sources: [1, 2, 3] } },
+    { stage: 'llm_call', at: at(2), data: { purpose: 'rewrite' } },
+    { stage: 'llm_result', at: at(2), data: { purpose: 'rewrite', usage: { inputTokens: 10, outputTokens: 5 } } },
+    { stage: 'planning', at: at(3), level: 'warn', data: { rewritten: null } },
+    { stage: 'llm_call', at: at(4), data: { purpose: 'rerank' } },
+  ]).map((r) => r.label)
+
+  assert.deepEqual(rows, [
+    'ПРИНЯТ ВОПРОС',
+    'ПОИСК ПО ПРОЕКТУ',
+    'ФРАГМЕНТЫ ПОЛУЧЕНЫ',
+    'ПЕРЕПИСЫВАНИЕ ВОПРОСА',
+    'ЗАПРОС ПЕРЕПИСАН',
+    'ПЕРЕПИСЫВАНИЕ НИЧЕГО НЕ ДАЛО',
+    'ОЦЕНКА КАНДИДАТОВ',
+  ])
+  // Второго «ФРАГМЕНТЫ ПОЛУЧЕНЫ» нет: второго поиска не было вовсе.
+  assert.equal(rows.filter((l) => l === 'ФРАГМЕНТЫ ПОЛУЧЕНЫ').length, 1)
+  // И лента не противоречит секции «Отбор», которая про тот же случай
+  // говорит «переписывание нового запроса не дало».
+  const note = rewriteSearchNote(parseResult(result({ mode: 'rewrite', rewriteSearch: 'skipped' })))
+  assert.match(note, /нового запроса не дало/)
+})
+
+test('итог отбора не читается «оставлено 3 из 0» при пустом списке кандидатов', () => {
+  const row = steps([
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
+    { stage: 'planning', at: at(1), data: { kept: 0, candidates: [] } },
+  ]).at(-1)
+  assert.equal(row.meta, 'оставлено 0 из 0')
 })
