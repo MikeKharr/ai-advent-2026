@@ -44,11 +44,14 @@
 неразборе **нет**: роутер отдаёт `invalid_json`/`truncated`, запуск проваливается
 с `paidNothing: false` — платить второй раз за ту же неудачу незачем.
 
-**Конструкции схемы — только те, что уже ходили к живому провайдеру**: `type`
-object/array/integer/string, `properties`, `required`, `additionalProperties`,
-`enum` — как у схемы дня 1 (`days/day1/anthropic.js`, `SELECTION_SCHEMA`) и
-реранкера дня 23. `type: ["string", "null"]` и `maxLength` в схеме **не
-используются**: в строгих подмножествах JSON Schema ограничения строк обычно
+**Конструкции схемы.** Проверены живым вызовом: `type`
+object/array/integer/string, `properties`, `required`, `additionalProperties` —
+это схема дня 1 (`days/day1/anthropic.js`, `SELECTION_SCHEMA`), которая ходит в
+Anthropic с первого дня. `enum` у поля `status` живым вызовом **не проверен**: у
+схемы дня 1 его нет, а схема реранкера дня 23 к провайдеру ещё не ездила —
+прогон дня 23 не проводился. Он принят как малый риск: один строковый `enum` из
+двух значений, и его отказ — обычный `invalid_json` роутера.
+`type: ["string", "null"]` и `maxLength` в схеме **не используются**: в строгих подмножествах JSON Schema ограничения строк обычно
 не поддерживаются, а 400 от провайдера — оплаченный отказ. Поэтому
 `clarification` — обычная строка, и пустая означает «уточнения нет» (наружу,
 в результат запуска, она выходит как `null`), а потолок цитаты в 300 знаков
@@ -134,5 +137,5 @@ object/array/integer/string, `properties`, `required`, `additionalProperties`,
 Контракт дня 23 целиком. Отличия: у события `llm_call` вызова ответа есть
 `data.schema: true` и `data.unknownBranch` (булево — шёл ли вызов без блока
 фрагментов), а при неподтверждённой цитате добавляется событие стадии
-`warning` «Цитата не нашлась во фрагменте» с `data.unverified` — списком
+`warning` «Цитата не подтверждена» с `data.unverified` — списком
 номеров.

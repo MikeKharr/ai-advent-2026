@@ -824,7 +824,10 @@ export function createRagAgent({
             emit({
               stage: 'warning',
               level: 'warn',
-              title: 'Цитата не нашлась во фрагменте',
+              // «Не подтверждена», а не «не нашлась»: причин три — слов нет
+              // в тексте фрагмента, номер не из отбора, цитата длиннее
+              // потолка, — и «не нашлась» верна только для первой.
+              title: 'Цитата не подтверждена',
               detail: read.quotes
                 .filter((item) => !item.verified)
                 .map((item) => `[${item.n}]`)

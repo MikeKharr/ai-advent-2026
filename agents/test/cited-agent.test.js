@@ -245,7 +245,7 @@ test('МУТАЦИЯ ДОСЛОВНОСТИ: переписанная цитат
   // неотличим от честного.
   assert.equal(result.outcome, 'unsupported')
   assert.ok(
-    snapshot.events.some((event) => event.title === 'Цитата не нашлась во фрагменте'),
+    snapshot.events.some((event) => event.title === 'Цитата не подтверждена'),
     'в ленте нет предупреждения о неподтверждённой цитате',
   )
 })
