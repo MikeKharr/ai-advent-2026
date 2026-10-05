@@ -16,8 +16,18 @@
 // содержимое — свойство докера и образа, а не нашего файла; его держит живым
 // прогоном шаг CI «Правка Caddyfile доезжает до живого входа»
 // (`.github/scripts/caddy-mount-check.sh`).
+//
+// Второе правило здесь же — цена монтировки каталогом: вход видит ВСЁ
+// содержимое каталога, а не один файл, поэтому в `deploy/caddy/` не должно
+// лежать ничего, кроме `Caddyfile` (I-14: правило обязано краснеть, а не
+// жить в комментарии). Границу называю прямо: этот тест смотрит на дерево
+// репозитория, `.gitignore` (`deploy/caddy/*` + `!deploy/caddy/Caddyfile`)
+// закрывает коммит лишнего файла — а **файл, положенный руками на сервере**
+// внутри `deploy/caddy/`, не держит ни тест, ни `.gitignore`: выкатка делает
+// `git reset --hard`, который неотслеживаемые файлы не удаляет. Это забота
+// владельца, механизма на неё здесь нет.
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -25,6 +35,7 @@ import { test } from 'node:test'
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 export const COMPOSE = 'deploy/compose.yml'
+export const CADDYDIR = 'deploy/caddy'
 export const CADDYFILE = 'deploy/caddy/Caddyfile'
 
 /** Блок службы `caddy`: от `\n  caddy:` до следующей службы. */
@@ -87,6 +98,26 @@ test('настоящий compose.yml: конфигурация входа мон
 
 test('файл конфигурации лежит там, откуда его монтируют', () => {
   assert.ok(existsSync(join(ROOT, CADDYFILE)), `${CADDYFILE} не найден`)
+})
+
+/**
+ * Цена монтировки каталогом: вход видит ВСЁ, что в каталоге окажется, а не
+ * один файл. Правило — в каталоге только `Caddyfile`.
+ *
+ * Принимает список имён, а не путь: приманка гоняет тот же разбор красным.
+ */
+export function strayFiles(entries) {
+  return entries.filter((name) => name !== 'Caddyfile')
+}
+
+test('в каталоге конфигурации входа нет ничего, кроме Caddyfile', () => {
+  // Предмет — дерево репозитория: только оно уезжает на сервер выкаткой.
+  assert.deepEqual(strayFiles(readdirSync(join(ROOT, CADDYDIR))), [])
+})
+
+test('приманка: в каталоге появился второй файл — вход увидел бы и его', () => {
+  assert.deepEqual(strayFiles(['Caddyfile', 'secrets.env']), ['secrets.env'])
+  assert.deepEqual(strayFiles(['Caddyfile', 'extra.conf']), ['extra.conf'])
 })
 
 // --- приманки ----------------------------------------------------------------

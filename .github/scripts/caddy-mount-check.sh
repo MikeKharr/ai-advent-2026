@@ -89,7 +89,9 @@ docker exec "$FILE_NAME" caddy reload --adapter caddyfile --config /etc/caddy/Ca
 
 fail=0
 
-dir_body=$(probe "$DIR_PORT")
+# `|| true`: отказ curl не должен обрывать скрипт под `set -e` до печати
+# `::error::` — иначе шаг красный, но без диагностики (находка reviewer, Н3).
+dir_body=$(probe "$DIR_PORT" || true)
 if [ "$dir_body" = "after" ]; then
   echo "ok: монтировка каталога — после подмены файла и reload живой вход отдаёт новое содержимое"
 else
@@ -97,7 +99,7 @@ else
   fail=1
 fi
 
-file_body=$(probe "$FILE_PORT")
+file_body=$(probe "$FILE_PORT" || true)
 if [ "$file_body" = "before" ]; then
   echo "ok: приманка — монтировка одиночным файлом держит прежнее содержимое при успешном reload (дефект воспроизведён)"
 else

@@ -69,6 +69,14 @@ deploy/.env
 deploy/*.env
 !deploy/.env.example
 
+# Каталог конфигурации входа монтируется в контейнер caddy ЦЕЛИКОМ
+# (deploy/compose.yml, `./caddy:/etc/caddy:ro`), поэтому всё, что в нём
+# окажется, вход увидит. Образцы выше `deploy/*.env` подкаталог не накрывают:
+# `*` не переходит через `/`, и `deploy/caddy/secrets.env` без этих двух строк
+# коммитился бы свободно. В git сюда попадает только `Caddyfile`.
+deploy/caddy/*
+!deploy/caddy/Caddyfile
+
 # Логи
 *.log
 *.log*
