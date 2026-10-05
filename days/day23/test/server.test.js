@@ -81,7 +81,7 @@ test('страница отдаётся и ключа в ней нет (I-1)', a
   assert.equal(res.status, 200)
   assert.match(res.headers.get('content-type'), /text\/html/)
   const html = await res.text()
-  assert.ok(html.includes('<h1>Ответ по проекту: с поиском и без</h1>'))
+  assert.ok(html.includes('<h1>Отбор второй ступенью: что нашлось и что дошло до модели</h1>'))
   assert.ok(!html.includes(KEY), 'ключ в разметке')
 })
 
@@ -147,13 +147,29 @@ test('resolveStatic отбивает выход за public, минуя норм
   }
 })
 
-test('/healthz отвечает и не раскрывает ключ (I-1)', async () => {
+test('/healthz отвечает, не раскрывает ключ (I-1) и не печатает остаток суточного потолка', async () => {
   const res = await fetch(`${base}/healthz`, { headers: head() })
   assert.equal(res.status, 200)
   const json = await res.json()
   assert.equal(json.ok, true)
-  assert.equal(json.limiter.dailyLimit, env.MAX_DAILY_CALLS)
   assert.ok(!JSON.stringify(json).includes(KEY), 'ключ в ответе пробы')
+
+  // ДОЛГ ДНЯ 22, ЗАКРЫТЫЙ ЗДЕСЬ (развилка Р8 ADR 2026-10-05-0544; пункт
+  // «Владельцу» в agent_docs/backlog.md). Ручка объявлена `open` и доступна
+  // анонимно: в дне 22 она отдавала `limiter.stats()` целиком, то есть любой
+  // снаружи видел `callsToday` и `dailyLimit` и мог выбирать момент залпа.
+  //
+  // Проверяется не отсутствие одного поля, а отсутствие ЛЮБОГО счётчика окна:
+  // иначе правило обходится переименованием. Число потолка ищется отдельно —
+  // оно и есть то, что не должно уходить наружу.
+  assert.equal('limiter' in json, false, 'проба снова отдаёт счётчики окон')
+  const body = JSON.stringify(json)
+  for (const name of ['callsToday', 'dailyLimit', 'trackedIps', 'readIps', 'perMin', 'perHour'])
+    assert.ok(!body.includes(name), `проба печатает счётчик ${name}`)
+  assert.ok(
+    !body.includes(String(env.MAX_DAILY_CALLS)),
+    'число суточного потолка видно снаружи',
+  )
 })
 
 test('пустой вопрос — отказ страницы, и до сервиса он не доходит', async () => {
@@ -202,7 +218,7 @@ test('тело больше 16 КБ до сервиса не доходит: ч�
 test('запуск уходит в сервис с именем агента, вопросом, режимом и ключом', async () => {
   seen.length = 0
   next = { status: 202, body: { runId: 'run-22' } }
-  const res = await ask({ question: '  где держится I-4  ', mode: 'norag' })
+  const res = await ask({ question: '  где держится I-4  ', mode: 'rerank' })
   assert.equal(res.status, 202)
   assert.deepEqual(await res.json(), { runId: 'run-22' })
   // Журнал стенда — улика того, что запрос дошёл именно до него и каким.
@@ -210,19 +226,19 @@ test('запуск уходит в сервис с именем агента, в
   assert.equal(seen[0].url, '/v1/runs')
   assert.equal(seen[0].auth, `Bearer ${KEY}`, 'ключ не предъявлен сервису')
   const sent = JSON.parse(seen[0].body)
-  assert.equal(sent.agent, 'rag-agent')
+  assert.equal(sent.agent, 'rerank-agent')
   // Вопрос подрезан по краям, но не изменён внутри.
-  assert.deepEqual(sent.input, { question: 'где держится I-4', mode: 'norag' })
+  assert.deepEqual(sent.input, { question: 'где держится I-4', mode: 'rerank' })
   // Сессии у дня нет: её идентификатор не выдумывается и в сервис не уходит.
   assert.equal('sessionId' in sent.input, false)
-  assert.equal(res.headers.get('set-cookie'), null, 'день 22 ставит cookie, которых у него нет')
+  assert.equal(res.headers.get('set-cookie'), null, 'день 23 ставит cookie, которых у него нет')
 })
 
 test('отказ сервиса словами сервиса, а отказ без слов — общей фразой', async () => {
-  next = { status: 400, body: { message: 'Поле mode должно быть одним из: rag, norag' } }
+  next = { status: 400, body: { message: 'Поле mode должно быть одним из: rag, rerank, rewrite' } }
   const spoken = await ask({ question: 'вопрос', mode: 'rag' })
   assert.equal(spoken.status, 400)
-  assert.equal((await spoken.json()).error, 'Поле mode должно быть одним из: rag, norag')
+  assert.equal((await spoken.json()).error, 'Поле mode должно быть одним из: rag, rerank, rewrite')
 
   next = { status: 503, body: { code: 'no_agent' } }
   const mute = await ask({ question: 'вопрос', mode: 'rag' })

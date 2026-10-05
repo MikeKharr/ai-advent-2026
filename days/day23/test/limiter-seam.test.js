@@ -157,7 +157,7 @@ test('окна не отнимают друг у друга: исчерпанн�
   const asked = await fetch(`${base}/api/runs`, {
     method: 'POST',
     headers: { 'x-forwarded-for': ip, 'content-type': 'application/json' },
-    body: JSON.stringify({ question: 'вопрос', mode: 'norag' }),
+    body: JSON.stringify({ question: 'вопрос', mode: 'rerank' }),
   })
   assert.equal(asked.status, 202, 'исчерпанное окно чтений отняло право задать вопрос')
 })

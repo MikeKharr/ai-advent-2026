@@ -1,4 +1,4 @@
-// Правила показа запуска — исполнением (days/day22/public/run.js).
+// Правила показа запуска — исполнением (days/day23/public/run.js).
 //
 // Предмет здесь поведенческий: что страница скажет при таких-то данных. Все
 // входы — то, что реально отдаёт `agents/src/rag-agent.js`; формы событий
@@ -19,8 +19,15 @@ import {
   indexMeta,
   isBlank,
   MAX_QUESTION,
+  CANDIDATES_RAG,
+  keptWord,
+  MODE_WORD,
   parseResult,
   plural,
+  relevanceWord,
+  SELECT_NONE,
+  selectionNote,
+  thresholdNote,
   repoUrl,
   shortSearchNote,
   sourceUrl,
@@ -83,14 +90,28 @@ test('признак отказа берётся ПОЛЕМ, а не поиск�
 
 test('строка меры называет остаток бюджета остатком, а не ценой запроса', () => {
   const meta = answerMeta(parseResult(result()))
-  assert.equal(meta, 'режим: с RAG · фрагментов: 2 · токенов: 4312 · бюджет дня: остаток $9,87')
-  // Режим без RAG числа фрагментов не называет: их не было.
-  assert.ok(!answerMeta(parseResult(result({ mode: 'norag', sources: [] }))).includes('фрагментов'))
+  assert.equal(meta, 'режим: без отбора · фрагментов: 2 · токенов: 4312 · бюджет дня: остаток $9,87')
+})
+
+test('строка меры режима с отбором называет ОБА числа: сколько было и сколько осталось', () => {
+  const meta = answerMeta(
+    parseResult(
+      result({
+        mode: 'rerank',
+        candidates: [
+          { n: 1, source: 'a.md', score: 0.5, relevance: 2, kept: true },
+          { n: 2, source: 'b.md', score: 0.4, relevance: 0, kept: false },
+        ],
+        sources: [{ n: 1, source: 'a.md', section: '', score: 0.5, text: 'т' }],
+      }),
+    ),
+  )
+  assert.ok(meta.includes('кандидатов: 2 → оставлено: 1'), meta)
 })
 
 test('чего не пришло, того в строке меры нет — нуля на его месте не бывает (I-8)', () => {
   const meta = answerMeta(parseResult(result({ tokens: null, budgetLeftUsd: null })))
-  assert.equal(meta, 'режим: с RAG · фрагментов: 2')
+  assert.equal(meta, 'режим: без отбора · фрагментов: 2')
 })
 
 test('шапка источников несёт короткий коммит и имя стратегии словом', () => {
@@ -133,9 +154,18 @@ test('сводка свёртки считает знаки пришедшего
 })
 
 test('частичный результат называется числами, а не прячется', () => {
-  const sources = parseResult(result()).sources
-  assert.equal(shortSearchNote(sources), 'Фрагментов нашлось 2, а не 5.')
-  assert.equal(shortSearchNote([]), null, 'пустая выдача — отдельный случай, не «меньше пяти»')
+  const parsed = parseResult(result())
+  const sources = parsed.sources
+  assert.equal(shortSearchNote(parsed), 'Фрагментов нашлось 2, а не 5.')
+  assert.equal(
+    shortSearchNote(parseResult(result({ sources: [] }))),
+    null,
+    'пустая выдача — отдельный случай, не «меньше пяти»',
+  )
+  // В режимах с отбором пятёрка — ПОТОЛОК ОТБОРА, а не недобор поиска, и
+  // строка про «нашлось 2, а не 5» была бы ложью про чужой шаг.
+  assert.equal(shortSearchNote(parseResult(result({ mode: 'rerank' }))), null)
+  assert.equal(shortSearchNote(parseResult(result({ mode: 'rewrite' }))), null)
   const partial = [{ text: 'есть' }, { text: null }, { text: null }]
   assert.equal(fragmentTextNote(partial), 'Текст пришёл у 1 фрагментов из 3.')
   assert.equal(fragmentTextNote([{ text: null }]), 'Текста фрагментов в этом ответе не пришло.')
@@ -177,7 +207,7 @@ test('лента рага: шесть записей в порядке конв�
 
 test('лента без RAG: три записи, призраков пропущенных шагов нет', () => {
   const list = steps([
-    { stage: 'received', at: at(0), data: { mode: 'norag' } },
+    { stage: 'received', at: at(0), data: { mode: 'rerank' } },
     { stage: 'llm_call', at: at(0), data: {} },
     { stage: 'llm_result', at: at(3), data: { usage: { inputTokens: 100, outputTokens: 200 } } },
   ])
@@ -360,4 +390,82 @@ test('строка состояния называет число фрагмен
   assert.equal(STATUS.asking(5), 'Фрагментов: 5. Спрашиваю модель…')
   assert.equal(STATUS.done(3400), 'Готово за 3,4 с.')
   assert.equal(STATUS.long, `Не отправлено: вопрос длиннее ${MAX_QUESTION} знаков.`)
+})
+
+// ——— отбор второй ступенью (ADR 2026-10-05-0544, пп. 1.2–1.4) ———
+
+const cands = [
+  { n: 1, source: 'agent_docs/invariants.md', section: 'I-4', score: 0.71, relevance: 2, kept: true },
+  { n: 2, source: 'rag/tools.py', section: '', score: 0.65, relevance: 1, kept: true },
+  { n: 3, source: 'README.md', section: '', score: 0.61, relevance: 0, kept: false },
+]
+
+test('кандидаты разбираются по одному, и порядок не пересортировывается', () => {
+  const parsed = parseResult(result({ mode: 'rerank', candidates: cands }))
+  assert.deepEqual(
+    parsed.candidates.map((c) => c.n),
+    [1, 2, 3],
+  )
+  assert.equal(parsed.candidates[2].kept, false)
+  // Не массив, мусор внутри, поля нет вовсе — пустой список, а не падение.
+  for (const raw of [undefined, null, 'нет', [1, 'два', null]])
+    assert.deepEqual(parseResult(result({ candidates: raw })).candidates.length === 0, true)
+})
+
+test('«не оценивал» и «оценил нулём» — разные вещи, и ноль не подставляется (I-8)', () => {
+  const parsed = parseResult(
+    result({ mode: 'rerank', candidates: [{ n: 1, source: 'a.md', score: 0.5, kept: false }] }),
+  )
+  assert.equal(parsed.candidates[0].relevance, null, 'отсутствие оценки стало нулём')
+  assert.equal(relevanceWord(null), '', 'на месте неоценённого появилось слово')
+  assert.equal(relevanceWord(0), 'не относится')
+  assert.equal(relevanceWord(2), 'отвечает')
+  // Незнакомая оценка показывается как пришла, а не прячется.
+  assert.equal(relevanceWord(7), '7')
+})
+
+test('`kept` приходит полем и не выводится страницей из релевантности', () => {
+  // Агент сказал «отброшен» при релевантности 2 — страница показывает то, что
+  // сказал агент: порог отбора держит он, и второго правила здесь нет.
+  const parsed = parseResult(
+    result({ mode: 'rerank', candidates: [{ n: 1, source: 'a.md', relevance: 2, kept: false }] }),
+  )
+  assert.equal(parsed.candidates[0].kept, false)
+  assert.equal(keptWord(false), 'отброшен')
+  assert.equal(keptWord(true), 'оставлен')
+})
+
+test('строка над таблицей считает по пришедшему, а не по потолку из разметки', () => {
+  const parsed = parseResult(result({ mode: 'rerank', candidates: cands }))
+  assert.equal(selectionNote(parsed), 'Кандидатов: 3. Оставлено отбором: 2.')
+  assert.equal(selectionNote(parseResult(result())), null, 'строка о кандидатах без кандидатов')
+})
+
+test('порог косинуса — число для сверки, и подпись говорит это прямо', () => {
+  const note = thresholdNote(0.55)
+  assert.match(note, /0,550/)
+  assert.match(note, /ничего не отсекает/)
+  assert.equal(thresholdNote(null), null, 'порог выдуман там, где его не прислали')
+})
+
+test('пустой отбор — исход «не знаю», а не отказ и не промах', () => {
+  assert.match(SELECT_NONE, /не знаю/)
+  assert.match(SELECT_NONE, /исход поиска, а не сбой/)
+  // Ни одного слова про промах, выдумку или поломку: именно их смешение в
+  // одном вердикте и есть долг дня 22, который день 23 закрывает.
+  assert.ok(!/выдум|промах|ошиб|сломал/i.test(SELECT_NONE), SELECT_NONE)
+  // Режим без отбора говорит ровно это, а не молчит и не обещает кандидатов.
+  assert.match(CANDIDATES_RAG, /второй ступени нет/)
+})
+
+test('переписанный вопрос: пустая строка и пробелы — это НЕ переписанный вопрос', () => {
+  assert.equal(parseResult(result({ rewritten: 'инвариант I-4 держатель' })).rewritten, 'инвариант I-4 держатель')
+  for (const raw of ['', '   ', null, undefined, 42])
+    assert.equal(parseResult(result({ rewritten: raw })).rewritten, null, String(raw))
+})
+
+test('режимов ровно три, и чужое значение режимом не становится', () => {
+  assert.deepEqual(Object.keys(MODE_WORD), ['rag', 'rerank', 'rewrite'])
+  for (const m of ['norag', 'RAG', '', null, 7])
+    assert.equal(parseResult(result({ mode: m })).mode, null, String(m))
 })
