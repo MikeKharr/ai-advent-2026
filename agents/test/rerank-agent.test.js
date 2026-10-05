@@ -138,7 +138,7 @@ function build({ rag, fetchImpl, key = KEY }) {
     env: envOf(),
     fetchImpl,
     log: () => {},
-    pipeline: true,
+    pipeline: 'rerank',
   })
   return { runs, agent }
 }
