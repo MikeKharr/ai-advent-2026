@@ -186,6 +186,19 @@ test('слово о деньгах переживает перечитывани
   assert.equal(carry(null, stored), false)
   // Память уходит вместе с диалогом: чужое слово не достаётся новой переписке.
   assert.match(page, /taskUnstored = false;\n\s+lastRefusal = null;/)
+  // И забывается С НАЧАЛОМ ХОДА — до отправки сообщения, а не только при
+  // смене диалога. Иначе отказ, у которого `end` потерялся, унаследовал бы
+  // прежнее «денег не стоил» по совпадению текста: страница пообещала бы
+  // возврат, которого не было (находка `reviewer` к PR #318).
+  const start = page.indexOf('const run = startRun(message);')
+  assert.notEqual(start, -1, 'начало хода не найдено')
+  const afterStart = page.slice(start, start + 600)
+  assert.match(afterStart, /lastRefusal = null;/)
+  // Сброс стоит ДО отправки реплики, а не после ответа.
+  assert.ok(
+    afterStart.indexOf('lastRefusal = null;') < afterStart.indexOf("pushLocal('user', message);"),
+    'сброс памяти стоит после отправки реплики',
+  )
 })
 
 test('строка поиска называет переписанный запрос, а молчание — словами', () => {

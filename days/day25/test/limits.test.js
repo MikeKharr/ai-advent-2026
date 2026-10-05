@@ -156,7 +156,7 @@ test('вернуть больше, чем занято, нельзя: суточ
   assert.equal(limiter.stats().callsToday, 2)
 
   // Пометка агента «кругов было ноль» не должна чинить счётчик чужих запусков.
-  limiter.release('10.4.0.1', 99)
+  limiter.release(99)
   assert.equal(limiter.stats().callsToday, 0, 'счётчик не уходит ниже нуля')
 
   // И потолок после этого прежний, а не раздутый возвратом.
@@ -176,21 +176,21 @@ test('возврат трогает ТОЛЬКО сутки: отметки ми
   )
 
   assert.equal(limiter.reserve('10.4.1.1', 1).ok, true)
-  limiter.release('10.4.1.1', 1)
+  limiter.release(1)
   // Сутки свободны: денег не потрачено.
   assert.equal(limiter.stats().callsToday, 0, 'суточный счётчик не вернулся')
   // Минута — нет: отметка попытки осталась, и адрес по-прежнему помнится.
   assert.equal(limiter.stats().trackedIps, 1, 'отметка адреса стёрлась вместе со слотом')
 
   assert.equal(limiter.reserve('10.4.1.1', 1).ok, true, 'второй в минуту ещё можно')
-  limiter.release('10.4.1.1', 1)
+  limiter.release(1)
   const third = limiter.reserve('10.4.1.1', 1)
   assert.equal(third.ok, false, 'возврат слота вернул и право стучать в ручку')
   assert.equal(third.reason, 'minute')
   // Час считает так же: через минуту минутное окно свободно, часовое — нет.
   c.tick(MINUTE + 1000)
   assert.equal(limiter.reserve('10.4.1.1', 1).ok, true, 'через минуту окно минуты свободно')
-  limiter.release('10.4.1.1', 1)
+  limiter.release(1)
   const fourth = limiter.reserve('10.4.1.1', 1)
   assert.equal(fourth.ok, false)
   assert.equal(fourth.reason, 'hour', 'часовое окно тоже чинилось возвратом')
@@ -207,7 +207,7 @@ test('возврат лишних кругов освобождает ровно
   assert.equal(limiter.reserve('10.5.0.1', 3).ok, true)
   // Круг был один — два слота назад. Наблюдается это СУТОЧНЫМ счётчиком:
   // окна частоты возврат не трогает (тест выше).
-  limiter.release('10.5.0.1', 2)
+  limiter.release(2)
   assert.equal(limiter.stats().callsToday, 1)
 
   // Суточного потолка снова хватает на девять, но не на десять.
@@ -230,7 +230,7 @@ test('негодное число слотов считается одним, а
       before + 1,
       `значение ${JSON.stringify(bad)} должно стоить ровно один слот`,
     )
-    limiter.release('10.6.0.1', 1)
+    limiter.release(1)
   }
 })
 

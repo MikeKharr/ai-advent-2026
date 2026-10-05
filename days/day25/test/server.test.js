@@ -446,9 +446,12 @@ test('возврат слотов не чинит окно частоты: по�
   const calls = source.match(/limiter\.release\(/g) ?? []
   assert.equal(calls.length, 3, `возвратов в дне стало ${calls.length}: проверьте каждый`)
   // Два — учёт по кругам в потоке событий, один — диспетчер по коду ответа.
-  assert.match(source, /if \(end\.error\?\.paidNothing\) \{\n\s+limiter\.release\(slot\.ip, slot\.reserved\)/)
-  assert.match(source, /if \(extra > 0\) limiter\.release\(slot\.ip, extra\)/)
-  assert.match(source, /limiter\.release\(ip, back\)/)
+  // Адреса в вызовах нет: возвращается общий суточный счётчик, а не чей-то
+  // слот, и параметр `ip` был бы ложью (находка `reviewer` к PR #318).
+  assert.match(source, /if \(end\.error\?\.paidNothing\) \{\n\s+limiter\.release\(slot\.reserved\)/)
+  assert.match(source, /if \(extra > 0\) limiter\.release\(extra\)/)
+  assert.match(source, /limiter\.release\(back\)/)
+  assert.equal(/limiter\.release\([^)]*ip/.test(source), false, 'адрес вернулся в вызов возврата')
 })
 
 /* ---------- критерии 3 и 5: пауза ---------- */

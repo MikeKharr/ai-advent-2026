@@ -1237,14 +1237,14 @@ async function proxyEvents(req, res, runId) {
       if (!slot) return
       // Денег не потрачено вовсе — назад уходят все занятые слоты.
       if (end.error?.paidNothing) {
-        limiter.release(slot.ip, slot.reserved)
+        limiter.release(slot.reserved)
         return
       }
       // Иначе занятым считается по слоту на состоявшийся круг — и при удаче,
       // и при падении. Круг, который не начинался, оплачен быть не мог, и
       // держать за него слот значит наказывать посетителя за нашу поломку.
       const extra = slot.reserved - Math.min(Math.max(spentRounds(end), 0), slot.reserved)
-      if (extra > 0) limiter.release(slot.ip, extra)
+      if (extra > 0) limiter.release(extra)
     } catch {}
   }
 
@@ -1628,7 +1628,7 @@ function runLedger(ip) {
       if (!refusal && !refunded) return 0
       const back = held
       held = 0
-      limiter.release(ip, back)
+      limiter.release(back)
       return back
     },
   }
