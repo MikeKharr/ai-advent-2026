@@ -14,6 +14,7 @@ import {
   PROFILE_INVARIANT_CAP,
   PROFILE_PROMPT_IDS,
   SUMMARIZE_LIMITS,
+  TASK_STATE_CHARS,
   TOPIC_FACT_CAP,
 } from './params.js'
 import { DatabaseSync } from 'node:sqlite'
@@ -154,6 +155,27 @@ CREATE INDEX IF NOT EXISTS run_prompts_by_session ON run_prompts(session_id);
 -- Уборка по сроку идёт по created_at и без индекса читала бы таблицу целиком,
 -- а строка здесь — копия рабочей памяти круга, до ~130 КБ.
 CREATE INDEX IF NOT EXISTS run_prompts_by_age ON run_prompts(created_at);
+
+-- Состояние задачи диалога — день 25 (ADR 2026-10-05-0544, п. 3.4). Одна
+-- строка на диалог: цель разговора, зафиксированные ограничения и термины,
+-- уточнения посетителя и открытые вопросы. Обновляется отдельным вызовом
+-- stage.task на этапе пополнения и уходит в промпт переписывания вопроса
+-- следующего хода — то есть это рабочая память ЦЕЛИ, а не переписки.
+--
+-- Рядом с диалогом, а не в messages.meta: меняется целиком на каждом ходе, а
+-- meta — снимок одного сообщения, и собирать состояние по всей переписке
+-- значило бы читать её целиком на каждом переписывании.
+--
+-- Срок — с сессией, тремя операторами, как у run_prompts (ADR, п. 3.4):
+-- clear уносит, deleteProfile уносит, sweep снимает по сроку профиля.
+CREATE TABLE IF NOT EXISTS task_state (
+  session_id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  state      TEXT NOT NULL,
+  round      INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_state_by_age ON task_state(updated_at);
 
 -- Память фактов: темы профиля и факты в них. Тема переживает сессию и
 -- уходит только вместе с профилем (ADR, п. 6.1). Имя "facts" в базе занято
@@ -507,6 +529,23 @@ export function createSessions({
     ),
     dropSessionPrompts: db.prepare('DELETE FROM run_prompts WHERE session_id = ?'),
 
+    // --- Состояние задачи диалога (ADR 2026-10-05-0544, п. 3.4) -----------
+    taskState: db.prepare(
+      `SELECT session_id AS sessionId, profile_id AS profileId, state, round,
+              updated_at AS updatedAt
+         FROM task_state WHERE session_id = ?`,
+    ),
+    // Состояние меняется целиком: вызов `stage.task` возвращает новое, а не
+    // дельту, поэтому строка перезаписывается, а не дополняется.
+    saveTaskState: db.prepare(
+      `INSERT INTO task_state (session_id, profile_id, state, round, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         profile_id = excluded.profile_id, state = excluded.state,
+         round = excluded.round, updated_at = excluded.updated_at`,
+    ),
+    dropSessionTaskState: db.prepare('DELETE FROM task_state WHERE session_id = ?'),
+
     sessionState: db.prepare(
       `SELECT s.profile_id AS profileId, s.topic_id AS topicId, s.pending_topic AS pendingTopic,
               t.title AS topicTitle
@@ -569,6 +608,11 @@ export function createSessions({
     dropProfileRunPrompts: db.prepare(
       'DELETE FROM run_prompts WHERE session_id IN (SELECT id FROM sessions WHERE profile_id = ?)',
     ),
+    // Тринадцатый оператор удаления профиля (ADR 2026-10-05-0544, п. 3.4):
+    // состояние задачи всех его диалогов. По `profile_id`, а не подзапросом
+    // по сессиям: столбец есть, и оператор не зависит от порядка внутри
+    // транзакции.
+    dropProfileTaskState: db.prepare('DELETE FROM task_state WHERE profile_id = ?'),
     dropProfile: db.prepare('DELETE FROM profiles WHERE id = ?'),
 
     // --- Сироты новых таблиц --------------------------------------------
@@ -588,6 +632,10 @@ export function createSessions({
     // обычно уходит раньше: clear снимает её и на действие «очистить», и на
     // уборку диалога по его сроку, — это короче обещанного, а не длиннее.
     staleRunPrompts: db.prepare('DELETE FROM run_prompts WHERE created_at < ?'),
+    // Состояние задачи — тот же срок и та же причина, что у текста промпта:
+    // строка переживает удаление сессии в обход `clear` (обрыв транзакции,
+    // правка базы руками), и без этого прохода к ней не пришёл бы никто.
+    staleTaskState: db.prepare('DELETE FROM task_state WHERE updated_at < ?'),
     orphanTopicFacts: db.prepare(
       'DELETE FROM topic_facts WHERE topic_id NOT IN (SELECT id FROM topics)',
     ),
@@ -1056,6 +1104,10 @@ export function createSessions({
       // „очистить“»: оставить текст жить после нажатия значило бы сделать
       // обещание ложным. Поэтому оператор отдельный и стоит здесь.
       stmt.dropSessionPrompts.run(sessionId)
+      // Состояние задачи — выжимка из этой же переписки (ADR 2026-10-05-0544,
+      // п. 3.4): «очистить» уносит и его, иначе новый диалог на том же
+      // идентификаторе начинался бы с чужой целью в промпте переписывания.
+      stmt.dropSessionTaskState.run(sessionId)
       stmt.dropFacts.run(sessionId)
       stmt.dropSummary.run(sessionId)
       stmt.dropCost.run(sessionId)
@@ -1102,6 +1154,7 @@ export function createSessions({
       // транзакции, правка базы руками), и без этого прохода к ней не пришёл
       // бы никто (ADR 2026-09-23-0646, п. 4).
       stmt.staleRunPrompts.run(at - profileTtlMs)
+      stmt.staleTaskState.run(at - profileTtlMs)
       stmt.orphanTopics.run()
       // Факты тем — после тем: осиротевшая тема сначала должна исчезнуть.
       stmt.orphanTopicFacts.run()
@@ -1272,6 +1325,7 @@ export function createSessions({
           // До dropProfileSessions: оператор выбирает диалоги профиля
           // подзапросом, и после их удаления выбирать было бы не из чего.
           runPrompts: Number(stmt.dropProfileRunPrompts.run(id).changes),
+          taskState: Number(stmt.dropProfileTaskState.run(id).changes),
           sessions: Number(stmt.dropProfileSessions.run(id).changes),
           profiles: Number(stmt.dropProfile.run(id).changes),
         }
@@ -1456,6 +1510,33 @@ export function createSessions({
     /** Тексты промптов запуска по кругам. Чужой диалог не отдаёт: см. runPrompts. */
     runPromptsOf({ runId, sessionId }) {
       return stmt.runPrompts.all(runId, sessionId)
+    },
+
+    // --- Состояние задачи диалога (ADR 2026-10-05-0544, п. 3.4) ----------
+
+    /**
+     * Состояние задачи диалога или `null`. Текст — JSON, как его записал
+     * этап пополнения; разбор — дело вызывающего (`rag/chat.js`), потому что
+     * форму состояния знает он, а не хранилище.
+     */
+    taskStateOf(sessionId) {
+      return stmt.taskState.get(sessionId) ?? null
+    },
+
+    /**
+     * Записать состояние задачи. Диалога нет — писать некуда, как и у текста
+     * промпта: состояние очищенной переписки не должно оживать ходом,
+     * доехавшим после нажатия «очистить».
+     *
+     * Потолок длины держится ЗДЕСЬ, одним числом: это единственное место,
+     * через которое состояние попадает в базу, и строка сверх потолка не
+     * пишется вовсе, а не режется молча посередине JSON.
+     */
+    saveTaskState({ sessionId, profileId, state, round, at = now() }) {
+      if (typeof state !== 'string' || state.length > TASK_STATE_CHARS) return false
+      if (!stmt.hasSession.get(sessionId)) return false
+      stmt.saveTaskState.run(sessionId, profileId, state, Math.max(1, Math.round(round)), at)
+      return true
     },
 
     /** Темы профиля с числом фактов, от свежих к старым. */
