@@ -420,7 +420,16 @@ export async function runAll({
         ? readFailure({ turn, failure: got.failure, latencyMs })
         : readTurn({ turn, result: got.result, latencyMs })
       scenario.turns.push(record)
-      save(buildReport({ ranAt, note, limits: limitsOf(set, rounds), params: PARAMS, scenarios }))
+      save(
+        buildReport({
+          ranAt,
+          note,
+          limits: limitsOf(set, rounds),
+          params: PARAMS,
+          scenarios,
+          mixedReason: MIXED_REASON,
+        }),
+      )
       if (record.failure)
         log(`${source.id}/${turn.n}: отказ ${record.failure.code} — ${record.failure.message}`)
       else
@@ -479,6 +488,20 @@ export const PROD_GAP =
   'пустое, — поэтому механическая проверка цели того дефекта не показывала; показывал ' +
   'именно stored. Непослитым в проде остаётся только сам этот PR — прогон и секция итогов, ' +
   'на поведение агента они не влияют.'
+
+/**
+ * Почему смешанный индекс этого прогона принят. ПРАВИТСЯ РУКОЙ, как и
+ * `PROD_GAP`: причину переиндексации посреди прогона код знать не может.
+ *
+ * Пустая строка — объявления нет, и смешанный индекс валит `--check`. Это
+ * умолчание: принять смешение можно только сказав, почему.
+ */
+export const MIXED_REASON =
+  'Выкатка PR #327 и #329 в main (a2a93b9) пришлась на окно прогона: корпус ' +
+  'переиндексировался между ходами s2/2 и s2/3. Разница корпусов между 84178a0 и a2a93b9 — ' +
+  'содержимое этих двух PR (мера дня 23 на 30 вопросах и умолчание RUN_MODE дня 24), то есть ' +
+  'документы и код дней 23 и 24, не дня 25. Решение принять замер, а не выбрасывать его, — ' +
+  'владельца (2026-10-05): третий прогон в тот же день упирался в суточный потолок (47 из 50).'
 
 export const noteFor = ({ rounds, keyUsed }) =>
   `Прогон по проду. ${PROD_GAP} ` +
@@ -606,6 +629,7 @@ export async function main({
     limits,
     params: PARAMS,
     scenarios: done.scenarios,
+    mixedReason: MIXED_REASON,
   })
   save(report)
   for (const scenario of report.scenarios) {

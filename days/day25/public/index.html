@@ -890,6 +890,10 @@
     </div>
     <p class="mem-empty" id="ev-state">Читаю файл прогона…</p>
     <div class="ev" id="ev" hidden>
+      <!-- Смешанный индекс: если корпус переиндексировался посреди прогона,
+           это сказано ЗДЕСЬ, до чисел, и с перечислением ходов — иначе числа
+           двух сценариев читались бы как мера одного корпуса. -->
+      <p class="warned" id="ev-mixed" hidden></p>
       <ul class="ev-list" id="ev-list"></ul>
       <p class="gate-note" id="ev-note"></p>
     </div>
@@ -6269,6 +6273,24 @@
   const evShortCommit = (commit) =>
     typeof commit === 'string' && commit !== '' ? commit.slice(0, 7) : null;
 
+  /**
+   * Строка о смешанном индексе: какие ходы на каком коммите корпуса. Нужна,
+   * когда выкатка пришлась на окно прогона и корпус переиндексировался: без
+   * неё числа двух сценариев читались бы как мера ОДНОГО корпуса, а это
+   * неправда. Нет смешения — нет и строки: `null`.
+   *
+   * Текст причины приходит из файла и не пересказывается здесь: пересказ
+   * разъехался бы с прогоном.
+   */
+  const evMixedLine = (index) => {
+    const mixed = index?.mixedAccepted;
+    if (!mixed || typeof mixed.reason !== 'string' || mixed.reason === '') return null;
+    const parts = Object.entries(mixed.turns ?? {}).map(
+      ([commit, turns]) => `${evShortCommit(commit)}: ${(turns ?? []).join(', ')}`,
+    );
+    return `Корпус переиндексировался посреди прогона, и ходы измерены на разных индексах — ${parts.join('; ')}. ${mixed.reason}`;
+  };
+
   /* --- конец выделяемого блока итогов --- */
 
   /** Строка одного хода: что ход проверял и что намерила механика. */
@@ -6381,6 +6403,22 @@
       $('ev-when').append(' · ', commit);
     }
     $('ev-note').textContent = data.note;
+    // Предупреждение о смешанном индексе — маркером и начертанием, как все
+    // предупреждения этой страницы.
+    const mixed = evMixedLine(data.index);
+    const where = $('ev-mixed');
+    where.replaceChildren();
+    where.hidden = mixed === null;
+    if (mixed !== null) {
+      const mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '!';
+      const prefix = document.createElement('span');
+      prefix.className = 'vh';
+      prefix.textContent = 'Предупреждение: ';
+      where.append(mark, prefix, mixed);
+    }
     say($('ev-state'), '');
     $('ev').hidden = false;
   };

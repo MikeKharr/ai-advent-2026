@@ -153,6 +153,25 @@ export function indexGuard(turns) {
 }
 
 /**
+ * Какие ходы прошли на каком коммите индекса. Карта СЧИТАЕТСЯ ПО ХОДАМ, а не
+ * пишется рукой: объявление смешения, которое расходится с самими ходами, —
+ * это объявление неправды, и `checkReport` сверяет карту с ходами ещё раз
+ * (правка файла руками уже случалась в дне 22).
+ *
+ * Ключ — коммит, значение — имена ходов вида `s1/3`. Ход без коммита (отказ)
+ * в карту не попадает: у него замера не было.
+ */
+export function indexTurns(scenarios) {
+  const map = {}
+  for (const s of scenarios)
+    for (const t of s.turns ?? []) {
+      if (typeof t.indexCommit !== 'string' || t.indexCommit === '') continue
+      ;(map[t.indexCommit] ??= []).push(`${s.id}/${t.n}`)
+    }
+  return map
+}
+
+/**
  * Файл результата целиком (`days/day25/public/eval.json`). Форма — та, которую
  * читает страница дня.
  *
@@ -160,15 +179,27 @@ export function indexGuard(turns) {
  * проде на момент прогона может не быть уже слитого кода. Пустая заметка
  * означала бы «прод равен main», и проверить это по файлу было бы нечем.
  */
-export function buildReport({ ranAt, note, limits, params, scenarios }) {
+export function buildReport({ ranAt, note, limits, params, scenarios, mixedReason = '' }) {
   const turns = scenarios.flatMap((s) => s.turns)
   const guard = indexGuard(turns)
+  // Смешанный индекс объявляется ТОЛЬКО если причина названа словами, и
+  // объявление приходит снаружи (`MIXED_REASON` в `run.mjs`), а не выводится
+  // здесь: «почему корпус переиндексировался посреди прогона» код знать не
+  // может. Карта ходов при этом считается по ходам — см. `indexTurns`.
+  const declared =
+    guard.seen.length > 1 && typeof mixedReason === 'string' && mixedReason.trim() !== ''
   return {
     ranAt,
     note,
     limits,
     params,
-    index: { commit: guard.commit, seen: guard.seen },
+    index: {
+      commit: guard.commit,
+      seen: guard.seen,
+      ...(declared
+        ? { mixedAccepted: { reason: mixedReason, turns: indexTurns(scenarios) } }
+        : {}),
+    },
     // Сводка КЛАДЁТСЯ В ФАЙЛ, а не считается на странице, и это не удобство:
     // страница дня 25 — один файл без модулей, и арифметика на ней была бы
     // второй копией этой. Копии разъезжаются молча (находка `reviewer` к PR
@@ -202,8 +233,26 @@ export function checkReport(report, set = {}) {
     problems.push('нет предела кругов прогона (limits.reviewRounds)')
   if (typeof report?.index?.commit !== 'string' || report.index.commit === '')
     problems.push('нет коммита индекса (index.commit)')
-  if (arr(report?.index?.seen).length > 1)
-    problems.push(`индекс менялся по ходу прогона: ${arr(report.index.seen).join(', ')}`)
+  // СМЕШАННЫЙ ИНДЕКС: красный по умолчанию, зелёный только объявленным.
+  //
+  // Почему не просто «красный всегда»: прогон идёт минутами по проду, и
+  // выкатка внутри его окна переиндексирует корпус — тогда два сценария
+  // измерены на двух корпусах. Молчать об этом нельзя, но и запрещать совсем
+  // значило бы выбрасывать оплаченный замер целиком. Поэтому смешение
+  // ПРОХОДИТ, если файл сам его объявляет: причина словами и карта «какой ход
+  // на каком коммите». Молчаливое смешение остаётся красным — ровно тот
+  // случай, который сверка и завели поймать (решение владельца 2026-10-05 по
+  // прогону 16:07Z, смешанному выкаткой PR #327 и #329).
+  //
+  // Объявление ПРОВЕРЯЕТСЯ, а не принимается на веру: карта сверяется с
+  // самими ходами. Иначе «объявить» значило бы «написать что угодно».
+  if (arr(report?.index?.seen).length > 1) {
+    const mixed = report.index.mixedAccepted
+    if (!isObject(mixed) || typeof mixed.reason !== 'string' || mixed.reason.trim() === '')
+      problems.push(`индекс менялся по ходу прогона: ${arr(report.index.seen).join(', ')}`)
+    else if (JSON.stringify(mixed.turns) !== JSON.stringify(indexTurns(arr(report.scenarios))))
+      problems.push('объявление смешанного индекса расходится с ходами файла')
+  }
 
   const scenarios = arr(report?.scenarios)
   if (scenarios.length !== 2) problems.push(`сценариев ${scenarios.length}, а должно быть два`)

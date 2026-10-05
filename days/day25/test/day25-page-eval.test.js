@@ -25,7 +25,7 @@ const rules = (() => {
   assert.notEqual(to, -1, 'у блока правил итогов обязан быть конец')
   return new Function(`${page.slice(from, to)}
     return { EV_WORD, EV_ORDER, EV_UNKNOWN, EV_NONE, EV_UNREADABLE, EV_BROKEN, evJoin,
-             evShortCommit };`)()
+             evShortCommit, evMixedLine };`)()
 })()
 
 test('исходы на экране — те же четыре, что в механике прогона, и ни одним больше', () => {
@@ -97,6 +97,28 @@ test('коммит индекса на экране короткий, а пол�
     false,
     'полный коммит снова печатается строкой',
   )
+})
+
+test('смешанный индекс назван на экране: какие ходы на каком коммите и почему', () => {
+  // Без этой строки числа двух сценариев читались бы как мера ОДНОГО корпуса.
+  // Предмет — и перечисление ходов, и причина из файла; пересказывать причину
+  // страница не должна, иначе пересказ разъедется с прогоном.
+  const line = rules.evMixedLine({
+    commit: 'aaa1111',
+    seen: ['aaa1111', 'bbb2222'],
+    mixedAccepted: {
+      reason: 'выкатка пришлась на окно прогона',
+      turns: { aaa1111: ['s1/1', 's2/2'], bbb2222: ['s2/3'] },
+    },
+  })
+  assert.match(line, /aaa1111: s1\/1, s2\/2/)
+  assert.match(line, /bbb2222: s2\/3/)
+  assert.match(line, /выкатка пришлась на окно прогона/, 'причина из файла не показана')
+
+  // Нет смешения — нет и строки: пустое предупреждение пугало бы зря.
+  assert.equal(rules.evMixedLine({ commit: 'aaa1111', seen: ['aaa1111'] }), null)
+  assert.equal(rules.evMixedLine({ mixedAccepted: { reason: '', turns: {} } }), null)
+  assert.equal(rules.evMixedLine(undefined), null)
 })
 
 test('вторичные строки итогов держат полосу чтения 52ch', () => {

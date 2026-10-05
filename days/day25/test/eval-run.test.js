@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkReport, readFailure, readTurn, summarize } from '../eval/mechanics.mjs'
+import { buildReport, checkReport, readFailure, readTurn, summarize } from '../eval/mechanics.mjs'
 import {
   createJar,
   DAY_LIMITS,
@@ -269,6 +269,74 @@ test('механика хода читается полями, а не домы�
   assert.equal(record.latencyMs, 23_000)
   // У удачного хода слова о деньгах нет вовсе: домысел пугал бы расходом.
   assert.equal(record.paidNothing, null)
+})
+
+test('объявленное смешение индекса проходит, молчаливое — нет, вранье в объявлении — нет', () => {
+  // Решение владельца 2026-10-05: смешанный индекс не выбрасывает оплаченный
+  // замер, но ПРОХОДИТ только объявленным. Три ветви, и каждая проверена:
+  // молчание — красное, объявление с причиной — зелёное, объявление,
+  // расходящееся с ходами, — красное. Без третьей «объявить» значило бы
+  // «написать что угодно».
+  const turn = (n, commit) =>
+    readTurn({
+      turn: { n, purpose: 'п', prompt: 'раз' },
+      result: okResult({ index: { commit } }),
+      latencyMs: 10,
+    })
+  const scenarios = () => [
+    { id: 's1', title: 's1', sessionName: 'диалог', turns: Array.from({ length: 12 }, (_, at) => turn(at + 1, 'aaa1111')) },
+    { id: 's2', title: 's2', sessionName: 'диалог', turns: Array.from({ length: 12 }, (_, at) => turn(at + 1, at < 2 ? 'aaa1111' : 'bbb2222')) },
+  ]
+  const bounds = { minTurns: 12 }
+
+  const silent = buildReport({
+    ranAt: '2026-10-05T16:07:00.000Z',
+    note: 'проба',
+    limits: { dailyCap: 50, reviewRounds: 1 },
+    params: {},
+    scenarios: scenarios(),
+  })
+  assert.equal(silent.index.mixedAccepted, undefined, 'объявление появилось без причины')
+  assert.ok(
+    checkReport(silent, bounds).some((p) => p.includes('индекс менялся')),
+    'молчаливое смешение прошло',
+  )
+
+  const declared = buildReport({
+    ranAt: '2026-10-05T16:07:00.000Z',
+    note: 'проба',
+    limits: { dailyCap: 50, reviewRounds: 1 },
+    params: {},
+    scenarios: scenarios(),
+    mixedReason: 'выкатка пришлась на окно прогона',
+  })
+  assert.deepEqual(checkReport(declared, bounds), [], 'объявленное смешение не прошло')
+  assert.deepEqual(declared.index.mixedAccepted.turns.bbb2222, [
+    's2/3', 's2/4', 's2/5', 's2/6', 's2/7', 's2/8', 's2/9', 's2/10', 's2/11', 's2/12',
+  ])
+
+  // Пустая причина объявлением не считается: принять смешение можно только
+  // сказав, почему.
+  const blank = buildReport({
+    ranAt: '2026-10-05T16:07:00.000Z',
+    note: 'проба',
+    limits: { dailyCap: 50, reviewRounds: 1 },
+    params: {},
+    scenarios: scenarios(),
+    mixedReason: '   ',
+  })
+  assert.ok(
+    checkReport(blank, bounds).some((p) => p.includes('индекс менялся')),
+    'пустая причина сошла за объявление',
+  )
+
+  // Объявление, расходящееся с ходами: карту правят руками — так уже бывало.
+  const lying = structuredClone(declared)
+  lying.index.mixedAccepted.turns.bbb2222 = ['s2/3']
+  assert.ok(
+    checkReport(lying, bounds).some((p) => p.includes('расходится с ходами')),
+    'вранье в объявлении прошло молча',
+  )
 })
 
 test('сменившийся посреди прогона индекс валит сверку, а не усредняется молча', () => {
