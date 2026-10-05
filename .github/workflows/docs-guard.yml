@@ -31,7 +31,10 @@ jobs:
       - name: Лимит длины файлов состояния (300 строк)
         run: |
           fail=0
-          for f in agent_docs/snapshot.md agent_docs/backlog.md; do
+          # Бэклог разнесён по темам (`agent_docs/backlog/*.md`), лимит — на
+          # каждый файл; шаблон покрывает и будущие темы. Если тематических
+          # файлов нет, шаблон останется строкой и шаг упадёт на «отсутствует».
+          for f in agent_docs/snapshot.md agent_docs/backlog.md agent_docs/backlog/*.md; do
             [ -f "$f" ] || { echo "::error::отсутствует $f"; fail=1; continue; }
             n=$(wc -l < "$f")
             if [ "$n" -gt 300 ]; then

@@ -20,7 +20,7 @@ import { CODES, rpcError } from './rpc.js'
  * прошёл бы НИКОГДА — конверт JSON-RPC и экранирование не бесплатны
  * (расхождение в ADR 2026-09-28-0736, п. 3: «тело до 64 КБ» и «64 КБ на
  * файл» несовместимы; вынесено владельцу — пункт «Владельцу» в
- * `agent_docs/backlog.md`, разбор в
+ * `agent_docs/backlog/process.md`, разбор в
  * `agent_docs/development-history/2026-09-28-0832-mcpstore-body-limit-deviation.md`).
  */
 export const DEFAULT_MAX_BODY = 64 * 1024
