@@ -552,11 +552,22 @@ export function createAskStage({ model, temperature, env, fetchImpl, emit, log, 
         { fetchImpl },
       )
     } catch (error) {
-      log(`запуск ${runId}: ${purpose}: ${error.code ?? ''} ${error.message}`)
+      // Причина отказа ПЕРВОЙ попытки — словами роутера (`reasons` в
+      // `llm.js`). `code` её не несёт: у обрыва ответа по потолку токенов и
+      // у отказа провайдера он один — `all_failed`, — а `message` схемного
+      // класса говорит общую фразу класса. Без этого поля журнал и лента
+      // показывали «task: all_failed» и на обрыве по потолку тоже, то есть
+      // не различали гипотезы (13 строк прогона дня 25).
+      const providerReason = error.reasons?.[0]?.reason ?? null
+      log(
+        `запуск ${runId}: ${purpose}: ${error.code ?? ''} ${error.message}` +
+          (providerReason ? ` — ${providerReason}` : ''),
+      )
       throw new RetrieveFailure({
         code: error.code ?? (error.status === 429 ? 'rate_limited' : 'router_error'),
         title: TITLES[purpose]?.failure ?? DEFAULT_TITLES.failure,
         message: explainRouterError(error),
+        providerReason,
         paid: !paidNothing(error),
         data: { purpose, status: error.status ?? null },
       })
