@@ -18,7 +18,7 @@ import http from 'node:http'
 import { after, before, test } from 'node:test'
 
 const KEY = 'agent-key-secret-day24-do-not-leak'
-const DAILY = 3
+const DAILY = 4
 
 /** @type {{url:string,body:string}[]} журнал стенда */
 const seen = []
@@ -63,36 +63,40 @@ const ask = (body) =>
     body: typeof body === 'string' ? body : JSON.stringify(body),
   })
 
-test('отказы 4xx не съедают суточный потолок, а 502 и 202 — съедают', async () => {
+test('отказы ДНЯ потолка не съедают, а всё, что дошло до сервиса, — съедает', async () => {
   seen.length = 0
-  // Четыре отказа РАЗНЫХ ветвей обработчика, и у каждой свой `reject`: тело не
-  // JSON, пустой вопрос, слишком длинный вопрос, отказ формы от сервиса.
+  // Три отказа РАЗНЫХ ветвей обработчика, и все три — ДО сервиса: тело не
+  // JSON, пустой вопрос, слишком длинный вопрос.
   const refused = [
     await ask('{не json'),
     await ask({ question: '   ' }),
     await ask({ question: 'я'.repeat(601) }),
   ]
   for (const res of refused) assert.equal(res.status, 400, await res.clone().text())
+  // Улика стенда: до него не дошёл НИ ОДИН из трёх. Это и есть граница
+  // возврата: платить было не за что, потому что ничего не ушло.
+  assert.equal(seen.length, 0, JSON.stringify(seen))
+
+  // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: отказ формы ОТ СЕРВИСА тоже 4xx, но слота не
+  // возвращает — запрос до сервиса дошёл и его время занял, и «ничего не ушло»
+  // было бы про него неправдой. Улика стенда: запись в его журнале появилась.
   next = { status: 400, body: { message: 'Поле question пустое' } }
   const fromService = await ask({ question: 'вопрос' })
   assert.equal(fromService.status, 400)
-  // Улика стенда: до него дошёл ровно один из четырёх отказов — тот, который
-  // отказал он сам. Три первых не доехали, и платить за них было не за что.
-  assert.equal(seen.length, 1, JSON.stringify(seen))
+  assert.equal(seen.length, 1, 'запрос до стенда не дошёл — проверка проверила не то')
 
-  // 502 слот НЕ возвращает: там сервис агентов мог дойти до вызова модели, и
-  // утверждать обратное день не вправе. Это и различающий случай: вернись слот
-  // и здесь, удачных запусков ниже поместилось бы на один больше.
+  // 502 слот тоже не возвращает: там сервис мог дойти до вызова модели.
   next = { status: 500, body: { code: 'oops' } }
   const broken = await ask({ question: 'вопрос' })
   assert.equal(broken.status, 502)
+  assert.equal(seen.length, 2)
 
-  // ГЛАВНОЕ: четыре отказа 4xx потолка не тронули, а один 502 — съел слот.
-  // Значит, запусков осталось DAILY − 1, и ни одним больше.
+  // ГЛАВНОЕ: три отказа дня потолка не тронули, а два дошедших до сервиса
+  // съели по слоту. Значит, запусков осталось DAILY − 2, и ни одним больше.
   next = { status: 202, body: { runId: 'run-24' } }
-  for (let i = 0; i < DAILY - 1; i += 1) {
+  for (let i = 0; i < DAILY - 2; i += 1) {
     const res = await ask({ question: `вопрос ${i}` })
-    assert.equal(res.status, 202, `запуск ${i + 1} из ${DAILY - 1} отказан после отказов 4xx`)
+    assert.equal(res.status, 202, `запуск ${i + 1} из ${DAILY - 2} отказан после отказов дня`)
   }
   // А удачные запуски потолок съели — возврат не отменил его вовсе.
   const over = await ask({ question: 'лишний' })

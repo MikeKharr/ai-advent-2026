@@ -48,6 +48,8 @@ import {
   CLARIFY_LABEL,
   dayLimitNote,
   fragmentsFromPlanning,
+  statusFor,
+  failedSections,
   failure,
   formatScore,
   fragmentSummary,
@@ -141,7 +143,7 @@ const PICK_NEVER = 'Вопроса ещё не было: отбирать был
 const PICK_RUNNING = 'Кандидаты появятся здесь, когда поиск вернёт выдачу.'
 /** Поток оборвался раньше, чем пришёл результат: кандидатов не будет. */
 const PICK_TORN = 'Кандидаты не дошли: поток событий оборвался раньше результата.'
-const PICK_FAILED = 'Отбора не было — что именно случилось, сказано выше в ответе.'
+
 /** Пустые состояния трёх секций дня 24 — до запуска, во время и при отказе. */
 const CHECKS_NEVER = 'Вопроса ещё не было: проверять было нечего.'
 const CHECKS_RUNNING = 'Проверки появятся, когда придёт ответ: их считает код по его полям.'
@@ -155,7 +157,11 @@ const QUOTES_NEVER = 'Вопроса ещё не было: цитировать 
 const QUOTES_RUNNING = 'Цитаты появятся вместе с ответом — уже сверенными с текстами фрагментов.'
 const QUOTES_FAILED = 'Цитат не было — ответа не случилось.'
 const QUOTES_TORN = 'Цитаты не дошли: поток событий оборвался раньше результата.'
-const SRCS_FAILED = 'Поиск отказал — что именно, сказано выше в ответе.'
+/**
+ * Секция источников при ПУСТОЙ выдаче удачного запуска. Это не отказ: запуск
+ * дошёл до конца, и что именно случилось, сказано исходом выше.
+ */
+const SRCS_FAILED = 'Фрагментов на экране нет — что именно случилось, сказано выше в ответе.'
 const STEPS_NEVER =
   'Запуска ещё не было. Шаги появятся здесь по мере того, как конвейер их проходит.'
 /** Запуск принят, первого события ещё нет. Те же слова, что в пустоте (п. 10). */
@@ -165,7 +171,12 @@ const STEPS_RUNNING =
 /** Состояние пульта между запусками. Нигде не сохраняется. */
 let events = []
 let stream = null
-let fragmentsFound = null
+/**
+ * Что КОНВЕЙЕР УСПЕЛ СКАЗАТЬ про числа: сколько нашёл поиск и сколько оставил
+ * отбор. Два поля, а не одно: «поиск вернул 10» и «в модель ушло 2» — разные
+ * утверждения, и строка обрыва спрашивает именно про первое.
+ */
+let counts = { found: null, kept: null }
 /**
  * Режим ЭТОГО запуска, а не текущее положение радиокнопки: к обрыву потока
  * кнопки уже отперты, и читать их значило бы спросить про другой запуск.
@@ -232,7 +243,7 @@ function showPickPlaceholder(text, { rewritten = null } = {}) {
  */
 function resetRun({ starting = false } = {}) {
   events = []
-  fragmentsFound = null
+  counts = { found: null, kept: null }
   runMode = null
   errorData = null
   answerEmpty.hidden = starting
@@ -653,8 +664,14 @@ function showFailure(error) {
   if (f.words) box.append(node('p', 'words-of', f.words))
   if (f.tail) box.append(node('p', undefined, f.tail))
   answerBox.replaceChildren(box)
-  showSrcsPlaceholder(SRCS_FAILED)
-  showPickPlaceholder(PICK_FAILED)
+  // ЧТО СКАЗАТЬ ПРО ШАГИ — решает правило по тому, что конвейер успел
+  // доложить, а не одна строка на любой отказ: `rerank_invalid`,
+  // `answer_invalid` и отказы роутера наступают ПОСЛЕ удавшегося поиска и
+  // отбора, и «Поиск отказал» объявляло бы непройденным шаг, который виден в
+  // ленте выше (находка `design-review`).
+  const said = failedSections(counts)
+  showSrcsPlaceholder(said.srcs)
+  showPickPlaceholder(said.pick)
   showChecksPlaceholder(CHECKS_FAILED)
   showCitedPlaceholder(CITED_FAILED)
   showQuotesPlaceholder(QUOTES_FAILED)
@@ -684,8 +701,10 @@ function onEvent(raw) {
     // Сколько фрагментов известно — решает ПРАВИЛО, а не строка здесь: стадия
     // `planning` приходит до трёх раз, и прежняя строка стирала уже известное
     // число каждым следующим событием (см. `fragmentsFromPlanning`).
-    fragmentsFound = fragmentsFromPlanning(event.data, fragmentsFound)
-    setStatus(fragmentsFound === null ? STATUS.askingPlain : STATUS.asking(fragmentsFound))
+    counts = fragmentsFromPlanning(event.data, counts)
+    // Какую из двух фраз ставить — решает правило, а не строка здесь: выбор
+    // между «поиск вернул» и «отбор оставил» это выбор смысла.
+    setStatus(statusFor(counts))
   }
   redrawSteps()
 }
@@ -782,7 +801,9 @@ function subscribe(runId) {
     //
     // Незнакомый режим не трогаем: выдумывать слова про поиск для режима,
     // которого страница не знает, нельзя — решает это `tornSrcsNote`.
-    const tornNote = tornSrcsNote(runMode, fragmentsFound)
+    // Спрашивается ИМЕННО `found`: секция источников говорит про то, успел ли
+    // ДОЛОЖИТЬСЯ ПОИСК, а не про то, что оставил отбор.
+    const tornNote = tornSrcsNote(runMode, counts.found)
     if (tornNote !== null) showSrcsPlaceholder(tornNote)
     // Секции «Отбор», «Три проверки», «Источники, на которые сослалась
     // модель» и «Цитаты» обязаны сказать про обрыв вместе с лентой: в дне 22
@@ -1027,11 +1048,19 @@ async function loadEval() {
   evalState.replaceChildren(node('p', 'empty', EVAL_LOADING))
   try {
     const answer = await fetch('eval.json')
+    // ФАЙЛА НЕТ И ФАЙЛ НЕ ЧИТАЕТСЯ — РАЗНЫЕ СОСТОЯНИЯ, и они не сливаются.
+    // 404 значит «прогона ещё не было»: до первого прогона на проде файла нет
+    // по построению, и «не удалось прочитать» читалось бы как поломка там, где
+    // ничего не сломано (находка `design-review`).
+    if (answer.status === 404) {
+      evalState.replaceChildren(node('p', 'empty', EVAL_NEVER))
+      return
+    }
     if (!answer.ok) throw new Error(String(answer.status))
     raw = await answer.json()
   } catch {
-    // Цвет `--fg`, а не вторичный: п. 10 просит именно его — это отсутствие
-    // файла, а не авария, поэтому и не `--danger`, но и не полушёпот.
+    // Цвет `--fg`, а не вторичный: это отсутствие файла, а не авария, поэтому
+    // и не `--danger`, но и не полушёпот.
     evalState.replaceChildren(node('p', 'unread', EVAL_UNREAD))
     return
   }

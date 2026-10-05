@@ -561,7 +561,7 @@ test('обрыв потока переписывает источники и о�
   const at = app.indexOf('stream.onerror')
   assert.ok(at > 0, 'обработчика обрыва нет')
   const branch = app.slice(at, app.indexOf('\n  }', at))
-  assert.match(branch, /tornSrcsNote\(runMode, fragmentsFound\)/, 'ветвь обрыва не спрашивает правило')
+  assert.match(branch, /tornSrcsNote\(runMode, counts\.found\)/, 'ветвь обрыва не спрашивает правило')
   assert.match(branch, /showSrcsPlaceholder\(/, 'ветвь обрыва не трогает секцию источников')
   assert.match(branch, /ANSWER_TORN/, 'блок ответа остаётся пустой областью')
   // Второй слой у правила про ДЕНЬГИ. `run.test.js` держит саму константу
@@ -583,6 +583,9 @@ test('обрыв потока переписывает источники и о�
   // Режим берётся у ЗАПУСКА — из события `received`, которым сервер его
   // назвал, — а не из умолчания страницы: своего умолчания у неё нет.
   assert.match(app, /if \(typeof mode === 'string' && mode !== ''\) runMode = mode/, 'режим запуска не запоминается')
+  // И «успел ли доложиться ПОИСК» спрашивается у `found`, а не у того, что
+  // оставил отбор: два числа, два смысла.
+  assert.ok(!/tornSrcsNote\(runMode, counts\.kept\)/.test(app), 'спрошено число отбора вместо выдачи поиска')
   assert.ok(!/runMode = 'rerank'|runMode = 'rewrite'/.test(app), 'страница придумывает режим запуска')
   // И про обрыв говорят ВСЕ новые секции дня, а не только лента.
   for (const name of ['CHECKS_TORN', 'CITED_TORN', 'QUOTES_TORN', 'PICK_TORN'])
@@ -630,7 +633,13 @@ test('каждая секция пульта говорит словами во 
       // У источников имена двух положений исторические (`SRCS_SEARCHING` и
       // строка обрыва живёт правилом `tornSrcsNote`) — они проверены своими
       // тестами выше, и здесь исключены по имени, а не молчанием.
-      if (name === 'SRCS' && (state === 'RUNNING' || state === 'TORN')) continue
+      // У источников и отбора часть положений живёт ПРАВИЛАМИ, а не
+      // константами страницы: `SRCS_SEARCHING` (во время), `tornSrcsNote`
+      // (обрыв) и `failedSections` (отказ, по тому, что конвейер успел
+      // доложить). Они проверены своими тестами исполнением, и здесь исключены
+      // по имени, а не молчанием.
+      if (name === 'SRCS' && state !== 'NEVER') continue
+      if (name === 'PICK' && state === 'FAILED') continue
       assert.ok(app.includes(`${name}_${state}`), `секция ${name} молчит в положении ${state}`)
     }
   // И ни одно из положений не ставится пустой строкой: заглушка пустотой — то

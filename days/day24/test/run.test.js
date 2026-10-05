@@ -12,6 +12,8 @@ import {
   answerMeta,
   DAY_LIMIT_NOTE,
   dayLimitNote,
+  FAILED_BEFORE_SEARCH,
+  failedSections,
   failure,
   formatScore,
   fragmentsFromPlanning,
@@ -57,6 +59,7 @@ import {
   SRCS_TORN_AFTER,
   SRCS_TORN_BEFORE,
   STATUS,
+  statusFor,
   steps,
   strategyWord,
   tornSrcsNote,
@@ -286,13 +289,17 @@ test('окно службы поиска: названо общим, и сказ
   assert.equal(f.paidNothing, true)
 })
 
-test('поиск недоступен: слова службы показаны, и сказано про режим без RAG', () => {
+test('поиск недоступен: слова службы показаны, и режим, которого нет, не предлагается', () => {
   for (const code of ['search_refused', 'search_failed', 'search_unavailable', 'search_empty']) {
     const f = failure({ code, message: 'NO_STRATEGY_INDEX: индекс стратегии не собран.', paidNothing: true })
     assert.equal(f.kind, 'search_down', code)
     assert.equal(f.words, 'NO_STRATEGY_INDEX: индекс стратегии не собран.')
-    assert.match(f.tail, /модель не вызывалась/)
-    assert.match(f.tail, /без RAG/)
+    assert.match(f.tail, /Модель не вызывалась/)
+    // НАХОДКА `design-review`: прежний текст предлагал «задать тот же вопрос в
+    // режиме без RAG». Такого режима у дня 24 нет, и выбора режима на экране
+    // нет вовсе — это был совет нажать несуществующую кнопку.
+    assert.ok(!/без RAG|с RAG/.test(f.tail), f.tail)
+    assert.match(f.tail, /Отвечать не по чему/)
   }
 })
 
@@ -415,8 +422,9 @@ test('пустой и пробельный ответ при удачном за
   assert.match(ANSWER_BLANK, /Вызов при этом состоялся/, 'не сказано, что деньги потрачены')
 })
 
-test('строка состояния называет число фрагментов из события, а не из разметки', () => {
-  assert.equal(STATUS.asking(5), 'Фрагментов: 5. Спрашиваю модель…')
+test('строка состояния называет числа из событий, а не из разметки', () => {
+  assert.equal(STATUS.asking(5), 'Отбор оставил 5. Спрашиваю модель…')
+  assert.equal(STATUS.found(5), 'Поиск вернул 5 фрагментов. Отбираю…')
   assert.equal(STATUS.done(3400), 'Готово за 3,4 с.')
   assert.equal(STATUS.long, `Не отправлено: вопрос длиннее ${MAX_QUESTION} знаков.`)
 })
@@ -786,31 +794,69 @@ test('каждое состояние второго поиска названо
 // который прошёл.
 test('число фрагментов не стирается событиями, у которых своих чисел нет', () => {
   // Выдача поиска: число стало известно.
-  assert.equal(fragmentsFromPlanning({ sources: [1, 2, 3] }, null), 3)
+  const none = { found: null, kept: null }
+  assert.deepEqual(fragmentsFromPlanning({ sources: [1, 2, 3] }, none), { found: 3, kept: null })
   // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: итог переписывания своих `sources` не несёт, и прежнее
   // число обязано уцелеть — иначе строка обрыва солжёт.
-  assert.equal(fragmentsFromPlanning({ rewritten: 'запрос', found: 7 }, 3), 3)
-  assert.equal(fragmentsFromPlanning({ rewriteSearch: 'skipped' }, 3), 3)
-  // Итог отбора число УТОЧНЯЕТ: именно столько ушло в контекст.
-  assert.equal(fragmentsFromPlanning({ kept: 2, candidates: 10 }, 3), 2)
+  const afterSearch = { found: 3, kept: null }
+  assert.deepEqual(fragmentsFromPlanning({ rewritten: 'запрос', found: 7 }, afterSearch), afterSearch)
+  assert.deepEqual(fragmentsFromPlanning({ rewriteSearch: 'skipped' }, afterSearch), afterSearch)
+  // ДВА ЧИСЛА, А НЕ ОДНО: итог отбора кладётся в `kept` и НЕ затирает `found`.
+  // Прежняя редакция держала одно поле, и «поиск вернул 3» после отбора
+  // превращалось в «поиск вернул 2» — ложь про чужой шаг (находка гейтов дня 23).
+  assert.deepEqual(fragmentsFromPlanning({ kept: 2, candidates: 10 }, afterSearch), { found: 3, kept: 2 })
   // Ноль оставленных — это ноль, а не «неизвестно»: исход «не знаю» тоже факт.
-  assert.equal(fragmentsFromPlanning({ kept: 0, candidates: 10 }, 3), 0)
-  // Ничего не пришло — прежнее знание не меняется, в том числе `null`.
-  assert.equal(fragmentsFromPlanning({}, 3), 3)
-  assert.equal(fragmentsFromPlanning(undefined, null), null)
+  assert.deepEqual(fragmentsFromPlanning({ kept: 0 }, afterSearch), { found: 3, kept: 0 })
+  // Ничего не пришло — прежнее знание не меняется, в том числе пустое.
+  assert.deepEqual(fragmentsFromPlanning({}, afterSearch), afterSearch)
+  assert.deepEqual(fragmentsFromPlanning(undefined, none), none)
+})
+
+test('строка состояния называет РАЗНОЕ до отбора и после — и разными словами', () => {
+  // «Поиск вернул N» верно только до отбора. После него на экране обязано
+  // стоять, сколько ОСТАЛОСЬ: одно число на два смысла и было находкой.
+  assert.equal(statusFor({ found: 10, kept: null }), 'Поиск вернул 10 фрагментов. Отбираю…')
+  assert.equal(statusFor({ found: 1, kept: null }), 'Поиск вернул 1 фрагмент. Отбираю…')
+  assert.equal(statusFor({ found: 10, kept: 2 }), 'Отбор оставил 2. Спрашиваю модель…')
+  // Ноль оставленных — тоже число: исход «не знаю» не прячется за «спрашиваю».
+  assert.equal(statusFor({ found: 10, kept: 0 }), 'Отбор оставил 0. Спрашиваю модель…')
+  // Чисел не было — общая фраза, а не «Поиск вернул 0» (I-8).
+  assert.equal(statusFor({ found: null, kept: null }), STATUS.askingPlain)
+  assert.equal(statusFor(undefined), STATUS.askingPlain)
+})
+
+// НАХОДКА `design-review`: обе секции ставили «Поиск отказал» и «Отбора не
+// было» на ЛЮБОЙ отказ — в том числе на те, что наступают ПОСЛЕ удавшегося
+// поиска и отбора, которые видны в ленте выше.
+test('при отказе секции говорят про шаги то, что конвейер успел доложить', () => {
+  // Поиск не доложился — и только тогда про него сказано «не доложился».
+  assert.deepEqual(failedSections({ found: null, kept: null }), FAILED_BEFORE_SEARCH)
+  // РАЗЛИЧАЮЩИЙ СЛУЧАЙ: поиск доложился, отбор — нет (например, реранкер
+  // ответил не по схеме). Прежние слова объявили бы непройденным поиск.
+  const midway = failedSections({ found: 10, kept: null })
+  assert.match(midway.srcs, /Поиск вернул 10 фрагментов/)
+  assert.ok(!/не доложился/.test(midway.srcs), midway.srcs)
+  assert.match(midway.pick, /Отбор не доложился/)
+  // И третий случай: оба шага прошли, не состоялся сам ответ.
+  const late = failedSections({ found: 10, kept: 2 })
+  assert.match(late.srcs, /Отбор оставил 2 из 10/)
+  assert.match(late.pick, /Отбор прошёл и оставил 2 из 10/)
+  assert.ok(!/не было|отказал/.test(late.pick), late.pick)
 })
 
 test('оборванный после отбора поток говорит, что поиск УСПЕЛ доложиться', () => {
   // Та самая сцена дефекта, собранная из событий: поиск доложился, отбор
   // доложился, поток оборвался.
-  let found = null
+  let counts = { found: null, kept: null }
   for (const data of [{ sources: [1, 2, 3] }, { rewriteSearch: 'skipped' }, { kept: 2, candidates: 3 }])
-    found = fragmentsFromPlanning(data, found)
-  assert.equal(found, 2)
-  assert.equal(tornSrcsNote('rewrite', found), SRCS_TORN_AFTER)
+    counts = fragmentsFromPlanning(data, counts)
+  assert.deepEqual(counts, { found: 3, kept: 2 })
+  // Секция источников спрашивает про ПОИСК, то есть про `found`, — не про то,
+  // что оставил отбор.
+  assert.equal(tornSrcsNote('rewrite', counts.found), SRCS_TORN_AFTER)
   // А оборвись поток до выдачи поиска — слова были бы другими, и это
   // различающий случай, а не та же строка на оба.
-  assert.equal(tornSrcsNote('rewrite', fragmentsFromPlanning({}, null)), SRCS_TORN_BEFORE)
+  assert.equal(tornSrcsNote('rewrite', fragmentsFromPlanning({}, undefined).found), SRCS_TORN_BEFORE)
 })
 
 // НАХОДКА `design-review` ДНЯ 23, перенесённая сюда копией: подпись «токенов»
