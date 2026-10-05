@@ -248,6 +248,19 @@ http://challenge.zpq.ai {
 		}
 	}
 
+	redir /day25 /day25/ permanent
+	handle_path /day25/* {
+		reverse_proxy day25:8080 {
+			health_uri /healthz
+			health_interval 30s
+			# Без этой строки день увидит в X-Forwarded-For адрес контейнера
+			# входа вместо адреса посетителя, и окна лимитера схлопнутся на один
+			# адрес для всех (agent_docs/guides/new-day.md, шаг 2). Работает в
+			# паре с trusted_proxies в начале файла.
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
 	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
 
 	# --- служба MCP ---
