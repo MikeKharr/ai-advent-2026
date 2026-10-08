@@ -287,6 +287,37 @@ function keyHeaders(req, res) {
   return null
 }
 
+/**
+ * Отказы, которые принадлежат ключу, а не связи. Форму ключа день проверяет
+ * сам (`keyHeaders`), а значение, окно отказов, суточный потолок и границы
+ * ключевого профиля — агент, и его отказ обязан дойти до страницы своим
+ * кодом. Без этих строк 403 `bad_model_key` и 429 потолка доходили бы как
+ * 502 «агент не ответил», и экран просил бы проверить связь вместо ключа —
+ * то есть ровно то действие, которое не помогает.
+ *
+ * `retry-after` пересылается тем значением, которое назвал агент: окно
+ * считает он, и странице нечем назвать своё число.
+ */
+const KEY_REFUSAL = new Set([
+  'bad_model_key',
+  'too_many_attempts',
+  'model_key_daily_cap',
+  'model_key_required',
+  'keyed_profile_model',
+])
+
+function keyRefused(res, response, json, headers = {}) {
+  if (!KEY_REFUSAL.has(json?.code)) return false
+  const retry = response.headers.get('retry-after')
+  send(
+    res,
+    response.status,
+    { error: json.message ?? 'Ключ модели не принят', code: json.code, resetAt: json.resetAt },
+    retry ? { ...headers, 'retry-after': retry } : headers,
+  )
+  return true
+}
+
 /** Запрос к агенту. Ошибки транспорта отдаются вызывающему как null. */
 async function callAgent(path, options = {}) {
   const response = await fetch(`${env.AGENT_URL}${path}`, {
@@ -341,6 +372,12 @@ const sessionsView = (list) =>
 const profileView = (profile, sessionCap) => ({
   id: profile.id,
   name: profile.name,
+  // Имя ключа, с которым профиль создан, или `null` — по этому полю экран
+  // узнаёт ключевой профиль (ADR 2026-10-07-1349, п. 4). Сюда профиль
+  // доходит только с годным ключом его имени, поэтому имя здесь — не утечка:
+  // его предъявил тот же, кто его и прислал. Значения ключа тут нет и быть
+  // не может — агент его не возвращает.
+  keyName: profile.keyName ?? null,
   settings: profile.settings ?? {},
   // У правила, как и у факта, стоит имя диалога-источника, а не его
   // идентификатор: монитор говорит, откуда правило взялось, и не раздаёт
@@ -364,7 +401,7 @@ async function handleProfiles(req, res) {
   if (!headers) return
   try {
     const { response, json } = await callAgent('/v1/profiles', { headers })
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(res, 200, {
       profiles: json.profiles ?? [],
       cap: json.cap ?? null,
@@ -398,7 +435,7 @@ async function handleProfileState(req, res) {
         cookies(dropProfile(), dropSession()),
       )
     }
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(res, 200, { profile: profileView(json.profile, json.sessionCap ?? null) })
   } catch (error) {
     console.error(`профиль: ${error.message}`)
@@ -426,7 +463,7 @@ async function handleCreateProfile(req, res) {
         code: json?.code,
       })
     }
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     // Cookie здесь не ставится: профиль выбирается отдельным действием
     // (ADR, п. 2) — так же, как выбирают существующий.
     return send(res, 200, { profile: { id: json.profile.id, name: json.profile.name } })
@@ -460,7 +497,7 @@ async function handleSelectProfile(req, res) {
         cookies(dropProfile(), dropSession()),
       )
     }
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     const profile = json.profile
     const live = profile.lastSession ?? null
     return send(
@@ -497,7 +534,7 @@ async function handleDeleteProfile(req, res) {
         code: json?.code,
       })
     }
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     // Удалили тот, что в cookie, — указателей больше нет.
     const mine = profileFromCookie(req) === body.id
     return send(
@@ -534,7 +571,7 @@ async function handleSettings(req, res) {
         code: json?.code,
       })
     }
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(res, 200, { settings: json.settings ?? {} })
   } catch (error) {
     console.error(`настройки: ${error.message}`)
@@ -552,7 +589,7 @@ async function handleSessions(req, res) {
   try {
     const { response, json } = await callAgent(`/v1/profiles/${profileId}/sessions`, { headers })
     if (response.status === 404) return send(res, 404, { error: 'Профиль не найден' })
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(res, 200, {
       sessions: sessionsView(json.sessions),
       cap: json.cap ?? null,
@@ -582,7 +619,7 @@ async function handleCreateSession(req, res) {
         code: json?.code,
       })
     }
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(
       res,
       200,
@@ -605,12 +642,12 @@ async function handleSelectSession(req, res) {
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор диалога' })
   try {
-    const { response } = await callAgent(`/v1/sessions/${body.id}?profile=${profileId}`, {
+    const { response, json } = await callAgent(`/v1/sessions/${body.id}?profile=${profileId}`, {
       headers,
     })
     // Диалог чужого профиля отвечает как несуществующий — и cookie не меняется.
     if (response.status === 404) return send(res, 404, { error: 'Диалог не найден' })
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(
       res,
       200,
@@ -678,7 +715,7 @@ async function handleTopicFacts(req, res, topicId) {
       headers,
     })
     if (response.status === 404) return send(res, 404, { error: 'Тема не найдена' })
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     // Имя диалога-источника, а не его идентификатор: у факта стоит дата
     // записи и диалог, и это не ссылка на издание (ADR, п. 5.2).
     const facts = (json.topic?.facts ?? []).map((f) => ({
@@ -728,6 +765,7 @@ async function handleAnswer(req, res) {
       })
       if (!response.ok) {
         limiter.release(ip)
+        if (keyRefused(res, response, json)) return
         if (response.status === 409 || response.status === 404 || response.status === 400) {
           return send(res, response.status, {
             error: json?.message ?? 'Диалог не создан',
@@ -772,6 +810,11 @@ async function handleAnswer(req, res) {
   }
   // До запуска дело не дошло — слот возвращается.
   limiter.release(ip)
+  // Границы ключевого профиля — 403, суточный потолок имени — 429: страница
+  // обязана увидеть их кодом, а не как «агент не ответил». Cookie диалога,
+  // если он только что родился, уезжает вместе с отказом: диалог у агента
+  // уже есть, и терять указатель на него нельзя.
+  if (keyRefused(res, response, json, headers)) return
   if (response.status === 400)
     return send(res, 400, { error: json?.message ?? 'Запрос отклонён' }, headers)
   console.error(`агент: ${response.status} ${json?.code ?? ''}`)
@@ -825,14 +868,14 @@ async function handleChat(req, res) {
 
   try {
     if (clearing) {
-      const { response } = await callAgent(`/v1/sessions/${sessionId}?profile=${profileId}`, {
+      const { response, json } = await callAgent(`/v1/sessions/${sessionId}?profile=${profileId}`, {
         method: 'DELETE',
         headers,
       })
       // Пока агент не подтвердил удаление, обещать его нельзя — и cookie
       // менять нельзя тоже: без прежнего идентификатора переписку будет
       // не удалить уже никогда.
-      if (!response.ok) throw new Error(`агент ${response.status}`)
+      if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
       // Новый диалог не заводится: он родится с первым сообщением или по
       // кнопке. Случайный идентификатор здесь не подошёл бы — диалога с ним
       // у профиля нет, и запуск отверг бы его (ADR, п. 2).
@@ -884,7 +927,7 @@ async function handleChat(req, res) {
         error: 'Память диалога у агента сейчас недоступна: переписка не показана.',
       })
     }
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(res, 200, {
       messages: json.messages ?? [],
       totalTokens: json.totalTokens ?? null,
@@ -936,7 +979,7 @@ async function handleHead(req, res) {
         error: json?.message ?? 'Ветку переключить не удалось',
         code: json?.code,
       })
-    if (!response.ok) throw new Error(`агент ${response.status}`)
+    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
     return send(res, 200, { head: json?.head ?? null })
   } catch (error) {
     console.error(`ветка: ${error.message}`)

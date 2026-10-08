@@ -3,6 +3,7 @@
 // и его диалогов, создание диалога первым сообщением, прокси потока.
 
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import http from 'node:http'
 import { after, before, test } from 'node:test'
 
@@ -22,11 +23,46 @@ const OTHER_SID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 /** Диалог чужого профиля: агент отвечает на него как на несуществующий. */
 const ALIEN_SID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const NEW_SID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+/** Ключевой профиль: сервис отдаёт у него имя ключа, открытый — `null`. */
+const KEYED_PID = '55555555-5555-4555-8555-555555555555'
+
+/**
+ * Отказы ключа, которые выдаёт сервис агентов, а не день: значение ключа,
+ * окно отказов и суточный потолок сверяет он. Стенд повторяет его коды и его
+ * заголовки, чтобы проверялся проброс дня, а не сверка.
+ */
+const KEY_REFUSALS = {
+  wrong: [403, { ok: false, code: 'bad_model_key', message: 'Ключ модели не принят' }],
+  burst: [
+    429,
+    { ok: false, code: 'too_many_attempts', message: 'Слишком много попыток — подождите минуту' },
+    { 'retry-after': '37' },
+  ],
+  over: [
+    429,
+    {
+      ok: false,
+      code: 'model_key_daily_cap',
+      message: 'Суточный потолок 2000 запусков на ключ исчерпан',
+      resetAt: '2026-10-09T00:00:00.000Z',
+    },
+  ],
+  wrongmodel: [
+    403,
+    {
+      ok: false,
+      code: 'keyed_profile_model',
+      message: 'В этом профиле доступна только модель без встроенных отказов.',
+    },
+  ],
+}
 
 const profileBody = (id, sessions) => ({
   ok: true,
   profile: {
     id,
+    // Имя ключа — поле, по которому экран узнаёт ключевой профиль.
+    keyName: id === KEYED_PID ? 'mika' : null,
     name: id === PID ? 'Мика' : 'Гость',
     settings: { strategy: 'summary', maxTokens: 2000 },
     rules: [{ key: 'тон', value: 'коротко', sourceSessionId: SID, updatedAt: 1 }],
@@ -68,6 +104,18 @@ const agent = http.createServer(async (req, res) => {
   }
   const [path, query = ''] = req.url.split('?')
   const profileOf = new URLSearchParams(query).get('profile')
+
+  // Ровно те ветви, на которых сервис агентов отказывает по ключу
+  // (`agents/src/service.js`): профили, диалоги и создание запуска. На
+  // `/v1/agents` и `/healthz` ключ не спрашивают, и отказа там нет.
+  const refusal = KEY_REFUSALS[req.headers['x-model-key']]
+  if (
+    refusal &&
+    (path.startsWith('/v1/profiles') || path.startsWith('/v1/sessions') || path === '/v1/runs')
+  ) {
+    res.writeHead(refusal[0], { 'content-type': 'application/json', ...(refusal[2] ?? {}) })
+    return res.end(JSON.stringify(refusal[1]))
+  }
 
   // --- профили ---
   if (path === '/v1/profiles' && req.method === 'GET') {
@@ -232,13 +280,14 @@ const cookieValue = (response, name) => {
   return found ? found[1] : null
 }
 
-const call = (method, path, body, { ip = '10.0.0.1', cookie } = {}) =>
+const call = (method, path, body, { ip = '10.0.0.1', cookie, modelKey } = {}) =>
   fetch(`${base}${path}`, {
     method,
     headers: {
       'content-type': 'application/json',
       'x-forwarded-for': ip,
       ...(cookie ? { cookie } : {}),
+      ...(modelKey ? { 'x-model-key': modelKey } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
@@ -808,4 +857,75 @@ test('кроме /events, ветвь /api/runs/* не проксируется: 
     assert.equal(r.status, 404, `${method} ${path}`)
   }
   assert.deepEqual(agentLog.slice(before), [], 'ни один из них до стенда не дошёл')
+})
+
+// --- Отказы ключа доходят до страницы своим кодом --------------------------
+
+test('403 bad_model_key от сервиса — 403 с кодом, а не 502 «агент не ответил»', async () => {
+  // Форма ключа годная, значение — нет: сверяет его сервис, и его отказ
+  // должен дойти до экрана. Прежде этот ответ становился 502, и экран просил
+  // проверить связь — действие, которое ключ не исправляет.
+  const r = await call('GET', '/api/profiles', undefined, { ip: '10.20.0.1', modelKey: 'wrong' })
+  assert.equal(r.status, 403)
+  const body = await r.json()
+  assert.equal(body.code, 'bad_model_key')
+  assert.equal(body.error, 'Ключ модели не принят')
+})
+
+test('429 окна отказов доходит кодом и тем же retry-after, что назвал сервис', async () => {
+  const r = await call('GET', '/api/profile', undefined, {
+    ip: '10.20.0.2',
+    cookie: withProfile(),
+    modelKey: 'burst',
+  })
+  assert.equal(r.status, 429)
+  assert.equal(r.headers.get('retry-after'), '37', 'число окна — сервиса, а не дня')
+  assert.equal((await r.json()).code, 'too_many_attempts')
+})
+
+test('429 суточного потолка доходит кодом и временем сброса', async () => {
+  const r = await call('POST', '/api/answer', { prompt: 'привет' }, {
+    ip: '10.20.0.3',
+    cookie: withSession(),
+    modelKey: 'over',
+  })
+  assert.equal(r.status, 429)
+  const body = await r.json()
+  assert.equal(body.code, 'model_key_daily_cap')
+  assert.equal(body.resetAt, '2026-10-09T00:00:00.000Z', 'страница называет время сброса')
+})
+
+test('403 границы ключевого профиля доходит кодом с запуска', async () => {
+  const r = await call('POST', '/api/answer', { prompt: 'привет' }, {
+    ip: '10.20.0.4',
+    cookie: withSession(),
+    modelKey: 'wrongmodel',
+  })
+  assert.equal(r.status, 403)
+  assert.equal((await r.json()).code, 'keyed_profile_model')
+})
+
+test('имя ключа профиля доходит до страницы чтением и выбором; у открытого — null', async () => {
+  const read = await call('GET', '/api/profile', undefined, {
+    ip: '10.20.0.5',
+    cookie: withProfile(KEYED_PID),
+    modelKey: 'mika',
+  })
+  assert.equal(read.status, 200)
+  assert.equal((await read.json()).profile.keyName, 'mika')
+
+  const picked = await call('POST', '/api/profile/select', { id: KEYED_PID }, {
+    ip: '10.20.0.5',
+    modelKey: 'mika',
+  })
+  assert.equal(picked.status, 200)
+  assert.equal((await picked.json()).profile.keyName, 'mika')
+
+  // Открытый профиль различим от ключевого: иначе зелёный результат выше
+  // удовлетворяла бы гипотеза «поле всегда непусто».
+  const open = await call('GET', '/api/profile', undefined, {
+    ip: '10.20.0.5',
+    cookie: withProfile(PID),
+  })
+  assert.equal((await open.json()).profile.keyName, null)
 })
