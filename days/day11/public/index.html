@@ -1264,6 +1264,14 @@
     }
 
     if (focus) {
+      // Ключ только что не приняли — фокус идёт в поле ключа: заново просят
+      // именно его, и список профилей здесь не действие. Иначе фокус ушёл бы
+      // на список: возврат из профиля перечитывает его после `keyLost`, и
+      // его `focus()` отменил бы фокус поля.
+      if (!$('key-error').hidden) {
+        $('model-key').focus();
+        return;
+      }
       const first = box.querySelector('.pro-pick');
       if (first) first.focus();
       else if (!full) $('pro-name').focus();
@@ -1364,6 +1372,9 @@
       currentProfileId = profile.id;
       gate.hidden = true;
       layout.hidden = false;
+      // Профиль открылся — прежний отказ ключа больше не про текущее
+      // положение дел, и на экране входа при возврате его быть не должно.
+      sayLine($('key-error'), '');
       $('pid-name').textContent = profile.name;
       $('pid-name').title = profile.name;
       // Смена профиля меняет всё: настройки, память, диалоги и ленту событий.
