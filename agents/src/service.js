@@ -1,7 +1,7 @@
 // HTTP-контракт сервиса агентов (ADR 2026-09-09-0854, п. 3). Один ключ,
 // `AGENT_KEY`, на все `/v1/*`; `/healthz` открыт — его проверяет compose.
 
-import { timingSafeEqual } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { LAYERED_AGENT_ID } from './layered.js'
 import { effectiveContext } from './llm.js'
 import {
@@ -17,6 +17,7 @@ import {
   TOPIC_FACT_CAP,
   WINDOW_LIMITS,
 } from './params.js'
+import { createModelKeys } from './model-keys.js'
 import { TERMINAL } from './runs.js'
 import { STAGED_AGENT_ID } from './staged.js'
 
@@ -27,10 +28,11 @@ const CANCEL_WAIT_MS = 5_000
 const SSE_PING_MS = 15_000
 const RUN_ID = /^[0-9a-f-]{36}$/
 
-function send(res, status, payload) {
+function send(res, status, payload, headers = {}) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
+    ...headers,
   })
   res.end(JSON.stringify(payload))
 }
@@ -159,6 +161,14 @@ export function createService({
    * Здесь её нет — `/v1` поверхности не знает и знать не должен.
    */
   controlState = () => 'выключена: не настроена',
+  /**
+   * Именные ключи модели без встроенных отказов (ADR 2026-10-07-1349, п. 2).
+   * Умолчание — `createModelKeys({})` с пустым списком, то есть возможности
+   * нет вовсе: сервис, которому ключи не передали, ведёт себя как до ADR.
+   * Выключенное умолчание здесь принципиально: забыть передать объект легче,
+   * чем забыть строку в `agents.env`, и «забыли» обязано означать «закрыто».
+   */
+  modelKeys = createModelKeys({}),
   env,
   fetchImpl = fetch,
   log = console.error,
@@ -225,6 +235,53 @@ export function createService({
 
   /** Идёт ли в этой сессии запуск: замок принадлежит исполнителю агента. */
   const busy = (sessionId) => [...agents.values()].some((a) => a.isBusy?.(sessionId))
+
+  /**
+   * ЕДИНСТВЕННЫЙ предикат чтения ключевого профиля (ADR 2026-10-07-1349,
+   * п. 2). Стоит на входе ветви `/v1/profiles` и ветви диалогов — не по
+   * ручкам: ручек у профиля девять, и промах в одной означал бы утечку
+   * переписки, порождённой моделью без встроенных отказов.
+   *
+   * `true` — профиль существует, он ключевой, и предъявленный ключ не того
+   * имени (или ключа нет вовсе). Ответ на это — такой же, как у
+   * несуществующего профиля: ни «нет», ни «закрыт» различить нельзя.
+   *
+   * Профиль, которого НЕТ, предикат не скрывает: про него отвечает сама
+   * ручка, своими прежними словами. Иначе `/invariants/:num` дня 14 сменил бы
+   * `unknown_invariant` на `unknown_profile` — правка сданного дня, которой
+   * ADR не требует.
+   */
+  const keyedAway = (profileId, keyName) => {
+    const owner = sessions.profileKeyName(profileId)
+    return typeof owner === 'string' && owner !== keyName
+  }
+
+  /** То же для диалога: его закрытость — свойство профиля, которому он принадлежит. */
+  const keyedAwaySession = (sessionId, keyName) => {
+    const profileId = sessions.sessionProfile(sessionId)
+    return typeof profileId === 'string' && keyedAway(profileId, keyName)
+  }
+
+  /**
+   * Чем закрытый профиль и его диалог подменяются на входе ветви: номером,
+   * которого в базе НЕТ. Ветвь дальше работает с ним, и каждая её ручка
+   * отвечает ровно то, что ответила бы на несуществующий профиль, — её
+   * собственными словами, без второй их копии здесь.
+   *
+   * Так «нет» и «закрыт» становятся неотличимы ПО ПОСТРОЕНИЮ, а не по
+   * совпадению строк. Отличать их нельзя даже кодом ответа: ручки `GET
+   * /settings` у профиля нет вовсе, и отказ `unknown_profile` там, где
+   * несуществующий профиль получает `not_found`, сам по себе сообщал бы «такой
+   * профиль есть, и он ключевой» (найдено тестом «байт в байт» ниже).
+   *
+   * Номер берётся один раз на процесс: постоянное значение в коде рано или
+   * поздно совпало бы с настоящим профилем, и тогда подмена открыла бы его.
+   */
+  const HIDDEN_ID = randomUUID()
+  const visibleProfile = (profileId, keyName) =>
+    keyedAway(profileId, keyName) ? HIDDEN_ID : profileId
+  const visibleSession = (sessionId, keyName) =>
+    keyedAwaySession(sessionId, keyName) ? HIDDEN_ID : sessionId
 
   /**
    * Умолчания реестра того агента, чьи настройки правятся. Настройки — за
@@ -449,6 +506,43 @@ export function createService({
       return send(res, 401, { ok: false, code: 'unauthorized' })
     }
 
+    // --- Ключ модели без встроенных отказов (ADR 2026-10-07-1349, п. 2) ----
+    // Сверка — ОДИН раз на запрос и ДО любой работы: заголовок, не совпавший
+    // ни с одним именем, получает 403 на ручках профилей, диалогов и запуска
+    // — профиль не создаётся, ничего не читается и не пишется. Без этого
+    // опечатка в ключе рождала бы ОТКРЫТЫЙ профиль (Б8), то есть ровно ту
+    // переписку в публичном списке, из-за которой стояло вето 1.
+    //
+    // Порядок строк здесь и есть порядок исполнения (I-4): ключ сервиса →
+    // ключ модели → работа. Слот суточного потолка имени занимает `createRun`
+    // — после сверки и до роутера.
+    const keyed = modelKeys.check({
+      req,
+      // Окно отказов — на адрес соединения. До сервиса агентов доходит только
+      // день под `AGENT_KEY`, то есть адрес здесь — адрес контейнера дня, а
+      // не посетителя. Окно поэтому гасит залп СЛУЖБЫ, а не человека, и
+      // защитой от перебора не является: перебор 24 случайных байт невозможен
+      // при любом окне. Честная граница, та же, что у `control/key.js`.
+      remote: req.socket?.remoteAddress ?? 'unknown',
+    })
+    const keyName = keyed.ok ? keyed.name : null
+    if (
+      !keyed.ok &&
+      (path.startsWith('/v1/profiles') ||
+        path.startsWith('/v1/sessions') ||
+        (path === '/v1/runs' && req.method === 'POST'))
+    ) {
+      // В журнал — путь и код, и только. Предъявленного значения здесь нет и
+      // быть не может: `check` его не возвращает (структурный запрет).
+      log(JSON.stringify({ event: 'refuse', path, code: keyed.code }))
+      return send(
+        res,
+        keyed.status,
+        { ok: false, code: keyed.code, message: keyed.message },
+        keyed.headers,
+      )
+    }
+
     // Ручки планировщика дня 18. Ответ на запуск — РЕШЕНИЕ, а не конец
     // работы: тик ждёт секунды, работа идёт минуты.
     const triggerMatch = /^\/v1\/jobs\/([a-z0-9-]{2,31})\/trigger$/.exec(path)
@@ -585,9 +679,14 @@ export function createService({
     // идентификатор из cookie (ADR 2026-09-09-1906).
     const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/)
     if (sessionMatch) {
-      const sessionId = sessionMatch[1]
       if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
-      if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      if (!isSessionId(sessionMatch[1])) {
+        return send(res, 404, { ok: false, code: 'unknown_session' })
+      }
+      // Вход ветви диалогов: диалог ключевого профиля закрыт тем же ключом,
+      // что сам профиль (ADR 2026-10-07-1349, п. 2). Переписка живёт здесь, и
+      // предикат на одном профиле оставил бы её открытой.
+      const sessionId = visibleSession(sessionMatch[1], keyName)
       if (foreignSession(sessionId, url.searchParams)) {
         return send(res, 404, { ok: false, code: 'unknown_session' })
       }
@@ -644,9 +743,11 @@ export function createService({
     // указанного сообщения (ADR 2026-09-14-0447, п. 8.3).
     const headMatch = path.match(/^\/v1\/sessions\/([^/]+)\/head$/)
     if (headMatch && req.method === 'PUT') {
-      const sessionId = headMatch[1]
       if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
-      if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      if (!isSessionId(headMatch[1])) {
+        return send(res, 404, { ok: false, code: 'unknown_session' })
+      }
+      const sessionId = visibleSession(headMatch[1], keyName)
       if (foreignSession(sessionId, url.searchParams)) {
         return send(res, 404, { ok: false, code: 'unknown_session' })
       }
@@ -689,9 +790,11 @@ export function createService({
     // кнопкой действует сразу и не стоит ничего.
     const topicMatch = path.match(/^\/v1\/sessions\/([^/]+)\/topic$/)
     if (topicMatch && req.method === 'POST') {
-      const sessionId = topicMatch[1]
       if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
-      if (!isSessionId(sessionId)) return send(res, 404, { ok: false, code: 'unknown_session' })
+      if (!isSessionId(topicMatch[1])) {
+        return send(res, 404, { ok: false, code: 'unknown_session' })
+      }
+      const sessionId = visibleSession(topicMatch[1], keyName)
       const profileId = url.searchParams.get('profile')
       // Чужая сессия отвечает как несуществующая — та же граница, что у
       // чтения и удаления диалога профиля.
@@ -764,7 +867,13 @@ export function createService({
       if (!sessions) return send(res, 503, { ok: false, code: 'no_sessions' })
 
       if (path === '/v1/profiles' && req.method === 'GET') {
-        return send(res, 200, { ok: true, profiles: sessions.profiles(), cap: env.PROFILE_CAP })
+        // Публичный список — только открытые профили; с ключом — плюс
+        // профили его имени (ADR 2026-10-07-1349, п. 2).
+        return send(res, 200, {
+          ok: true,
+          profiles: sessions.profiles(undefined, keyName),
+          cap: env.PROFILE_CAP,
+        })
       }
 
       if (path === '/v1/profiles' && req.method === 'POST') {
@@ -772,7 +881,11 @@ export function createService({
         if (!parsed.ok) return
         const name = parseProfileName(parsed.body?.name)
         if (!name.ok) return send(res, 400, { ok: false, code: 'bad_input', message: name.message })
-        const created = sessions.createProfile({ name: name.name })
+        // Действительный ключ создаёт КЛЮЧЕВОЙ профиль, его отсутствие —
+        // обычный открытый, как до ADR. Третьего пути нет: заголовок, не
+        // совпавший ни с одним именем, до этой строки не доходит — 403 стоит
+        // на входе `route` (Б8).
+        const created = sessions.createProfile({ name: name.name, keyName })
         if (!created.ok) {
           return send(res, 409, {
             ok: false,
@@ -787,8 +900,14 @@ export function createService({
         /^\/v1\/profiles\/([^/]+)(\/settings|\/sessions|\/topics\/\d+|\/invariants|\/invariants\/draft|\/invariants\/\d{1,9}|\/prompts\/[a-z][a-z.]{1,40})?$/,
       )
       if (!match) return send(res, 404, { ok: false, code: 'not_found' })
-      const [, profileId, tail] = match
-      if (!isProfileId(profileId)) return send(res, 404, { ok: false, code: 'unknown_profile' })
+      const [, asked, tail] = match
+      if (!isProfileId(asked)) return send(res, 404, { ok: false, code: 'unknown_profile' })
+
+      // Предикат чтения — ЗДЕСЬ, на входе ветви, а не в девяти ручках ниже:
+      // состояние профиля, настройки, диалоги, темы, инварианты и промпты
+      // закрываются одной строкой (ADR 2026-10-07-1349, п. 2). Закрытый
+      // профиль дальше просто не существует — см. `visibleProfile`.
+      const profileId = visibleProfile(asked, keyName)
 
       if (!tail && req.method === 'GET') {
         // Чтение профиля срок его памяти не продлевает (ADR, п. 2): выбор
