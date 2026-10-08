@@ -865,11 +865,19 @@ test('403 bad_model_key от сервиса — 403 с кодом, а не 502 �
   // Форма ключа годная, значение — нет: сверяет его сервис, и его отказ
   // должен дойти до экрана. Прежде этот ответ становился 502, и экран просил
   // проверить связь — действие, которое ключ не исправляет.
+  const before = agentLog.length
   const r = await call('GET', '/api/profiles', undefined, { ip: '10.20.0.1', modelKey: 'wrong' })
   assert.equal(r.status, 403)
   const body = await r.json()
   assert.equal(body.code, 'bad_model_key')
   assert.equal(body.error, 'Ключ модели не принят')
+  // Отказ пришёл ОТ СТЕНДА, а не от собственной проверки формы в дне: иначе
+  // тот же зелёный результат удовлетворяла бы гипотеза «день отверг форму»,
+  // а форма у `wrong` годная. Улика — запись в журнале стенда, не код ответа.
+  const seen = agentLog.slice(before)
+  assert.equal(seen.length, 1, 'запрос до стенда не дошёл')
+  assert.equal(seen[0].url, '/v1/profiles')
+  assert.equal(seen[0].modelKey, 'wrong', 'стенд получил ровно предъявленное значение')
 })
 
 test('429 окна отказов доходит кодом и тем же retry-after, что назвал сервис', async () => {
