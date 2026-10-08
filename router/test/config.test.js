@@ -199,3 +199,134 @@ test('у agents денежный лимит упирается раньше то
       `по ставке Haiku на эти деньги приходится до ${affordable} токенов`,
   )
 })
+
+// --- Модель без встроенных отказов: граница «приложение → провайдер» -------
+// ADR 2026-10-07-1349, п. 1 и п. 7. Запись доступна по имени ТОЛЬКО
+// приложению `agents`; `day5` и `smoke` её не видят в списке моделей и не
+// могут назвать по имени. Яруса класса для этого не хватает: класс
+// `news_answer` приложения `day5` включает ярус `self-hosted`, то есть до
+// поля `apps` эта модель была бы для `day5` законным явным выбором.
+
+const ABLITERATED = 'mac-qwen3-abliterated'
+const abliterated = providers.find((p) => p.id === ABLITERATED)
+
+/**
+ * Роутер продовой конфигурации со СЧИТАЮЩИМ `fetch`. Отличие от `prodRouter`
+ * принципиальное: бросающий `fetch` не различает «до провайдера не дошли» и
+ * «дошли, но вызов упал» — роутер ловит отказ адаптера сам и отвечает
+ * `all_failed` в обоих случаях. Здесь вызовы пересчитываются, и «адаптер не
+ * вызван» становится утверждением о числе, а не о коде ответа.
+ */
+function countingRouter() {
+  const calls = []
+  const config = loadConfig({ providers, classes, apps, env: ENV_PROD })
+  const router = createRouter({
+    config,
+    registry: createStaticRegistry(config.providers),
+    fetchImpl: (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) })
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ response: 'ответ', eval_count: 3, prompt_eval_count: 7 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+    },
+    env: ENV_PROD,
+  })
+  return { router, calls }
+}
+
+test('запись модели без отказов: та Ollama, тот слот, без web_search и tools', () => {
+  const base = providers.find((p) => p.id === 'mac-qwen3')
+  assert.notEqual(abliterated, undefined, 'запись есть в продовой конфигурации')
+  assert.equal(abliterated.model, 'hf.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF:Q6_K')
+  assert.equal(abliterated.baseUrl, base.baseUrl, 'тот же адрес: слот ноутбука общий')
+  assert.equal(abliterated.maxConcurrency, 1)
+  assert.equal(abliterated.explicitOnly, true, 'политика её не берёт')
+  assert.deepEqual(abliterated.apps, ['agents'])
+  assert.deepEqual(abliterated.price, { inputPerMTok: 0, outputPerMTok: 0 })
+  // Условие compliance по I-6: модель без отказов не ищет в сети и не зовёт
+  // инструментов. Проверяется обе возможности порознь — и весь список целиком,
+  // иначе добавленная третья возможность прошла бы молча.
+  assert.equal(abliterated.capabilities.includes('web_search'), false)
+  assert.equal(abliterated.capabilities.includes('tools'), false)
+  assert.deepEqual(abliterated.capabilities, ['text_generation', 'json_schema'])
+})
+
+test('/v1/models: запись видит agents и не видит day5 и smoke', () => {
+  const { router } = countingRouter()
+  const forAgents = router.providerLimits('layered_dialogue', 'agents').map((p) => p.id)
+  assert.equal(forAgents.includes(ABLITERATED), true, 'приложение из apps запись видит')
+  // Контрольная ветвь: без поля `apps` остальные записи `agents` по-прежнему
+  // видит — зелёный результат нельзя получить, спрятав от него всё.
+  assert.equal(forAgents.includes('mac-qwen3'), true)
+
+  for (const app of ['day5', 'smoke']) {
+    const ids = router.providerLimits('news_answer', app).map((p) => p.id)
+    assert.equal(ids.includes(ABLITERATED), false, `${app}: записи в списке нет`)
+  }
+  // Класс `news_answer` у `day5` включает ярус `self-hosted`, и обычная запись
+  // ноутбука в его списке есть. Без этой строки зелёный результат выше
+  // удовлетворяла бы и гипотеза «весь ярус self-hosted для day5 закрыт».
+  assert.equal(
+    router.providerLimits('news_answer', 'day5').map((p) => p.id).includes('mac-qwen3'),
+    true,
+  )
+})
+
+test('явный выбор модели без отказов от day5 и smoke — refused/policy, адаптер не вызван', async () => {
+  for (const app of ['day5', 'smoke']) {
+    const { router, calls } = countingRouter()
+    const answer = await router.route(
+      { taskClass: 'news_answer', input: 'привет', provider: ABLITERATED },
+      { app },
+    )
+    assert.equal(answer.ok, false, `${app}: отказ`)
+    assert.equal(answer.code, 'refused', `${app}: именно refused`)
+    assert.deepEqual(
+      answer.reasons.map((r) => r.stage),
+      ['policy'],
+      `${app}: стадия policy — решает разрешение, а не возможность`,
+    )
+    assert.equal(calls.length, 0, `${app}: до адаптера запрос не дошёл`)
+  }
+})
+
+test('явный выбор той же модели от agents доходит до адаптера', async () => {
+  const { router, calls } = countingRouter()
+  const answer = await router.route(
+    { taskClass: 'layered_dialogue', input: 'привет', provider: ABLITERATED },
+    { app: 'agents' },
+  )
+  assert.equal(answer.ok, true)
+  assert.equal(calls.length, 1, 'ровно один вызов')
+  assert.equal(calls[0].url, `${abliterated.baseUrl}/api/generate`)
+  assert.equal(calls[0].body.model, abliterated.model, 'уехал тег сборки без отказов')
+})
+
+test('вызов без приложения записи с apps не получает: умолчание закрыто', async () => {
+  const { router, calls } = countingRouter()
+  const answer = await router.route({
+    taskClass: 'layered_dialogue',
+    input: 'привет',
+    provider: ABLITERATED,
+  })
+  assert.equal(answer.code, 'refused')
+  assert.equal(calls.length, 0)
+  // И в списке моделей без приложения её тоже нет.
+  assert.equal(
+    router.providerLimits('layered_dialogue').map((p) => p.id).includes(ABLITERATED),
+    false,
+  )
+})
+
+test('apps с неизвестным приложением валит старт, а не закрывает запись молча', () => {
+  const broken = providers.map((p) =>
+    p.id === ABLITERATED ? { ...p, apps: ['agents-keyd'] } : p,
+  )
+  assert.throws(
+    () => loadConfig({ providers: broken, classes, apps, env: ENV_PROD }),
+    /неизвестное приложение agents-keyd/,
+  )
+})

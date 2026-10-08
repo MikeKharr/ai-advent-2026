@@ -28,6 +28,36 @@
     "dataHandling": "Данные не покидают частную сеть владельца; журналов у Ollama нет, кроме локального лога запросов."
   },
   {
+    "_": "Та же Ollama ноутбука, что mac-qwen3, второй записью: сборка без встроенных отказов (ADR 2026-10-07-1349). Доступна ТОЛЬКО приложению agents (поле apps) и только по явному provider, внутри ключевого профиля дня 11. Возможностей web_search и tools у записи нет намеренно — условие compliance по I-6: модель без отказов не ищет в сети и не зовёт инструментов. Слот ноутбука общий с mac-qwen3: health.js считает inflight по хосту из baseUrl, и две записи на одном адресе делят одну ёмкость. Цена 0: ноутбук владельца, расхода нет.",
+    "id": "mac-qwen3-abliterated",
+    "revision": 1,
+    "kind": "ollama",
+    "tier": "self-hosted",
+    "baseUrl": "http://100.77.87.97:11434",
+    "model": "hf.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF:Q6_K",
+    "profile": "laptop",
+    "capabilities": ["text_generation", "json_schema"],
+    "contextWindow": 131072,
+    "maxRequestTokens": 6000,
+    "jurisdiction": "local",
+    "dataClasses": ["public", "internal", "personal"],
+    "maxConcurrency": 1,
+    "thinking": {
+      "none": true,
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
+    "keepAlive": "30m",
+    "explicitOnly": true,
+    "apps": ["agents"],
+    "price": {
+      "inputPerMTok": 0,
+      "outputPerMTok": 0
+    },
+    "dataHandling": "Данные не покидают частную сеть владельца; журналов у Ollama нет, кроме локального лога запросов."
+  },
+  {
     "id": "anthropic-haiku",
     "revision": 1,
     "kind": "anthropic",

@@ -125,6 +125,17 @@ export function validateProviders(providers, env) {
     // дорогой модели в автоматическую маршрутизацию, поэтому — на старте.
     if (p.explicitOnly !== undefined && typeof p.explicitOnly !== 'boolean')
       fail(`${where}: explicitOnly — булево`)
+    // Провайдер, которого можно назвать по имени не всякому приложению (ADR
+    // 2026-10-07-1349, п. 1). Поле — вторая ось разрешений рядом с ярусами
+    // класса: запись БЕЗ поля доступна любому приложению, как прежде, запись
+    // с полем — только названным. Пустой список означал бы «никому»: это не
+    // настройка, а недописанная строка, поэтому он падает на старте.
+    if (p.apps !== undefined) {
+      if (!Array.isArray(p.apps) || p.apps.length === 0)
+        fail(`${where}: apps — непустой массив идентификаторов приложений`)
+      for (const id of p.apps)
+        if (typeof id !== 'string' || id.length === 0) fail(`${where}: apps — непустые строки`)
+    }
     if (!Number.isInteger(p.revision ?? 1)) fail(`${where}: revision — целое`)
     if (p.secretEnv && !env[p.secretEnv])
       fail(`${where}: переменная секрета ${p.secretEnv} не задана`)
@@ -254,9 +265,27 @@ export function capabilityFit(p, cls, level, dataClass, inputTokens, extraRequir
   return { ok: true }
 }
 
+/**
+ * Поле `apps` провайдера названо по идентификаторам из реестра приложений
+ * (ADR 2026-10-07-1349, п. 1). Опечатка в имени тихо закрыла бы провайдера
+ * от всех — включая то приложение, ради которого запись и завели, — и
+ * заметить это было бы нечем, кроме отказа в проде. Проверяется только когда
+ * реестр приложений вообще передан: роутер поднимается и без него.
+ */
+export function validateProviderApps(providers, appsConfig) {
+  const known = new Set((appsConfig.apps ?? []).map((a) => a.id))
+  for (const p of providers)
+    for (const id of p.apps ?? [])
+      if (!known.has(id))
+        fail(`провайдер ${p.id}: apps называет неизвестное приложение ${id}`)
+}
+
 export function loadConfig({ providers, classes, apps, env = process.env }) {
   validateProviders(providers, env)
   validateClasses(classes, providers)
-  if (apps) validateApps(apps, env, classes)
+  if (apps) {
+    validateApps(apps, env, classes)
+    validateProviderApps(providers, apps)
+  }
   return { providers, classes, apps: apps ?? null }
 }

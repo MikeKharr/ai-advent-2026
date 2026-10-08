@@ -129,7 +129,10 @@ export function createService({
 
     let result
     try {
-      result = await router.route(body, { signal: clientGone.signal })
+      // Приложение едет в маршрутизацию вместе с запросом: поле `apps`
+      // провайдера сверяется там (ADR 2026-10-07-1349, п. 1), и без этого
+      // довода сверять было бы не с чем.
+      result = await router.route(body, { signal: clientGone.signal, app: app.id })
     } finally {
       res.off('close', onClose)
     }
@@ -195,7 +198,9 @@ export function createService({
           return send(res, 403, { ok: false, code: 'class_not_allowed' })
         return send(res, 200, {
           taskClass: router.resolveClass(taskClass),
-          providers: router.providerLimits(taskClass),
+          // Список моделей — по приложению: запись, закрытую за другим
+          // приложением, оно не видит (ADR 2026-10-07-1349, п. 1, Б2).
+          providers: router.providerLimits(taskClass, app.id),
           budgetLeft: budgetLeft(app, now()),
         })
       }
