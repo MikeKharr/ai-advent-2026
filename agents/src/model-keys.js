@@ -26,7 +26,7 @@
 // измерение. Та же честная граница записана в `agent_docs/backlog/` по
 // `mcp/src/service.js`.
 
-import { timingSafeEqual } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 
 /** Заголовок, которым предъявляется ключ. Один и только один. */
 export const MODEL_KEY_HEADER = 'x-model-key'
@@ -238,10 +238,26 @@ function nextDay(today) {
   return [y, m - 1, d + 1]
 }
 
-/** Сравнение постоянного времени. Разная длина — сразу нет, длина не секрет. */
+/**
+ * Сравнение постоянного времени ПО СВЁРТКАМ, а не по строкам — форма
+ * `days/day22/limits.js`, которую называет ADR 2026-10-07-1349, §2
+ * («свёртка `sha256` → `timingSafeEqual`»).
+ *
+ * Почему по свёрткам: `timingSafeEqual` требует равной длины и на разной
+ * бросает, поэтому сравнение сырых значений нуждалось бы в раннем возврате по
+ * длине — и тогда значение негодной длины не доходило бы до сравнения ни
+ * разу, то есть время ответа сообщало бы о длине ключа. `sha256` даёт обеим
+ * сторонам ровно 32 байта, и сравнение исполняется при любом предъявленном
+ * значении.
+ *
+ * Прежняя редакция стояла в форме `control/key.js` (ранний возврат по длине).
+ * Содержательная цена была почти нулевой — длина ключа объявлена в
+ * `deploy/.env.example`, а 24 случайных байта не перебираются, — но это было
+ * незаявленное отступление от принятого ADR (замечание З2 `compliance`),
+ * и проще снять его, чем объяснять.
+ */
 export function safeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false
-  const ba = Buffer.from(a)
-  const bb = Buffer.from(b)
-  return ba.length === bb.length && timingSafeEqual(ba, bb)
+  const sum = (value) => createHash('sha256').update(value, 'utf8').digest()
+  return timingSafeEqual(sum(a), sum(b))
 }

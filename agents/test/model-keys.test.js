@@ -78,6 +78,32 @@ test('пустая MODEL_KEYS — возможности нет вовсе: лю
   }
 })
 
+test('выключенная возможность отказывает 403, а не 429: окно отказов не заводится', () => {
+  // Честная граница замечания З1 `compliance`: ранний возврат при пустых
+  // `entries` сам по себе ОТВЕТ не меняет — пустой цикл ни с чем не совпадёт
+  // и отдаст тот же 403. Он меняет другое, и вот это держит проверка ниже:
+  // при выключенной возможности адрес не попадает в окно неудачных попыток
+  // вовсе. Иначе залп по выключенной возможности через `failsPerMin` попыток
+  // начал бы получать 429 — то есть «выключено» стало бы неотличимо от
+  // «слишком часто», а карта адресов росла бы на ровном месте.
+  let clock = 1_000_000
+  const keys = createModelKeys({ entries: [], failsPerMin: 3, now: () => clock })
+  for (let i = 0; i < 10; i += 1) {
+    const out = keys.check({ req: request(MIKE), remote: 'burst' })
+    assert.equal(out.status, 403, `попытка ${i + 1}`)
+    assert.equal(out.code, 'bad_model_key')
+  }
+  assert.equal(keys.watching(), 0, 'ни одного адреса в окне: возможности нет вовсе')
+
+  // Отрицательный контроль: при НАСТРОЕННЫХ ключах тот же залп окно заводит
+  // и на четвёртой попытке отвечает 429. Без этой ветви зелёный результат
+  // выше удовлетворяла бы гипотеза «окна нет вообще никогда».
+  const live = createModelKeys({ entries: ENTRIES, failsPerMin: 3, now: () => clock })
+  for (let i = 0; i < 3; i += 1) live.check({ req: request('wrong'), remote: 'burst' })
+  assert.equal(live.check({ req: request('wrong'), remote: 'burst' }).status, 429)
+  assert.equal(live.watching(), 1)
+})
+
 test('пустой заголовок при пустой переменной не совпадает: сравнения пустых строк нет', () => {
   const keys = createModelKeys({ entries: [] })
   assert.equal(keys.check({ req: request(''), remote: 'a' }).ok, false)
@@ -118,10 +144,18 @@ test('чужое значение — 403 bad_model_key, и ни имени, н�
   assert.equal(dump.includes('mike'), false, 'и имени нет: отказ не называет имён')
 })
 
-test('модуль сверяет через timingSafeEqual и не замыкается на совпадении', () => {
+test('модуль сверяет через sha256 → timingSafeEqual и не замыкается на совпадении', () => {
   const source = readFileSync(join(here, '..', 'src', 'model-keys.js'), 'utf8')
-  assert.match(source, /import \{ timingSafeEqual \} from 'node:crypto'/)
-  assert.match(source, /timingSafeEqual\(ba, bb\)/)
+  // Форма ADR 2026-10-07-1349, §2 — та же, что у `days/day22/limits.js`:
+  // свёртка, потом сравнение. Сверять сырые строки нельзя: `timingSafeEqual`
+  // на разной длине бросает, поэтому понадобился бы ранний возврат по длине,
+  // и значение негодной длины не доходило бы до сравнения ни разу.
+  assert.match(source, /import \{ createHash, timingSafeEqual \} from 'node:crypto'/)
+  assert.match(source, /createHash\('sha256'\)/)
+  assert.match(source, /timingSafeEqual\(sum\(a\), sum\(b\)\)/)
+  // Раннего возврата по длине в сверке нет: его отсутствие и есть разница
+  // между формой ADR и формой `control/key.js`.
+  assert.equal(/\.length === /.test(source.slice(source.indexOf('export function safeEqual'))), false)
   // Цикл сверки без выхода изнутри: ни `break`, ни `return` между `for` и
   // его закрытием. Это строка, а не измерение времени (см. шапку файла).
   const loop = source.slice(
@@ -136,6 +170,11 @@ test('модуль сверяет через timingSafeEqual и не замык�
   assert.equal(safeEqual(MIKE, `${MIKE}x`), false)
   assert.equal(safeEqual(MIKE, 'M'), false)
   assert.equal(safeEqual(null, MIKE), false)
+  // Значение совсем другой длины не бросает и не проходит: свёртки обе по
+  // 32 байта, поэтому до сравнения доходит любое предъявленное.
+  assert.equal(safeEqual('x', MIKE), false)
+  assert.equal(safeEqual('x'.repeat(5000), MIKE), false)
+  assert.equal(safeEqual('', ''), true, 'свёртки равны — сравнение работает и на пустых')
 })
 
 // --- Окно неудачных попыток -----------------------------------------------

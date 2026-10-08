@@ -156,6 +156,13 @@
   .pro-pick:active { background:var(--bg); transform:translateY(1px); }
   .pro-name { display:flex; align-items:baseline; gap:var(--s-2); flex-wrap:wrap; }
   .pro-title { font-size:var(--t-md); line-height:1.6; overflow-wrap:anywhere; }
+  /* Подписи строки переносятся ОДНИМ целым. Поодиночке, прямыми детьми
+     .pro-name, второй чип уезжал на новую строку к левому краю: замер на 768 и
+     1280 при имени в 40 знаков (предел поля) давал «сдвиг второго влево
+     −350.6 px» и разные строки. Группа — один flex-элемент: не влезла, ушла
+     вниз вся, а зазор внутри тот же --s-2, что у .pro-name, — один зазор на
+     весь ряд. */
+  .pro-chips { display:flex; align-items:baseline; gap:var(--s-2); flex-wrap:nowrap; }
   .pro-when { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); font-variant-numeric:tabular-nums; }
   /* Профиль из cookie помечен словом, а не только фоном. */
   .chip {
