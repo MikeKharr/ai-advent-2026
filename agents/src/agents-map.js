@@ -34,6 +34,12 @@ export function createAgents({
   invariants,
   prompts,
   servers,
+  /**
+   * Именные ключи модели без встроенных отказов (ADR 2026-10-07-1349, п. 2).
+   * Нужны агенту дня 11: при пустом списке записи модели нет ни в `describe`,
+   * ни в разборе входа — возможности нет вовсе. Прочие агенты её не знают.
+   */
+  modelKeys = null,
   env,
   log = () => {},
 }) {
@@ -65,7 +71,7 @@ export function createAgents({
     else if (entry.id === MCP_AGENT_ID)
       agent = createMcpAgent({ agent: entry, servers, runs, sessions, env, log })
     else if (entry.id === LAYERED_AGENT_ID)
-      agent = createLayeredAgent({ agent: entry, runs, sessions, env, log })
+      agent = createLayeredAgent({ agent: entry, runs, sessions, modelKeys, env, log })
     else if (entry.id === STAGED_AGENT_ID)
       agent = createStagedAgent({ agent: entry, runs, sessions, stageLog, env, log })
     else if (entry.id === INVARIANT_AGENT_ID)

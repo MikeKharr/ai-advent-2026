@@ -394,7 +394,7 @@ export function createService({
     agent.execute(run).catch((error) => log(`запуск ${run.id}: ${error.message}`))
   }
 
-  async function createRun(req, res) {
+  async function createRun(req, res, keyName) {
     let body
     try {
       body = JSON.parse(await readBody(req))
@@ -408,8 +408,37 @@ export function createService({
     const agent = typeof body?.agent === 'string' ? agents.get(body.agent) : null
     if (!agent)
       return send(res, 404, { ok: false, code: 'unknown_agent', message: 'Агент не найден' })
-    const parsed = agent.parseInput(body.input)
-    if (!parsed.ok) return send(res, 400, { ok: false, code: 'bad_input', message: parsed.message })
+    // Имя ключа — в разбор входа: агент дня 11 сверяет его с `key_name`
+    // профиля (ADR 2026-10-07-1349, п. 2). Прочие агенты второй аргумент не
+    // читают, и их разбор не меняется ни строкой.
+    const parsed = agent.parseInput(body.input, { keyName })
+    if (!parsed.ok) {
+      // Отказ разбора умеет назвать свой статус: границы ключевого профиля —
+      // 403, а не 400, потому что дело не в форме запроса, а в разрешении.
+      return send(res, parsed.status ?? 400, {
+        ok: false,
+        code: parsed.code ?? 'bad_input',
+        message: parsed.message,
+      })
+    }
+
+    // Суточный потолок ИМЕНИ (решение владельца 8) — после сверки ключа и ДО
+    // создания запуска, то есть до роутера (I-4). Ключ меняет, КОМУ доступна
+    // модель, а не что стоит раньше. Считается всякий запуск, предъявивший
+    // ключ: потолок — ловушка на утечку ключа и автоматизацию, а она не
+    // становится безопаснее от того, в каком профиле запуск идёт.
+    if (keyName !== null) {
+      const charged = modelKeys.charge(keyName)
+      if (!charged.ok) {
+        log(JSON.stringify({ event: 'refuse', path: '/v1/runs', code: charged.code, key: keyName }))
+        return send(res, charged.status, {
+          ok: false,
+          code: charged.code,
+          message: charged.message,
+          resetAt: charged.resetAt,
+        })
+      }
+    }
 
     const run = runs.create({ agent, input: parsed.input })
     // Сессия занимается синхронно, до ответа: иначе второе сообщение успеет
@@ -560,7 +589,7 @@ export function createService({
       return send(res, 200, body)
     }
 
-    if (path === '/v1/runs' && req.method === 'POST') return createRun(req, res)
+    if (path === '/v1/runs' && req.method === 'POST') return createRun(req, res, keyName)
 
     const runMatch = path.match(/^\/v1\/runs\/([^/]+)(\/events)?$/)
     if (runMatch && req.method === 'GET') {

@@ -23,9 +23,12 @@ import {
 } from './llm.js'
 import { recall } from './memory.js'
 import {
+  DAY11_MODELS,
   inputBudgetFor,
+  isKeyedModel,
   isProfileId,
   isSessionId,
+  KEYED_MODEL,
   LAYERED_MAX_TOKENS,
   LAYERED_MODELS,
   PARAM_LIMITS,
@@ -60,6 +63,13 @@ export function createLayeredAgent({
   runs,
   env,
   sessions = null,
+  /**
+   * Именные ключи модели без встроенных отказов (ADR 2026-10-07-1349, п. 2).
+   * `null` или пустой список — возможности НЕТ ВОВСЕ: записи нет в
+   * `describe()`, и разбор входа её не принимает. Умолчание выключено: забыть
+   * передать объект легче, чем забыть строку в `agents.env`.
+   */
+  modelKeys = null,
   policy = defaultPolicy,
   fetchImpl = fetch,
   now = Date.now,
@@ -67,6 +77,15 @@ export function createLayeredAgent({
 }) {
   const baseSystem = agent.systemPrompt
   const limitsOf = () => fetchLimits(env, agent.taskClass, { fetchImpl }).catch(() => null)
+  /**
+   * Включена ли возможность вообще (ADR 2026-10-07-1349, п. 2). Пустая
+   * `MODEL_KEYS` — модели нет ни в списке, ни в разборе входа: иначе экран
+   * предлагал бы выбрать то, что заведомо отказывает, а запуск доходил бы до
+   * роутера за моделью, которую никто не может открыть.
+   */
+  const keysOn = () => modelKeys?.enabled === true
+  /** Что предлагает выбрать день 11 сейчас: со закрытой записью или без неё. */
+  const modelsNow = () => (keysOn() ? DAY11_MODELS : LAYERED_MODELS)
   // Свой замок на агента: диалоги дня 11 и дней 6–10 живут в одной базе, но
   // занятость сессии — свойство исполнителя, и общего состояния у двух
   // агентов нет.
@@ -89,7 +108,13 @@ export function createLayeredAgent({
      * `append` завёл бы сессию сам, и потолок в 20 диалогов обошёлся бы
      * чужим или выдуманным идентификатором (ADR, п. 3).
      */
-    parseInput(body) {
+    /**
+     * @param context `keyName` — имя предъявленного ключа модели или `null`
+     *   (ADR 2026-10-07-1349, п. 2). Сверку ключа сделал сервис; здесь имя
+     *   только сопоставляется с профилем. Прочие агенты второй аргумент не
+     *   читают, и их разбор не меняется.
+     */
+    parseInput(body, { keyName = null } = {}) {
       if (!body || typeof body !== 'object')
         return { ok: false, message: 'input должен быть объектом' }
       for (const field of FOREIGN_FIELDS) {
@@ -113,11 +138,41 @@ export function createLayeredAgent({
         // потолок сервиса: 2049 отвергается здесь, а не роутером.
         maxOutputTokens: LAYERED_MAX_TOKENS,
         defaults: agent.defaults,
-        // Список дня 11 — с моделями Kimi (ADR 2026-09-16-1038). Дни 6–10
-        // зовут `parseParams` без него и остаются на `MODELS`.
-        models: LAYERED_MODELS,
+        // Список дня 11 — с моделями Kimi (ADR 2026-09-16-1038) и, когда
+        // ключи настроены, с записью без отказов (ADR 2026-10-07-1349, п. 5).
+        // Дни 6–10 зовут `parseParams` без него и остаются на `MODELS`; дни
+        // 13–15 — на `LAYERED_MODELS`, и закрытой записи у них нет вовсе.
+        models: modelsNow(),
       })
       if (!parsed.ok) return { ok: false, message: parsed.message }
+
+      // --- Ключевой профиль и закрытая модель (ADR 2026-10-07-1349, п. 2) --
+      // Две границы, обе ДО `runs.create`, то есть до роутера:
+      //   — закрытая модель разрешена ТОЛЬКО в ключевом профиле и только с
+      //     ключом его имени;
+      //   — в ключевом профиле разрешена ТОЛЬКО она. Иначе переписка,
+      //     порождённая моделью без отказов, уехала бы в контексте следующего
+      //     хода к Haiku или Kimi — ровно то, из-за чего стояло вето 2.
+      // `profileKeyName` отдаёт `undefined` у несуществующего профиля, но
+      // досюда такой не доходит: принадлежность диалога профилю проверена выше.
+      const profileKey = sessions.profileKeyName(profileId) ?? null
+      const wantsKeyed = isKeyedModel(parsed.params.model)
+      if (wantsKeyed && (profileKey === null || profileKey !== keyName)) {
+        return {
+          ok: false,
+          status: 403,
+          code: 'model_key_required',
+          message: 'Эта модель доступна только в профиле, созданном по ключу, и только по нему.',
+        }
+      }
+      if (!wantsKeyed && profileKey !== null) {
+        return {
+          ok: false,
+          status: 403,
+          code: 'keyed_profile_model',
+          message: 'В этом профиле доступна только модель без встроенных отказов.',
+        }
+      }
       if (parsed.params.prompt === '') return { ok: false, message: 'Напишите сообщение' }
 
       const system = parseSystem(body.system)
@@ -152,6 +207,10 @@ export function createLayeredAgent({
           window: windowSize.value,
           factsTokens: factsTokens.value,
           parentId: parentId.value,
+          // Ключевой ли это профиль — решено ЗДЕСЬ, на входе, и дальше не
+          // перерешается: исполнение не должно второй раз спрашивать базу и
+          // получить другой ответ.
+          keyed: profileKey !== null,
         },
       }
     },
@@ -165,7 +224,10 @@ export function createLayeredAgent({
      */
     async describe() {
       const limits = await limitsOf()
-      const models = LAYERED_MODELS.map((m) => {
+      // Закрытая запись попадает в список только при настроенных ключах
+      // (ADR 2026-10-07-1349, п. 7): «пустая MODEL_KEYS → записи нет в
+      // describe()». Экран не предлагает выбрать то, что заведомо откажет.
+      const models = modelsNow().map((m) => {
         const budget = effectiveBudget(m.id, inputBudgetFor(m.id), limits)
         return {
           ...m,
@@ -200,9 +262,22 @@ export function createLayeredAgent({
 
     async execute(run) {
       const { profileId, sessionId, params } = run.input
-      const strategy = run.input.strategy ?? null
-      const windowSize = run.input.window ?? null
-      const summarizeAt = run.input.summarizeAt ?? null
+      /**
+       * Ключевой профиль — БЕЗ памяти профиля (ADR 2026-10-07-1349, п. 3).
+       * Ни сводки, ни пополнения: оба идут в `anthropic-haiku`, то есть
+       * внешнему поставщику, и увезли бы ему и промпт, и порождённый текст —
+       * то самое, из-за чего стояло вето 2. Это цена единственного
+       * допустимого варианта его снятия, а не настройка.
+       *
+       * Что это значит по строкам ниже: стратегия и порог сводки обнуляются
+       * (контекст собирает окно в токенах — `tailMemory` → `sessions.tail`,
+       * тот же отбор целыми репликами от свежих к старым, что у `fitDialog`),
+       * правила и темы в запрос не идут, `policy.replenish` не зовётся вовсе.
+       */
+      const keyed = run.input.keyed === true
+      const strategy = keyed ? null : (run.input.strategy ?? null)
+      const windowSize = keyed ? null : (run.input.window ?? null)
+      const summarizeAt = keyed ? null : (run.input.summarizeAt ?? null)
       const system = run.input.system ?? baseSystem
       const systemOverridden = run.input.system !== null && run.input.system !== undefined
       const startedAt = now()
@@ -377,6 +452,16 @@ export function createLayeredAgent({
             systemChars: system.length,
           },
         })
+        if (keyed) {
+          emit({
+            stage: 'planning',
+            title: 'Память профиля выключена для этой модели',
+            detail:
+              'ни сводки, ни правил, ни тем, ни фактов: ничего из этого профиля не уходит ' +
+              'внешнему поставщику. Длинный диалог обрезается окном.',
+            data: { keyed: true, provider: params.model, memory: 'off' },
+          })
+        }
         if (systemOverridden) {
           emit({
             stage: 'planning',
@@ -415,16 +500,20 @@ export function createLayeredAgent({
         })
         const context = recalled.context
 
-        // Слои профиля: правила и активная тема с её фактами.
+        // Слои профиля: правила и активная тема с её фактами. В ключевом
+        // профиле их нет — не «пусто по совпадению», а не читается вовсе:
+        // писать их нечем (пополнение выключено), и отдавать модели прошлые
+        // слои было бы обещанием памяти, которой у профиля нет.
         const state = sessions.sessionState(sessionId)
-        const rules = sessions.rulesOf(profileId)
-        const topic = state?.topicId
-          ? {
-              id: state.topicId,
-              title: state.topicTitle,
-              facts: sessions.topicFactsOf(state.topicId, TOPIC_FACT_CAP).map((f) => f.text),
-            }
-          : null
+        const rules = keyed ? [] : sessions.rulesOf(profileId)
+        const topic =
+          !keyed && state?.topicId
+            ? {
+                id: state.topicId,
+                title: state.topicTitle,
+                facts: sessions.topicFactsOf(state.topicId, TOPIC_FACT_CAP).map((f) => f.text),
+              }
+            : null
 
         // Единственный вызов политики сборки: порядок и состав блоков — её.
         const assembled = policy.assemble({
@@ -573,25 +662,33 @@ export function createLayeredAgent({
 
         // Пополнение — после ответа и до `finish`: ответ уже входит в пару
         // «вопрос — ответ», и задержка честно видна на экране.
-        const replenished = await policy.replenish({
-          sessions,
-          sessionId,
-          profileId,
-          answerId,
-          pair: [
-            { role: 'user', text: params.prompt, tokens: estimateTokens(params.prompt) },
-            {
-              role: 'agent',
-              text: answer.text,
-              tokens: answer.usage.outputTokens ?? estimateTokens(answer.text),
-            },
-          ],
-          emit,
-          env,
-          fetchImpl,
-          now,
-          log,
-        })
+        //
+        // В ключевом профиле его НЕ ЗОВУТ: вызов идёт в `anthropic-haiku`
+        // (`context.js`, `SUMMARY_PROVIDER`) и увёз бы внешнему поставщику и
+        // вопрос, и ответ модели без встроенных отказов. Держатель — тест
+        // «запуск в ключевом профиле делает ровно один вызов роутера»:
+        // вернуть этот вызов значит получить второй, с `anthropic-haiku`.
+        const replenished = keyed
+          ? { called: false, spent: 0, paid: false, report: null }
+          : await policy.replenish({
+              sessions,
+              sessionId,
+              profileId,
+              answerId,
+              pair: [
+                { role: 'user', text: params.prompt, tokens: estimateTokens(params.prompt) },
+                {
+                  role: 'agent',
+                  text: answer.text,
+                  tokens: answer.usage.outputTokens ?? estimateTokens(answer.text),
+                },
+              ],
+              emit,
+              env,
+              fetchImpl,
+              now,
+              log,
+            })
         if (replenished.paid) summaryPaid = true
 
         // Вопрос о новой теме — обычная реплика агента: она видна в логе,

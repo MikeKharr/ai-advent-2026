@@ -100,6 +100,16 @@ for (const miss of mcpSkipped) log({ event: 'mcp_server_skipped', server: miss.n
 // не оборачивается «инструментов нет» в проде.
 assertAgentServers(registry, mcpKnown)
 
+// Именные ключи модели без встроенных отказов (ADR 2026-10-07-1349, п. 2).
+// Негодные записи отбрасываются с замечанием в журнал: опечатка в ключе
+// одного человека не должна уносить сервис, в котором живут дни 6–25.
+// Пустая переменная — возможности нет вовсе, и это нормальное состояние:
+// ключи заводит владелец руками (п. 6), агенту их копировать некуда.
+const parsedModelKeys = parseModelKeys(env.MODEL_KEYS)
+for (const note of parsedModelKeys.notes) log(note)
+const modelKeys = createModelKeys({ entries: parsedModelKeys.entries })
+log({ event: 'model_keys', names: modelKeys.size(), enabled: modelKeys.enabled })
+
 const agents = createAgents({
   registry,
   archive,
@@ -109,6 +119,7 @@ const agents = createAgents({
   invariants,
   prompts: profilePrompts,
   servers: mcpServers,
+  modelKeys,
   env,
   log,
 })
@@ -182,16 +193,6 @@ try {
 } catch (error) {
   log({ event: 'control_log_off', file: env.CONTROL_LOG_FILE, reason: error.message })
 }
-
-// Именные ключи модели без встроенных отказов (ADR 2026-10-07-1349, п. 2).
-// Негодные записи отбрасываются с замечанием в журнал: опечатка в ключе
-// одного человека не должна уносить сервис, в котором живут дни 6–25.
-// Пустая переменная — возможности нет вовсе, и это нормальное состояние:
-// ключи заводит владелец руками (п. 6), агенту их копировать некуда.
-const parsedModelKeys = parseModelKeys(env.MODEL_KEYS)
-for (const note of parsedModelKeys.notes) log(note)
-const modelKeys = createModelKeys({ entries: parsedModelKeys.entries })
-log({ event: 'model_keys', names: modelKeys.size(), enabled: modelKeys.enabled })
 
 const handler = createService({
   agents,
