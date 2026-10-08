@@ -46,7 +46,18 @@ const agent = http.createServer(async (req, res) => {
   const chunks = []
   for await (const c of req) chunks.push(c)
   const body = Buffer.concat(chunks).toString()
-  agentLog.push({ method: req.method, url: req.url, auth: req.headers.authorization, body })
+  agentLog.push({
+    method: req.method,
+    url: req.url,
+    auth: req.headers.authorization,
+    // Заголовки, по которым проверяется Б5: что ключ модели дошёл, а чужие
+    // заголовки клиента — нет. `undefined` в записи и значит «не дошёл».
+    modelKey: req.headers['x-model-key'],
+    evalKey: req.headers['x-eval-key'],
+    forwardedHost: req.headers['x-forwarded-host'],
+    cookie: req.headers.cookie,
+    body,
+  })
   const json = (status, payload) => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(payload))
@@ -202,7 +213,7 @@ process.env.RATE_LIMIT_PER_MIN = '4'
 process.env.RATE_LIMIT_PER_HOUR = '50'
 process.env.RATE_LIMIT_WRITES_PER_HOUR = '5'
 
-const { server } = await import('../server.js')
+const { pending, server, sweepPending, sweepTimer } = await import('../server.js')
 let base = ''
 
 before(async () => {
@@ -560,14 +571,18 @@ test('исчезнувший по сроку диалог: пустой лог �
   assert.match(setCookies(r), /day11_sid=; .*Max-Age=0/)
 })
 
-test('поток событий проксируется как есть', async () => {
+// Поток событий теперь привязан к адресу создателя запуска (ADR
+// 2026-10-07-1349, п. 4, Б6), поэтому адрес здесь предъявляется тот же, что
+// у `/api/answer`. До этого ADR у потока не было никакой авторизации, и
+// запрос без адреса проходил — потому эта проверка и правится.
+test('поток событий проксируется как есть — с адреса, создавшего запуск', async () => {
   const { runId } = await (
     await call('POST', '/api/answer', { prompt: 'вопрос' }, {
       ip: '10.6.0.1',
       cookie: withSession(),
     })
   ).json()
-  const r = await fetch(`${base}/api/runs/${runId}/events`)
+  const r = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.6.0.1' })
   assert.equal(r.status, 200)
   assert.match(await r.text(), /event: end\ndata: \{"status":"succeeded"/)
 })
@@ -607,4 +622,190 @@ test('подделанная cookie не принимается: профиль 
   })
   assert.equal(r.status, 409)
   assert.equal((await r.json()).code, 'no_profile')
+})
+
+// --- Ключ модели и привязка потока (ADR 2026-10-07-1349, п. 4) -------------
+// Б5: до стенда доходит РОВНО `x-model-key` и ни один другой заголовок
+// клиента. Б6, Б10, Б11: поток событий отдаётся только адресу, создавшему
+// запуск; запись переживает закрытие соединения и `end`; срок держат проверка
+// на чтении и таймер; слот лимитера разбирается ровно один раз.
+
+const MODEL_KEY = 'K'.repeat(32)
+
+test('до стенда доходит ровно x-model-key и ни один другой заголовок клиента (Б5)', async () => {
+  const before = agentLog.length
+  const r = await fetch(`${base}/api/answer`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': '10.9.0.1',
+      cookie: withSession(),
+      'x-model-key': MODEL_KEY,
+      // Заголовки, которых у стенда быть не должно: день собирает заголовки
+      // сам, клиентских не пропускает, и `...req.headers` ему запрещён.
+      authorization: 'Bearer FORGED',
+      'x-eval-key': 'someone-elses-key',
+      'x-forwarded-host': 'evil.example',
+    },
+    body: JSON.stringify({ prompt: 'вопрос' }),
+  })
+  assert.equal(r.status, 202)
+
+  const runCall = agentLog.slice(before).find((c) => c.url === '/v1/runs')
+  assert.notEqual(runCall, undefined, 'запуск до стенда дошёл')
+  assert.equal(runCall.modelKey, MODEL_KEY, 'ключ модели проброшен')
+  // Ключ сервиса — СВОЙ, из окружения дня, а не присланный клиентом.
+  assert.equal(runCall.auth, 'Bearer agent-key')
+  assert.equal(runCall.evalKey, undefined, 'чужой x-eval-key до стенда не дошёл')
+  assert.equal(runCall.forwardedHost, undefined, 'x-forwarded-host не дошёл')
+  assert.equal(runCall.cookie, undefined, 'cookie посетителя не дошла')
+})
+
+test('негодная форма ключа — 403, и до стенда запрос не идёт', async () => {
+  const before = agentLog.length
+  const r = await fetch(`${base}/api/answer`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': '10.9.0.2',
+      cookie: withSession(),
+      // Пробел вне [A-Za-z0-9_-]: значение не могло прийти от нашего экрана.
+      // Только ASCII: заголовок HTTP не принимает ничего вне ByteString, и
+      // кириллица уронила бы сам `fetch` в тесте, ничего не проверив.
+      'x-model-key': 'key with space',
+    },
+    body: JSON.stringify({ prompt: 'вопрос' }),
+  })
+  assert.equal(r.status, 403)
+  const body = await r.json()
+  assert.equal(body.code, 'bad_model_key')
+  // Значение не попало в ответ: ни в сообщение, ни в код.
+  assert.equal(JSON.stringify(body).includes('key with space'), false)
+  assert.deepEqual(agentLog.slice(before), [], 'стенд не вызван')
+})
+
+/** Запуск с заданного адреса: отдаёт `runId`, которым открывается поток. */
+const startRun = async (ip, prompt = 'вопрос') =>
+  (await call('POST', '/api/answer', { prompt }, { ip, cookie: withSession() })).json()
+
+test('поток событий с чужого адреса — 404, и стенд не вызван (Б6)', async () => {
+  const { runId } = await startRun('10.10.0.1')
+  const before = agentLog.length
+
+  const alien = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.10.0.99' })
+  assert.equal(alien.status, 404)
+  assert.equal((await alien.json()).error, 'Запуск не найден')
+  assert.deepEqual(agentLog.slice(before), [], 'до стенда чужой запрос не дошёл')
+
+  // Контрольная ветвь: с адреса-создателя тот же запуск отдаётся.
+  const mine = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.10.0.1' })
+  assert.equal(mine.status, 200)
+  await mine.text()
+})
+
+test('переподключение с того же адреса после закрытия и после end — 200 (Б10)', async () => {
+  const { runId } = await startRun('10.11.0.1')
+
+  // Первое чтение доводится до конца: в нём приходит `end`.
+  const first = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.11.0.1' })
+  assert.equal(first.status, 200)
+  assert.match(await first.text(), /event: end/)
+
+  // Переподключение ПОСЛЕ `end` — именно то, что делает EventSource при
+  // обрыве сети. Со стиранием записи на `close` или на `end` здесь был бы 404.
+  for (const attempt of [1, 2]) {
+    const again = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.11.0.1' })
+    assert.equal(again.status, 200, `переподключение ${attempt}`)
+    await again.text()
+  }
+  // Запись на месте, и отметка от `end` стоит.
+  assert.equal(pending.has(runId), true)
+  assert.equal(pending.get(runId).ended, true)
+
+  // А с чужого адреса переподключение по-прежнему 404.
+  assert.equal(
+    (await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.11.0.77' })).status,
+    404,
+  )
+})
+
+test('слот лимитера при paidNothing возвращается ровно один раз (Б10)', async () => {
+  const ip = '10.12.0.1'
+  const used = async () => (await (await fetch(`${base}/healthz`)).json()).limiter.callsToday
+  // «без денег» — стенд отвечает запуском, который кончается paidNothing.
+  const { runId } = await startRun(ip, 'без денег')
+  const afterStart = await used()
+
+  const read = async () => {
+    const r = await call('GET', `/api/runs/${runId}/events`, undefined, { ip })
+    assert.equal(r.status, 200)
+    await r.text()
+  }
+  await read()
+  const afterFirst = await used()
+  assert.equal(afterFirst, afterStart - 1, 'слот вернулся: денег не потратили')
+
+  // Второе и третье чтение того же потока слот больше не возвращают: иначе
+  // каждое перечитывание дарило бы адресу лишний запуск суточного потолка.
+  await read()
+  await read()
+  assert.equal(await used(), afterFirst, 'возврат слота не повторяется')
+})
+
+test('по истечении срока — 404 всем, и записи в pending больше нет (Б11)', async () => {
+  const { runId } = await startRun('10.13.0.1')
+  assert.equal(pending.has(runId), true)
+
+  // Отметка сдвигается в прошлое: `now - at` — та же величина, что при ходе
+  // часов вперёд, и проверка на чтении смотрит именно на неё. Часы процесса
+  // при этом не трогаются, и соседние тесты от этого не зависят.
+  pending.get(runId).at -= 11 * 60_000
+  const before = agentLog.length
+
+  const late = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.13.0.1' })
+  assert.equal(late.status, 404, 'даже адресу-создателю — 404')
+  assert.deepEqual(agentLog.slice(before), [], 'стенд не вызван')
+  assert.equal(pending.has(runId), false, 'запись снята на месте, на чтении')
+})
+
+test('запись запуска, поток которого не открывали, исчезает по таймеру (Б11)', async () => {
+  const { runId } = await startRun('10.14.0.1')
+  assert.equal(pending.has(runId), true)
+
+  // Поток не открывается вовсе: до проверки на чтении дело не доходит, и
+  // снять запись может только таймер.
+  pending.get(runId).at -= 11 * 60_000
+  // Зовётся та же функция, что стоит в `setInterval`.
+  assert.equal(sweepPending() >= 1, true, 'уборка сняла хотя бы эту запись')
+  assert.equal(pending.has(runId), false)
+
+  // Таймер есть и не держит событийный цикл. ЧЕСТНАЯ ГРАНИЦА: что он
+  // срабатывает сам раз в минуту, здесь не проверяется — см. комментарий у
+  // экспорта в `server.js`.
+  assert.notEqual(sweepTimer, undefined, 'таймер уборки существует')
+  assert.equal(sweepTimer.hasRef(), false, 'таймер не держит процесс')
+
+  // Свежая запись уборкой не задета — иначе зелёный результат выше
+  // удовлетворяла бы гипотеза «уборка стирает всё подряд».
+  const fresh = await startRun('10.14.0.2')
+  sweepPending()
+  assert.equal(pending.has(fresh.runId), true)
+})
+
+// --- Остальная ветвь запусков недостижима (Б7) ----------------------------
+
+test('кроме /events, ветвь /api/runs/* не проксируется: 404 и стенд не вызван (Б7)', async () => {
+  const { runId } = await startRun('10.15.0.1')
+  const before = agentLog.length
+
+  for (const [method, path] of [
+    ['GET', `/api/runs/${runId}`],
+    ['GET', `/api/runs/${runId}/log.csv`],
+    ['GET', `/api/runs/${runId}/prompts`],
+    ['POST', `/api/runs/${runId}/pause`],
+  ]) {
+    const r = await call(method, path, method === 'POST' ? {} : undefined, { ip: '10.15.0.1' })
+    assert.equal(r.status, 404, `${method} ${path}`)
+  }
+  assert.deepEqual(agentLog.slice(before), [], 'ни один из них до стенда не дошёл')
 })
