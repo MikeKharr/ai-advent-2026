@@ -119,13 +119,18 @@ const agent = http.createServer(async (req, res) => {
 
   // --- профили ---
   if (path === '/v1/profiles' && req.method === 'GET') {
+    // `keyName` в строках списка — как у `liveProfiles` сервиса: имя у
+    // ключевого профиля, `null` у открытого. Ключевая строка приходит только
+    // предъявившему ключ её имени, поэтому с ключом список длиннее.
+    const keyed = { id: KEYED_PID, name: 'Мика по ключу', lastSeenAt: 1100, createdAt: 1, sessions: 1, keyName: 'mika' }
+    const open = [
+      { id: PID, name: 'Мика', lastSeenAt: 1000, createdAt: 1, sessions: 2, keyName: null },
+      { id: EMPTY_PID, name: 'Гость', lastSeenAt: 900, createdAt: 1, sessions: 0, keyName: null },
+    ]
     return json(200, {
       ok: true,
       cap: 5,
-      profiles: [
-        { id: PID, name: 'Мика', lastSeenAt: 1000, createdAt: 1, sessions: 2 },
-        { id: EMPTY_PID, name: 'Гость', lastSeenAt: 900, createdAt: 1, sessions: 0 },
-      ],
+      profiles: req.headers['x-model-key'] === 'mika' ? [keyed, ...open] : open,
     })
   }
   if (path === '/v1/profiles' && req.method === 'POST') {
@@ -966,4 +971,45 @@ test('страница не кладёт ключ ни в localStorage, ни в 
   assert.ok(field, 'поля ключа на странице нет')
   assert.match(field[0], /type="password"/)
   assert.equal(/\sname=/.test(field[0]), false, 'у поля ключа есть name — значение уедет в адрес')
+})
+
+// --- Ключевой профиль различим в списке входа -----------------------------
+
+test('список входа несёт имя ключа, и страница метит такие профили', async () => {
+  // Сервер: имя ключа доезжает до страницы в каждой строке списка. Без него
+  // пометку рисовать нечем, и список читался бы как «все открыты».
+  const keyed = await call('GET', '/api/profiles', undefined, {
+    ip: '10.21.0.1',
+    modelKey: 'mika',
+  })
+  assert.equal(keyed.status, 200)
+  const rows = (await keyed.json()).profiles
+  assert.deepEqual(
+    rows.map((p) => [p.name, p.keyName]),
+    [['Мика по ключу', 'mika'], ['Мика', null], ['Гость', null]],
+    'ключевой профиль назван именем ключа, открытые — null',
+  )
+
+  // Без ключа ключевой строки в списке нет вовсе: иначе зелёный результат
+  // выше удовлетворяла бы гипотеза «список всегда одинаков».
+  const open = await call('GET', '/api/profiles', undefined, { ip: '10.21.0.1' })
+  assert.deepEqual(
+    (await open.json()).profiles.map((p) => [p.name, p.keyName]),
+    [['Мика', null], ['Гость', null]],
+  )
+
+  // Страница: подпись в строке списка строится из `p.keyName`, и это
+  // исполняемый код, а не комментарий — комментарии и разметка сняты.
+  const page = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+  const code = page
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  assert.match(
+    code,
+    /if \(p\.keyName\) \{[\s\S]{0,200}?chip\.textContent = 'по ключу'/,
+    'подпись «по ключу» в строке списка не строится из p.keyName',
+  )
+  // И строка состояния ключа больше не признаётся, что не различает их.
+  assert.equal(code.includes('список не различает'), false)
 })
