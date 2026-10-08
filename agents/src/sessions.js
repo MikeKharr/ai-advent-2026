@@ -74,8 +74,17 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 
 -- Профили дня 11 (ADR 2026-09-15-2024, п. 10). Профиль — ярлык, по которому
--- агент находит свою память, а не защита: все профили видны всем. Живёт
--- 30 дней от последнего действия любого посетителя в нём.
+-- агент находит свою память. Живёт 30 дней от последнего действия любого
+-- посетителя в нём.
+--
+-- ОТКРЫТЫЙ профиль (key_name IS NULL) защитой не является: такие профили
+-- видны всем, и любой посетитель читает, пополняет и удаляет любой из них.
+-- КЛЮЧЕВОЙ профиль (key_name — имя ключа из MODEL_KEYS) — защита, и именно
+-- она (ADR 2026-10-07-1349, п. 2): в публичном списке его нет, а каждое его
+-- чтение и каждый запуск требуют заголовка x-model-key с ключом ТОГО ЖЕ
+-- имени, иначе ответ такой же, как у несуществующего профиля. Смешанных
+-- профилей не бывает по построению: столбец ставится при создании и не
+-- меняется.
 CREATE TABLE IF NOT EXISTS profiles (
   id           TEXT PRIMARY KEY,
   name         TEXT NOT NULL,
@@ -230,6 +239,11 @@ function migrate(db) {
   if (!has('profiles', 'invariant_seq')) {
     db.exec('ALTER TABLE profiles ADD COLUMN invariant_seq INTEGER NOT NULL DEFAULT 0')
   }
+  // Имя ключа ключевого профиля (ADR 2026-10-07-1349, п. 2). Без значения по
+  // умолчанию и с NULL у всех существующих строк: профили, созданные до этой
+  // миграции, были и остаются ОТКРЫТЫМИ — молча закрыть их за ключом значило
+  // бы отобрать чужую память. Образец тот же, что у `settings_staged` выше.
+  if (!has('profiles', 'key_name')) db.exec('ALTER TABLE profiles ADD COLUMN key_name TEXT')
   moveStagedSettings(db)
 }
 
@@ -413,19 +427,39 @@ export function createSessions({
 
     // --- Профили дня 11 (ADR 2026-09-15-2024, п. 2 и 3) ------------------
     addProfile: db.prepare(
-      'INSERT INTO profiles (id, name, settings, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO profiles (id, name, settings, created_at, last_seen_at, key_name) VALUES (?, ?, ?, ?, ?, ?)',
     ),
+    // Публичный список отдаёт только ОТКРЫТЫЕ профили; с ключом — плюс
+    // профили его имени (ADR 2026-10-07-1349, п. 2). Сравнение `p.key_name = ?`
+    // при параметре NULL в SQL никогда не истинно, поэтому вызов без ключа
+    // сам собой оставляет одну первую ветвь — сторожевого значения не нужно.
+    //
+    // `keyName` в выдаче — чтобы экран входа мог отличить ключевой профиль от
+    // открытого (находка `frontend` живой проверкой: без этого поля пометку
+    // нарисовать нечем, и список читался как «все открыты»). Утечки нет по
+    // той же строке WHERE: ключевая запись попадает в список ТОЛЬКО тому, кто
+    // предъявил ключ её имени, то есть имя в ответе он уже знает. У открытых
+    // профилей здесь `null`.
     liveProfiles: db.prepare(
       `SELECT p.id, p.name, p.created_at AS createdAt, p.last_seen_at AS lastSeenAt,
+              p.key_name AS keyName,
               (SELECT count(*) FROM sessions s
                 WHERE s.profile_id = p.id AND s.last_seen_at >= ?) AS sessions
-         FROM profiles p WHERE p.last_seen_at >= ? ORDER BY p.last_seen_at DESC`,
+         FROM profiles p
+        WHERE p.last_seen_at >= ? AND (p.key_name IS NULL OR p.key_name = ?)
+        ORDER BY p.last_seen_at DESC`,
     ),
     countProfiles: db.prepare('SELECT count(*) AS n FROM profiles WHERE last_seen_at >= ?'),
     profile: db.prepare(
       `SELECT id, name, settings, settings_staged AS settingsStaged,
-              created_at AS createdAt, last_seen_at AS lastSeenAt
+              created_at AS createdAt, last_seen_at AS lastSeenAt, key_name AS keyName
          FROM profiles WHERE id = ? AND last_seen_at >= ?`,
+    ),
+    // Имя ключа профиля — для предиката чтения. Отдельный узкий запрос: он
+    // зовётся на КАЖДОМ пути ветви профилей и ветви диалогов, и тянуть ради
+    // него правила, темы и диалоги профиля было бы расточительно.
+    profileKeyName: db.prepare(
+      'SELECT key_name AS keyName FROM profiles WHERE id = ? AND last_seen_at >= ?',
     ),
     touchProfile: db.prepare('UPDATE profiles SET last_seen_at = ? WHERE id = ?'),
     saveSettings: db.prepare('UPDATE profiles SET settings = ?, last_seen_at = ? WHERE id = ?'),
@@ -1191,8 +1225,25 @@ export function createSessions({
      * Все живые профили по убыванию активности: их видят все посетители —
      * профиль это ярлык памяти, а не учётная запись (решение владельца 9).
      */
-    profiles(at = now()) {
-      return stmt.liveProfiles.all(at - ttlMs, at - profileTtlMs)
+    /**
+     * @param keyName имя предъявленного ключа или `null`. Без ключа список —
+     *   только открытые профили; с ключом — плюс профили его имени (ADR
+     *   2026-10-07-1349, п. 2). Ключевой профиль чужого имени не виден
+     *   никому, включая держателя другого ключа.
+     */
+    profiles(at = now(), keyName = null) {
+      return stmt.liveProfiles.all(at - ttlMs, at - profileTtlMs, keyName)
+    },
+
+    /**
+     * Имя ключа профиля: `null` — открытый, строка — ключевой, `undefined` —
+     * профиля нет (или он вышел по сроку). Три исхода различимы намеренно:
+     * предикат чтения в `service.js` обязан отличать «открытый» от «нет
+     * такого», иначе отказ на несуществующем профиле перестал бы совпадать с
+     * прежним ответом дней 11 и 14.
+     */
+    profileKeyName(id, at = now()) {
+      return stmt.profileKeyName.get(id, at - profileTtlMs)?.keyName
     },
 
     /**
@@ -1223,6 +1274,12 @@ export function createSessions({
       return {
         id: row.id,
         name: row.name,
+        // Имя ключа ключевого профиля или null у открытого. Имя — не секрет,
+        // а до этой строки доходит только тот, кто ключ этого имени уже
+        // предъявил (предикат чтения в `service.js`): иначе профиль отвечает
+        // как несуществующий. Экрану оно нужно, чтобы сказать словами, что
+        // память профиля выключена (ADR 2026-10-07-1349, п. 4).
+        keyName: row.keyName ?? null,
         settings,
         // Настройки дня 13 — отдельным полем: день 11 читает `settings` и
         // значений, которых не умеет принять, в нём не встречает.
@@ -1250,7 +1307,14 @@ export function createSessions({
      * Шестому посетителю продукт не предлагает стереть чужое — он получает
      * отказ `profiles_full`.
      */
-    createProfile({ name, at = now() }) {
+    /**
+     * @param keyName имя ключа, с которым профиль создан, или `null` —
+     *   обычный открытый профиль, как до ADR 2026-10-07-1349. Столбец
+     *   ставится ЗДЕСЬ и больше не меняется: смешанных профилей не бывает по
+     *   построению. Потолок живых профилей общий — ключевые занимают те же
+     *   места, иначе ключ поднимал бы потолок памяти вдвое.
+     */
+    createProfile({ name, keyName = null, at = now() }) {
       db.exec('BEGIN')
       try {
         if (stmt.countProfiles.get(at - profileTtlMs).n >= profileCap) {
@@ -1258,7 +1322,7 @@ export function createSessions({
           return { ok: false, code: 'profiles_full' }
         }
         const id = randomUUID()
-        stmt.addProfile.run(id, name, '{}', at, at)
+        stmt.addProfile.run(id, name, '{}', at, at, keyName)
         db.exec('COMMIT')
         return { ok: true, profile: this.profile(id, at) }
       } catch (error) {

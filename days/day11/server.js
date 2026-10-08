@@ -23,14 +23,38 @@ const RUN_ID = /^[0-9a-f-]{36}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SESSION_COOKIE = 'day11_sid'
 const PROFILE_COOKIE = 'day11_pid'
-/** Сколько помним, чей запуск: чтобы вернуть слот лимитера, если агент денег не потратил. */
+/**
+ * Сколько живёт запись о запуске. Две обязанности у неё теперь две:
+ *   — вернуть слот лимитера, если агент денег не потратил (как было);
+ *   — держать связку «запуск ↔ адрес», которой поток событий проверяет, тому
+ *     ли адресу его отдавать (ADR 2026-10-07-1349, п. 4, Б6).
+ *
+ * Запись НЕ стирается ни закрытием соединения, ни событием `end`: `EventSource`
+ * переподключается сам при обрыве, и со стиранием поток открывался бы ровно
+ * один раз, а переподключение любого запуска дня 11 получало бы 404. Срок
+ * считается от отметки `at`, которую `end` обновляет: привязка живёт весь
+ * запуск и 10 минут после его завершения.
+ *
+ * Держат срок ДВЕ строки, а не трафик (Б11): проверка на чтении в
+ * `proxyEvents` и таймер `sweepPending` ниже.
+ *
+ * I-10: связка «запуск ↔ адрес» живёт не дольше часового окна лимитера
+ * (`limits.js`), и держит это код дня, а не поведение посетителей.
+ */
 const PENDING_TTL_MS = 10 * 60_000
+/** Как часто таймер снимает просроченные записи. Образец — agents/server.js. */
+const PENDING_SWEEP_MS = 60_000
 
 const { env, errors: envErrors } = parseEnv()
 for (const message of envErrors) console.error(`конфигурация: ${message}`)
 
 const limiter = createLimiter(env)
-/** @type {Map<string, { ip: string, at: number }>} runId → кто занял слот */
+/**
+ * @type {Map<string, { ip: string, at: number, ended: boolean }>}
+ * runId → кто занял слот. `ended` — слот лимитера уже разобран: событие `end`
+ * приходит один раз, но поток могут открыть и перечитать много раз, и без
+ * флага повторное чтение возвращало бы слот второй раз (Б10).
+ */
 const pending = new Map()
 
 const agentHeaders = { authorization: `Bearer ${env.AGENT_KEY}` }
@@ -198,9 +222,104 @@ const dropProfile = () => setCookie(PROFILE_COOKIE, '', 0)
 const cookies = (...values) => (values.length > 0 ? { 'set-cookie': values } : {})
 
 function remember(runId, ip) {
-  const now = Date.now()
-  for (const [id, slot] of pending) if (now - slot.at > PENDING_TTL_MS) pending.delete(id)
-  pending.set(runId, { ip, at: now })
+  // Ленивой уборки здесь больше нет: её делает таймер. Уборка «по случаю»
+  // держала бы связку «запуск ↔ адрес» до следующего ЧУЖОГО запуска — часы на
+  // тихом дне (ADR 2026-10-07-1349, п. 4, Б11).
+  pending.set(runId, { ip, at: Date.now(), ended: false })
+}
+
+/**
+ * Снять просроченные записи. Зовётся таймером — для запусков, поток которых
+ * никто не открыл: до них проверка на чтении не доходит, и без таймера их
+ * связка с адресом жила бы в памяти процесса неограниченно долго.
+ */
+function sweepPending(at = Date.now()) {
+  let removed = 0
+  for (const [id, slot] of pending) {
+    if (at - slot.at > PENDING_TTL_MS) {
+      pending.delete(id)
+      removed += 1
+    }
+  }
+  return removed
+}
+
+// `.unref()` — таймер не держит событийный цикл: процесс завершается, когда
+// его больше ничто не держит, и тесты не висят на нём (образец —
+// `agents/server.js`, уборка готовых запусков).
+const sweepTimer = setInterval(() => sweepPending(), PENDING_SWEEP_MS).unref()
+
+/**
+ * Ключ модели из запроса посетителя (ADR 2026-10-07-1349, п. 4).
+ *
+ * Проброс — ЯВНЫМ полем и ровно одного заголовка. `...req.headers` здесь
+ * запрещён (Б5): он увёз бы агенту cookie, `authorization` посетителя и всё
+ * остальное, а `callAgent` собирает заголовки сам именно затем, чтобы
+ * клиентских среди них не было.
+ *
+ * Значение проверяется только на форму, и не ради безопасности: заголовок
+ * HTTP не принимает ничего вне ByteString, и значение с кириллицей или
+ * переносом строки уронило бы `fetch` внутри дня. Негодная форма — тот же
+ * отказ, что негодный ключ: иначе день молча отбросил бы заголовок, и
+ * опечатка в ключе родила бы ОТКРЫТЫЙ профиль (ровно то, что запрещает Б8).
+ *
+ * Значение не попадает ни в журнал дня, ни в ответ: его некуда передать —
+ * ниже возвращается либо оно само в заголовок `fetch`, либо признак отказа.
+ */
+const MODEL_KEY_FORM = /^[A-Za-z0-9_-]{1,256}$/
+
+function modelKey(req) {
+  const value = req.headers['x-model-key']
+  if (value === undefined) return { ok: true, headers: {} }
+  if (typeof value !== 'string' || !MODEL_KEY_FORM.test(value)) return { ok: false }
+  return { ok: true, headers: { 'x-model-key': value } }
+}
+
+/**
+ * Заголовки ключа или отказ 403 теми же словами, что у агента.
+ *
+ * Зовётся из `askAgent` ниже и только из него: прежде эту пару строк
+ * копировала каждая ручка профиля, и одна из четырнадцати её не скопировала —
+ * в ключевом профиле «новый диалог» отвечал «профиль не найден» (блокирующая
+ * находка `reviewer` к PR #334). Счёт ручек в комментарии держателем не был и
+ * быть не мог.
+ */
+function keyHeaders(req, res) {
+  const key = modelKey(req)
+  if (key.ok) return key.headers
+  send(res, 403, { error: 'Ключ модели не принят', code: 'bad_model_key' })
+  return null
+}
+
+/**
+ * Отказы, которые принадлежат ключу, а не связи. Форму ключа день проверяет
+ * сам (`keyHeaders`), а значение, окно отказов, суточный потолок и границы
+ * ключевого профиля — агент, и его отказ обязан дойти до страницы своим
+ * кодом. Без этих строк 403 `bad_model_key` и 429 потолка доходили бы как
+ * 502 «агент не ответил», и экран просил бы проверить связь вместо ключа —
+ * то есть ровно то действие, которое не помогает.
+ *
+ * `retry-after` пересылается тем значением, которое назвал агент: окно
+ * считает он, и странице нечем назвать своё число.
+ */
+const KEY_REFUSAL = new Set([
+  'bad_model_key',
+  'too_many_attempts',
+  'model_key_daily_cap',
+  'model_key_required',
+  'keyed_profile_model',
+])
+
+function keyRefused(res, response, json, headers = {}) {
+  if (!KEY_REFUSAL.has(json?.code)) return false
+  const retry = response.headers.get('retry-after')
+  send(
+    res,
+    response.status,
+    { error: json.message ?? 'Ключ модели не принят', code: json.code, resetAt: json.resetAt },
+    retry ? { ...headers, 'retry-after': retry } : headers,
+  )
+  return true
 }
 
 /** Запрос к агенту. Ошибки транспорта отдаются вызывающему как null. */
@@ -211,6 +330,41 @@ async function callAgent(path, options = {}) {
     signal: AbortSignal.timeout(env.AGENT_TIMEOUT_MS),
   })
   const json = await response.json().catch(() => null)
+  return { response, json }
+}
+
+/**
+ * ЕДИНСТВЕННЫЙ способ, которым ручка профиля ходит к сервису агентов
+ * (ADR 2026-10-07-1349, п. 4, Б5).
+ *
+ * Почему помощник, а не правило «не забудь две строки». Заголовок ключа и
+ * разбор его отказов нужны ВСЕМ ручкам профиля, и тринадцать из четырнадцати
+ * копировали одну и ту же пару. Четырнадцатая — `POST /api/session` — её не
+ * скопировала, и в ключевом профиле второй диалог завести было нельзя:
+ * запрос доходил до агента без ключа, `visibleProfile` подменял номер, и день
+ * отвечал «Диалог не создан: профиль не найден». Безопасность при этом не
+ * нарушалась — отказ закрытый, — но профиль не работал для того
+ * единственного, кому он предназначен. Здесь пропустить ручку нельзя по
+ * построению: ключ добавляет сам помощник.
+ *
+ * Возвращает `null`, когда ответ посетителю уже отправлен: это либо негодная
+ * форма заголовка (403 от `keyHeaders`), либо отказ, принадлежащий ключу
+ * (403/429 от агента, `keyRefused`). Вызывающему остаётся выйти.
+ *
+ * Ошибки транспорта не ловит: у каждой ручки свои слова про недоступного
+ * агента, и `try`/`catch` остаётся там, где он и был.
+ *
+ * `cookies` — заголовки ответа, которые обязаны уехать вместе с отказом
+ * ключа: у `/api/answer` это `set-cookie` новорождённого диалога.
+ */
+async function askAgent(req, res, path, options = {}, { cookies: extra = {} } = {}) {
+  const headers = keyHeaders(req, res)
+  if (!headers) return null
+  const { response, json } = await callAgent(path, {
+    ...options,
+    headers: { ...(options.headers ?? {}), ...headers },
+  })
+  if (!response.ok && keyRefused(res, response, json, extra)) return null
   return { response, json }
 }
 
@@ -257,6 +411,12 @@ const sessionsView = (list) =>
 const profileView = (profile, sessionCap) => ({
   id: profile.id,
   name: profile.name,
+  // Имя ключа, с которым профиль создан, или `null` — по этому полю экран
+  // узнаёт ключевой профиль (ADR 2026-10-07-1349, п. 4). Сюда профиль
+  // доходит только с годным ключом его имени, поэтому имя здесь — не утечка:
+  // его предъявил тот же, кто его и прислал. Значения ключа тут нет и быть
+  // не может — агент его не возвращает.
+  keyName: profile.keyName ?? null,
   settings: profile.settings ?? {},
   // У правила, как и у факта, стоит имя диалога-источника, а не его
   // идентификатор: монитор говорит, откуда правило взялось, и не раздаёт
@@ -277,7 +437,9 @@ const profileView = (profile, sessionCap) => ({
 /** Список профилей для экрана входа. Чтение вне лимитера, как в днях 7–10. */
 async function handleProfiles(req, res) {
   try {
-    const { response, json } = await callAgent('/v1/profiles')
+    const asked = await askAgent(req, res, '/v1/profiles')
+    if (!asked) return
+    const { response, json } = asked
     if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, {
       profiles: json.profiles ?? [],
@@ -301,7 +463,9 @@ async function handleProfileState(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}`)
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) {
       return send(
         res,
@@ -323,11 +487,13 @@ async function handleCreateProfile(req, res) {
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
-    const { response, json } = await callAgent('/v1/profiles', {
+    const asked = await askAgent(req, res, '/v1/profiles', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: body.name }),
     })
+    if (!asked) return
+    const { response, json } = asked
     // Отказы агента доходят его словами и его кодом: 409 — мест нет, 400 —
     // имя не годится. Страница показывает их по-разному.
     if (response.status === 409 || response.status === 400) {
@@ -357,7 +523,9 @@ async function handleSelectProfile(req, res) {
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор профиля' })
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${body.id}`)
+    const asked = await askAgent(req, res, `/v1/profiles/${body.id}`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) {
       // Профиль мог уйти по сроку или быть удалённым любым посетителем:
       // указатель в браузере стирается вместе с отказом.
@@ -393,7 +561,9 @@ async function handleDeleteProfile(req, res) {
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор профиля' })
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${body.id}`, { method: 'DELETE' })
+    const asked = await askAgent(req, res, `/v1/profiles/${body.id}`, { method: 'DELETE' })
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404 || response.status === 409) {
       return send(res, response.status, {
         error: json?.message ?? 'Профиль не найден',
@@ -423,11 +593,13 @@ async function handleSettings(req, res) {
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/settings`, {
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/settings`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
+    if (!asked) return
+    const { response, json } = asked
     // Причину отказа пользователь должен видеть словами агента: он их проверял.
     if (response.status === 400 || response.status === 404) {
       return send(res, response.status, {
@@ -449,7 +621,9 @@ async function handleSessions(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/sessions`)
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/sessions`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) return send(res, 404, { error: 'Профиль не найден' })
     if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, {
@@ -470,11 +644,13 @@ async function handleCreateSession(req, res) {
   if (!profileId) return
   const body = (await jsonBody(req)) ?? {}
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/sessions`, {
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ topicId: body.topicId ?? null }),
     })
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 409 || response.status === 400 || response.status === 404) {
       return send(res, response.status, {
         error: json?.message ?? 'Диалог не создан',
@@ -502,7 +678,9 @@ async function handleSelectSession(req, res) {
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор диалога' })
   try {
-    const { response } = await callAgent(`/v1/sessions/${body.id}?profile=${profileId}`)
+    const asked = await askAgent(req, res, `/v1/sessions/${body.id}?profile=${profileId}`)
+    if (!asked) return
+    const { response, json } = asked
     // Диалог чужого профиля отвечает как несуществующий — и cookie не меняется.
     if (response.status === 404) return send(res, 404, { error: 'Диалог не найден' })
     if (!response.ok) throw new Error(`агент ${response.status}`)
@@ -531,7 +709,9 @@ async function handleTopic(req, res) {
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
-    const { response, json } = await callAgent(
+    const asked = await askAgent(
+      req,
+      res,
       `/v1/sessions/${sessionId}/topic?profile=${profileId}`,
       {
         method: 'POST',
@@ -543,6 +723,8 @@ async function handleTopic(req, res) {
         ),
       },
     )
+    if (!asked) return
+    const { response, json } = asked
     if (!response.ok) {
       return send(res, response.status === 502 ? 502 : response.status, {
         error: json?.message ?? 'Ответ не принят',
@@ -565,7 +747,9 @@ async function handleTopicFacts(req, res, topicId) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/topics/${topicId}`)
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/topics/${topicId}`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) return send(res, 404, { error: 'Тема не найдена' })
     if (!response.ok) throw new Error(`агент ${response.status}`)
     // Имя диалога-источника, а не его идентификатор: у факта стоит дата
@@ -608,11 +792,19 @@ async function handleAnswer(req, res) {
     // Первое сообщение создаёт диалог профиля (ADR, п. 2). Потолок в 20
     // действует и здесь: 409 — и запуска не было.
     try {
-      const { response, json } = await callAgent(`/v1/profiles/${profileId}/sessions`, {
+      const asked = await askAgent(req, res, `/v1/profiles/${profileId}/sessions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ topicId: topicId ?? null }),
       })
+      // Отказ ключа помощник уже отправил. Слот возвращается и здесь: порядок
+      // ADR — лимитер на адрес, потом ключ, — поэтому слот к этому моменту
+      // занят, и отказ границы ключа его тратить не должен.
+      if (!asked) {
+        limiter.release(ip)
+        return
+      }
+      const { response, json } = asked
       if (!response.ok) {
         limiter.release(ip)
         if (response.status === 409 || response.status === 404 || response.status === 400) {
@@ -634,7 +826,12 @@ async function handleAnswer(req, res) {
 
   let result
   try {
-    result = await callAgent('/v1/runs', {
+    // Ровно `x-model-key` и ничего больше: его кладёт `askAgent`, агент
+    // сверяет ключ сам и разрешает по нему закрытую модель (ADR
+    // 2026-10-07-1349, п. 4, Б5). Cookie только что рождённого диалога
+    // уезжает и с отказом ключа: диалог у агента уже есть, и терять
+    // указатель на него нельзя.
+    result = await askAgent(req, res, '/v1/runs', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -643,11 +840,16 @@ async function handleAnswer(req, res) {
         // которую не видит.
         input: { ...input, profileId, sessionId },
       }),
-    })
+    }, { cookies: headers })
   } catch (error) {
     limiter.release(ip)
     console.error(`агент: ${error.name}: ${error.message}`)
     return send(res, 502, { error: AGENT_DOWN }, headers)
+  }
+  if (!result) {
+    // Отказ ключа отправлен помощником — вместе с cookie диалога.
+    limiter.release(ip)
+    return
   }
 
   const { response, json } = result
@@ -708,9 +910,11 @@ async function handleChat(req, res) {
 
   try {
     if (clearing) {
-      const { response } = await callAgent(`/v1/sessions/${sessionId}?profile=${profileId}`, {
+      const asked = await askAgent(req, res, `/v1/sessions/${sessionId}?profile=${profileId}`, {
         method: 'DELETE',
       })
+      if (!asked) return
+      const { response, json } = asked
       // Пока агент не подтвердил удаление, обещать его нельзя — и cookie
       // менять нельзя тоже: без прежнего идентификатора переписку будет
       // не удалить уже никогда.
@@ -736,9 +940,9 @@ async function handleChat(req, res) {
         cookies(dropSession()),
       )
     }
-    const { response, json } = await callAgent(
-      `/v1/sessions/${sessionId}${contextQuery(req, profileId)}`,
-    )
+    const asked = await askAgent(req, res, `/v1/sessions/${sessionId}${contextQuery(req, profileId)}`)
+    if (!asked) return
+    const { response, json } = asked
     // Диалог ушёл по сроку или профиль сменили: указатель стирается, и
     // страница показывает пустой лог, а не чужую переписку.
     if (response.status === 404) {
@@ -802,7 +1006,9 @@ async function handleHead(req, res) {
     return send(res, 400, { error: 'messageId должен быть целым числом' })
 
   try {
-    const { response, json } = await callAgent(
+    const asked = await askAgent(
+      req,
+      res,
       `/v1/sessions/${sessionId}/head?profile=${profileId}`,
       {
         method: 'PUT',
@@ -810,6 +1016,8 @@ async function handleHead(req, res) {
         body: JSON.stringify({ messageId: body.messageId }),
       },
     )
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404 || response.status === 409)
       return send(res, response.status, {
         error: json?.message ?? 'Ветку переключить не удалось',
@@ -829,12 +1037,35 @@ async function handleHead(req, res) {
  * лимитера возвращается.
  */
 async function proxyEvents(req, res, runId) {
+  // --- Привязка потока к адресу (ADR 2026-10-07-1349, п. 4, Б6) ----------
+  // До этого ADR у потока не было НИКАКОЙ авторизации: `runs.subscribe` у
+  // агента проигрывает весь журнал вместе с `run.result` любому, кто знает
+  // `runId`. Теперь поток отдаётся только тому адресу, которым запуск создан.
+  //
+  // ЧЕСТНАЯ ГРАНИЦА: адрес — не ключ. Общий NAT даёт один адрес двум
+  // посетителям, и для них привязка не разделяет. Что её держит, кроме
+  // адреса, — неугадываемый `runId` (randomUUID, 122 бита), известный только
+  // тому, кто получил его на свой `/api/answer`. Поток защищён адресом, а не
+  // ключом, и ADR это называет прямо.
+  //
+  // Проверка — ДО обращения к агенту: чужой запрос до стенда не доходит.
+  const slot = pending.get(runId)
+  const notFound = () => send(res, 404, { error: 'Запуск не найден' })
+  if (!slot) return notFound()
+  // Срок — на ЧТЕНИИ, а не только в таймере: это и делает «после срока — 404
+  // всем» правдой в тот самый момент, когда поток открывают (Б11).
+  if (Date.now() - slot.at > PENDING_TTL_MS) {
+    pending.delete(runId)
+    return notFound()
+  }
+  if (slot.ip !== clientIp(req)) return notFound()
+
   const controller = new AbortController()
   req.on('close', () => {
     controller.abort()
-    // Вкладку закрыли до конца потока: держать связку «запуск → адрес»
-    // дольше нужного незачем (I-10).
-    pending.delete(runId)
+    // Запись НЕ стирается: `EventSource` переподключается сам при обрыве, и
+    // стирание давало бы 404 на переподключении любого запуска дня 11 (Б10).
+    // Срок записи снимут проверка выше и таймер.
   })
 
   let upstream
@@ -874,9 +1105,17 @@ async function proxyEvents(req, res, runId) {
     endSeen = false
     try {
       const end = JSON.parse(line.slice(6))
-      const slot = pending.get(runId)
-      pending.delete(runId)
-      if (slot && end.error?.paidNothing) limiter.release(slot.ip)
+      const done = pending.get(runId)
+      // Запись не стирается и здесь: от `end` начинается отсчёт тех 10 минут,
+      // в которые ответ ещё можно перечитать с того же адреса. Отметка
+      // обновляется, а слот лимитера разбирается РОВНО ОДИН РАЗ — по флагу:
+      // поток могут открыть повторно, и второй `end` вернул бы слот дважды,
+      // то есть подарил бы адресу лишний запуск (Б10).
+      if (done && !done.ended) {
+        done.ended = true
+        done.at = Date.now()
+        if (end.error?.paidNothing) limiter.release(done.ip)
+      }
     } catch {}
   }
 
@@ -1001,4 +1240,15 @@ if (process.env.NODE_ENV !== 'test') {
   server.listen(env.PORT, () => console.log(`день 11 слушает :${env.PORT}`))
 }
 
-export { env, server }
+// `pending`, `sweepPending` и `sweepTimer` уезжают наружу РАДИ ТЕСТОВ, и это
+// названо прямо, а не спрятано: срок привязки «запуск ↔ адрес» держат две
+// строки (ADR 2026-10-07-1349, п. 4, Б11), и у обеих обязан быть держатель.
+//
+// Что тест ими делает: сдвигает отметку записи в прошлое — та же разница
+// `now - at`, что и ход часов, — и зовёт `sweepPending`, ту самую функцию,
+// которую зовёт таймер.
+//
+// ЧЕСТНАЯ ГРАНИЦА: что интервал срабатывает САМ раз в минуту, тест не
+// проверяет — он ждал бы минуту. Держится присутствие таймера, его `unref` и
+// поведение его функции, а не факт срабатывания по времени.
+export { env, pending, server, sweepPending, sweepTimer }

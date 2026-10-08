@@ -3,6 +3,7 @@
 // и его диалогов, создание диалога первым сообщением, прокси потока.
 
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import http from 'node:http'
 import { after, before, test } from 'node:test'
 
@@ -22,11 +23,46 @@ const OTHER_SID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 /** Диалог чужого профиля: агент отвечает на него как на несуществующий. */
 const ALIEN_SID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const NEW_SID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+/** Ключевой профиль: сервис отдаёт у него имя ключа, открытый — `null`. */
+const KEYED_PID = '55555555-5555-4555-8555-555555555555'
+
+/**
+ * Отказы ключа, которые выдаёт сервис агентов, а не день: значение ключа,
+ * окно отказов и суточный потолок сверяет он. Стенд повторяет его коды и его
+ * заголовки, чтобы проверялся проброс дня, а не сверка.
+ */
+const KEY_REFUSALS = {
+  wrong: [403, { ok: false, code: 'bad_model_key', message: 'Ключ модели не принят' }],
+  burst: [
+    429,
+    { ok: false, code: 'too_many_attempts', message: 'Слишком много попыток — подождите минуту' },
+    { 'retry-after': '37' },
+  ],
+  over: [
+    429,
+    {
+      ok: false,
+      code: 'model_key_daily_cap',
+      message: 'Суточный потолок 2000 запусков на ключ исчерпан',
+      resetAt: '2026-10-09T00:00:00.000Z',
+    },
+  ],
+  wrongmodel: [
+    403,
+    {
+      ok: false,
+      code: 'keyed_profile_model',
+      message: 'В этом профиле доступна только модель без встроенных отказов.',
+    },
+  ],
+}
 
 const profileBody = (id, sessions) => ({
   ok: true,
   profile: {
     id,
+    // Имя ключа — поле, по которому экран узнаёт ключевой профиль.
+    keyName: id === KEYED_PID ? 'mika' : null,
     name: id === PID ? 'Мика' : 'Гость',
     settings: { strategy: 'summary', maxTokens: 2000 },
     rules: [{ key: 'тон', value: 'коротко', sourceSessionId: SID, updatedAt: 1 }],
@@ -46,7 +82,18 @@ const agent = http.createServer(async (req, res) => {
   const chunks = []
   for await (const c of req) chunks.push(c)
   const body = Buffer.concat(chunks).toString()
-  agentLog.push({ method: req.method, url: req.url, auth: req.headers.authorization, body })
+  agentLog.push({
+    method: req.method,
+    url: req.url,
+    auth: req.headers.authorization,
+    // Заголовки, по которым проверяется Б5: что ключ модели дошёл, а чужие
+    // заголовки клиента — нет. `undefined` в записи и значит «не дошёл».
+    modelKey: req.headers['x-model-key'],
+    evalKey: req.headers['x-eval-key'],
+    forwardedHost: req.headers['x-forwarded-host'],
+    cookie: req.headers.cookie,
+    body,
+  })
   const json = (status, payload) => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(payload))
@@ -58,15 +105,46 @@ const agent = http.createServer(async (req, res) => {
   const [path, query = ''] = req.url.split('?')
   const profileOf = new URLSearchParams(query).get('profile')
 
+  // Ровно те ветви, на которых сервис агентов отказывает по ключу
+  // (`agents/src/service.js`): профили, диалоги и создание запуска. На
+  // `/v1/agents` и `/healthz` ключ не спрашивают, и отказа там нет.
+  const refusal = KEY_REFUSALS[req.headers['x-model-key']]
+  if (
+    refusal &&
+    (path.startsWith('/v1/profiles') || path.startsWith('/v1/sessions') || path === '/v1/runs')
+  ) {
+    res.writeHead(refusal[0], { 'content-type': 'application/json', ...(refusal[2] ?? {}) })
+    return res.end(JSON.stringify(refusal[1]))
+  }
+
+  // Ключевой профиль без ключа СВОЕГО имени отвечает как несуществующий —
+  // ровно так ведёт себя `agents` (`visibleProfile` подменяет номер на тот,
+  // которого в базе нет). Это общая ветвь на все пути профиля, а не на
+  // отдельные: ручка, забывшая проброс ключа, обязана краснеть независимо от
+  // того, какая она (блокирующая находка `reviewer`: `POST /api/session`
+  // проброс потеряла, а стенд спрашивал ключ только у путей, которые её
+  // тест не задевал).
+  const keyedPath =
+    path.startsWith(`/v1/profiles/${KEYED_PID}`) ||
+    (profileOf === KEYED_PID && path.startsWith('/v1/sessions/'))
+  if (keyedPath && req.headers['x-model-key'] !== 'mika') {
+    return json(404, { ok: false, code: 'unknown_profile' })
+  }
+
   // --- профили ---
   if (path === '/v1/profiles' && req.method === 'GET') {
+    // `keyName` в строках списка — как у `liveProfiles` сервиса: имя у
+    // ключевого профиля, `null` у открытого. Ключевая строка приходит только
+    // предъявившему ключ её имени, поэтому с ключом список длиннее.
+    const keyed = { id: KEYED_PID, name: 'Мика по ключу', lastSeenAt: 1100, createdAt: 1, sessions: 1, keyName: 'mika' }
+    const open = [
+      { id: PID, name: 'Мика', lastSeenAt: 1000, createdAt: 1, sessions: 2, keyName: null },
+      { id: EMPTY_PID, name: 'Гость', lastSeenAt: 900, createdAt: 1, sessions: 0, keyName: null },
+    ]
     return json(200, {
       ok: true,
       cap: 5,
-      profiles: [
-        { id: PID, name: 'Мика', lastSeenAt: 1000, createdAt: 1, sessions: 2 },
-        { id: EMPTY_PID, name: 'Гость', lastSeenAt: 900, createdAt: 1, sessions: 0 },
-      ],
+      profiles: req.headers['x-model-key'] === 'mika' ? [keyed, ...open] : open,
     })
   }
   if (path === '/v1/profiles' && req.method === 'POST') {
@@ -202,7 +280,7 @@ process.env.RATE_LIMIT_PER_MIN = '4'
 process.env.RATE_LIMIT_PER_HOUR = '50'
 process.env.RATE_LIMIT_WRITES_PER_HOUR = '5'
 
-const { server } = await import('../server.js')
+const { pending, server, sweepPending, sweepTimer } = await import('../server.js')
 let base = ''
 
 before(async () => {
@@ -221,13 +299,14 @@ const cookieValue = (response, name) => {
   return found ? found[1] : null
 }
 
-const call = (method, path, body, { ip = '10.0.0.1', cookie } = {}) =>
+const call = (method, path, body, { ip = '10.0.0.1', cookie, modelKey } = {}) =>
   fetch(`${base}${path}`, {
     method,
     headers: {
       'content-type': 'application/json',
       'x-forwarded-for': ip,
       ...(cookie ? { cookie } : {}),
+      ...(modelKey ? { 'x-model-key': modelKey } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
@@ -560,14 +639,18 @@ test('исчезнувший по сроку диалог: пустой лог �
   assert.match(setCookies(r), /day11_sid=; .*Max-Age=0/)
 })
 
-test('поток событий проксируется как есть', async () => {
+// Поток событий теперь привязан к адресу создателя запуска (ADR
+// 2026-10-07-1349, п. 4, Б6), поэтому адрес здесь предъявляется тот же, что
+// у `/api/answer`. До этого ADR у потока не было никакой авторизации, и
+// запрос без адреса проходил — потому эта проверка и правится.
+test('поток событий проксируется как есть — с адреса, создавшего запуск', async () => {
   const { runId } = await (
     await call('POST', '/api/answer', { prompt: 'вопрос' }, {
       ip: '10.6.0.1',
       cookie: withSession(),
     })
   ).json()
-  const r = await fetch(`${base}/api/runs/${runId}/events`)
+  const r = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.6.0.1' })
   assert.equal(r.status, 200)
   assert.match(await r.text(), /event: end\ndata: \{"status":"succeeded"/)
 })
@@ -607,4 +690,500 @@ test('подделанная cookie не принимается: профиль 
   })
   assert.equal(r.status, 409)
   assert.equal((await r.json()).code, 'no_profile')
+})
+
+// --- Ключ модели и привязка потока (ADR 2026-10-07-1349, п. 4) -------------
+// Б5: до стенда доходит РОВНО `x-model-key` и ни один другой заголовок
+// клиента. Б6, Б10, Б11: поток событий отдаётся только адресу, создавшему
+// запуск; запись переживает закрытие соединения и `end`; срок держат проверка
+// на чтении и таймер; слот лимитера разбирается ровно один раз.
+
+const MODEL_KEY = 'K'.repeat(32)
+
+test('до стенда доходит ровно x-model-key и ни один другой заголовок клиента (Б5)', async () => {
+  const before = agentLog.length
+  const r = await fetch(`${base}/api/answer`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': '10.9.0.1',
+      cookie: withSession(),
+      'x-model-key': MODEL_KEY,
+      // Заголовки, которых у стенда быть не должно: день собирает заголовки
+      // сам, клиентских не пропускает, и `...req.headers` ему запрещён.
+      authorization: 'Bearer FORGED',
+      'x-eval-key': 'someone-elses-key',
+      'x-forwarded-host': 'evil.example',
+    },
+    body: JSON.stringify({ prompt: 'вопрос' }),
+  })
+  assert.equal(r.status, 202)
+
+  const runCall = agentLog.slice(before).find((c) => c.url === '/v1/runs')
+  assert.notEqual(runCall, undefined, 'запуск до стенда дошёл')
+  assert.equal(runCall.modelKey, MODEL_KEY, 'ключ модели проброшен')
+  // Ключ сервиса — СВОЙ, из окружения дня, а не присланный клиентом.
+  assert.equal(runCall.auth, 'Bearer agent-key')
+  assert.equal(runCall.evalKey, undefined, 'чужой x-eval-key до стенда не дошёл')
+  assert.equal(runCall.forwardedHost, undefined, 'x-forwarded-host не дошёл')
+  assert.equal(runCall.cookie, undefined, 'cookie посетителя не дошла')
+})
+
+test('негодная форма ключа — 403, и до стенда запрос не идёт', async () => {
+  const before = agentLog.length
+  const r = await fetch(`${base}/api/answer`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': '10.9.0.2',
+      cookie: withSession(),
+      // Пробел вне [A-Za-z0-9_-]: значение не могло прийти от нашего экрана.
+      // Только ASCII: заголовок HTTP не принимает ничего вне ByteString, и
+      // кириллица уронила бы сам `fetch` в тесте, ничего не проверив.
+      'x-model-key': 'key with space',
+    },
+    body: JSON.stringify({ prompt: 'вопрос' }),
+  })
+  assert.equal(r.status, 403)
+  const body = await r.json()
+  assert.equal(body.code, 'bad_model_key')
+  // Значение не попало в ответ: ни в сообщение, ни в код.
+  assert.equal(JSON.stringify(body).includes('key with space'), false)
+  assert.deepEqual(agentLog.slice(before), [], 'стенд не вызван')
+})
+
+/** Запуск с заданного адреса: отдаёт `runId`, которым открывается поток. */
+const startRun = async (ip, prompt = 'вопрос') =>
+  (await call('POST', '/api/answer', { prompt }, { ip, cookie: withSession() })).json()
+
+test('поток событий с чужого адреса — 404, и стенд не вызван (Б6)', async () => {
+  const { runId } = await startRun('10.10.0.1')
+  const before = agentLog.length
+
+  const alien = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.10.0.99' })
+  assert.equal(alien.status, 404)
+  assert.equal((await alien.json()).error, 'Запуск не найден')
+  assert.deepEqual(agentLog.slice(before), [], 'до стенда чужой запрос не дошёл')
+
+  // Контрольная ветвь: с адреса-создателя тот же запуск отдаётся.
+  const mine = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.10.0.1' })
+  assert.equal(mine.status, 200)
+  await mine.text()
+})
+
+test('переподключение с того же адреса после закрытия и после end — 200 (Б10)', async () => {
+  const { runId } = await startRun('10.11.0.1')
+
+  // Первое чтение доводится до конца: в нём приходит `end`.
+  const first = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.11.0.1' })
+  assert.equal(first.status, 200)
+  assert.match(await first.text(), /event: end/)
+
+  // Переподключение ПОСЛЕ `end` — именно то, что делает EventSource при
+  // обрыве сети. Со стиранием записи на `close` или на `end` здесь был бы 404.
+  for (const attempt of [1, 2]) {
+    const again = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.11.0.1' })
+    assert.equal(again.status, 200, `переподключение ${attempt}`)
+    await again.text()
+  }
+  // Запись на месте, и отметка от `end` стоит.
+  assert.equal(pending.has(runId), true)
+  assert.equal(pending.get(runId).ended, true)
+
+  // А с чужого адреса переподключение по-прежнему 404.
+  assert.equal(
+    (await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.11.0.77' })).status,
+    404,
+  )
+})
+
+test('слот лимитера при paidNothing возвращается ровно один раз (Б10)', async () => {
+  const ip = '10.12.0.1'
+  const used = async () => (await (await fetch(`${base}/healthz`)).json()).limiter.callsToday
+  // «без денег» — стенд отвечает запуском, который кончается paidNothing.
+  const { runId } = await startRun(ip, 'без денег')
+  const afterStart = await used()
+
+  const read = async () => {
+    const r = await call('GET', `/api/runs/${runId}/events`, undefined, { ip })
+    assert.equal(r.status, 200)
+    await r.text()
+  }
+  await read()
+  const afterFirst = await used()
+  assert.equal(afterFirst, afterStart - 1, 'слот вернулся: денег не потратили')
+
+  // Второе и третье чтение того же потока слот больше не возвращают: иначе
+  // каждое перечитывание дарило бы адресу лишний запуск суточного потолка.
+  await read()
+  await read()
+  assert.equal(await used(), afterFirst, 'возврат слота не повторяется')
+})
+
+test('по истечении срока — 404 всем, и записи в pending больше нет (Б11)', async () => {
+  const { runId } = await startRun('10.13.0.1')
+  assert.equal(pending.has(runId), true)
+
+  // Отметка сдвигается в прошлое: `now - at` — та же величина, что при ходе
+  // часов вперёд, и проверка на чтении смотрит именно на неё. Часы процесса
+  // при этом не трогаются, и соседние тесты от этого не зависят.
+  pending.get(runId).at -= 11 * 60_000
+  const before = agentLog.length
+
+  const late = await call('GET', `/api/runs/${runId}/events`, undefined, { ip: '10.13.0.1' })
+  assert.equal(late.status, 404, 'даже адресу-создателю — 404')
+  assert.deepEqual(agentLog.slice(before), [], 'стенд не вызван')
+  assert.equal(pending.has(runId), false, 'запись снята на месте, на чтении')
+})
+
+test('запись запуска, поток которого не открывали, исчезает по таймеру (Б11)', async () => {
+  const { runId } = await startRun('10.14.0.1')
+  assert.equal(pending.has(runId), true)
+
+  // Поток не открывается вовсе: до проверки на чтении дело не доходит, и
+  // снять запись может только таймер.
+  pending.get(runId).at -= 11 * 60_000
+  // Зовётся та же функция, что стоит в `setInterval`.
+  assert.equal(sweepPending() >= 1, true, 'уборка сняла хотя бы эту запись')
+  assert.equal(pending.has(runId), false)
+
+  // Таймер есть и не держит событийный цикл. ЧЕСТНАЯ ГРАНИЦА: что он
+  // срабатывает сам раз в минуту, здесь не проверяется — см. комментарий у
+  // экспорта в `server.js`.
+  assert.notEqual(sweepTimer, undefined, 'таймер уборки существует')
+  assert.equal(sweepTimer.hasRef(), false, 'таймер не держит процесс')
+
+  // Свежая запись уборкой не задета — иначе зелёный результат выше
+  // удовлетворяла бы гипотеза «уборка стирает всё подряд».
+  const fresh = await startRun('10.14.0.2')
+  sweepPending()
+  assert.equal(pending.has(fresh.runId), true)
+})
+
+// --- Остальная ветвь запусков недостижима (Б7) ----------------------------
+
+test('кроме /events, ветвь /api/runs/* не проксируется: 404 и стенд не вызван (Б7)', async () => {
+  const { runId } = await startRun('10.15.0.1')
+  const before = agentLog.length
+
+  for (const [method, path] of [
+    ['GET', `/api/runs/${runId}`],
+    ['GET', `/api/runs/${runId}/log.csv`],
+    ['GET', `/api/runs/${runId}/prompts`],
+    ['POST', `/api/runs/${runId}/pause`],
+  ]) {
+    const r = await call(method, path, method === 'POST' ? {} : undefined, { ip: '10.15.0.1' })
+    assert.equal(r.status, 404, `${method} ${path}`)
+  }
+  assert.deepEqual(agentLog.slice(before), [], 'ни один из них до стенда не дошёл')
+})
+
+// --- Отказы ключа доходят до страницы своим кодом --------------------------
+
+test('403 bad_model_key от сервиса — 403 с кодом, а не 502 «агент не ответил»', async () => {
+  // Форма ключа годная, значение — нет: сверяет его сервис, и его отказ
+  // должен дойти до экрана. Прежде этот ответ становился 502, и экран просил
+  // проверить связь — действие, которое ключ не исправляет.
+  const before = agentLog.length
+  const r = await call('GET', '/api/profiles', undefined, { ip: '10.20.0.1', modelKey: 'wrong' })
+  assert.equal(r.status, 403)
+  const body = await r.json()
+  assert.equal(body.code, 'bad_model_key')
+  assert.equal(body.error, 'Ключ модели не принят')
+  // Отказ пришёл ОТ СТЕНДА, а не от собственной проверки формы в дне: иначе
+  // тот же зелёный результат удовлетворяла бы гипотеза «день отверг форму»,
+  // а форма у `wrong` годная. Улика — запись в журнале стенда, не код ответа.
+  const seen = agentLog.slice(before)
+  assert.equal(seen.length, 1, 'запрос до стенда не дошёл')
+  assert.equal(seen[0].url, '/v1/profiles')
+  assert.equal(seen[0].modelKey, 'wrong', 'стенд получил ровно предъявленное значение')
+})
+
+test('429 окна отказов доходит кодом и тем же retry-after, что назвал сервис', async () => {
+  const r = await call('GET', '/api/profile', undefined, {
+    ip: '10.20.0.2',
+    cookie: withProfile(),
+    modelKey: 'burst',
+  })
+  assert.equal(r.status, 429)
+  assert.equal(r.headers.get('retry-after'), '37', 'число окна — сервиса, а не дня')
+  assert.equal((await r.json()).code, 'too_many_attempts')
+})
+
+test('429 суточного потолка доходит кодом и временем сброса', async () => {
+  const r = await call('POST', '/api/answer', { prompt: 'привет' }, {
+    ip: '10.20.0.3',
+    cookie: withSession(),
+    modelKey: 'over',
+  })
+  assert.equal(r.status, 429)
+  const body = await r.json()
+  assert.equal(body.code, 'model_key_daily_cap')
+  assert.equal(body.resetAt, '2026-10-09T00:00:00.000Z', 'страница называет время сброса')
+})
+
+test('403 границы ключевого профиля доходит кодом с запуска', async () => {
+  const r = await call('POST', '/api/answer', { prompt: 'привет' }, {
+    ip: '10.20.0.4',
+    cookie: withSession(),
+    modelKey: 'wrongmodel',
+  })
+  assert.equal(r.status, 403)
+  assert.equal((await r.json()).code, 'keyed_profile_model')
+})
+
+test('имя ключа профиля доходит до страницы чтением и выбором; у открытого — null', async () => {
+  const read = await call('GET', '/api/profile', undefined, {
+    ip: '10.20.0.5',
+    cookie: withProfile(KEYED_PID),
+    modelKey: 'mika',
+  })
+  assert.equal(read.status, 200)
+  assert.equal((await read.json()).profile.keyName, 'mika')
+
+  const picked = await call('POST', '/api/profile/select', { id: KEYED_PID }, {
+    ip: '10.20.0.5',
+    modelKey: 'mika',
+  })
+  assert.equal(picked.status, 200)
+  assert.equal((await picked.json()).profile.keyName, 'mika')
+
+  // Открытый профиль различим от ключевого: иначе зелёный результат выше
+  // удовлетворяла бы гипотеза «поле всегда непусто».
+  const open = await call('GET', '/api/profile', undefined, {
+    ip: '10.20.0.5',
+    cookie: withProfile(PID),
+  })
+  assert.equal((await open.json()).profile.keyName, null)
+})
+
+// --- Ключ не попадает в браузерные хранилища (решение владельца 7) --------
+
+test('страница не кладёт ключ ни в localStorage, ни в sessionStorage, ни в cookie', async () => {
+  const page = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+  // Проверяется исполняемый текст, а не комментарии и не разметку: в
+  // комментариях эти имена названы нарочно — там сказано, почему их нет в
+  // коде. Блочные комментарии и строки-комментарии снимаются, HTML-комментарии
+  // снимаются тоже.
+  const code = page
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+
+  // Хранилищ в дне 11 нет вовсе: указатели профиля и диалога ставит сервер
+  // своими cookie, а страница их не читает. Поэтому проверка — на отсутствие
+  // самих обращений, а не на отсутствие ключа рядом с ними: вторая форма
+  // зеленела бы от переименования переменной.
+  for (const store of ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie']) {
+    assert.equal(code.includes(store), false, `страница обращается к ${store}`)
+  }
+
+  // Поле ключа существует, закрыто и БЕЗ атрибута name: без name значение не
+  // попадает в адрес страницы даже при сбое обработчика отправки. Без этих
+  // двух проверок всё выше зеленело бы на странице, где ключа нет вообще.
+  const field = page.match(/<input id="model-key"[^>]*>/)
+  assert.ok(field, 'поля ключа на странице нет')
+  assert.match(field[0], /type="password"/)
+  assert.equal(/\sname=/.test(field[0]), false, 'у поля ключа есть name — значение уедет в адрес')
+})
+
+// --- Ключевой профиль различим в списке входа -----------------------------
+
+test('список входа несёт имя ключа, и страница метит такие профили', async () => {
+  // Сервер: имя ключа доезжает до страницы в каждой строке списка. Без него
+  // пометку рисовать нечем, и список читался бы как «все открыты».
+  const keyed = await call('GET', '/api/profiles', undefined, {
+    ip: '10.21.0.1',
+    modelKey: 'mika',
+  })
+  assert.equal(keyed.status, 200)
+  const rows = (await keyed.json()).profiles
+  assert.deepEqual(
+    rows.map((p) => [p.name, p.keyName]),
+    [['Мика по ключу', 'mika'], ['Мика', null], ['Гость', null]],
+    'ключевой профиль назван именем ключа, открытые — null',
+  )
+
+  // Без ключа ключевой строки в списке нет вовсе: иначе зелёный результат
+  // выше удовлетворяла бы гипотеза «список всегда одинаков».
+  const open = await call('GET', '/api/profiles', undefined, { ip: '10.21.0.1' })
+  assert.deepEqual(
+    (await open.json()).profiles.map((p) => [p.name, p.keyName]),
+    [['Мика', null], ['Гость', null]],
+  )
+
+  // Страница: подпись в строке списка строится из `p.keyName`, и это
+  // исполняемый код, а не комментарий — комментарии и разметка сняты.
+  const page = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+  const code = page
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  assert.match(
+    code,
+    /if \(p\.keyName\) chipOf\('по ключу'\)/,
+    'подпись «по ключу» в строке списка не строится из p.keyName',
+  )
+  // Подписи строки живут одной группой: прямыми детьми .pro-name второй чип
+  // переносился на новую строку к левому краю (замер design-review).
+  assert.match(code, /chips\.className = 'pro-chips'/, 'группы подписей в строке списка нет')
+  assert.match(code, /\.pro-chips \{[^}]*flex-wrap:nowrap/, 'группа подписей рвётся внутри себя')
+  // Группа должна ещё и ВСТАВЛЯТЬСЯ целиком: мутация `name.append(chips)` →
+  // `name.append(...chips.children)` возвращает прежний дефект, а прошлая
+  // редакция этой проверки оставалась зелёной — группа строилась и не
+  // использовалась. Выжившая мутация и была находкой.
+  assert.match(
+    code,
+    /name\.append\(chips\)/,
+    'группа подписей строится, но в строку не вставляется',
+  )
+  assert.equal(code.includes('name.append(...chips.children)'), false)
+  // И строка состояния ключа больше не признаётся, что не различает их.
+  assert.equal(code.includes('список не различает'), false)
+})
+
+// --- Проброс ключа на КАЖДОЙ ручке профиля --------------------------------
+// Блокирующая находка `reviewer` к PR #334: `POST /api/session` был
+// единственным из четырнадцати обработчиков без проброса `x-model-key`, и в
+// ключевом профиле «новый диалог» отвечал «профиль не найден». Прежние тесты
+// этого не держали: они проверяли проброс на тех ручках, которые трогали, а
+// счёт ручек стоял только в комментарии.
+//
+// Эта проверка перебирает ВСЕ ручки профиля и утверждает об одном: что бы
+// ручка ни делала, каждый её запрос к сервису уходит с ключом. Пропущенная
+// ручка краснеет здесь независимо от того, какая она.
+
+/** Ручка профиля: метод, путь, тело и свой адрес — окна лимитера узкие. */
+const PROFILE_ROUTES = [
+  ['GET', '/api/profiles', undefined, '10.30.0.1'],
+  ['GET', '/api/profile', undefined, '10.30.0.2'],
+  ['POST', '/api/profile', { name: 'по ключу' }, '10.30.0.3'],
+  ['POST', '/api/profile/select', { id: KEYED_PID }, '10.30.0.4'],
+  ['PUT', '/api/settings', { maxTokens: 1500 }, '10.30.0.5'],
+  ['GET', '/api/sessions', undefined, '10.30.0.6'],
+  ['POST', '/api/session', { topicId: null }, '10.30.0.7'],
+  ['POST', '/api/session/select', { id: SID }, '10.30.0.8'],
+  ['POST', '/api/session/topic', { topicId: 7 }, '10.30.0.9'],
+  ['GET', '/api/topic/7', undefined, '10.30.0.10'],
+  ['GET', '/api/chat', undefined, '10.30.0.11'],
+  ['PUT', '/api/chat/head', { messageId: 3 }, '10.30.0.12'],
+  ['POST', '/api/answer', { prompt: 'вопрос' }, '10.30.0.13'],
+  ['DELETE', '/api/chat', undefined, '10.30.0.14'],
+  ['DELETE', '/api/profile', { id: KEYED_PID }, '10.30.0.15'],
+]
+
+test('каждая ручка профиля уносит x-model-key до сервиса — все четырнадцать', async () => {
+  for (const [method, path, body, ip] of PROFILE_ROUTES) {
+    const before = agentLog.length
+    const response = await call(method, path, body, {
+      ip,
+      cookie: withSession(SID, KEYED_PID),
+      modelKey: 'mika',
+    })
+    const seen = agentLog.slice(before)
+    assert.ok(seen.length > 0, `${method} ${path}: до сервиса вообще не дошло`)
+    for (const callToAgent of seen) {
+      assert.equal(
+        callToAgent.modelKey,
+        'mika',
+        `${method} ${path}: запрос ${callToAgent.method} ${callToAgent.url} ушёл БЕЗ ключа`,
+      )
+    }
+    // И ответ не «профиль не найден»: стенд ведёт себя как agents, то есть
+    // ключевой профиль без ключа отвечает как несуществующий. Без проброса
+    // любая из этих ручек вернула бы именно это.
+    const json = await response.json().catch(() => null)
+    assert.notEqual(
+      json?.code,
+      'unknown_profile',
+      `${method} ${path}: ключевой профиль ответил как несуществующий`,
+    )
+  }
+})
+
+test('POST /api/session в ключевом профиле создаёт диалог, а не 404 (находка reviewer)', async () => {
+  const before = agentLog.length
+  const r = await call('POST', '/api/session', { topicId: null }, {
+    ip: '10.31.0.1',
+    cookie: withProfile(KEYED_PID),
+    modelKey: 'mika',
+  })
+  assert.equal(r.status, 200, 'диалог создан')
+  const body = await r.json()
+  assert.equal(body.sessionId, NEW_SID)
+  assert.match(setCookies(r), new RegExp(`day11_sid=${NEW_SID}`), 'cookie диалога поставлена')
+
+  const made = agentLog.slice(before).find((c) => c.method === 'POST' && c.url.endsWith('/sessions'))
+  assert.notEqual(made, undefined, 'создание диалога дошло до сервиса')
+  assert.equal(made.modelKey, 'mika', 'и дошло с ключом')
+})
+
+test('негодная форма ключа — 403 на каждой ручке профиля, и до сервиса не доходит', async () => {
+  // Форму проверяет сам день (`modelKey`), и теперь это делает общий
+  // помощник: пропустить ручку нельзя. Пробел вне [A-Za-z0-9_-].
+  for (const [method, path, body, ip] of PROFILE_ROUTES) {
+    const before = agentLog.length
+    const r = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': `10.32.${ip.split('.')[3]}.1`,
+        cookie: withSession(SID, KEYED_PID),
+        'x-model-key': 'key with space',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    assert.equal(r.status, 403, `${method} ${path}`)
+    assert.equal((await r.json()).code, 'bad_model_key', `${method} ${path}`)
+    assert.deepEqual(agentLog.slice(before), [], `${method} ${path}: стенд не вызван`)
+  }
+})
+
+// --- Отказ по ключу на списке профилей — не «проверьте связь» (п. 4) ------
+
+test('429 ключа на списке профилей разбирает ветвь ключа, а не ветвь связи', async () => {
+  // Сервер: оба отказа доходят до страницы кодом и числом — это предмет,
+  // которым ветвь на странице вообще может отличаться от обрыва связи.
+  const burst = await call('GET', '/api/profiles', undefined, { ip: '10.22.0.1', modelKey: 'burst' })
+  assert.equal(burst.status, 429)
+  assert.equal((await burst.json()).code, 'too_many_attempts')
+  assert.equal(burst.headers.get('retry-after'), '37')
+
+  const cap = await call('GET', '/api/profiles', undefined, { ip: '10.22.0.2', modelKey: 'over' })
+  assert.equal(cap.status, 429)
+  const capBody = await cap.json()
+  assert.equal(capBody.code, 'model_key_daily_cap')
+  assert.equal(capBody.resetAt, '2026-10-09T00:00:00.000Z')
+
+  const page = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+  const code = page
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+
+  // Страница различает эти два кода от обрыва связи ИМЕНЕМ кода, а не текстом
+  // сообщения: список удерживаемых отказов — один, и его читает и ветвь
+  // загрузки списка, и строка обещания нового профиля.
+  assert.match(
+    code,
+    /const KEY_HELD = new Set\(\['too_many_attempts', 'model_key_daily_cap'\]\)/,
+    'список отказов, принадлежащих ключу, на странице не объявлен',
+  )
+  assert.match(code, /const keyFault = KEY_HELD\.has\(error\.code\)/, 'ветвь загрузки списка его не читает')
+
+  // «Проверьте связь» остаётся ТОЛЬКО во ветви, где связь и виновата: иначе
+  // подсказка велела бы проверять то, что в порядке.
+  assert.match(
+    code,
+    /say\(\$\('gate-msg'\), keyFault\s*\n?\s*\?[\s\S]{0,160}?отказал по ключу[\s\S]{0,160}?Проверьте связь/,
+    'сообщение списка не разведено по ветвям',
+  )
+  // Пока ключ не подтверждён, обещание закрытого профиля снято, а строка
+  // состояния ключа погашена — обе ветви в renderKey читают `keyHeld`.
+  assert.match(code, /hint\.textContent = keyHeld !== null/, 'обещание профиля не зависит от удержанного отказа')
+  assert.match(
+    code,
+    /if \(keyHeld !== null\) \{\s*\n\s*sayLine\(\$\('key-error'\), keyHeld\);\s*\n\s*say\(\$\('key-on'\), ''\);/,
+    'отказ не попадает в строку отказа или состояние ключа не гасится',
+  )
 })

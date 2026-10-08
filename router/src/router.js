@@ -65,6 +65,19 @@ export function createRouter({
     return config.classes[name] ? name : 'other'
   }
 
+  /**
+   * Можно ли этому приложению назвать провайдера по имени (ADR
+   * 2026-10-07-1349, п. 1). Запись без поля `apps` — да, как прежде: поле
+   * вводится, не меняя поведения существующих записей. Запись с полем — только
+   * приложению из списка. Одна функция на обе стороны границы (`route` и
+   * `providerLimits`): разойдясь, они дали бы модель, которой нет в списке, но
+   * которая вызывается по имени, — или наоборот.
+   */
+  function appAllowed(provider, app) {
+    const only = provider.apps ?? null
+    return only === null || (app !== null && only.includes(app))
+  }
+
   function resolveThinking(cls, requested) {
     if (requested === undefined || requested === cls.thinking) return { level: cls.thinking }
     if (cls.locked) return { error: `класс закреплён за уровнем ${cls.thinking}` }
@@ -77,8 +90,12 @@ export function createRouter({
    * @param req тело запроса
    * @param signal сигнал обрыва клиента: при `abort` вызов к провайдеру
    *   прерывается тем же предохранителем, что дедлайн и `budgetMs`.
+   * @param app идентификатор приложения, предъявившего ключ. Нужен полю
+   *   `apps` провайдера (ADR 2026-10-07-1349, п. 1): без него запись,
+   *   закрытую за одним приложением, назвал бы по имени кто угодно. `null` —
+   *   вызов изнутри (тесты роутера): запись с полем `apps` тогда недоступна.
    */
-  async function route(req, { signal = null } = {}) {
+  async function route(req, { signal = null, app = null } = {}) {
     const taskClass = resolveClass(req.taskClass)
     const cls = config.classes[taskClass]
     const reasons = []
@@ -171,6 +188,20 @@ export function createRouter({
             },
           ],
         )
+      // Вторая ось разрешений: провайдер с полем `apps` доступен по имени
+      // только названным приложениям (ADR 2026-10-07-1349, п. 1). Яруса
+      // класса для этого не хватает: класс `news_answer` приложения `day5`
+      // включает ярус `self-hosted`, и без этой отсечки `day5` назвал бы
+      // модель без встроенных отказов законным явным выбором. Отсечка — ДО
+      // вызова адаптера: до провайдера такой запрос не доходит вовсе.
+      if (!appAllowed(candidates[0], app))
+        return refuse('refused', `провайдер ${explicit} не разрешён приложению ${app ?? '—'}`, [
+          {
+            provider: explicit,
+            stage: 'policy',
+            reason: 'приложение не названо в apps провайдера',
+          },
+        ])
     } else {
       candidates = orderedCandidates(cls, providers)
     }
@@ -546,15 +577,19 @@ export function createRouter({
    * на запрос и последний известный остаток квоты. Нужно, чтобы приложение
    * подгоняло размер запроса, а не узнавало о пределе отказом.
    */
-  function providerLimits(taskClass) {
+  function providerLimits(taskClass, app = null) {
     const cls = config.classes[resolveClass(taskClass)]
     // Приложению показываем только те модели, которые класс действительно
     // может использовать: классификатор в списке моделей для ответа
     // пользователю — это приглашение выбрать заведомый отказ.
     // Список для выбора: провайдеры с `explicitOnly` сюда входят — именно
     // отсюда приложение узнаёт, что их можно назвать по имени.
+    // Провайдер, закрытый за другим приложением, в список не входит: иначе
+    // `/v1/models` предлагал бы выбрать заведомый отказ, а экран чужого
+    // приложения показывал бы модель, назвать которую ему нельзя (ADR
+    // 2026-10-07-1349, п. 1, Б2). Та же функция, что в `route`.
     const capable = orderedCandidates(cls, registry.list(), { explicit: true }).filter(
-      (p) => capabilityFit(p, cls, cls.thinking, cls.dataClass, 0).ok,
+      (p) => appAllowed(p, app) && capabilityFit(p, cls, cls.thinking, cls.dataClass, 0).ok,
     )
     return capable.map((p) => {
       const quota = health.quotaOf(p)
