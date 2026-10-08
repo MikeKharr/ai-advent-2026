@@ -1021,9 +1021,23 @@ test('список входа несёт имя ключа, и страница 
     .replace(/^\s*\/\/.*$/gm, '')
   assert.match(
     code,
-    /if \(p\.keyName\) \{[\s\S]{0,200}?chip\.textContent = 'по ключу'/,
+    /if \(p\.keyName\) chipOf\('по ключу'\)/,
     'подпись «по ключу» в строке списка не строится из p.keyName',
   )
+  // Подписи строки живут одной группой: прямыми детьми .pro-name второй чип
+  // переносился на новую строку к левому краю (замер design-review).
+  assert.match(code, /chips\.className = 'pro-chips'/, 'группы подписей в строке списка нет')
+  assert.match(code, /\.pro-chips \{[^}]*flex-wrap:nowrap/, 'группа подписей рвётся внутри себя')
+  // Группа должна ещё и ВСТАВЛЯТЬСЯ целиком: мутация `name.append(chips)` →
+  // `name.append(...chips.children)` возвращает прежний дефект, а прошлая
+  // редакция этой проверки оставалась зелёной — группа строилась и не
+  // использовалась. Выжившая мутация и была находкой.
+  assert.match(
+    code,
+    /name\.append\(chips\)/,
+    'группа подписей строится, но в строку не вставляется',
+  )
+  assert.equal(code.includes('name.append(...chips.children)'), false)
   // И строка состояния ключа больше не признаётся, что не различает их.
   assert.equal(code.includes('список не различает'), false)
 })
@@ -1123,4 +1137,53 @@ test('негодная форма ключа — 403 на каждой ручк�
     assert.equal((await r.json()).code, 'bad_model_key', `${method} ${path}`)
     assert.deepEqual(agentLog.slice(before), [], `${method} ${path}: стенд не вызван`)
   }
+})
+
+// --- Отказ по ключу на списке профилей — не «проверьте связь» (п. 4) ------
+
+test('429 ключа на списке профилей разбирает ветвь ключа, а не ветвь связи', async () => {
+  // Сервер: оба отказа доходят до страницы кодом и числом — это предмет,
+  // которым ветвь на странице вообще может отличаться от обрыва связи.
+  const burst = await call('GET', '/api/profiles', undefined, { ip: '10.22.0.1', modelKey: 'burst' })
+  assert.equal(burst.status, 429)
+  assert.equal((await burst.json()).code, 'too_many_attempts')
+  assert.equal(burst.headers.get('retry-after'), '37')
+
+  const cap = await call('GET', '/api/profiles', undefined, { ip: '10.22.0.2', modelKey: 'over' })
+  assert.equal(cap.status, 429)
+  const capBody = await cap.json()
+  assert.equal(capBody.code, 'model_key_daily_cap')
+  assert.equal(capBody.resetAt, '2026-10-09T00:00:00.000Z')
+
+  const page = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+  const code = page
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+
+  // Страница различает эти два кода от обрыва связи ИМЕНЕМ кода, а не текстом
+  // сообщения: список удерживаемых отказов — один, и его читает и ветвь
+  // загрузки списка, и строка обещания нового профиля.
+  assert.match(
+    code,
+    /const KEY_HELD = new Set\(\['too_many_attempts', 'model_key_daily_cap'\]\)/,
+    'список отказов, принадлежащих ключу, на странице не объявлен',
+  )
+  assert.match(code, /const keyFault = KEY_HELD\.has\(error\.code\)/, 'ветвь загрузки списка его не читает')
+
+  // «Проверьте связь» остаётся ТОЛЬКО во ветви, где связь и виновата: иначе
+  // подсказка велела бы проверять то, что в порядке.
+  assert.match(
+    code,
+    /say\(\$\('gate-msg'\), keyFault\s*\n?\s*\?[\s\S]{0,160}?отказал по ключу[\s\S]{0,160}?Проверьте связь/,
+    'сообщение списка не разведено по ветвям',
+  )
+  // Пока ключ не подтверждён, обещание закрытого профиля снято, а строка
+  // состояния ключа погашена — обе ветви в renderKey читают `keyHeld`.
+  assert.match(code, /hint\.textContent = keyHeld !== null/, 'обещание профиля не зависит от удержанного отказа')
+  assert.match(
+    code,
+    /if \(keyHeld !== null\) \{\s*\n\s*sayLine\(\$\('key-error'\), keyHeld\);\s*\n\s*say\(\$\('key-on'\), ''\);/,
+    'отказ не попадает в строку отказа или состояние ключа не гасится',
+  )
 })

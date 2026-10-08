@@ -174,9 +174,20 @@
   .pro-del:hover { color:var(--danger); border-color:var(--line-ctl); filter:none; }
   .gate-form .field { display:block; }
   .gate-note { margin:0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); max-width:52ch; }
+  /* Соседние пояснения стояли слитно: замер давал зазор 0 px между подсказкой
+     ключа и строкой его состояния и между подсказкой имени и обещанием
+     профиля. --s-2 — тот же зазор, что у .warned ниже: внутри блока по
+     корпусу --s-2/--s-3. Второй селектор нужен из-за скрытой строки отказа:
+     она стоит в DOM между двумя пояснениями, и `.gate-note + .gate-note` до
+     состояния ключа не доходит. */
+  .gate-note + .gate-note, .warned + .gate-note { margin-top:var(--s-2); }
   .gate-row { display:flex; align-items:flex-end; gap:var(--s-3); flex-wrap:wrap; }
   .gate-row .grow { flex:1 1 14rem; min-width:0; }
   .gate-row .submit { margin-top:0; }
+  /* Второстепенная кнопка в ряду ввода встаёт на 4.6 px ниже поля (39 против
+     43.6): у .dlg-btn кегль --t-sm и интерлиньяж 1.5. В ряду ей задаются
+     --t-md и 1.6 — те же, что у .submit рядом, и те же низ и высота. */
+  .gate-row .dlg-btn { font-size:var(--t-md); line-height:1.6; }
 
   /* --- плавающая кнопка настроек --- */
   /* Единственный вход в окно настроек (ADR, п. 9). Первым элементом .chat-col
@@ -197,7 +208,13 @@
                stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
 
   /* --- шапка: профиль и тема --- */
-  .pid { display:flex; align-items:baseline; gap:var(--s-2); min-width:0; }
+  /* Перенос: на 360 чип «по ключу» в шапке удваивал горизонтальную прокрутку
+     — замер давал перебор 155 px с чипом против 76 px без него, то есть 79 px
+     ровно от него. С переносом чип уходит на следующую строку шапки, и
+     остаётся прежние 76 px, к чипу отношения не имеющие (пункт «Владельцу»,
+     `backlog/days.md`). Скрыть чип на узкой ширине было нельзя: подпись
+     «по ключу» — единственное место, где экран говорит, что профиль закрыт. */
+  .pid { display:flex; align-items:baseline; gap:var(--s-2); min-width:0; flex-wrap:wrap; }
   .pid-label {
     font-size:var(--t-xs); line-height:1.4; text-transform:uppercase;
     letter-spacing:.06em; color:var(--fg-mut);
@@ -1077,6 +1094,15 @@
   let modelKey = null;
   /** Есть ли у агента модель по ключу вообще: пустая MODEL_KEYS — поля нет. */
   let keyedModels = false;
+  /**
+   * Текст отказа, принадлежащего ключу, пока ключ сервером не подтверждён, —
+   * или `null`. Эти отказы ключ НЕ отменяют (он может быть верным, а отказ
+   * временным), но и подтверждения ему не дают: пока строка непуста, экран не
+   * обещает, что новый профиль будет закрыт, и не показывает состояние ключа.
+   */
+  let keyHeld = null;
+  /** Отказы ключа, при которых ключ остаётся, а подтверждения ещё нет. */
+  const KEY_HELD = new Set(['too_many_attempts', 'model_key_daily_cap']);
 
   const keyHeader = () => (modelKey === null ? {} : { 'x-model-key': modelKey });
 
@@ -1114,6 +1140,9 @@
    */
   const keyLost = () => {
     modelKey = null;
+    // Прежний удерживаемый отказ снимается: ключа больше нет, и его срок
+    // окна к новому значению отношения не имеет.
+    keyHeld = null;
     $('model-key').value = '';
     renderKey();
     sayLine($('key-error'), 'Ключ модели не принят. Введите его заново.');
@@ -1239,25 +1268,28 @@
       title.textContent = p.name;
       title.title = p.name;
       name.append(title);
-      // Профиль из cookie помечен словом, а не только фоном: цвет не
-      // единственный носитель смысла.
-      if (p.id === currentProfileId) {
+      // Подписи строки живут в одной группе, а не прямыми детьми .pro-name:
+      // поодиночке второй чип переносился на новую строку к левому краю, а
+      // группа переносится целиком (см. `.pro-chips`). Группа добавляется
+      // только если в ней что-то есть — пустой элемент дал бы лишний зазор.
+      const chips = document.createElement('span');
+      chips.className = 'pro-chips';
+      const chipOf = (text) => {
         const chip = document.createElement('span');
         chip.className = 'chip';
-        chip.textContent = 'в прошлый раз';
-        name.append(chip);
-      }
+        chip.textContent = text;
+        chips.append(chip);
+      };
+      // Профиль из cookie помечен словом, а не только фоном: цвет не
+      // единственный носитель смысла.
+      if (p.id === currentProfileId) chipOf('в прошлый раз');
       // Ключевой профиль в списке назван словом — той же подписью, что стоит
       // у имени профиля внутри. Без неё список читался бы как «все открыты», и
       // посетитель с ключом начинал бы писать в открытый профиль, думая, что
       // он закрыт. Имя ключа рядом не печатается: оно известно только тому,
       // кто его предъявил, и строке списка ничего не добавляет.
-      if (p.keyName) {
-        const chip = document.createElement('span');
-        chip.className = 'chip';
-        chip.textContent = 'по ключу';
-        name.append(chip);
-      }
+      if (p.keyName) chipOf('по ключу');
+      if (chips.childElementCount > 0) name.append(chips);
       const when = document.createElement('span');
       when.className = 'pro-when';
       const n = p.sessions ?? 0;
@@ -1300,6 +1332,9 @@
       profileList = d.profiles ?? [];
       profileCap = d.cap ?? null;
       currentProfileId = d.currentId ?? null;
+      // Список пришёл — значит, ключ (если он предъявлен) сервером принят.
+      keyHeld = null;
+      renderKey();
       renderGate({ focus });
     } catch (error) {
       // Ключ уже забыт и назван своей строкой: список перечитывается без
@@ -1307,14 +1342,28 @@
       // в случае, когда и связь, и список в порядке. Второго витка не будет:
       // без заголовка этого отказа сервер не даёт.
       if (error.code === 'bad_model_key') return loadProfiles({ focus });
+
+      // Отказ принадлежит ключу, а не связи: окно попыток и суточный потолок.
+      // Прежде оба приходили сюда и получали «Проверьте связь» — подсказку,
+      // которая здесь не помогает: связь в порядке, ждать надо срок, который
+      // сервер назвал. Ключ при этом НЕ забывается: он может быть верным, и
+      // отказ временный, — но подтверждения ему пока нет, поэтому строка
+      // состояния гасится, а обещание закрытого профиля снимается.
+      const keyFault = KEY_HELD.has(error.code);
+      if (keyFault) {
+        keyHeld = error.message;
+        renderKey();
+      }
       $('pro-list').replaceChildren();
       $('pro-list').removeAttribute('aria-busy');
-      say($('gate-msg'), 'Список профилей не загрузился. Проверьте связь и повторите.');
+      say($('gate-msg'), keyFault
+        ? 'Список профилей не загрузился: сервер отказал по ключу — причина выше.'
+        : 'Список профилей не загрузился. Проверьте связь и повторите.');
       $('gate-retry-row').hidden = false;
       // Создавать профиль вслепую нельзя: неизвестно, есть ли места.
       $('pro-name').disabled = true;
       $('pro-create').disabled = true;
-      if (focus) $('gate-retry').focus();
+      if (focus) (keyFault ? $('model-key') : $('gate-retry')).focus();
     }
   };
   $('gate-retry').onclick = () => loadProfiles({ focus: true });
@@ -1330,10 +1379,22 @@
     $('key-apply').textContent = on ? 'Сменить ключ' : 'Применить ключ';
     const hint = $('pro-keyed-hint');
     hint.hidden = !keyedModels;
-    hint.textContent = on
-      ? 'Ключ применён: новый профиль будет закрыт этим ключом — увидеть и прочитать его сможет только тот, у кого ключ.'
-      : 'Без ключа новый профиль будет открыт всем.';
-    if (!on) say($('key-on'), '');
+    // Три состояния, а не два: ключа нет, ключ принят, ключ предъявлен и
+    // сервером пока не принят. Третье нельзя сливать со вторым — обещание
+    // «профиль будет закрыт этим ключом» в нём неизвестно.
+    hint.textContent = keyHeld !== null
+      ? 'Ключ предъявлен, но сервер его пока не принял: каким будет новый профиль, неизвестно.'
+      : on
+        ? 'Ключ применён: новый профиль будет закрыт этим ключом — увидеть и прочитать его сможет только тот, у кого ключ.'
+        : 'Без ключа новый профиль будет открыт всем.';
+    if (keyHeld !== null) {
+      // Словами сервера и его числом: срок окна и время сброса потолка он
+      // уже назвал, а строка состояния ключа гасится — подтверждения нет.
+      sayLine($('key-error'), keyHeld);
+      say($('key-on'), '');
+    } else if (!on) {
+      say($('key-on'), '');
+    }
   };
 
   // Форма ключа, известная и серверу, и агенту. Проверяется здесь, чтобы
@@ -1352,10 +1413,15 @@
       return;
     }
     modelKey = value === '' ? null : value;
+    // Новая попытка — прежний удерживаемый отказ снимается: он относился к
+    // прошлому значению и к прошлой минуте.
+    keyHeld = null;
     renderKey();
     await loadProfiles();
-    // Если ключ не принят, список перечитан уже без него: тогда об этом
-    // говорит строка отказа, а не эта.
+    // Если ключ не принят, список перечитан уже без него; если отказ
+    // удерживается (429), о нём говорит строка отказа. В обоих случаях эта
+    // строка молчит: подтверждения ключу нет.
+    if (keyHeld !== null) return;
     if (modelKey === null && value !== '') return;
     say($('key-on'), modelKey === null
       ? `Ключ снят: в списке только открытые профили — ${profileList.length}.`
