@@ -276,9 +276,13 @@ function modelKey(req) {
 }
 
 /**
- * Заголовки ключа или отказ 403 теми же словами, что у агента. Один вызов на
- * ручку: ручек у дня тринадцать, и «забыл пробросить» означало бы, что
- * ключевой профиль отвечает посетителю как несуществующий.
+ * Заголовки ключа или отказ 403 теми же словами, что у агента.
+ *
+ * Зовётся из `askAgent` ниже и только из него: прежде эту пару строк
+ * копировала каждая ручка профиля, и одна из четырнадцати её не скопировала —
+ * в ключевом профиле «новый диалог» отвечал «профиль не найден» (блокирующая
+ * находка `reviewer` к PR #334). Счёт ручек в комментарии держателем не был и
+ * быть не мог.
  */
 function keyHeaders(req, res) {
   const key = modelKey(req)
@@ -326,6 +330,41 @@ async function callAgent(path, options = {}) {
     signal: AbortSignal.timeout(env.AGENT_TIMEOUT_MS),
   })
   const json = await response.json().catch(() => null)
+  return { response, json }
+}
+
+/**
+ * ЕДИНСТВЕННЫЙ способ, которым ручка профиля ходит к сервису агентов
+ * (ADR 2026-10-07-1349, п. 4, Б5).
+ *
+ * Почему помощник, а не правило «не забудь две строки». Заголовок ключа и
+ * разбор его отказов нужны ВСЕМ ручкам профиля, и тринадцать из четырнадцати
+ * копировали одну и ту же пару. Четырнадцатая — `POST /api/session` — её не
+ * скопировала, и в ключевом профиле второй диалог завести было нельзя:
+ * запрос доходил до агента без ключа, `visibleProfile` подменял номер, и день
+ * отвечал «Диалог не создан: профиль не найден». Безопасность при этом не
+ * нарушалась — отказ закрытый, — но профиль не работал для того
+ * единственного, кому он предназначен. Здесь пропустить ручку нельзя по
+ * построению: ключ добавляет сам помощник.
+ *
+ * Возвращает `null`, когда ответ посетителю уже отправлен: это либо негодная
+ * форма заголовка (403 от `keyHeaders`), либо отказ, принадлежащий ключу
+ * (403/429 от агента, `keyRefused`). Вызывающему остаётся выйти.
+ *
+ * Ошибки транспорта не ловит: у каждой ручки свои слова про недоступного
+ * агента, и `try`/`catch` остаётся там, где он и был.
+ *
+ * `cookies` — заголовки ответа, которые обязаны уехать вместе с отказом
+ * ключа: у `/api/answer` это `set-cookie` новорождённого диалога.
+ */
+async function askAgent(req, res, path, options = {}, { cookies: extra = {} } = {}) {
+  const headers = keyHeaders(req, res)
+  if (!headers) return null
+  const { response, json } = await callAgent(path, {
+    ...options,
+    headers: { ...(options.headers ?? {}), ...headers },
+  })
+  if (!response.ok && keyRefused(res, response, json, extra)) return null
   return { response, json }
 }
 
@@ -397,11 +436,11 @@ const profileView = (profile, sessionCap) => ({
 
 /** Список профилей для экрана входа. Чтение вне лимитера, как в днях 7–10. */
 async function handleProfiles(req, res) {
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   try {
-    const { response, json } = await callAgent('/v1/profiles', { headers })
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    const asked = await askAgent(req, res, '/v1/profiles')
+    if (!asked) return
+    const { response, json } = asked
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, {
       profiles: json.profiles ?? [],
       cap: json.cap ?? null,
@@ -423,10 +462,10 @@ async function handleProfiles(req, res) {
 async function handleProfileState(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}`, { headers })
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) {
       return send(
         res,
@@ -435,7 +474,7 @@ async function handleProfileState(req, res) {
         cookies(dropProfile(), dropSession()),
       )
     }
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, { profile: profileView(json.profile, json.sessionCap ?? null) })
   } catch (error) {
     console.error(`профиль: ${error.message}`)
@@ -445,16 +484,16 @@ async function handleProfileState(req, res) {
 
 async function handleCreateProfile(req, res) {
   if (!reserveWrite(req, res)) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
-    const { response, json } = await callAgent('/v1/profiles', {
+    const asked = await askAgent(req, res, '/v1/profiles', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: body.name }),
     })
+    if (!asked) return
+    const { response, json } = asked
     // Отказы агента доходят его словами и его кодом: 409 — мест нет, 400 —
     // имя не годится. Страница показывает их по-разному.
     if (response.status === 409 || response.status === 400) {
@@ -463,7 +502,7 @@ async function handleCreateProfile(req, res) {
         code: json?.code,
       })
     }
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     // Cookie здесь не ставится: профиль выбирается отдельным действием
     // (ADR, п. 2) — так же, как выбирают существующий.
     return send(res, 200, { profile: { id: json.profile.id, name: json.profile.name } })
@@ -481,12 +520,12 @@ async function handleCreateProfile(req, res) {
  */
 async function handleSelectProfile(req, res) {
   if (!reserveWrite(req, res)) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор профиля' })
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${body.id}`, { headers })
+    const asked = await askAgent(req, res, `/v1/profiles/${body.id}`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) {
       // Профиль мог уйти по сроку или быть удалённым любым посетителем:
       // указатель в браузере стирается вместе с отказом.
@@ -497,7 +536,7 @@ async function handleSelectProfile(req, res) {
         cookies(dropProfile(), dropSession()),
       )
     }
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     const profile = json.profile
     const live = profile.lastSession ?? null
     return send(
@@ -519,22 +558,19 @@ async function handleSelectProfile(req, res) {
  */
 async function handleDeleteProfile(req, res) {
   if (!reserveWrite(req, res)) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор профиля' })
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${body.id}`, {
-      method: 'DELETE',
-      headers,
-    })
+    const asked = await askAgent(req, res, `/v1/profiles/${body.id}`, { method: 'DELETE' })
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404 || response.status === 409) {
       return send(res, response.status, {
         error: json?.message ?? 'Профиль не найден',
         code: json?.code,
       })
     }
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     // Удалили тот, что в cookie, — указателей больше нет.
     const mine = profileFromCookie(req) === body.id
     return send(
@@ -554,16 +590,16 @@ async function handleSettings(req, res) {
   if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/settings`, {
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/settings`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', ...headers },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
+    if (!asked) return
+    const { response, json } = asked
     // Причину отказа пользователь должен видеть словами агента: он их проверял.
     if (response.status === 400 || response.status === 404) {
       return send(res, response.status, {
@@ -571,7 +607,7 @@ async function handleSettings(req, res) {
         code: json?.code,
       })
     }
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, { settings: json.settings ?? {} })
   } catch (error) {
     console.error(`настройки: ${error.message}`)
@@ -584,12 +620,12 @@ async function handleSettings(req, res) {
 async function handleSessions(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/sessions`, { headers })
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/sessions`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) return send(res, 404, { error: 'Профиль не найден' })
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, {
       sessions: sessionsView(json.sessions),
       cap: json.cap ?? null,
@@ -608,18 +644,20 @@ async function handleCreateSession(req, res) {
   if (!profileId) return
   const body = (await jsonBody(req)) ?? {}
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/sessions`, {
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ topicId: body.topicId ?? null }),
     })
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 409 || response.status === 400 || response.status === 404) {
       return send(res, response.status, {
         error: json?.message ?? 'Диалог не создан',
         code: json?.code,
       })
     }
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(
       res,
       200,
@@ -637,17 +675,15 @@ async function handleSelectSession(req, res) {
   if (!reserveWrite(req, res)) return
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const body = await jsonBody(req)
   if (!UUID.test(body?.id ?? '')) return send(res, 400, { error: 'Нужен идентификатор диалога' })
   try {
-    const { response, json } = await callAgent(`/v1/sessions/${body.id}?profile=${profileId}`, {
-      headers,
-    })
+    const asked = await askAgent(req, res, `/v1/sessions/${body.id}?profile=${profileId}`)
+    if (!asked) return
+    const { response, json } = asked
     // Диалог чужого профиля отвечает как несуществующий — и cookie не меняется.
     if (response.status === 404) return send(res, 404, { error: 'Диалог не найден' })
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(
       res,
       200,
@@ -670,16 +706,16 @@ async function handleTopic(req, res) {
   if (!profileId) return
   const sessionId = sessionFromCookie(req)
   if (!sessionId) return send(res, 409, { error: 'Диалога ещё нет', code: 'no_session' })
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const body = await jsonBody(req)
   if (!body) return send(res, 400, { error: 'тело не JSON' })
   try {
-    const { response, json } = await callAgent(
+    const asked = await askAgent(
+      req,
+      res,
       `/v1/sessions/${sessionId}/topic?profile=${profileId}`,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify(
           body.decision !== undefined && body.decision !== null
             ? { decision: body.decision }
@@ -687,6 +723,8 @@ async function handleTopic(req, res) {
         ),
       },
     )
+    if (!asked) return
+    const { response, json } = asked
     if (!response.ok) {
       return send(res, response.status === 502 ? 502 : response.status, {
         error: json?.message ?? 'Ответ не принят',
@@ -708,14 +746,12 @@ async function handleTopic(req, res) {
 async function handleTopicFacts(req, res, topicId) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   try {
-    const { response, json } = await callAgent(`/v1/profiles/${profileId}/topics/${topicId}`, {
-      headers,
-    })
+    const asked = await askAgent(req, res, `/v1/profiles/${profileId}/topics/${topicId}`)
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404) return send(res, 404, { error: 'Тема не найдена' })
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     // Имя диалога-источника, а не его идентификатор: у факта стоит дата
     // записи и диалог, и это не ссылка на издание (ADR, п. 5.2).
     const facts = (json.topic?.facts ?? []).map((f) => ({
@@ -742,8 +778,6 @@ async function handleAnswer(req, res) {
   if (!body) return send(res, 400, { error: 'тело должно быть объектом' })
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const keyed = keyHeaders(req, res)
-  if (!keyed) return
 
   const ip = clientIp(req)
   const slot = limiter.reserve(ip)
@@ -758,14 +792,21 @@ async function handleAnswer(req, res) {
     // Первое сообщение создаёт диалог профиля (ADR, п. 2). Потолок в 20
     // действует и здесь: 409 — и запуска не было.
     try {
-      const { response, json } = await callAgent(`/v1/profiles/${profileId}/sessions`, {
+      const asked = await askAgent(req, res, `/v1/profiles/${profileId}/sessions`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...keyed },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ topicId: topicId ?? null }),
       })
+      // Отказ ключа помощник уже отправил. Слот возвращается и здесь: порядок
+      // ADR — лимитер на адрес, потом ключ, — поэтому слот к этому моменту
+      // занят, и отказ границы ключа его тратить не должен.
+      if (!asked) {
+        limiter.release(ip)
+        return
+      }
+      const { response, json } = asked
       if (!response.ok) {
         limiter.release(ip)
-        if (keyRefused(res, response, json)) return
         if (response.status === 409 || response.status === 404 || response.status === 400) {
           return send(res, response.status, {
             error: json?.message ?? 'Диалог не создан',
@@ -785,22 +826,30 @@ async function handleAnswer(req, res) {
 
   let result
   try {
-    result = await callAgent('/v1/runs', {
+    // Ровно `x-model-key` и ничего больше: его кладёт `askAgent`, агент
+    // сверяет ключ сам и разрешает по нему закрытую модель (ADR
+    // 2026-10-07-1349, п. 4, Б5). Cookie только что рождённого диалога
+    // уезжает и с отказом ключа: диалог у агента уже есть, и терять
+    // указатель на него нельзя.
+    result = await askAgent(req, res, '/v1/runs', {
       method: 'POST',
-      // Ровно `x-model-key` и ничего больше: агент сверяет ключ сам и
-      // разрешает по нему закрытую модель (ADR 2026-10-07-1349, п. 4, Б5).
-      headers: { 'content-type': 'application/json', ...keyed },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         agent: env.AGENT_ID,
         // Профиль и диалог добавляет сервер: страница берёт их из cookie,
         // которую не видит.
         input: { ...input, profileId, sessionId },
       }),
-    })
+    }, { cookies: headers })
   } catch (error) {
     limiter.release(ip)
     console.error(`агент: ${error.name}: ${error.message}`)
     return send(res, 502, { error: AGENT_DOWN }, headers)
+  }
+  if (!result) {
+    // Отказ ключа отправлен помощником — вместе с cookie диалога.
+    limiter.release(ip)
+    return
   }
 
   const { response, json } = result
@@ -810,11 +859,6 @@ async function handleAnswer(req, res) {
   }
   // До запуска дело не дошло — слот возвращается.
   limiter.release(ip)
-  // Границы ключевого профиля — 403, суточный потолок имени — 429: страница
-  // обязана увидеть их кодом, а не как «агент не ответил». Cookie диалога,
-  // если он только что родился, уезжает вместе с отказом: диалог у агента
-  // уже есть, и терять указатель на него нельзя.
-  if (keyRefused(res, response, json, headers)) return
   if (response.status === 400)
     return send(res, 400, { error: json?.message ?? 'Запрос отклонён' }, headers)
   console.error(`агент: ${response.status} ${json?.code ?? ''}`)
@@ -845,8 +889,6 @@ function contextQuery(req, profileId) {
 async function handleChat(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const sessionId = sessionFromCookie(req)
   const clearing = req.method === 'DELETE'
 
@@ -868,14 +910,15 @@ async function handleChat(req, res) {
 
   try {
     if (clearing) {
-      const { response, json } = await callAgent(`/v1/sessions/${sessionId}?profile=${profileId}`, {
+      const asked = await askAgent(req, res, `/v1/sessions/${sessionId}?profile=${profileId}`, {
         method: 'DELETE',
-        headers,
       })
+      if (!asked) return
+      const { response, json } = asked
       // Пока агент не подтвердил удаление, обещать его нельзя — и cookie
       // менять нельзя тоже: без прежнего идентификатора переписку будет
       // не удалить уже никогда.
-      if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+      if (!response.ok) throw new Error(`агент ${response.status}`)
       // Новый диалог не заводится: он родится с первым сообщением или по
       // кнопке. Случайный идентификатор здесь не подошёл бы — диалога с ним
       // у профиля нет, и запуск отверг бы его (ADR, п. 2).
@@ -897,10 +940,9 @@ async function handleChat(req, res) {
         cookies(dropSession()),
       )
     }
-    const { response, json } = await callAgent(
-      `/v1/sessions/${sessionId}${contextQuery(req, profileId)}`,
-      { headers },
-    )
+    const asked = await askAgent(req, res, `/v1/sessions/${sessionId}${contextQuery(req, profileId)}`)
+    if (!asked) return
+    const { response, json } = asked
     // Диалог ушёл по сроку или профиль сменили: указатель стирается, и
     // страница показывает пустой лог, а не чужую переписку.
     if (response.status === 404) {
@@ -927,7 +969,7 @@ async function handleChat(req, res) {
         error: 'Память диалога у агента сейчас недоступна: переписка не показана.',
       })
     }
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, {
       messages: json.messages ?? [],
       totalTokens: json.totalTokens ?? null,
@@ -957,8 +999,6 @@ async function handleChat(req, res) {
 async function handleHead(req, res) {
   const profileId = requireProfile(req, res)
   if (!profileId) return
-  const headers = keyHeaders(req, res)
-  if (!headers) return
   const sessionId = sessionFromCookie(req)
   if (!sessionId) return send(res, 409, { error: 'Диалога ещё нет', code: 'no_session' })
   const body = await jsonBody(req)
@@ -966,20 +1006,24 @@ async function handleHead(req, res) {
     return send(res, 400, { error: 'messageId должен быть целым числом' })
 
   try {
-    const { response, json } = await callAgent(
+    const asked = await askAgent(
+      req,
+      res,
       `/v1/sessions/${sessionId}/head?profile=${profileId}`,
       {
         method: 'PUT',
-        headers: { 'content-type': 'application/json', ...headers },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ messageId: body.messageId }),
       },
     )
+    if (!asked) return
+    const { response, json } = asked
     if (response.status === 404 || response.status === 409)
       return send(res, response.status, {
         error: json?.message ?? 'Ветку переключить не удалось',
         code: json?.code,
       })
-    if (!response.ok) { if (keyRefused(res, response, json)) return; throw new Error(`агент ${response.status}`) }
+    if (!response.ok) throw new Error(`агент ${response.status}`)
     return send(res, 200, { head: json?.head ?? null })
   } catch (error) {
     console.error(`ветка: ${error.message}`)

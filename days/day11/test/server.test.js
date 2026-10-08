@@ -117,6 +117,20 @@ const agent = http.createServer(async (req, res) => {
     return res.end(JSON.stringify(refusal[1]))
   }
 
+  // Ключевой профиль без ключа СВОЕГО имени отвечает как несуществующий —
+  // ровно так ведёт себя `agents` (`visibleProfile` подменяет номер на тот,
+  // которого в базе нет). Это общая ветвь на все пути профиля, а не на
+  // отдельные: ручка, забывшая проброс ключа, обязана краснеть независимо от
+  // того, какая она (блокирующая находка `reviewer`: `POST /api/session`
+  // проброс потеряла, а стенд спрашивал ключ только у путей, которые её
+  // тест не задевал).
+  const keyedPath =
+    path.startsWith(`/v1/profiles/${KEYED_PID}`) ||
+    (profileOf === KEYED_PID && path.startsWith('/v1/sessions/'))
+  if (keyedPath && req.headers['x-model-key'] !== 'mika') {
+    return json(404, { ok: false, code: 'unknown_profile' })
+  }
+
   // --- профили ---
   if (path === '/v1/profiles' && req.method === 'GET') {
     // `keyName` в строках списка — как у `liveProfiles` сервиса: имя у
@@ -1012,4 +1026,101 @@ test('список входа несёт имя ключа, и страница 
   )
   // И строка состояния ключа больше не признаётся, что не различает их.
   assert.equal(code.includes('список не различает'), false)
+})
+
+// --- Проброс ключа на КАЖДОЙ ручке профиля --------------------------------
+// Блокирующая находка `reviewer` к PR #334: `POST /api/session` был
+// единственным из четырнадцати обработчиков без проброса `x-model-key`, и в
+// ключевом профиле «новый диалог» отвечал «профиль не найден». Прежние тесты
+// этого не держали: они проверяли проброс на тех ручках, которые трогали, а
+// счёт ручек стоял только в комментарии.
+//
+// Эта проверка перебирает ВСЕ ручки профиля и утверждает об одном: что бы
+// ручка ни делала, каждый её запрос к сервису уходит с ключом. Пропущенная
+// ручка краснеет здесь независимо от того, какая она.
+
+/** Ручка профиля: метод, путь, тело и свой адрес — окна лимитера узкие. */
+const PROFILE_ROUTES = [
+  ['GET', '/api/profiles', undefined, '10.30.0.1'],
+  ['GET', '/api/profile', undefined, '10.30.0.2'],
+  ['POST', '/api/profile', { name: 'по ключу' }, '10.30.0.3'],
+  ['POST', '/api/profile/select', { id: KEYED_PID }, '10.30.0.4'],
+  ['PUT', '/api/settings', { maxTokens: 1500 }, '10.30.0.5'],
+  ['GET', '/api/sessions', undefined, '10.30.0.6'],
+  ['POST', '/api/session', { topicId: null }, '10.30.0.7'],
+  ['POST', '/api/session/select', { id: SID }, '10.30.0.8'],
+  ['POST', '/api/session/topic', { topicId: 7 }, '10.30.0.9'],
+  ['GET', '/api/topic/7', undefined, '10.30.0.10'],
+  ['GET', '/api/chat', undefined, '10.30.0.11'],
+  ['PUT', '/api/chat/head', { messageId: 3 }, '10.30.0.12'],
+  ['POST', '/api/answer', { prompt: 'вопрос' }, '10.30.0.13'],
+  ['DELETE', '/api/chat', undefined, '10.30.0.14'],
+  ['DELETE', '/api/profile', { id: KEYED_PID }, '10.30.0.15'],
+]
+
+test('каждая ручка профиля уносит x-model-key до сервиса — все четырнадцать', async () => {
+  for (const [method, path, body, ip] of PROFILE_ROUTES) {
+    const before = agentLog.length
+    const response = await call(method, path, body, {
+      ip,
+      cookie: withSession(SID, KEYED_PID),
+      modelKey: 'mika',
+    })
+    const seen = agentLog.slice(before)
+    assert.ok(seen.length > 0, `${method} ${path}: до сервиса вообще не дошло`)
+    for (const callToAgent of seen) {
+      assert.equal(
+        callToAgent.modelKey,
+        'mika',
+        `${method} ${path}: запрос ${callToAgent.method} ${callToAgent.url} ушёл БЕЗ ключа`,
+      )
+    }
+    // И ответ не «профиль не найден»: стенд ведёт себя как agents, то есть
+    // ключевой профиль без ключа отвечает как несуществующий. Без проброса
+    // любая из этих ручек вернула бы именно это.
+    const json = await response.json().catch(() => null)
+    assert.notEqual(
+      json?.code,
+      'unknown_profile',
+      `${method} ${path}: ключевой профиль ответил как несуществующий`,
+    )
+  }
+})
+
+test('POST /api/session в ключевом профиле создаёт диалог, а не 404 (находка reviewer)', async () => {
+  const before = agentLog.length
+  const r = await call('POST', '/api/session', { topicId: null }, {
+    ip: '10.31.0.1',
+    cookie: withProfile(KEYED_PID),
+    modelKey: 'mika',
+  })
+  assert.equal(r.status, 200, 'диалог создан')
+  const body = await r.json()
+  assert.equal(body.sessionId, NEW_SID)
+  assert.match(setCookies(r), new RegExp(`day11_sid=${NEW_SID}`), 'cookie диалога поставлена')
+
+  const made = agentLog.slice(before).find((c) => c.method === 'POST' && c.url.endsWith('/sessions'))
+  assert.notEqual(made, undefined, 'создание диалога дошло до сервиса')
+  assert.equal(made.modelKey, 'mika', 'и дошло с ключом')
+})
+
+test('негодная форма ключа — 403 на каждой ручке профиля, и до сервиса не доходит', async () => {
+  // Форму проверяет сам день (`modelKey`), и теперь это делает общий
+  // помощник: пропустить ручку нельзя. Пробел вне [A-Za-z0-9_-].
+  for (const [method, path, body, ip] of PROFILE_ROUTES) {
+    const before = agentLog.length
+    const r = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': `10.32.${ip.split('.')[3]}.1`,
+        cookie: withSession(SID, KEYED_PID),
+        'x-model-key': 'key with space',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    assert.equal(r.status, 403, `${method} ${path}`)
+    assert.equal((await r.json()).code, 'bad_model_key', `${method} ${path}`)
+    assert.deepEqual(agentLog.slice(before), [], `${method} ${path}: стенд не вызван`)
+  }
 })
