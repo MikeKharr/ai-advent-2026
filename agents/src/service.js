@@ -8,6 +8,7 @@ import {
   inputBudgetFor,
   isProfileId,
   isSessionId,
+  KEYED_PROFILE_MODELS,
   LAYERED_MODELS,
   parseProfileName,
   parsePrompt,
@@ -292,14 +293,45 @@ export function createService({
   const settingsDefaults = () => agents.get(LAYERED_AGENT_ID)?.defaults ?? {}
 
   /**
+   * По какому списку моделей проверяются настройки ЭТОГО профиля
+   * (ADR 2026-10-07-1349, п. 2 и п. 5).
+   *
+   * Правило одно и то же с обеих сторон: в настройках годно ровно то, что
+   * годно в запуске этого профиля, — иначе получается ловушка в одну сторону
+   * или в другую.
+   *   — Ключевой профиль: только закрытая запись. Прежний `LAYERED_MODELS`
+   *     её не содержал, и `PUT /settings` отвечал «Неизвестная модель» на
+   *     единственную модель, которой в этом профиле и можно пользоваться:
+   *     настроить профиль было нельзя вовсе (блокирующая находка живой
+   *     проверки `frontend`, PR #334).
+   *   — Открытый профиль: закрытой записи нет вовсе, как и в его
+   *     переключателе моделей. Принять её сюда значило бы завести вторую
+   *     ловушку: настройки сохранились бы, а запуск ответил 403
+   *     `model_key_required` — и причина лежала бы в настройках, которые
+   *     посетитель уже закрыл.
+   *
+   * Профиль здесь уже прошёл предикат ключа на входе ветви, поэтому строка в
+   * `key_name` означает «ключ этого имени предъявлен», а не просто «профиль
+   * закрыт».
+   */
+  const settingsModels = (profileId) =>
+    typeof sessions.profileKeyName(profileId) === 'string'
+      ? KEYED_PROFILE_MODELS
+      : LAYERED_MODELS
+
+  /**
    * Разбор настроек агента, чьи настройки правятся. День 13 присылает
    * `?agent=staged-agent`: у него свои потолки и две настройки круга проверки
-   * (ADR 2026-09-21-1747, п. 5). Без параметра — путь дня 11, слово в слово.
+   * (ADR 2026-09-21-1747, п. 5). Без параметра — путь дня 11, слово в слово;
+   * список моделей у него теперь зависит от профиля (см. `settingsModels`).
+   *
+   * Дни 13–15 идут ветвью `agent.parseSettings` и закрытой записи не видят
+   * ни при каком профиле: их агенты знают только `LAYERED_MODELS`.
    */
-  const settingsParser = (params) => {
+  const settingsParser = (params, profileId) => {
     const agent = agents.get(params.get('agent') ?? LAYERED_AGENT_ID)
     if (agent?.parseSettings) return (body) => agent.parseSettings(body)
-    return (body) => parseSettings(body, settingsDefaults(), LAYERED_MODELS)
+    return (body) => parseSettings(body, settingsDefaults(), settingsModels(profileId))
   }
 
   /**
@@ -982,7 +1014,7 @@ export function createService({
         // Список — тот же, что у входа запуска дня 11: настройки этой ручки
         // принадлежат агенту дня 11, и модель, годная в запуске, обязана быть
         // годной в настройках (ADR 2026-09-16-1038).
-        const settings = settingsParser(url.searchParams)(parsed.body)
+        const settings = settingsParser(url.searchParams, profileId)(parsed.body)
         if (!settings.ok) {
           return send(res, 400, { ok: false, code: 'bad_input', message: settings.message })
         }

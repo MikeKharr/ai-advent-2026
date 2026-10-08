@@ -144,6 +144,29 @@ test('staged-agent с этой моделью — 400 «Неизвестная �
   sessions.close()
 })
 
+test('путь настроек дней 13–15 закрытой записи не видит ни в каком профиле', () => {
+  // `staged.js:276` разбирает настройки против LAYERED_MODELS, и своего
+  // профиля у дней 13–15 нет — профиль общий. То есть `?agent=staged-agent`
+  // на ключевом профиле не должен становиться дверью к закрытой записи:
+  // список у этой ветви свой, и записи в нём нет.
+  const staged = createStagedAgent({
+    agent: REGISTRY.get('staged-agent'),
+    runs: createRuns(),
+    sessions: null,
+    stageLog: null,
+    env: ENV,
+    fetchImpl: async () => {
+      throw new Error('роутер вызван, хотя вызова быть не должно')
+    },
+    log: () => {},
+  })
+  const refused = staged.parseSettings({ model: KEYED })
+  assert.equal(refused.ok, false)
+  assert.match(refused.message, /Неизвестная модель/)
+  // Контрольная ветвь: обычную модель та же ветвь принимает.
+  assert.equal(staged.parseSettings({ model: 'anthropic-haiku' }).ok, true)
+})
+
 // --- Бюджет (params.js: поиск по DAY11_MODELS) ----------------------------
 
 test('бюджет закрытой записи — её собственный, а не Haiku', () => {

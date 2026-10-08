@@ -362,3 +362,104 @@ test('открытые профили ключом не затронуты: де
   await http.close()
   sessions.close()
 })
+
+// --- Настройки профиля: список моделей тот же, что у запуска ---------------
+// Блокирующая находка живой проверки `frontend` (PR #334): путь настроек дня 11
+// разбирал их против `LAYERED_MODELS`, то есть списка БЕЗ закрытой записи, и
+// `PUT /settings` отвечал «Неизвестная модель» на единственную модель, которой
+// в ключевом профиле и можно пользоваться. Настроить профиль было нельзя
+// вовсе, а окно настроек на экране из-за отказа не закрывалось.
+//
+// Правило, которое держат четыре проверки ниже: в настройках годно ровно то,
+// что годно в запуске ЭТОГО профиля. Ловушки обе названы: «не принимает
+// единственную доступную» и «приняла ту, на которой запуск ответит 403».
+
+const KEYED_ID = 'mac-qwen3-abliterated'
+
+test('ключевой профиль принимает в настройках закрытую модель', async () => {
+  const { sessions } = open()
+  const http = await serve({ sessions })
+  const keyed = await create(http, 'ключевой', MIKE)
+
+  const saved = await http.put(
+    `/v1/profiles/${keyed.id}/settings`,
+    { model: KEYED_ID, maxTokens: 1500 },
+    MIKE,
+  )
+  assert.equal(saved.status, 200, 'настройки сохраняются, а не 400 «Неизвестная модель»')
+  assert.equal((await saved.json()).settings.model, KEYED_ID)
+  // И перечитываются: значение легло в профиль, а не только в ответ.
+  const back = await (await http.get(`/v1/profiles/${keyed.id}`, MIKE)).json()
+  assert.equal(back.profile.settings.model, KEYED_ID)
+  await http.close()
+  sessions.close()
+})
+
+test('ключевой профиль НЕ принимает в настройках чужую модель', async () => {
+  const { sessions } = open()
+  const http = await serve({ sessions })
+  const keyed = await create(http, 'ключевой', MIKE)
+
+  const refused = await http.put(
+    `/v1/profiles/${keyed.id}/settings`,
+    { model: 'anthropic-haiku' },
+    MIKE,
+  )
+  assert.equal(refused.status, 400)
+  assert.match((await refused.json()).message, /Неизвестная модель/)
+  // Ничего не записалось: отказ разбора до записи, как и у прочих настроек.
+  const back = await (await http.get(`/v1/profiles/${keyed.id}`, MIKE)).json()
+  assert.equal(back.profile.settings.model, undefined)
+  await http.close()
+  sessions.close()
+})
+
+test('открытый профиль НЕ принимает закрытую модель: иначе ловушка 403 на запуске', async () => {
+  const { sessions } = open()
+  const http = await serve({ sessions })
+  const open_ = await create(http, 'открытый')
+
+  // С ключом в руках — и всё равно отказ: в открытом профиле этой записи нет
+  // вовсе, и сохранить её значило бы отложить 403 до следующего запуска.
+  for (const key of [undefined, MIKE]) {
+    const refused = await http.put(`/v1/profiles/${open_.id}/settings`, { model: KEYED_ID }, key)
+    assert.equal(refused.status, 400, JSON.stringify(key))
+    assert.match((await refused.json()).message, /Неизвестная модель/)
+  }
+  // Контрольная ветвь: обычную модель открытый профиль принимает как прежде.
+  const ok = await http.put(`/v1/profiles/${open_.id}/settings`, { model: 'anthropic-haiku' })
+  assert.equal(ok.status, 200)
+  assert.equal((await ok.json()).settings.model, 'anthropic-haiku')
+  await http.close()
+  sessions.close()
+})
+
+test('список входа помечает ключевой профиль именем ключа, открытый — null', async () => {
+  const { sessions } = open()
+  const http = await serve({ sessions })
+  const keyed = await create(http, 'ключевой', MIKE)
+  const open_ = await create(http, 'открытый')
+
+  const rows = async (key) => (await (await http.get('/v1/profiles', key)).json()).profiles
+  const byId = (list, id) => list.find((p) => p.id === id)
+
+  // С ключом видно оба, и они РАЗЛИЧИМЫ: без этого поля экран рисовать
+  // пометку не может и список читается как «все открыты».
+  const mine = await rows(MIKE)
+  assert.equal(byId(mine, keyed.id).keyName, 'mike')
+  assert.equal(byId(mine, open_.id).keyName, null)
+
+  // Без ключа ключевой строки в списке нет вовсе — утечки имени нет: имя
+  // уходит только тому, кто ключ этого имени предъявил.
+  const anon = await rows(undefined)
+  assert.equal(byId(anon, keyed.id), undefined)
+  assert.equal(byId(anon, open_.id).keyName, null)
+  assert.equal(JSON.stringify(anon).includes('mike'), false, 'имени ключа в публичном списке нет')
+
+  // С ключом ДРУГОГО имени — то же самое.
+  const alien = await rows(GUEST)
+  assert.equal(byId(alien, keyed.id), undefined)
+  assert.equal(JSON.stringify(alien).includes('mike'), false)
+  await http.close()
+  sessions.close()
+})

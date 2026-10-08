@@ -433,8 +433,16 @@ export function createSessions({
     // профили его имени (ADR 2026-10-07-1349, п. 2). Сравнение `p.key_name = ?`
     // при параметре NULL в SQL никогда не истинно, поэтому вызов без ключа
     // сам собой оставляет одну первую ветвь — сторожевого значения не нужно.
+    //
+    // `keyName` в выдаче — чтобы экран входа мог отличить ключевой профиль от
+    // открытого (находка `frontend` живой проверкой: без этого поля пометку
+    // нарисовать нечем, и список читался как «все открыты»). Утечки нет по
+    // той же строке WHERE: ключевая запись попадает в список ТОЛЬКО тому, кто
+    // предъявил ключ её имени, то есть имя в ответе он уже знает. У открытых
+    // профилей здесь `null`.
     liveProfiles: db.prepare(
       `SELECT p.id, p.name, p.created_at AS createdAt, p.last_seen_at AS lastSeenAt,
+              p.key_name AS keyName,
               (SELECT count(*) FROM sessions s
                 WHERE s.profile_id = p.id AND s.last_seen_at >= ?) AS sessions
          FROM profiles p
