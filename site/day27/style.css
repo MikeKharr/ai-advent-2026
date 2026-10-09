@@ -136,7 +136,11 @@ a.wk-link:hover { background:var(--bg); }
 }
 
 /* ── Как запрос доходит до модели ────────────────────────────────────── */
-/* Схема для глаза: прокручивается сама, строка не переносится. */
+/* Схема для глаза: прокручивается сама, строка не переносится.
+   tabindex="-1" в разметке — не украшение: прокручиваемый блок Chrome сам
+   делает остановкой табуляции с браузерным кольцом, хотя блок
+   aria-hidden="true" и порядок читается списком ниже. Скрипта, который снял
+   бы остановку по факту переполнения, у этой страницы нет. */
 .chain {
   margin:0 0 var(--s-4); padding:var(--s-3);
   background:var(--bg); border:1px solid var(--line); border-radius:var(--r-sm);
@@ -155,7 +159,9 @@ a.wk-link:hover { background:var(--bg); }
 
 /* ── Ссылка на день 11 ───────────────────────────────────────────────── */
 .go { padding:var(--s-4); }
-.go p { margin:0 0 var(--s-3); max-width:68ch; }
+/* :not(.note) — иначе .go p перебивает .note по весу селектора, и вторичный
+   текст уходит на 68ch вместо 52ch (находка design-review к #337). */
+.go p:not(.note) { margin:0 0 var(--s-3); max-width:68ch; }
 
 /* ── Г. Раскрывающееся пояснение ─────────────────────────────────────── */
 .exp {
@@ -182,7 +188,7 @@ a.wk-link:hover { background:var(--bg); }
   padding:var(--s-3) var(--s-4) var(--s-4);
   border-top:1px solid var(--line);
 }
-.exp-body p { margin:0; font-size:var(--t-sm); line-height:1.5; max-width:68ch; }
+.exp-body p { margin:0; font-size:var(--t-sm); line-height:1.5; max-width:52ch; }
 .exp-body p + p { margin-top:var(--s-3); }
 .exp-body a:hover { background:var(--bg); }
 
