@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка и тексты — agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md,
+     «Тело дня», день 27. Страница статическая целиком: ни app.js, ни results.json,
+     ни noscript у неё нет — прогона у дня 27 не было, читать нечего (ADR
+     2026-10-09-1335, п. 5). Числа замеров на странице отсутствуют; номера дней,
+     даты решений и пути — статические факты репозитория, не результат прогона. -->
+<title>День 27: локальная модель в приложениях — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <p class="back"><a href="/">← AI Advent 2026</a></p>
+    <h1>День 27: локальная модель в приложениях</h1>
+    <p class="lede">Приложения проекта уже спрашивают модель, которая работает на ноутбуке владельца, и показывают её ответы: отдельного задания на этот день не осталось, и замерять здесь нечего.</p>
+  </header>
+
+  <nav class="wk" aria-label="Неделя 26–30">
+    <p class="wk-label lbl">Неделя: локальная LLM</p>
+    <ul class="wk-list" role="list">
+      <li><a class="wk-link" href="/day26/">26</a></li>
+      <li><span class="wk-link wk-now" aria-current="page">27</span></li>
+      <li><a class="wk-link" href="/day28/">28</a></li>
+      <li><a class="wk-link" href="/day29/">29</a></li>
+      <li><a class="wk-link" href="/day30/">30</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <section aria-labelledby="means-h">
+      <div class="sec-head"><h2 id="means-h">Что это значит</h2></div>
+      <div class="panel means">
+        <p class="means-lead">Локальная модель в приложениях уже работает, и поэтому у этого дня нет своего замера.</p>
+        <p class="prose">Веб-приложения проекта выбирают модель по имени из общего реестра. Среди имён есть локальная: она отвечает на ноутбуке владельца, а не у поставщика в облаке. Запрос доходит до неё тем же путём, что до облачной, — через сервис агентов и роутер; разница только в том, какая запись реестра выбрана. В дне 11 есть и режим, где к локальной модели не примешивается ни один облачный вызов.</p>
+        <ul class="bounds">
+          <li>Модель живёт на ноутбуке владельца. Она доступна сайту только при включённой частной сети на ноутбуке; когда ноутбук выключен или сеть остановлена, роутер отвечает отказом «провайдер недоступен», и посетитель видит именно отказ, а не пустой ответ.</li>
+          <li>Сборка без встроенных отказов доступна только по именному ключу: без ключа её в списке дня 11 нет вовсе.</li>
+          <li>Полностью локальный контур проверяется конфигурацией, а не замером: страница показывает, где это видно в коде, и не обещает чисел.</li>
+        </ul>
+        <details class="exp">
+          <summary>Почему у этого дня нет замера<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Задание дня 27 — «приложение шлёт запросы в локальную LLM, получает и отображает ответы, работает без облачных моделей». Оно было закрыто раньше, чем началась неделя локальной LLM: локальная модель попала в реестр роутера и в списки моделей дней 5 и 11 ещё в сентябре, а полностью локальный контур — в начале октября. Пробела не осталось, а значит, нечего и мерить.</p>
+            <p>Остальные четыре дня недели закрывают настоящие пробелы и показывают числа прогонов. Эта страница их не показывает не потому, что прогон не удался, а потому что прогона не было: подставить сюда дату правки файла или чужие числа значило бы соврать. Решение — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR 2026-10-09-1335</a>, п. 5.</p>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section aria-labelledby="closed-h">
+      <div class="sec-head"><h2 id="closed-h">Что уже было закрыто</h2></div>
+      <ul class="closed" role="list">
+        <li>
+          <p class="closed-text">Ollama на ноутбуке владельца поднята службой и слушает адрес частной сети, а не все интерфейсы машины: снаружи сети к ней не подключиться.</p>
+          <p class="closed-meta"><span class="tag">Закрыто раньше</span><span class="closed-date num">09.09.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-09-0258-tailscale-to-laptop.md">ADR 2026-09-09-0258</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-09-09-0258-mac-tailnet.md">запись 2026-09-09-0258-mac-tailnet.md</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/deploy/mac/ai.zpq.ollama-tailnet.plist">deploy/mac/ai.zpq.ollama-tailnet.plist</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Локальная модель стоит в реестре роутера записью <code>mac-qwen3</code> ярусом <code>self-hosted</code>, и приложения выбирают её по имени — в списке моделей дня 5 и в списке дня 11.</p>
+          <p class="closed-meta"><span class="tag">Закрыто раньше</span><span class="closed-date num">09.09.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-09-0156-live-provider-quota.md">ADR 2026-09-09-0156</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/router/config/providers.json">router/config/providers.json</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/days/day5/env.js">days/day5/env.js</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agents/src/params.js">agents/src/params.js</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Ключевой профиль дня 11 — полностью локальный контур: сводка истории и пополнение памяти профиля в нём выключены, поэтому ни промпт, ни порождённый моделью текст не уходят внешнему поставщику. Доступ к такому профилю — по именному ключу.</p>
+          <p class="closed-meta"><span class="tag">Закрыто раньше</span><span class="closed-date num">07.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-07-1349-keyed-uncensored-model.md">ADR 2026-10-07-1349</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agents/src/layered.js">agents/src/layered.js</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-10-08-1034-keyed-uncensored-model-screen.md">запись 2026-10-08-1034-keyed-uncensored-model-screen.md</a></p>
+        </li>
+      </ul>
+      <p class="gap-line">Пробела не было: к началу недели приложение уже спрашивало локальную модель и показывало её ответы, поэтому своего прогона у этого дня нет. Отсутствие пробела — тоже результат недели.</p>
+    </section>
+
+    <section aria-labelledby="chain-h">
+      <div class="sec-head"><h2 id="chain-h">Как запрос доходит до модели</h2></div>
+      <p class="chain" aria-hidden="true" tabindex="-1">экран дня 11 → сервис агентов → роутер → частная сеть → Ollama ноутбука</p>
+      <ol class="steps">
+        <li>Посетитель выбирает модель на экране дня 11 и пишет реплику; экран шлёт её своему серверу.
+          <a class="step-file" href="https://github.com/MikeKharr/ai-advent-2026/blob/main/days/day11/public/index.html">days/day11/public/index.html</a></li>
+        <li>Сервис агентов собирает контекст профиля и берёт выбранное имя модели из своего списка — локальная запись стоит там рядом с облачными.
+          <a class="step-file" href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agents/src/params.js">agents/src/params.js</a></li>
+        <li>Роутер находит запись реестра по имени и видит у неё ярус <code>self-hosted</code>: вызов пойдёт не поставщику, а на свою машину.
+          <a class="step-file" href="https://github.com/MikeKharr/ai-advent-2026/blob/main/router/config/providers.json">router/config/providers.json</a></li>
+        <li>Запрос уходит с сервера на ноутбук по частной сети: наружу, в публичный интернет, он при этом не выходит, а служба на ноутбуке другого адреса и не слушает.
+          <a class="step-file" href="https://github.com/MikeKharr/ai-advent-2026/blob/main/deploy/mac/ai.zpq.ollama-tailnet.plist">deploy/mac/ai.zpq.ollama-tailnet.plist</a></li>
+        <li>Ollama на ноутбуке генерирует ответ, адаптер роутера приводит его к общей форме, и экран показывает текст — так же, как показал бы ответ облачной модели.
+          <a class="step-file" href="https://github.com/MikeKharr/ai-advent-2026/blob/main/router/src/adapters/ollama.js">router/src/adapters/ollama.js</a></li>
+      </ol>
+      <details class="exp">
+        <summary>Что именно значит «без облака»<span class="q-mark" aria-hidden="true"></span></summary>
+        <div class="exp-body">
+          <p>Обычный профиль дня 11 после каждого отвеченного хода просит модель сжать историю в сводку и пополнить память профиля. Если модель для ответа выбрана локальная, эти служебные вызовы всё равно могут идти к облачной — и тогда «локально» верно только про сам ответ.</p>
+          <p>В ключевом профиле дня 11 оба служебных механизма выключены: контекст собирается стратегией окна, сводка не заказывается, память профиля не пополняется. Ни промпт, ни порождённый моделью текст не уходят внешнему поставщику — это условие, под которым профиль вообще существует, и видно оно в конфигурации и в коде сервиса агентов, а не в числах замера.</p>
+          <p>Где это записано: <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-07-1349-keyed-uncensored-model.md">ADR 2026-10-07-1349</a>, раздел про память профиля; у записи реестра для этого профиля нет ни поиска в сети, ни инструментов — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/router/config/providers.json">router/config/providers.json</a>.</p>
+        </div>
+      </details>
+    </section>
+
+    <section aria-labelledby="go-h">
+      <div class="sec-head"><h2 id="go-h">Посмотреть, как это работает</h2></div>
+      <div class="panel go">
+        <p>Приложение, которое спрашивает локальную модель и показывает её ответы, — чат дня 11. Эта страница его не воспроизводит.</p>
+        <p><a class="wk-link" href="/day11/">Открыть день 11</a></p>
+        <p class="note">Локальная модель отвечает в нём, пока на ноутбуке включена частная сеть. Сборка без встроенных отказов видна только внутри профиля, созданного с именным ключом; ключ выдаёт владелец.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="task-h">
+      <div class="sec-head"><h2 id="task-h">Задание дня</h2></div>
+      <blockquote class="task">
+        <p><strong>День 27 «Интеграция локальной LLM в приложение»:</strong> CLI/телеграм-бот/веб-приложение; приложение шлёт запросы в локальную LLM, получает и отображает ответы, работает без облачных моделей.</p>
+      </blockquote>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Решение недели — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR 2026-10-09-1335</a>, ключевой профиль — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-07-1349-keyed-uncensored-model.md">ADR 2026-10-07-1349</a>, как это шло — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-10-08-0957-keyed-uncensored-model-server.md">запись истории</a>, исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</p>
+  </footer>
+</div>
+</body>
+</html>
