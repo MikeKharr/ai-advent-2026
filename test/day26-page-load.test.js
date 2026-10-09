@@ -32,6 +32,81 @@ test('app.js дня 26 грузится без ошибки', () => {
   assert.doesNotThrow(loadPage)
 })
 
+// Подложный DOM: ровно столько, сколько трогает app.js. Нужен, чтобы
+// проверить поведение состояний, а не только загрузку файла. Объявления
+// функций обычного скрипта попадают в глобальную область контекста vm,
+// поэтому render и showMessage здесь вызываются напрямую.
+function fakeDom() {
+  const nodes = new Map()
+  const mk = (name) => ({
+    name, hidden: false, textContent: '', className: '', scope: '', href: '',
+    children: [], scrollWidth: 0, clientWidth: 0,
+    appendChild(n) { this.children.push(n); return n },
+    setAttribute() {}, removeAttribute() {}, addEventListener() {},
+    querySelector() { return null }, focus() {},
+    get childElementCount() { return this.children.length },
+  })
+  const document = {
+    getElementById(id) {
+      if (!nodes.has(id)) nodes.set(id, mk(id))
+      return nodes.get(id)
+    },
+    createElement: (t) => mk(t),
+    querySelectorAll: () => [],
+  }
+  const ctx = vm.createContext({
+    fetch: () => new Promise(() => {}), console, document,
+    window: { addEventListener: () => {} },
+    location: { hash: '' },
+  })
+  new vm.Script(read('../site/day26/app.js'), { filename: 'app.js' }).runInContext(ctx)
+  return { ctx, nodes, get: (id) => document.getElementById(id) }
+}
+
+const DATA = () => JSON.parse(read('../site/day26/results.json'))
+
+// Ради чего: пустая таблица с одними заголовками обещает числа, которых нет.
+// Так и было до правки — блок «Скорость против предсказуемости текста»
+// оставался на экране пустым в трёх состояниях из четырёх (design-review к #339).
+for (const [name, mutate] of [
+  ['файла нет или он негоден', () => ({})],
+  ['чужой день в файле', () => ({ ...DATA(), day: 29 })],
+  ['прогона ещё не было', () => ({ ...DATA(), prompts: [] })],
+  ['проверки скорости в прогоне нет', () => {
+    const d = DATA(); delete d.speed_vs_content; delete d.speculative; return d
+  }],
+]) {
+  test('блок скорости не остаётся пустой таблицей: ' + name, () => {
+    const dom = fakeDom()
+    dom.ctx.render(mutate())
+    assert.equal(dom.get('svc-box').hidden, true, 'блок с таблицей скорости остался на экране')
+    assert.equal(dom.get('svc-status').hidden, false, 'причины на месте блока нет')
+    assert.ok(dom.get('svc-status').textContent.length > 0, 'причина пуста')
+    assert.equal(dom.get('svc-body').children.length, 0, 'в таблице скорости появились строки')
+  })
+}
+
+test('на полных данных блок скорости и ловушки /v1 показаны', () => {
+  const dom = fakeDom()
+  dom.ctx.render(DATA())
+  assert.equal(dom.get('svc-box').hidden, false)
+  assert.equal(dom.get('svc-status').hidden, true)
+  assert.ok(dom.get('svc-body').children.length > 0, 'строк скорости нет')
+  assert.equal(dom.get('traps').hidden, false, 'ловушки /v1 спрятаны при полных данных')
+  assert.equal(dom.get('opts-p').hidden, false, 'строка параметров спрятана при полных данных')
+})
+
+// Доля принятых черновиков — сводная за прогон. Разбивки по типам текста
+// замер не записал, и страница не вправе называть долю для русской прозы
+// (находка design-review к #339: число не из данных и спорило с таблицей).
+test('доли принятых черновиков по типам текста в данных нет и на странице тоже', () => {
+  const d = DATA()
+  assert.equal(d.speculative.accepted_fraction.by_text_kind, null)
+  const html = read('../site/day26/index.html')
+  assert.ok(!/около трети|почти все \d|принимается [а-я]+ треть/.test(html),
+    'доля принятых черновиков названа прозой, а не взята из данных')
+})
+
 test('index.html дня 26 грузит app.js и не грузит ничего с CDN', () => {
   const html = read('../site/day26/index.html')
   assert.ok(html.includes('src="app.js"'), 'app.js не подключён')

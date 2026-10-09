@@ -275,5 +275,19 @@
     "tps": 11.42
    }
   ]
+ },
+ "speculative": {
+  "draft_num_predict": 4,
+  "accepted_fraction": {
+   "min": 0.34337,
+   "max": 1.0,
+   "samples": 46,
+   "by_text_kind": null
+  },
+  "log_lines": [
+   "spec common_specu: adding speculative implementation 'draft-mtp'",
+   "srv    load_model: speculative decoding context initialized"
+  ],
+  "documented_in_library": false
  }
 }

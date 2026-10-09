@@ -60,6 +60,13 @@ function showMessage(text) {
   $('bd-status').hidden = false;
   $('acc-status').textContent = text;
   $('acc-status').hidden = false;
+  /* Пояснения тоже висят на данных: без них остались бы таблица с одними
+     заголовками и абзацы с пустыми местами вместо чисел. */
+  $('traps').hidden = true;
+  $('opts-p').hidden = true;
+  $('svc-box').hidden = true;
+  $('svc-status').textContent = text;
+  $('svc-status').hidden = false;
 }
 
 function valid(d) {
@@ -233,23 +240,27 @@ function renderAccess(list) {
 
   const dflt = list.find((a) => /v1/.test(a.label) && typeof a.reasoning_chars === 'number' && a.reasoning_chars > 0);
   const none = list.find((a) => /v1/.test(a.label) && a.reasoning_chars === 0);
-  if (dflt) {
-    $('trap-ttft').textContent = num(dflt.ttft_s, 2);
-    $('trap-ttft-answer').textContent = num(dflt.ttft_answer_s, 2);
-    $('trap-usage').textContent = typeof dflt.answer_tokens === 'number' ? String(dflt.answer_tokens) : NO_DATA;
-  }
-  if (none) {
-    $('trap-ttft-off').textContent = num(none.ttft_answer_s, 2);
-    $('trap-visible').textContent = typeof none.answer_tokens === 'number' ? String(none.answer_tokens) : NO_DATA;
-  }
+  /* Абзацы про ловушки показываются только когда обе стороны сравнения в
+     данных есть: иначе в прозе остались бы «нет данных» вместо чисел. */
+  if (!dflt || !none) return;
+  $('trap-ttft').textContent = num(dflt.ttft_s, 2);
+  $('trap-ttft-answer').textContent = num(dflt.ttft_answer_s, 2);
+  $('trap-usage').textContent = typeof dflt.answer_tokens === 'number' ? String(dflt.answer_tokens) : NO_DATA;
+  $('trap-ttft-off').textContent = num(none.ttft_answer_s, 2);
+  $('trap-visible').textContent = typeof none.answer_tokens === 'number' ? String(none.answer_tokens) : NO_DATA;
+  $('traps').hidden = false;
 }
 
 /* ── Скорость против предсказуемости текста ───────────────────────────── */
 
-function renderSpeed(s) {
+function renderSpeed(s, spec) {
   const box = $('svc-body');
   if (!s || !Array.isArray(s.cases) || !s.cases.length) {
-    $('svc-note').textContent = 'Проверка в этом прогоне не делалась.';
+    /* Пустая таблица с одними заголовками — худшее из возможного: обещает
+       числа, которых нет. Блок прячется целиком, на его месте — причина. */
+    $('svc-box').hidden = true;
+    $('svc-status').textContent = 'Проверка скорости против предсказуемости текста в этом прогоне не делалась.';
+    $('svc-status').hidden = false;
     return;
   }
   s.cases.forEach((c) => {
@@ -265,6 +276,25 @@ function renderSpeed(s) {
   $('svc-note').textContent = 'Параметры: ' + opts + '. Источник чисел: ' +
     (typeof s.series === 'string' && s.series ? s.series : NO_DATA) +
     '. У предельно предсказуемого текста скорости нет данных: движок не вернул счётчик токенов.';
+
+  /* Доля принятых черновиков — сводная за прогон, без разбивки по типам
+     текста: её в данных нет, и страница её не придумывает. */
+  const f = spec && spec.accepted_fraction ? spec.accepted_fraction : null;
+  $('spec-draft').textContent = spec && typeof spec.draft_num_predict === 'number'
+    ? String(spec.draft_num_predict) : NO_DATA;
+  $('spec-min').textContent = f ? num(f.min, 2) : NO_DATA;
+  $('spec-max').textContent = f ? num(f.max, 2) : NO_DATA;
+  $('spec-n').textContent = f && typeof f.samples === 'number' ? String(f.samples) : NO_DATA;
+  const log = $('spec-log');
+  const lines = spec && Array.isArray(spec.log_lines) ? spec.log_lines : [];
+  lines.forEach((line) => {
+    const li = document.createElement('li');
+    li.appendChild(el('code', null, line));
+    log.appendChild(li);
+  });
+
+  $('svc-box').hidden = false;
+  $('svc-status').hidden = true;
 }
 
 /* ── Сборка ───────────────────────────────────────────────────────────── */
@@ -280,6 +310,7 @@ function render(data) {
       (typeof data.think === 'boolean' ? ', think ' + data.think : '')
     : NO_DATA;
   $('opts').textContent = opts;
+  $('opts-p').hidden = opts === NO_DATA;
 
   if (Array.isArray(data.notes) && data.notes.length) {
     const ul = $('run-notes');
@@ -298,7 +329,7 @@ function render(data) {
   $('bd-status').hidden = true;
 
   renderAccess(data.access);
-  renderSpeed(data.speed_vs_content);
+  renderSpeed(data.speed_vs_content, data.speculative);
 
   $('run-line').textContent = 'Прогон ' + fmtRun(data.generated) + ' · ' + data.host +
     ' · модель ' + data.model + ' · Ollama ' + data.runner + ' · коммит ' +

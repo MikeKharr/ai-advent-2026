@@ -140,12 +140,16 @@ a.wk-link:hover { background:var(--bg); }
 /* Прокрутка нужна таблицам от пяти столбцов; у дня 26 таких нет, и разметка
    обёртку не ставит. Правила живут здесь по договору копии пяти страниц
    недели: имена классов и значения у общих компонентов одинаковы. */
+/* Две колонки вместо четырёх: 40 % первой оставляли бы подпись в три знака
+   шириной и рвали её переносами на 360 px. */
+.tbl-2col th[scope="col"]:first-child, .tbl-2col th[scope="row"] { width:auto; }
 .tbl-scroll { overflow-x:auto; min-width:0; }
 .tbl-hint { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
 /* Ниже 36rem на числовые колонки остаётся ~50px: --t-sm в них не влезает. */
 @media (max-width:35.999rem) {
   .tbl table { font-size:var(--t-xs); line-height:1.4; }
   .tbl th[scope="col"]:first-child, .tbl th[scope="row"] { width:30%; }
+  .tbl-2col th[scope="col"]:first-child, .tbl-2col th[scope="row"] { width:auto; }
   .tbl th { overflow-wrap:break-word; hyphens:auto; }
   .tbl th, .tbl td { padding-left:var(--s-1); }
 }
