@@ -1,0 +1,283 @@
+/* День 29: оптимизация — одна ось за раз. Токены — agent_docs/design/corpus.md,
+   блок токенов скопирован из site/style.css значение-в-значение; самого крупного
+   размера корпуса здесь нет вовсе — по корпусу он только для лендинга, и его
+   отсутствие в файле страхует от применения. Раскладка —
+   agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md.
+   Значение вне шкалы — дефект, а не нюанс. */
+
+:root {
+  color-scheme: light dark;
+  --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+  --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+  --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-lg:1.125rem; --t-xl:1.5rem;
+  --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+  --line:#e6e6e3; --line-ctl:#8f8f8a;
+  --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+  --overlay:rgb(23 23 26 / .5);
+  --r-sm:6px; --r-md:10px; --r-full:999px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+    --line:#2a2a30; --line-ctl:#6a6a73;
+    --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+    --overlay:rgb(0 0 0 / .6);
+  }
+}
+
+/* ── Служебный слой: одинаков во всех пяти каталогах недели ──────────── */
+* { box-sizing:border-box; }
+/* Собственный display перебивает [hidden] из таблицы браузера. */
+[hidden] { display:none !important; }
+/* Акцент на экране один — это кольцо. Состояние summary сообщает сам details. */
+:where(a, button, summary):focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+a { color:inherit; }
+a:hover { background:var(--surface); }
+a:active, button:active, summary:active { position:relative; top:1px; }
+.num { font-variant-numeric:tabular-nums; }
+/* Видимо скрыто: остаётся в дереве доступности, в отличие от display:none. */
+.vh {
+  position:absolute; width:1px; height:1px; overflow:hidden;
+  clip-path:inset(50%); white-space:nowrap;
+}
+
+body {
+  margin:0; background:var(--bg); color:var(--fg);
+  font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+code, .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:var(--t-xs); }
+
+/* ── Контейнер и ритм ────────────────────────────────────────────────── */
+.page {
+  max-width:60rem; margin-inline:auto;
+  padding-block:var(--s-6); padding-inline:var(--s-4);
+}
+@media (min-width:36rem) {
+  .page { padding-block:var(--s-7); padding-inline:var(--s-5); }
+}
+.head { margin-bottom:var(--s-5); }
+.back { margin:0 0 var(--s-2); font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+h1 {
+  font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; font-weight:600;
+  margin:0;
+}
+.lede { margin:var(--s-2) 0 0; color:var(--fg-mut); max-width:68ch; }
+main > section + section { margin-top:var(--s-7); }
+noscript { display:block; margin-bottom:var(--s-5); }
+
+h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0 0 var(--s-4); }
+h3 { font-size:var(--t-md); line-height:1.6; font-weight:600; margin:0 0 var(--s-3); }
+.prose { margin:0; max-width:68ch; }
+.prose + .prose { margin-top:var(--s-4); }
+.note {
+  margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+  max-width:52ch;
+}
+.lbl {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut);
+}
+/* Ошибка и пустой прогон — обычное сообщение, не авария: --fg, не --danger. */
+.status { margin:0; font-size:var(--t-md); line-height:1.6; color:var(--fg); max-width:68ch; }
+.status + * { margin-top:var(--s-4); }
+.prose + .status, .prose + .tbl-sum { margin-top:var(--s-4); }
+.panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); }
+
+/* ── А. Полоса недели ────────────────────────────────────────────────── */
+.wk { margin-bottom:var(--s-7); }
+.wk-cap {
+  margin:0 0 var(--s-2); font-size:var(--t-xs); line-height:1.4;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--fg-mut);
+}
+.wk-list { display:flex; flex-wrap:wrap; gap:var(--s-2); list-style:none; margin:0; padding:0; }
+.wk-link {
+  display:inline-block; padding:var(--s-1) var(--s-3);
+  font-size:var(--t-sm); line-height:1.5; font-variant-numeric:tabular-nums;
+  background:var(--surface); color:var(--fg);
+  border:1px solid var(--line-ctl); border-radius:var(--r-full);
+  text-decoration:none;
+  transition:background-color 120ms;
+}
+a.wk-link:hover { background:var(--bg); }
+.wk-now { background:var(--fg); color:var(--surface); border-color:var(--fg); }
+
+/* ── Итог дня ────────────────────────────────────────────────────────── */
+.sum { padding:var(--s-4); }
+.verdict { margin:0; font-size:var(--t-lg); line-height:1.4; max-width:68ch; }
+.verdict + * { margin-top:var(--s-4); }
+.limits {
+  margin:var(--s-4) 0 0; padding-left:var(--s-5);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch;
+  /* В границах меры стоят числа, которые сравнивают глазами: повторы,
+     идентификаторы вопросов, секунды внутри оговорок прогона. */
+  font-variant-numeric:tabular-nums;
+}
+.limits li + li { margin-top:var(--s-1); }
+/* Подпись и её список — один блок: между ними внутриблочный шаг, а не
+   межблочный, иначе подпись отрывается от того, что подписывает. */
+.lbl-run { display:block; margin-top:var(--s-4); }
+.lbl-run + .limits { margin-top:var(--s-2); }
+.tbl-sum {
+  margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+  max-width:52ch; font-variant-numeric:tabular-nums;
+}
+
+/* ── В. Таблица замеров ──────────────────────────────────────────────── */
+.tbl { margin:0; }
+/* Межблочный шаг над таблицей ставится здесь, а не наследуется от `.verdict +
+   *`: та же специфичность, но `.tbl { margin:0 }` идёт ниже и обнуляла его —
+   подпись таблицы прилипала к предыдущему абзацу (находка design-review). */
+.verdict + .tbl, .prose + .tbl, .tbl-sum + .tbl { margin-top:var(--s-4); }
+/* Подпись таблицы видима и стоит над ней: на этой странице таблиц три, и
+   скрытая подпись оставила бы глаз без ориентира (отличие от дня 21 —
+   намеренное). padding, а не margin: у table-caption margin не применяется.
+   У широкой таблицы видимая подпись — figcaption: она же метка прокручиваемой
+   области, а caption внутри уехал бы вместе с содержимым. */
+.tbl caption, .tbl figcaption {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut); text-align:start; padding-bottom:var(--s-2);
+}
+.tbl table {
+  width:100%; border-collapse:collapse; table-layout:fixed;
+  font-size:var(--t-sm); line-height:1.5;
+}
+.tbl th, .tbl td {
+  padding:var(--s-2) 0 var(--s-2) var(--s-2); text-align:right; vertical-align:baseline;
+}
+.tbl th[scope="col"]:first-child, .tbl th[scope="row"] {
+  text-align:left; font-weight:600; width:40%; padding-right:var(--s-3);
+}
+.tbl thead th { color:var(--fg-mut); font-weight:600; border-bottom:1px solid var(--line); }
+.tbl tbody tr + tr th, .tbl tbody tr + tr td { border-top:1px solid var(--line); }
+.tbl td.num, .tbl th.num { font-variant-numeric:tabular-nums; }
+.cell-sub { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+.tbl-scroll { overflow-x:auto; min-width:0; }
+/* Кольцо корпуса, а не умолчание браузера: область получает tabindex="0" при
+   переполнении и становится остановкой табуляции наравне со ссылками.
+   Тот же набор — у моноширинного блока промпта, он прокручивается так же. */
+.tbl-scroll:focus-visible, .code:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+.tbl-hint { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
+/* Пять столбцов на 360 px не умещаются: таблица прокручивается сама, страница
+   — нет. Первая колонка липкая, иначе на середине прокрутки неясно, чья строка. */
+.tbl-wide { table-layout:auto; min-width:40rem; }
+.tbl-wide th[scope="col"]:first-child, .tbl-wide th[scope="row"] {
+  width:auto; position:sticky; left:0; z-index:1;
+  background:var(--surface); border-right:1px solid var(--line);
+  padding-left:var(--s-2);
+}
+.tbl-wide th[scope="col"]:first-child { background:var(--bg); }
+/* Ячейка липкой колонки сама стоит на --surface, и общее a:hover (тоже
+   --surface) на ней не виден: наведение здесь идёт на ступень в другую
+   сторону (находка design-review). */
+.tbl-wide th a:hover { background:var(--bg); }
+.tbl-wide td, .tbl-wide th { white-space:nowrap; }
+/* Ниже 36rem на числовые колонки остаётся ~50px: --t-sm в них не влезает. */
+@media (max-width:35.999rem) {
+  .tbl table { font-size:var(--t-xs); line-height:1.4; }
+  .tbl th[scope="col"]:first-child, .tbl th[scope="row"] { width:30%; }
+  .tbl-wide th[scope="col"]:first-child, .tbl-wide th[scope="row"] { width:auto; }
+  .tbl th { overflow-wrap:break-word; hyphens:auto; }
+  .tbl th, .tbl td { padding-left:var(--s-1); }
+}
+
+/* ── Б. Что уже было закрыто ─────────────────────────────────────────── */
+.closed { list-style:none; margin:0; padding:0; }
+.closed > li + li { margin-top:var(--s-4); }
+.closed p { margin:0; max-width:68ch; }
+.tag {
+  display:inline-block; margin-top:var(--s-2); padding:0 var(--s-2);
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut); border:1px solid var(--line-ctl); border-radius:var(--r-full);
+  white-space:nowrap;
+}
+.tag-date { margin-left:var(--s-2); font-size:var(--t-xs); color:var(--fg-mut); font-variant-numeric:tabular-nums; }
+.src {
+  margin:var(--s-1) 0 0;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); line-height:1.5; color:var(--fg-mut); overflow-wrap:anywhere;
+}
+.gap {
+  margin:var(--s-4) 0 0; padding-top:var(--s-4); border-top:1px solid var(--line);
+  font-size:var(--t-sm); line-height:1.5; max-width:68ch;
+}
+
+/* ── Г. Раскрывающееся пояснение ─────────────────────────────────────── */
+.exp {
+  border:1px solid var(--line); border-radius:var(--r-md);
+  background:var(--surface);
+}
+.exp + .exp { margin-top:var(--s-3); }
+/* Соседом первого раскрывающегося блока стоит то, что кончилось перед ним:
+   список границ меры, таблица или строка про снятые оговорки. `+` смотрит на
+   соседа в дереве, а не на видимого, поэтому и в состоянии «ошибка», где
+   оговорки скрыты атрибутом, сосед тот же `.note` — правило покрывает обе
+   ветви (регрессия от подписи оговорок, находка design-review). */
+.limits + .exp, .tbl + .exp, .note + .exp { margin-top:var(--s-4); }
+.exp > summary {
+  display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-3);
+  padding:var(--s-3) var(--s-4);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg);
+  list-style:none; cursor:pointer;
+  transition:background-color 120ms;
+}
+.exp > summary::-webkit-details-marker { display:none; }
+.exp > summary::marker { content:""; }
+.exp > summary:hover { background:var(--bg); }
+.exp > summary:focus-visible { outline-offset:-2px; }
+.q-mark { color:var(--fg-mut); }
+.q-mark::before { content:"+"; }
+.exp[open] > summary .q-mark::before { content:"−"; }
+.exp-body {
+  padding:var(--s-3) var(--s-4) var(--s-4); border-top:1px solid var(--line);
+}
+.exp-body > * { margin:0; max-width:68ch; }
+.exp-body > * + * { margin-top:var(--s-3); }
+.exp-body a:hover { background:var(--bg); }
+.exp-body ul { padding-left:var(--s-5); }
+.exp-body li + li { margin-top:var(--s-1); }
+.exp-body .small { font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch; }
+
+/* ── Промпт целиком: моноширинный блок внутри раскрытого пояснения ───── */
+/* Переносов внутри строк шаблона не придумывается: промпт должен читаться
+   тем же, чем он уходил в модель. Поэтому блок прокручивается сам, а
+   остановку табуляции ему ставит app.js — только при переполнении. */
+.code {
+  margin:0; padding:var(--s-3);
+  background:var(--bg); border:1px solid var(--line); border-radius:var(--r-sm);
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); line-height:1.5;
+  overflow-x:auto; white-space:pre-wrap; overflow-wrap:anywhere;
+}
+.exp-body .lbl { display:block; }
+
+/* ── Задание дня ─────────────────────────────────────────────────────── */
+.task {
+  margin:0; padding-inline-start:var(--s-4);
+  border-inline-start:3px solid var(--line); max-width:68ch; font-size:var(--t-md);
+}
+.task p { margin:0; }
+.task p + p { margin-top:var(--s-3); }
+
+/* ── Д. Подвал ───────────────────────────────────────────────────────── */
+.foot {
+  margin-top:var(--s-7); border-top:1px solid var(--line); padding-top:var(--s-4);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+}
+.foot p { margin:0; max-width:68ch; }
+.foot p + p { margin-top:var(--s-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wk-link, .exp > summary { transition:none; }
+}
+
+/* Печать: раскрыто всё, липкого и прокручиваемого нет. Два правила на
+   раскрытие — современные браузеры прячут содержимое по-разному. */
+@media print {
+  details::details-content { content-visibility:visible !important; }
+  details:not([open]) > :not(summary) { display:block; }
+  .q-mark { display:none; }
+  .tbl-scroll, .code { overflow:visible; }
+  .tbl-wide { min-width:0; }
+  .tbl-wide th[scope="col"]:first-child, .tbl-wide th[scope="row"] { position:static; }
+  .tbl-wide td, .tbl-wide th { white-space:normal; }
+}
