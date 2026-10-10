@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка и тексты — agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md,
+     решение недели — agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md.
+     Пути к своим файлам относительные, <base> нет; ссылка на лендинг — от корня.
+     Ни одного числа прогона литералом: всё из results.json, вывод считает app.js. -->
+<title>День 26: модель на своей машине — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <p class="back"><a href="/">← AI Advent 2026</a></p>
+    <h1>День 26: модель на своей машине</h1>
+    <p class="lede">Ollama на ноутбуке владельца отвечает по CLI и по HTTP. Восемь запросов разной сложности — от факта одной фразой до выжимки документа на четыре с половиной тысячи токенов — прогнаны по одному разу, и у каждого видно, верно ли он отвечен, через сколько пришёл первый токен ответа и с какой скоростью.</p>
+  </header>
+
+  <nav class="wk" aria-label="Неделя 26–30">
+    <p class="wk-cap" id="wk-cap">Неделя: локальная LLM</p>
+    <ul class="wk-list">
+      <li><span class="wk-link wk-now" aria-current="page">26</span></li>
+      <li><a class="wk-link" href="/day27/">27</a></li>
+      <li><a class="wk-link" href="/day28/">28</a></li>
+      <li><a class="wk-link" href="/day29/">29</a></li>
+      <li><a class="wk-link" href="/day30/">30</a></li>
+    </ul>
+  </nav>
+
+  <noscript><p class="status">Таблицы замеров строит скрипт, а он отключён. Данные прогона — файл <a href="results.json">results.json</a> рядом с этой страницей, выводы — в <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR недели</a>.</p></noscript>
+
+  <main>
+    <section aria-labelledby="sum-h">
+      <h2 id="sum-h">Итог дня</h2>
+      <div class="panel sum">
+        <p class="verdict" id="verdict" role="status">Читаю результаты прогона…</p>
+
+        <figure class="tbl" id="steps-tbl" hidden>
+          <table>
+            <caption>Запросы по ступеням</caption>
+            <thead>
+              <tr>
+                <th scope="col">Запрос</th>
+                <th scope="col">Верно</th>
+                <th scope="col" class="num">До 1-го токена ответа, с</th>
+                <th scope="col" class="num">Ток/с</th>
+              </tr>
+            </thead>
+            <tbody id="steps-body"></tbody>
+          </table>
+          <p class="tbl-sum" id="steps-sum"></p>
+        </figure>
+
+        <ul class="limits">
+          <li>Повторов на запрос — <span class="num" id="limit-repeats">нет данных</span>. Разброс по повторам в этом прогоне не измерен вовсе: разница в один вердикт может быть шумом, а не свойством запроса.</li>
+          <li>Ступеней восемь, и каждая представлена одним запросом: это не статистика, а срез.</li>
+          <li>Верность ставили код и человек. Модели-судьи в этом прогоне не было, и способ оценки стоит у каждой строки таблицы.</li>
+          <li>Мерено на ноутбуке, а не на проде: на прод переносятся качество и ограничения модели, не секунды.</li>
+        </ul>
+        <ul class="limits" id="run-notes" hidden></ul>
+
+        <details class="exp">
+          <summary>Как это мерено<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Каждый запрос уходил в <code>/api/generate</code> потоком (<code>stream: true</code>) на локальный экземпляр Ollama по петле. Обвязка записывала: промпт, полный ответ, <code>prompt_eval_count</code>, <code>eval_count</code>, <code>load_duration</code>, <code>prompt_eval_duration</code>, <code>eval_duration</code>, <code>done_reason</code>.</p>
+            <p><strong>Ток/с</strong> — это <code>eval_count</code>, делённое на <code>eval_duration</code>: скорость самой генерации, без обработки входа и без загрузки весов. <strong>До 1-го токена ответа</strong> — время от отправки запроса до первого чанка <em>видимого</em> ответа. На восьми запросах с выключенным рассуждением это то же, что первый чанк любого вида; на строке с включённым рассуждением — нет, и разница там в сотни раз.</p>
+            <p id="opts-p" hidden>Параметры всех запросов одинаковы — <span class="mono" id="opts"></span> — чтобы разница во времени объяснялась запросом, а не перезагрузкой модели под другое окно контекста.</p>
+            <p class="small">Перед каждым запросом снимался размер журнала Ollama: появление в нём обслуженного запроса означало бы, что в то же окно отвечала служба сайта, и замер был бы помечен «с помехой». Помех за прогон не было.</p>
+          </div>
+        </details>
+
+        <details class="exp">
+          <summary>Как оценена верность<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Три значения: <strong>верно</strong>, <strong>частично</strong>, <strong>неверно</strong> — рубрика 2/1/0 дня 22. Рядом с вердиктом стоит способ оценки, и он важнее самого вердикта.</p>
+            <ul>
+              <li><strong>Механически</strong> — ответ сверял код или точный эталон: год в факте, число в арифметике, день недели по <code>datetime</code>, запуск функции в Node 22 против восьми наборов входа, разбор JSON против схемы.</li>
+              <li><strong>Вручную</strong> — смысловая сверка человеком: перевод абзаца, пункты выжимки против исходного документа, ответ про коды 429 и 503.</li>
+            </ul>
+            <p>Третьего способа — модели-судьи — в этом прогоне не было, хотя ADR недели его предусматривал. Поэтому там, где стоит «вручную», читатель проверяет не число, а чужое прочтение: полный ответ модели лежит в разборе ниже, и прочтение можно оспорить.</p>
+          </div>
+        </details>
+
+        <details class="exp">
+          <summary>Почему скорость гуляет вдвое<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Разброс в таблице — не шум прогона и не окно контекста. У тега модели включено спекулятивное декодирование <strong>draft-MTP</strong>: черновой слой предсказывает несколько токенов вперёд, и выигрыш зависит от того, насколько текст предсказуем. Там, где принимается почти весь черновик, скорость удваивается. Там, где почти ничего, прогон чернового слоя не отрабатывает своих накладных расходов, и остаётся собственная скорость модели.</p>
+            <p class="status" id="svc-status" role="status">Читаю результаты прогона…</p>
+            <div id="svc-box" hidden>
+              <p>Параметр модели — <code>draft_num_predict <span class="num" id="spec-draft"></span></code>. Доля принятых черновых токенов за прогон гуляла от <span class="num" id="spec-min"></span> до <span class="num" id="spec-max"></span> на <span class="num" id="spec-n"></span> замерах.</p>
+              <p><strong>Какой доле какой текст соответствует, этот замер числом не записал:</strong> разбивка по типам текста читалась по журналу службы, и в данных страницы её нет. Что скорость идёт за предсказуемостью текста, видно из таблицы — доли в ней не участвуют.</p>
+              <figure class="tbl tbl-2col">
+                <table>
+                  <caption>Скорость против предсказуемости текста</caption>
+                  <thead>
+                    <tr><th scope="col">Что генерируется</th><th scope="col" class="num">Ток/с</th></tr>
+                  </thead>
+                  <tbody id="svc-body"></tbody>
+                </table>
+                <p class="tbl-sum" id="svc-note"></p>
+              </figure>
+              <p>Следствие для этого проекта: интерфейс сайта русскоязычный, то есть работает на худшей половине этой вилки. Любая оценка «сколько мы отдаём токенов в секунду», снятая на английском или на коде, завысит реальность вдвое.</p>
+              <p class="small">Найдено по журналу службы и по <code>ollama show</code>: на странице библиотеки Ollama про MTP у этого тега не сказано ничего. Строки журнала, по которым это видно:</p>
+              <ul class="small" id="spec-log"></ul>
+            </div>
+          </div>
+        </details>
+
+        <details class="exp">
+          <summary>Чего этот замер не мерил<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <ul>
+              <li><strong>Устойчивости.</strong> Один прогон на запрос. Повтор того же запроса в отдельной серии дал разброс около трёх процентов, но это один запрос, а не весь набор.</li>
+              <li><strong>Потолка железа.</strong> Ноутбук был в обычной интерактивной работе владельца, а не на изолированном стенде. Числа — скорость на рабочей машине под нагрузкой.</li>
+              <li><strong>Проды.</strong> Замер шёл в отдельный экземпляр Ollama по петле; служба, которую видит сайт, не трогалась.</li>
+              <li><strong>Качества на длинной дистанции.</strong> Восемь запросов — срез ступеней сложности, а не выборка, по которой считают долю ошибок.</li>
+              <li><strong>Энергопотребления и троттлинга.</strong> Предупреждений о тепловом троттлинге за прогон не было, но частоту без привилегированного доступа не снять.</li>
+            </ul>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section aria-labelledby="closed-h">
+      <h2 id="closed-h">Что уже было закрыто</h2>
+      <ul class="closed" role="list">
+        <li>
+          <p>Ollama на ноутбуке владельца отвечает по CLI и по HTTP; служба слушает адрес частной сети, а не <code>0.0.0.0</code>.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">09.09.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-09-0258-tailscale-to-laptop.md">ADR 2026-09-09-0258</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-09-09-0258-mac-tailnet.md">запись 2026-09-09-0258-mac-tailnet.md</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/deploy/mac/ai.zpq.ollama-tailnet.plist">deploy/mac/ai.zpq.ollama-tailnet.plist</a></p>
+        </li>
+        <li>
+          <p>Ярус <code>self-hosted</code> в реестре провайдеров и выбор провайдера вызывающим: локальная модель — такой же пункт списка, как облачная.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">08.09.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-08-1748-llm-router.md">ADR 2026-09-08-1748</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-08-1824-explicit-model-choice.md">ADR 2026-09-08-1824</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/router/config/providers.json">router/config/providers.json</a></p>
+        </li>
+      </ul>
+      <p class="gap"><strong>Пробел, который закрывает эта страница:</strong> прогона запросов разной сложности не было. Что модель запускается и отвечает на простой запрос, было известно; что она делает с переводом, арифметикой, кодом, схемой и документом на четыре с половиной тысячи токенов — нет.</p>
+    </section>
+
+    <section aria-labelledby="bd-h">
+      <h2 id="bd-h">Разбор по запросам</h2>
+      <p class="prose">У каждого запроса — полный промпт, эталон, полный ответ модели и причина вердикта. Ответы не пересказаны: их можно прочитать и оспорить.</p>
+      <p class="status" id="bd-status" role="status">Читаю результаты прогона…</p>
+      <ul class="breakdown" id="breakdown" role="list"></ul>
+    </section>
+
+    <section aria-labelledby="acc-h">
+      <h2 id="acc-h">Способы доступа</h2>
+      <p class="prose">Один и тот же запрос — тремя способами. Сравнение не про скорость: про то, какие метрики способ вообще отдаёт и что он делает с рассуждением модели. Ответ верен во всех четырёх вызовах.</p>
+      <figure class="tbl" id="access-tbl" hidden>
+        <table>
+          <caption>Один запрос тремя способами</caption>
+          <thead>
+            <tr>
+              <th scope="col">Способ</th>
+              <th scope="col">Ответ</th>
+              <th scope="col" class="num">До 1-го токена ответа, с</th>
+              <th scope="col">Длительности от движка</th>
+            </tr>
+          </thead>
+          <tbody id="access-body"></tbody>
+        </table>
+      </figure>
+      <p class="status" id="acc-status" role="status">Читаю результаты прогона…</p>
+      <div id="traps" hidden>
+      <h3>Две ловушки OpenAI-совместимого эндпоинта</h3>
+      <p class="prose">Первая: <strong>рассуждение там включено по умолчанию и приходит в нестандартном поле</strong> — <code>delta.reasoning</code>, а не <code>reasoning_content</code>, как ждёт часть клиентов. Если это поле не читать, ответ выглядит так, будто модель молчала: поток начинается через <span class="num" id="trap-ttft"></span> с, а первый токен видимого ответа приходит через <span class="num" id="trap-ttft-answer"></span> с. Выключается параметром <code>reasoning_effort: "none"</code> — не <code>think</code>, как на <code>/api/generate</code>; с ним до первого токена остаётся <span class="num" id="trap-ttft-off"></span> с.</p>
+      <p class="prose">Вторая: <strong><code>usage.completion_tokens</code> считает токены рассуждения</strong>. В замере это <span class="num" id="trap-usage"></span> токенов против <span class="num" id="trap-visible"></span> токенов видимого ответа. Поделить первое на время после первого видимого токена — и получится скорость втрое выше настоящей. Это ровно та ошибка, в которую легко въехать, считая стоимость и скорость по <code>usage</code>.</p>
+      </div>
+      <p class="note">Побочное наблюдение, важное для эксплуатации: загрузка весов повторялась при каждом переключении между вызовами с разным окном контекста — Ollama поднимает под другое <code>num_ctx</code> новый экземпляр модели. Отсюда и две раздельные службы в текущей схеме: сайт и локальные опыты не делят одно окно.</p>
+    </section>
+
+    <section aria-labelledby="call-h">
+      <h2 id="call-h">Как это вызвать</h2>
+      <div class="calls">
+        <figure class="call">
+          <figcaption>Через CLI</figcaption>
+          <pre><code>OLLAMA_HOST=127.0.0.1:11435 ollama run qwen3.8:27b --verbose --think=false 'In what year was the Eiffel Tower completed?'</code></pre>
+        </figure>
+        <figure class="call">
+          <figcaption>Через HTTP</figcaption>
+          <pre><code>curl -s http://127.0.0.1:11435/api/generate -d '{"model":"qwen3.8:27b","prompt":"In what year was the Eiffel Tower completed?","stream":false,"think":false,"options":{"num_ctx":16384,"temperature":0,"seed":42}}'</code></pre>
+        </figure>
+      </div>
+      <p class="note">Петля в примерах стоит намеренно: без <code>OLLAMA_HOST</code> клиент стучится на порт по умолчанию, где слушает другая служба. Адреса частной сети и имени машины в ней здесь нет — ни в примерах, ни в данных страницы.</p>
+    </section>
+
+    <section aria-labelledby="task-h">
+      <h2 id="task-h">Задание дня</h2>
+      <blockquote class="task">
+        <p><strong>День 26 «Запуск локальной LLM»:</strong> установить и запустить локальную LLM; проверить: запускается локально, доступ через CLI или HTTP API, отвечает на простой запрос; сделать: запросы разной сложности. Результат: локальная LLM запущена и отвечает.</p>
+      </blockquote>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p class="num" id="run-line"></p>
+    <p>Решение недели — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR 2026-10-09-1335</a>, раскладка страницы — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md">спецификация дней 26–30</a>, данные прогона — <a href="results.json">results.json</a>, исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</p>
+  </footer>
+</div>
+</body>
+</html>
