@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка и тексты — agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md,
+     решение недели — agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md, п. 6.
+     Пути к своим файлам относительные, <base> нет; ссылка на лендинг — от корня.
+     Ни одного числа прогона литералом: всё из results.json (I-8).
+     Текстов ответов модели на этой странице нет вовсе — только времена и коды
+     (ADR недели, п. 6.4). Адресов частной сети, имён машин и значений ключей
+     нет ни в разметке, ни в данных (I-1, I-3, I-10). -->
+<title>День 30: свой сервис на локальной модели — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <p class="back"><a href="/">← AI Advent 2026</a></p>
+    <h1>День 30: свой сервис на локальной модели</h1>
+    <p class="lede">Модель живёт на ноутбуке за частной сетью, а наружу смотрит публичный адрес сайта. Проверено три вещи: доходит ли запрос посетителя до ноутбука, что происходит при нескольких запросах разом и срабатывают ли ограничения. Текстов ответов здесь нет вовсе — только времена и коды.</p>
+  </header>
+
+  <nav class="wk" aria-label="Неделя 26–30">
+    <p class="wk-cap" id="wk-cap">Неделя: локальная LLM</p>
+    <ul class="wk-list">
+      <li><a class="wk-link" href="/day26/">26</a></li>
+      <li><a class="wk-link" href="/day27/">27</a></li>
+      <li><a class="wk-link" href="/day28/">28</a></li>
+      <li><a class="wk-link" href="/day29/">29</a></li>
+      <li><span class="wk-link wk-now" aria-current="page">30</span></li>
+    </ul>
+  </nav>
+
+  <noscript><p class="status">Таблицы замеров строит скрипт, а он отключён. Данные прогона — файл <a href="results.json">results.json</a> рядом с этой страницей, выводы — в <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR недели</a>.</p></noscript>
+
+  <main>
+    <section aria-labelledby="sum-h">
+      <h2 id="sum-h">Итог дня</h2>
+      <div class="panel sum">
+        <p class="verdict" id="verdict" role="status">Читаю результаты прогона…</p>
+
+        <figure class="tbl" id="burst-tbl" hidden>
+          <figcaption id="t30b">Три запроса разом</figcaption>
+          <div class="tbl-scroll" role="region" aria-labelledby="t30b">
+            <table class="tbl-wide">
+              <caption class="vh">Три запроса разом: двумя путями, сколько обслужено и за какое время</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Путь</th>
+                  <th scope="col" class="num">Запросов</th>
+                  <th scope="col" class="num">Обслужено</th>
+                  <th scope="col" class="num">Отказано</th>
+                  <th scope="col" class="num">Полное время, с</th>
+                </tr>
+              </thead>
+              <tbody id="burst-body"></tbody>
+            </table>
+          </div>
+          <p class="tbl-hint" hidden>Таблица прокручивается вбок.</p>
+          <p class="tbl-sum">Отказ одним путём и очередь другим — это результат замера, а не дефект сервиса: ёмкость локального провайдера выбрана равной одному запросу, а Ollama вместо отказа ставит запросы в очередь, и полное время — цена этой очереди.</p>
+        </figure>
+        <p class="status" id="burst-status" role="status">Читаю результаты прогона…</p>
+
+        <ul class="limits">
+          <li>Повторов на каждую пробу — <span class="num" id="limit-repeats">нет данных</span>. Разницу в секунду этот замер от шума не отличает.</li>
+          <li>Пробы через прод работают только при включённой частной сети на ноутбуке, и включает её владелец на окно проверки. Пока сеть выключена, все пробы этим путём дают один и тот же ответ «провайдер недоступен» и ни одной гипотезы не различают.</li>
+          <li>Судьи и оценок качества здесь нет: страница показывает коды ответов и времена, а не то, насколько ответ хорош. Проверить ответ по этой странице нельзя.</li>
+          <li>Ограничение, у которого нет отрицательной пробы, помечено словом «не проверялось». Защита без проверки — не защита.</li>
+        </ul>
+        <span class="lbl lbl-run" id="run-notes-cap" hidden>Оговорки этого прогона</span>
+        <ul class="limits" id="run-notes" hidden></ul>
+        <p class="note" id="run-notes-dup" hidden></p>
+
+        <details class="exp">
+          <summary>Как это мерено<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Два пути, и они разные по сути. <strong>Через публичный API</strong> — тот самый адрес, которым идёт посетитель: запрос уходит на сервер, сервер выбирает локального провайдера и дотягивается до ноутбука по частной сети. <strong>Напрямую в Ollama</strong> — запрос с самого ноутбука на петлю, без сервера и без сети вовсе.</p>
+            <p>«Полное время» — настенное время от первого отправленного запроса до последнего полученного ответа, а не сумма времён запросов: при очереди это не одно и то же. «Обслужено» и «Отказано» считаются по коду ответа, причина отказа берётся из тела ответа дословно.</p>
+            <p class="small">Прогон записывает коды, времена и причины. Текстов ответов он не записывает вовсе — не прячет, а не получает: то, чего в записи нет, не может утечь на публичную страницу.</p>
+          </div>
+        </details>
+
+        <details class="exp">
+          <summary>Чего этот замер не мерил<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <ul>
+              <li><strong>Качества ответов.</strong> Их тексты сюда не идут; что модель отвечает по делу, мерено в днях 26 и 28, а не здесь.</li>
+              <li><strong>Потолка железа.</strong> Ноутбук был в обычной работе владельца, а не на изолированном стенде.</li>
+              <li><strong>Устойчивости во времени.</strong> Пробы шли одним окном в один день; что будет через неделю работы, этот замер не говорит.</li>
+              <li><strong>Поведения при многих посетителях.</strong> Запросы шли с одного адреса; ограничение частоты на адрес при этом видно, а общая нагрузка сайта — нет.</li>
+              <li><strong>Потолка размера запроса у роутера.</strong> Снаружи он недостижим: публичный API обрезает тему раньше, и до роутера длинный запрос не доходит.</li>
+            </ul>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section aria-labelledby="closed-h">
+      <h2 id="closed-h">Что уже было закрыто</h2>
+      <ul class="closed" role="list">
+        <li>
+          <p>Ноутбук владельца доступен серверу как домашний сервер: частная сеть до машины, служба Ollama слушает только её адрес, а не все интерфейсы.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">09.09.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-09-0258-tailscale-to-laptop.md">ADR 2026-09-09-0258</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-09-09-0258-mac-tailnet.md">запись 2026-09-09-0258-mac-tailnet.md</a></p>
+        </li>
+        <li>
+          <p>Роутер с ключами приложений уже стоит перед моделями: у записи локального провайдера заданы и ёмкость хоста, и потолок размера запроса, а здоровье провайдера проверяется до вызова.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">08.09.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-08-1748-llm-router.md">ADR 2026-09-08-1748</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/router/config/providers.json">router/config/providers.json</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/router/src/health.js">router/src/health.js</a></p>
+        </li>
+        <li>
+          <p>Чат на локальной модели уже в проде: день 11 работает с профилями и слоями памяти, и воспроизводить его здесь незачем.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">16.09.2026</span></p>
+          <p class="src"><a href="/day11/">день 11</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/days/day11">days/day11/</a></p>
+        </li>
+        <li>
+          <p>Именной ключ и суточный потолок на ключ, а также полностью локальный контур ключевого профиля — решение принято и выкачено до этой недели.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">07.10.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-07-1349-keyed-uncensored-model.md">ADR 2026-10-07-1349</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-10-08-0957-keyed-uncensored-model-server.md">запись 2026-10-08-0957-keyed-uncensored-model-server.md</a></p>
+        </li>
+        <li>
+          <p>Порядок «лимит до вызова» — инвариант проекта, а не настройка: ни один запрос не вызывает модель раньше, чем пройдёт проверку частоты и суточного лимита.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">07.09.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/invariants.md">инвариант I-4</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/days/day5/limits.js">days/day5/limits.js</a></p>
+        </li>
+      </ul>
+      <p class="gap"><strong>Пробел, который закрывает эта страница:</strong> всё перечисленное было настроено, но не проверено снаружи ни разу. Доходит ли запрос посетителя до ноутбука целиком, что увидит клиент при нескольких запросах разом и срабатывают ли ограничения на деле — замера этого не было. Настроенная защита и проверенная защита — не одно и то же.</p>
+    </section>
+
+    <section aria-labelledby="acc-h">
+      <h2 id="acc-h">Доступ</h2>
+      <p class="prose">Чем именно закрыт сервис, что увидит посетитель без доступа и где живёт ключ. Значений ключей, адресов частной сети и имён машин в ней на этой странице нет — ни в тексте, ни в данных.</p>
+      <dl class="acc" id="acc-box" hidden>
+        <dt class="lbl">Как закрыт</dt>
+        <dd id="acc-how"></dd>
+        <dt class="lbl">Без доступа видно</dt>
+        <dd id="acc-without"></dd>
+        <dt class="lbl">Где живёт ключ</dt>
+        <dd id="acc-key"></dd>
+      </dl>
+      <p class="status" id="acc-status" role="status">Читаю результаты прогона…</p>
+    </section>
+
+    <section aria-labelledby="lim-h">
+      <h2 id="lim-h">Ограничения: что сработало</h2>
+      <p class="prose">По каждому ограничению — его значение, сработало ли оно на отрицательной пробе и что при этом увидел клиент. Код ответа и текст ошибки стоят как есть: именно их получает посетитель, а не пересказ.</p>
+      <figure class="tbl" id="lim-tbl" hidden>
+        <table class="tbl-lim">
+          <caption>Ограничения и отрицательные пробы</caption>
+          <thead>
+            <tr>
+              <th scope="col">Ограничение</th>
+              <th scope="col">Значение</th>
+              <th scope="col">Сработало</th>
+              <th scope="col">Что увидел клиент</th>
+            </tr>
+          </thead>
+          <tbody id="lim-body"></tbody>
+        </table>
+        <p class="tbl-sum" id="lim-sum"></p>
+      </figure>
+      <p class="status" id="lim-status" role="status">Читаю результаты прогона…</p>
+
+      <details class="exp">
+        <summary>Почему проба частоты дала не только отказ по частоте<span class="q-mark" aria-hidden="true"></span></summary>
+        <div class="exp-body">
+          <p>Проба шлёт разом больше запросов, чем позволяет окно частоты, и в этом же окне уже лежали запросы предыдущих проб того же прогона — отдельного адреса на каждую пробу у замера нет. Поэтому ответы пришли разные: часть запросов отвергнута по частоте, часть отвергнута роутером как исчерпанная ёмкость локального провайдера, и часть дошла до модели.</p>
+          <p>Для проверяемого утверждения этого достаточно: ограничение частоты <strong>срабатывает</strong> и клиент видит ровно тот код и текст, которые стоят в таблице. Чего проба не говорит — это каким по счёту запросом ограничение включается: для такого счёта нужно чистое окно, а окно было занято.</p>
+          <p class="small">Окно частоты считается на адрес, и значение потолка взято из таблицы выше, а не из этого текста. Потолок размера запроса у роутера снаружи недостижим вовсе: публичный API отвергает слишком длинную тему раньше, чем запрос дойдёт до роутера, — поэтому в таблице стоит ограничение публичного API, а не роутера.</p>
+        </div>
+      </details>
+    </section>
+
+    <section aria-labelledby="chat-h">
+      <h2 id="chat-h">Чат на локальной модели</h2>
+      <p class="prose">Чат по локальной модели уже работает в проде — это день 11 с профилями и слоями памяти. Эта страница его не воспроизводит: второй экран с тем же назначением был бы вторым источником правды, а не новой возможностью.</p>
+      <p class="act"><a class="wk-link" href="/day11/">Открыть день 11</a></p>
+    </section>
+
+    <section aria-labelledby="call-h">
+      <h2 id="call-h">Пример вызова</h2>
+      <figure class="code">
+        <figcaption>Через публичный API</figcaption>
+        <pre><code>curl -sS https://challenge.zpq.ai/day5/api/answer -H 'content-type: application/json' -d '{"sphere":"fintech","model":"mac-qwen3","maxTokens":64}'</code></pre>
+      </figure>
+      <p class="note">Ключа в этой команде нет, и это не пропуск: публичный API ключа от клиента не требует вовсе, а ключ приложения для роутера живёт на сервере и до браузера не доходит. Адреса ноутбука в частной сети здесь тоже нет — путь до него выбирает сервер, а не клиент.</p>
+    </section>
+
+    <section aria-labelledby="task-h">
+      <h2 id="task-h">Задание дня</h2>
+      <blockquote class="task">
+        <p><strong>День 30 «Локальная LLM как приватный сервис»:</strong> на VPS или домашнем сервере, HTTP API, чат; проверить доступ по сети, стабильность при нескольких запросах, базовые ограничения (rate limit / max context).</p>
+      </blockquote>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p class="num" id="run-line"></p>
+    <p>Решение недели — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR 2026-10-09-1335</a>, раскладка страницы — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md">спецификация дней 26–30</a>, код прогона — <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/rag/eval">rag/eval/</a>, данные прогона — <a href="results.json">results.json</a>, исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</p>
+  </footer>
+</div>
+</body>
+</html>
