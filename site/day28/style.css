@@ -206,7 +206,12 @@ a.wk-link:hover { background:var(--bg); }
   background:var(--surface);
 }
 .exp + .exp { margin-top:var(--s-3); }
-.limits + .exp, .tbl + .exp { margin-top:var(--s-4); }
+/* Соседом первого раскрывающегося блока стоит то, что кончилось перед ним:
+   список границ меры, таблица или строка про снятые оговорки. `+` смотрит на
+   соседа в дереве, а не на видимого, поэтому и в состоянии «ошибка», где
+   оговорки скрыты атрибутом, сосед тот же `.note` — правило покрывает обе
+   ветви (регрессия от подписи оговорок, находка design-review). */
+.limits + .exp, .tbl + .exp, .note + .exp { margin-top:var(--s-4); }
 .exp > summary {
   display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-3);
   padding:var(--s-3) var(--s-4);
