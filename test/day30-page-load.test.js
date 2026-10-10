@@ -76,10 +76,11 @@ for (const [name, mutate] of [
     dom.ctx.render(mutate())
     assert.equal(dom.get('burst-tbl').hidden, true, 'таблица осталась на экране без строк')
     assert.equal(dom.get('burst-body').children.length, 0, 'в таблице появились строки')
-    // Причина на месте таблицы есть, и ни одно сообщение на экране не
-    // повторяет другое дословно: четыре копии одной строки — дефект, две
-    // разные строки (частичный вывод и причина пустой таблицы) — нет.
-    const said = ['verdict', 'burst-status', 'acc-status', 'lim-status']
+    // Причина названа, и ровно один раз: либо в главном статусе (файла нет,
+    // чужой день, пусто — экран снимается разом), либо на месте самой
+    // таблицы (частный случай «проб нет»). Повтор полного текста в обоих
+    // местах — дефект; отсылку из других секций проверяет тест ниже.
+    const said = ['verdict', 'burst-status']
       .map((id) => dom.get(id))
       .filter((n) => !n.hidden && n.textContent.trim().length > 0)
       .map((n) => n.textContent.trim())
@@ -106,20 +107,42 @@ for (const [name, mutate] of [
   ['чужой день', () => ({ ...DATA(), day: 29 })],
   ['прогона ещё не было', () => ({ ...DATA(), burst: [], limits: [] })],
 ]) {
-  test('сообщение состояния печатается один раз: ' + name, () => {
+  test('полное сообщение состояния печатается один раз: ' + name, () => {
     const dom = fakeDom()
     dom.ctx.render(mutate())
-    const shown = ['verdict', 'burst-status', 'acc-status', 'lim-status']
+    const full = dom.get('verdict').textContent.trim()
+    assert.ok(full.length > 0, 'главный статус пуст')
+    const copies = ['verdict', 'burst-status', 'acc-status', 'lim-status']
       .map((id) => dom.get(id))
-      .filter((n) => !n.hidden && n.textContent.trim().length > 0)
-    assert.equal(shown.length, 1,
-      'сообщений на экране ' + shown.length + ', а должно быть одно')
-    assert.equal(shown[0].name, 'verdict', 'сообщение стоит не в главном статусе')
+      .filter((n) => !n.hidden && n.textContent.trim() === full)
+    assert.equal(copies.length, 1,
+      'полный текст напечатан ' + copies.length + ' раз, а должен один')
+    assert.equal(copies[0].name, 'verdict', 'полный текст стоит не в главном статусе')
     // Блок оговорок прогона в этих состояниях пуст, и подпись с числом
     // снятых не должна висеть над пустотой.
     for (const id of ['run-notes-cap', 'run-notes', 'run-notes-dup']) {
       assert.equal(dom.get(id).hidden, true, id + ' остался на экране без данных')
     }
+  })
+
+  // Секция, у которой остались только заголовок и абзац, обещает содержимое,
+  // а причина уехала на полтора экрана вверх. Короткая строка на месте
+  // пустого блока связывает их (находка design-review к #344).
+  test('пустые секции несут короткую отсылку к причине: ' + name, () => {
+    const dom = fakeDom()
+    dom.ctx.render(mutate())
+    const full = dom.get('verdict').textContent.trim()
+    for (const id of ['acc-status', 'lim-status']) {
+      const n = dom.get(id)
+      assert.equal(n.hidden, false, id + ' скрыт — секция осталась пустой без объяснения')
+      assert.ok(n.textContent.trim().length > 0, id + ' пуст')
+      assert.notEqual(n.textContent.trim(), full,
+        id + ' повторяет полное сообщение целиком, а должен отсылать к нему')
+      assert.ok(/«Итоге дня»/.test(n.textContent),
+        'строка не говорит, где искать причину: ' + n.textContent)
+    }
+    assert.equal(dom.get('acc-box').hidden, true, 'пустой dl доступа остался на экране')
+    assert.equal(dom.get('lim-tbl').hidden, true, 'пустая таблица ограничений осталась на экране')
   })
 }
 

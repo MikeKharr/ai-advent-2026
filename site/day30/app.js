@@ -123,9 +123,16 @@ function limitRows(limits) {
 
 /* ── Состояния ────────────────────────────────────────────────────────── */
 
+/* Короткая строка на месте пустого блока. Полная причина стоит один раз, в
+   «Итоге дня», но секция, у которой остались только заголовок и абзац,
+   обещает содержимое — а причина уехала на полтора экрана вверх, и связь
+   между ними пропадает (находка design-review к #344). Поэтому: полный текст
+   один раз наверху, здесь — отсылка к нему. */
+const POINT_UP = 'Нет данных прогона — причина в «Итоге дня» выше.';
+
 /* Одно сообщение на экран, а не четыре одинаковых в четырёх `role="status"`:
-   отсутствие файла — одна причина, и читать её четыре раза незачем. Блоки,
-   которым нечего показать, просто скрыты (находка design-review к #344). */
+   отсутствие файла — одна причина, и читать её четыре раза незачем
+   (находка design-review к #344). */
 function showMessage(text) {
   $('verdict').textContent = text;
   $('burst-tbl').hidden = true;
@@ -133,9 +140,13 @@ function showMessage(text) {
   $('lim-tbl').hidden = true;
   $('lim-sum').textContent = '';
   ['run-notes-cap', 'run-notes', 'run-notes-dup'].forEach((id) => { $(id).hidden = true; });
-  ['burst-status', 'acc-status', 'lim-status'].forEach((id) => {
-    $(id).textContent = '';
-    $(id).hidden = true;
+  /* Строка проб живёт в том же «Итоге дня», прямо под полным текстом:
+     отсылать вверх на два абзаца незачем, и она просто снимается. */
+  $('burst-status').textContent = '';
+  $('burst-status').hidden = true;
+  ['acc-status', 'lim-status'].forEach((id) => {
+    $(id).textContent = POINT_UP;
+    $(id).hidden = false;
   });
 }
 
