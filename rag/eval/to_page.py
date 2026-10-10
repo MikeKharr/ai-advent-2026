@@ -57,7 +57,8 @@ def mib(kib) -> float | None:
 
 
 def envelope(day: int, raw: dict, judge: str | None, notes: list[str],
-             stability_ids: list[str] | None = None, judged: bool = True) -> dict:
+             stability_ids: list[str] | None = None, judged: bool = True,
+             memory_shown: bool = True) -> dict:
     """Общий конверт четырёх страниц с числами.
 
     `host` берётся КОНСТАНТОЙ, а не из сырого файла: это подпись машины
@@ -87,7 +88,11 @@ def envelope(day: int, raw: dict, judge: str | None, notes: list[str],
     for note in notes:
         if note not in merged:
             merged.append(note)
-    if report.RSS_NOTE not in merged and _has_rss(raw):
+    if not memory_shown:
+        # Страница этого дня числа памяти не показывает — оговорка о его
+        # составе ссылалась бы на число, которого на экране нет.
+        merged = [note for note in merged if note != report.RSS_NOTE]
+    elif report.RSS_NOTE not in merged and _has_rss(raw):
         merged.append(report.RSS_NOTE)
     if merged:
         out["notes"] = merged
@@ -349,7 +354,8 @@ def day28(raw: dict, cloud_raw: dict | None, verdicts: dict,
     notes.extend(_derived_notes(raw))
     notes.extend(verdicts.get("notes") or [])
     return {
-        **envelope(28, raw, verdicts.get("judge"), notes, stability_ids),
+        **envelope(28, raw, verdicts.get("judge"), notes, stability_ids,
+                   memory_shown=False),
         "summary": {"local": side_summary(local_rows), "cloud": side_summary(cloud_rows)},
         "questions": questions,
     }
@@ -382,13 +388,18 @@ def _derived_notes(raw: dict) -> list[str]:
         first = (runs[0] or {}).get("ttft_s") if runs else None
         rest = [one.get("ttft_s") for one in runs[1:] if one.get("ttft_s")]
         if first and rest and first > 2 * min(rest):
-            cold.append(f"{row['id']} ({first} с против {min(rest)} с)")
+            cold.append(f"{row['id']} ({_ru(first)} с против {_ru(min(rest))} с)")
     if cold:
         out.append(
             f"Первый повтор нёс загрузку весов: {', '.join(cold)}. Это холодный "
             "старт, а не разброс модели, и в разбросе времени его надо читать "
             "отдельно.")
     return out
+
+
+def _ru(number) -> str:
+    """Число для текста страницы: десятичная запятая, как во всей неделе."""
+    return str(number).replace(".", ",")
 
 
 def _retrieved_match(local: dict, cloud: dict):
