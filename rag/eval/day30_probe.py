@@ -1,10 +1,12 @@
 """День 30 — приватный сервис: пробы через прод и напрямую в локальную Ollama.
 
 Что мерит (ADR 2026-10-09-1335, п. 6): доступ по сети, несколько запросов
-разом и срабатывание ограничений. Три ограничения — частота (шестой запрос в
-минуту через день 5 → `429` с `retry-after`), размер запроса (отказ роутера
-выше `maxRequestTokens` ДО вызова провайдера) и окно контекста (прямой запрос
-длиннее `num_ctx`, с заданным окном и без него).
+разом и срабатывание ограничений. Три ограничения — частота (шесть
+одновременных запросов через день 5 → один `429` «Слишком часто»; заголовка
+`retry-after` день 5 не отдаёт), длина темы
+в публичном API дня 5 (61 знак → `400` до вызова модели; `maxRequestTokens`
+роутера снаружи недостижим — см. `limit_request_size`) и окно контекста
+(прямой запрос длиннее `num_ctx`, с заданным окном и без него).
 
 ПРЕДУСЛОВИЕ — Tailscale на ноутбуке включён, и это действие владельца
 (решение Р4: включить на окно проверки и выключить после). Пока он остановлен,
@@ -73,7 +75,9 @@ def ask_day5(prompt_text: str, base: str = DAY5, max_tokens: int = 64,
     Текст ответа НЕ ВОЗВРАЩАЕТСЯ вовсе: на страницу дня 30 идут времена и
     коды, и текст, которого в записи нет, утечь не может.
     """
-    body = json.dumps({"prompt": prompt_text, "model": PROVIDER,
+    # День 5 принимает тему в поле `sphere` (до 60 знаков, `days/day5/env.js`),
+    # а не произвольный промпт: остальной вход день собирает сам.
+    body = json.dumps({"sphere": prompt_text, "model": PROVIDER,
                        "maxTokens": max_tokens}).encode("utf-8")
     request = urllib.request.Request(base, data=body,
                                      headers={"Content-Type": "application/json"})
@@ -170,38 +174,54 @@ def parallel_day5(count: int, ask=ask_day5) -> dict:
     }
 
 
-def limit_rate(ask=ask_day5, sleep=time.sleep) -> dict:
-    """Частота: шесть запросов подряд, шестой обязан получить `429`.
+def limit_rate(ask=ask_day5) -> dict:
+    """Частота: шесть запросов ОДНОВРЕМЕННО, один из них обязан получить `429`.
 
-    Пять первых занимают окно, шестой его проверяет. Запись несёт `retry-after`
-    дословно: без числа секунд отказ не отличить от сбоя.
+    Последовательно проверять нельзя: ответ модели на ноутбуке идёт около
+    минуты, и шесть запросов подряд растягиваются дольше окна (первый прогон
+    2026-10-10 дал шесть `200`). Окно дня считает запуски на входе, до вызова
+    модели, поэтому из шести одновременных пять занимают окно, а шестой
+    получает `429` сразу. Остальные могут получить отказ ёмкости хоста — это
+    другой лимит, и он записывается отдельно, кодами.
     """
-    rows = [ask("Одним словом: да.") for _ in range(RATE_WINDOW + 1)]
-    last = rows[-1]
+    count = RATE_WINDOW + 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
+        rows = list(pool.map(lambda _: ask("да"), range(count)))
+    statuses = [row["status"] for row in rows]
+    # 429 у дня 5 бывает от нескольких лимитов (окно минуты, окно часа,
+    # суточный предел, бюджет). Окно минуты различается словами отказа.
+    limited = [row for row in rows if row["status"] == 429
+               and "Подождите минуту" in str(row.get("reason") or "")]
+    seen = limited[0] if limited else rows[-1]
     return {
         "name": f"запусков в минуту на адрес — {RATE_WINDOW}",
         "value": str(RATE_WINDOW),
-        "fired": last["status"] == 429,
-        "client_saw": f"{last['status']}, retry-after {last['retry_after']}, "
-                      f"{last['reason']}",
-        "statuses": [row["status"] for row in rows],
+        "fired": bool(limited),
+        "client_saw": f"{seen['status']}, retry-after {seen['retry_after']}, "
+                      f"{seen['reason']}",
+        "statuses": statuses,
     }
 
 
 def limit_request_size(ask=ask_day5) -> dict:
-    """Размер запроса: выше `maxRequestTokens` роутер отказывает ДО вызова.
+    """Размер запроса через публичный API: длинный вход отсекает сам день 5.
 
-    Длина берётся с запасом над потолком в токенах: знаков на токен по-русски
-    меньше четырёх, поэтому потолок заведомо превышен. Точного числа токенов
-    запроса прогон не знает — и не обязан: проверяется факт отказа и его
-    слова, а не граница с точностью до токена.
+    Посетитель задаёт только тему (`sphere`, до 60 знаков), а контекст день
+    собирает сам. `maxRequestTokens` роутера (6000) снаружи недостижим: бюджет
+    входа дня — минимум из своих лимитов (`effectiveBudget`), у `mac-qwen3` в
+    `days/day5/env.js` `maxInputTokens` 4500 < 6000, а запрос сверх бюджета
+    день отвергает `429` до `askRouter` (`days/day5/server.js`). Проверяется граница, которую
+    видит посетитель: тема длиннее 60 знаков получает 400 до вызова модели.
     """
-    long_prompt = "лимит " * (MAX_REQUEST_TOKENS * 2)
+    # 61 знак: на один больше границы. Тема в тысячи знаков проверяла бы уже
+    # предел тела запроса 64 КБ, а не длину темы (прогон 2026-10-10: 502).
+    long_prompt = "а" * 61
     row = ask(long_prompt)
     return {
-        "name": f"maxRequestTokens провайдера {PROVIDER} — {MAX_REQUEST_TOKENS}",
-        "value": str(MAX_REQUEST_TOKENS),
-        "fired": row["status"] not in (200, None),
+        "name": "длина темы в публичном API дня 5 — 60 знаков "
+                f"(maxRequestTokens {MAX_REQUEST_TOKENS} снаружи недостижим)",
+        "value": "60",
+        "fired": row["status"] == 400,
         "client_saw": f"{row['status']}, {row['reason']}",
         "prompt_chars": len(long_prompt),
     }
@@ -285,8 +305,9 @@ def run(model: str, runner: str, commit: str, through_prod: bool,
                 {"name": f"запусков в минуту на адрес — {RATE_WINDOW}",
                  "value": str(RATE_WINDOW), "fired": None,
                  "client_saw": "не проверялся: провайдер недоступен"},
-                {"name": f"maxRequestTokens провайдера {PROVIDER} — {MAX_REQUEST_TOKENS}",
-                 "value": str(MAX_REQUEST_TOKENS), "fired": None,
+                {"name": "длина темы в публичном API дня 5 — 60 знаков "
+                         f"(maxRequestTokens {MAX_REQUEST_TOKENS} снаружи недостижим)",
+                 "value": "60", "fired": None,
                  "client_saw": "не проверялся: провайдер недоступен"},
                 *limits,
             ]
@@ -315,8 +336,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         print("прямые пробы: 1 и 3 одновременных запроса, окно контекста заданное и нет")
-        print(f"через прод: доступность, 3 одновременных, {RATE_WINDOW + 1} запрос в минуту, "
-              f"запрос выше {MAX_REQUEST_TOKENS} токенов")
+        print(f"через прод: доступность, 3 одновременных, {RATE_WINDOW + 1} одновременных "
+              "на окно частоты, тема в 61 знак (граница 60)")
         print(f"слотов дня 5 будет занято около {RATE_WINDOW + 1 + 3 + 2} из 50 суточных; "
               "расход 0")
         return 0

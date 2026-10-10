@@ -953,6 +953,78 @@ class ПробыДня30(unittest.TestCase):
         self.assertEqual(set(got), {"status", "time_s", "answer_chars", "reason", "retry_after"})
         self.assertEqual(got["answer_chars"], len("ответ модели"))
 
+    def test_запрос_к_дню_5_несёт_тему_в_поле_sphere(self):
+        """День 5 принимает тему в `sphere`; иное поле — 400 «Поле sphere…»."""
+        seen = {}
+
+        class Response:
+            status = 200
+            headers = {}
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        def opener(request, **_kw):
+            seen.update(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        day30.ask_day5("финтех", opener=opener)
+        self.assertEqual(seen.get("sphere"), "финтех")
+        self.assertNotIn("prompt", seen)
+
+    def test_частота_проверяется_одновременными_запросами(self):
+        """Шесть одновременных: пятеро в окне, шестой — 429; иначе «не сработал»."""
+        import threading
+        lock = threading.Lock()
+        count = {"n": 0}
+
+        def ask(_text):
+            with lock:
+                count["n"] += 1
+                n = count["n"]
+            if n > day30.RATE_WINDOW:
+                return {"status": 429, "time_s": 0.01, "answer_chars": None,
+                        "reason": "Слишком часто. Подождите минуту.", "retry_after": None}
+            return {"status": 200, "time_s": 1.0, "answer_chars": 1,
+                    "reason": None, "retry_after": None}
+
+        got = day30.limit_rate(ask=ask)
+        self.assertTrue(got["fired"])
+        self.assertEqual(len(got["statuses"]), day30.RATE_WINDOW + 1)
+        self.assertIn("Подождите минуту", got["client_saw"])
+        hour = day30.limit_rate(ask=lambda _t: {"status": 429, "time_s": 0.01,
+                                                "answer_chars": None,
+                                                "reason": "Лимит на час исчерпан",
+                                                "retry_after": None})
+        self.assertFalse(hour["fired"])
+
+        quiet = day30.limit_rate(ask=lambda _t: {"status": 200, "time_s": 1.0,
+                                                 "answer_chars": 1, "reason": None,
+                                                 "retry_after": None})
+        self.assertFalse(quiet["fired"])
+
+    def test_проба_длины_темы_проверяет_именно_длину_темы(self):
+        """61 знак: на один больше границы, тело далеко от предела 64 КБ дня 5."""
+        sent = []
+
+        def ask(text):
+            sent.append(text)
+            return {"status": 400, "time_s": 0.01, "answer_chars": None,
+                    "reason": "Слишком длинно: не больше 60 символов", "retry_after": None}
+
+        got = day30.limit_request_size(ask=ask)
+        self.assertEqual(len(sent[0]), 61)
+        body = json.dumps({"sphere": sent[0], "model": day30.PROVIDER, "maxTokens": 64})
+        self.assertLess(len(body.encode("utf-8")), 64 * 1024)
+        self.assertTrue(got["fired"])
+        self.assertEqual(got["value"], "60")
+
     def test_недоступный_провайдер_останавливает_пробы_через_прод(self):
         def ask(*_a, **_kw):
             return {"status": 503, "time_s": 0.1, "answer_chars": None,
@@ -979,12 +1051,13 @@ class ПробыДня30(unittest.TestCase):
         def ask(*_a, **_kw):
             code = next(codes)
             return {"status": code, "time_s": 0.1, "answer_chars": 1,
-                    "reason": "окно исчерпано" if code == 429 else None,
-                    "retry_after": "41" if code == 429 else None}
+                    "reason": "Слишком часто. Подождите минуту." if code == 429 else None,
+                    "retry_after": None}
 
         got = day30.limit_rate(ask=ask)
         self.assertTrue(got["fired"])
-        self.assertIn("41", got["client_saw"])
+        # Заголовка retry-after день 5 не отдаёт: различитель — слова отказа.
+        self.assertIn("Подождите минуту", got["client_saw"])
 
 
 if __name__ == "__main__":
