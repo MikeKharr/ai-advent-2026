@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка и тексты — agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md,
+     решение недели — agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md.
+     Пути к своим файлам относительные, <base> нет; ссылка на лендинг — от корня.
+     Ни одного числа прогона литералом: всё из results.json, вывод считает verdict.js.
+     Раскрывающихся блоков верхнего уровня четыре, и каждый стоит в своей секции;
+     «чего этот замер не мерил» под details не ушло — это границы меры, и они на виду. -->
+<title>День 29: оптимизация — одна ось за раз — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+<script src="verdict.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <p class="back"><a href="/">← AI Advent 2026</a></p>
+    <h1>День 29: оптимизация — одна ось за раз</h1>
+    <p class="lede">Базой взята конфигурация дня 28, и от неё по очереди менялась ровно одна вещь: температура, потолок ответа, окно контекста, рассуждение, промпт-шаблон, сжатие весов. Каждая ось — один прогон на тех же десяти вопросах. Итог вышел не тот, которого ждали: правило отбора не взяло ни одной оси, и «после» оказалось повторным прогоном базы.</p>
+  </header>
+
+  <nav class="wk" aria-label="Неделя 26–30">
+    <p class="wk-cap" id="wk-cap">Неделя: локальная LLM</p>
+    <ul class="wk-list">
+      <li><a class="wk-link" href="/day26/">26</a></li>
+      <li><a class="wk-link" href="/day27/">27</a></li>
+      <li><a class="wk-link" href="/day28/">28</a></li>
+      <li><span class="wk-link wk-now" aria-current="page">29</span></li>
+      <li><a class="wk-link" href="/day30/">30</a></li>
+    </ul>
+  </nav>
+
+  <noscript><p class="status">Таблицы замеров строит скрипт, а он отключён. Данные прогона — файл <a href="results.json">results.json</a> рядом с этой страницей, выводы — в <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR недели</a>.</p></noscript>
+
+  <main>
+    <section aria-labelledby="sum-h">
+      <h2 id="sum-h">Итог дня</h2>
+      <div class="panel sum">
+        <p class="verdict" id="verdict" role="status">Читаю результаты прогона…</p>
+
+        <figure class="tbl" id="gain-tbl" hidden>
+          <table>
+            <caption>Что это дало: база против «после»</caption>
+            <thead>
+              <tr>
+                <th scope="col">Метрика</th>
+                <th scope="col" class="num">До</th>
+                <th scope="col" class="num">После</th>
+                <th scope="col">Разница</th>
+              </tr>
+            </thead>
+            <tbody id="gain-body"></tbody>
+          </table>
+        </figure>
+
+        <ul class="limits">
+          <li>Повторов на вопрос — <span class="num" id="limit-repeats">нет данных</span>. Разница в один-два вопроса между осями может быть шумом температуры, а не свойством оси.</li>
+          <li id="limit-ids">нет данных</li>
+          <li id="limit-suspect" hidden></li>
+          <li>Мерено на ноутбуке, а не на проде: на прод переносятся качество и ограничения модели, не секунды.</li>
+          <li>Оценку ставит судья — <span id="limit-judge">нет данных</span>, то есть модель, а не код; на десяти вопросах статистики нет.</li>
+          <li>Порога шума у скорости и памяти нет: разница в токенах и мегабайтах измеряется, а не оценивается.</li>
+          <li>Признаков и полного времени по каждой оси в файле страницы нет — только оценка судьи и ток/с. Полная причина, по которой ось не вошла в «после», видна в каталоге замеров, а не здесь.</li>
+          <li>Сочетания осей не мерены вовсе: метод дня — одна ось за раз, и как оси ведут себя вместе, замер не говорит.</li>
+          <li>Память по осям не мерена, и в таблицах на её месте стоит «нет данных», а не оценка на глаз.</li>
+          <li>Поиск во всех прогонах один и тот же: предмет дня — генерация, а не качество поиска.</li>
+        </ul>
+        <ul class="limits" id="run-notes" hidden></ul>
+
+        <details class="exp">
+          <summary>Как это мерено<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>База — конфигурация дня 28: тот же индекс ноутбука, тот же набор из десяти контрольных вопросов, тот же промпт реестра агентов. От неё менялась ровно одна вещь, и каждый вариант прогонялся один раз на всех десяти вопросах.</p>
+            <p>Время до первого токена и токены в секунду прогон берёт из ответа движка по каждому запросу и усредняет по вопросам набора — это среднее по <strong>разным</strong> вопросам, а не по повторам одного. Слова «медиана» на странице нет: один прогон на вопрос медианы не даёт, и обещать устойчивость, которой замер не мерил, нельзя.</p>
+            <p>Оценку верности ставит судья по рубрике дней 22 и 28: <strong>2 — верно</strong>, <strong>1 — частично</strong>, <strong>0 — неверно</strong>. Судья — модель, читающая вопрос, ответ и найденные фрагменты, а не код со сравнением строк. Средняя по рубрике на десяти вопросах статистикой не является: доверительного интервала у неё нет, и порог шума поэтому считается как два вопроса из набора.</p>
+            <p class="small">Неизменным во всех прогонах оставалось всё, кроме оси: индекс, число фрагментов на вопрос, срез фрагмента, набор вопросов, рубрика судьи и машина. Сводки «все параметры движка одним списком» на странице нет: прогон кладёт в файл значения только тех ручек, которые менялись, а дописывать остальные значило бы показать число, которого в прогоне не было.</p>
+          </div>
+        </details>
+
+        <details class="exp">
+          <summary>Как мерена память<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Метод тот же, что в ADR <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-30-0957-rag-quantized-embedder.md">2026-09-30-0957</a>: размер загруженной модели движок сообщает сам, а пик расхода снимается частой выборкой процессов движка на время прогона.</p>
+            <p>У метода две честные границы. Выборка видит пик только в моменты опроса, и короткий всплеск между ними пропустит. А служб движка на ноутбуке две — замеры и сайт, — поэтому сумма по процессам включает и вторую; разбивка по процессам лежит рядом с числом в каталоге замеров.</p>
+            <p class="small">В этом прогоне память снята на весь прогон, а не на каждую ось, поэтому по осям и по конфигурациям «до» и «после» в таблицах стоит «нет данных».</p>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section aria-labelledby="closed-h">
+      <h2 id="closed-h">Что уже было закрыто</h2>
+      <ul class="closed" role="list">
+        <li>
+          <p>Сжатие весов уже мерилось — но для эмбеддера поиска и в виде обучения с учётом квантования, а не сжатия готовых весов генеративной модели.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">30.09.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-30-0957-rag-quantized-embedder.md">ADR 2026-09-30-0957</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/rag">rag/</a></p>
+        </li>
+        <li>
+          <p>Как мерить память и чему верить: замер на macOS занижает расход, а срабатывание потолка читается по журналу, а не по признакам.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">02.10.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-02-1519-ollama-ceiling-4g.md">ADR 2026-10-02-1519</a></p>
+        </li>
+        <li>
+          <p>Потолок токенов на ответ сделан громким: обрыв на потолке виден как обрыв, а не как законченный ответ.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">01.10.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-01-1818-loud-token-ceiling.md">ADR 2026-10-01-1818</a></p>
+        </li>
+      </ul>
+      <p class="gap"><strong>Пробел, который закрывает эта страница:</strong> для генеративной модели не мерено ничего — ни параметров движка, ни промпт-шаблона, ни сжатия весов. Было известно, как мерить память и как не обмануться потолком; чего стоит каждая ручка у локальной модели на реальной задаче — нет.</p>
+    </section>
+
+    <section aria-labelledby="axes-h">
+      <h2 id="axes-h">Оси: по одной за раз</h2>
+      <p class="prose">Каждая строка — отдельный прогон на тех же десяти вопросах, в котором от базы отличалась ровно одна вещь. У промпта в ячейках слово, а не текст: оба шаблона целиком — в раскрывающемся блоке ниже.</p>
+      <figure class="tbl" id="axes-tbl" hidden>
+        <figcaption id="t29axes">Оси, по одному прогону на каждую</figcaption>
+        <div class="tbl-scroll" role="region" aria-labelledby="t29axes">
+          <table class="tbl-wide">
+            <caption class="vh">Оси: значения до и после, оценка судьи и токены в секунду</caption>
+            <thead>
+              <tr>
+                <th scope="col">Ось</th>
+                <th scope="col">До</th>
+                <th scope="col">После</th>
+                <th scope="col" class="num">Оценка</th>
+                <th scope="col" class="num">Ток/с</th>
+              </tr>
+            </thead>
+            <tbody id="axes-body"></tbody>
+          </table>
+        </div>
+        <p class="tbl-hint" hidden>Таблица прокручивается вбок.</p>
+        <p class="tbl-sum" id="changed-line"></p>
+      </figure>
+      <p class="status" id="axes-status" role="status">Читаю результаты прогона…</p>
+
+      <h3 id="rule-h">Как выбрано «после»</h3>
+      <p class="prose">Правило записано заранее, чтобы «после» не было вкусом: берутся оси, у которых оценка не упала, а время выросло в пользу ответа. Сборка без отказов в «после» <strong>не входит ни при каких числах</strong> — «после» это конфигурация той модели, что стоит в проде.</p>
+      <p class="tbl-sum" id="rule-text"></p>
+      <ul class="limits" id="rule-list"></ul>
+
+      <details class="exp">
+        <summary>Промпт до и после<span class="q-mark" aria-hidden="true"></span></summary>
+        <div class="exp-body">
+          <p class="small">Только для базовой модели: шаблоны сборки без отказов не публикуются.</p>
+          <p class="lbl">Промпт реестра («полный»)</p>
+          <pre class="code" id="prompt-before">Читаю результаты прогона…</pre>
+          <p class="lbl">Компактный шаблон («компактный»)</p>
+          <pre class="code" id="prompt-after">Читаю результаты прогона…</pre>
+        </div>
+      </details>
+    </section>
+
+    <section aria-labelledby="quant-h">
+      <h2 id="quant-h">Сжатие весов: Q4_K_M против Q6_K</h2>
+      <p class="prose"><strong>Q6_K-сборка дообучена снятием отказов — разница между ней и Q4_K_M не только в сжатии.</strong> Скорость и память сравнимы честно, верность — нет. Её ответы на странице не показываются, поэтому вердикт по этой оси проверить нельзя: это единственное место недели, где читатель вынужден поверить на слово, и молчать об этом было бы нечестно.</p>
+      <p class="prose">Чистой оси сжатия здесь нет и по второй причине: чистого Q6_K у этой модели в библиотеке движка не существует, а качать восьмибитную сборку ради чистой оси владелец не выбрал. Это решение, а не упущение.</p>
+      <figure class="tbl" id="quant-tbl" hidden>
+        <table>
+          <caption>Сжатие весов: числа и только числа</caption>
+          <thead>
+            <tr>
+              <th scope="col">Метрика</th>
+              <th scope="col" class="num">Q4_K_M</th>
+              <th scope="col" class="num">Q6_K</th>
+              <th scope="col">Разница</th>
+            </tr>
+          </thead>
+          <tbody id="quant-body"></tbody>
+        </table>
+        <p class="tbl-sum" id="quant-names"></p>
+      </figure>
+      <p class="status" id="quant-status" role="status">Читаю результаты прогона…</p>
+      <p class="note">Разбора по запросам у этой оси нет вовсе: наполнить его можно было бы только текстами её ответов, а они не публикуются — вето по <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-07-1349-keyed-uncensored-model.md">ADR 2026-10-07-1349</a>. Сборка без отказов в «после» не входит ни при каких числах.</p>
+
+      <details class="exp">
+        <summary>Что такое сжатие весов<span class="q-mark" aria-hidden="true"></span></summary>
+        <div class="exp-body">
+          <p>Весы модели можно хранить грубее: вместо точного значения каждого числа — его приближение по общей шкале. Модель от этого занимает меньше памяти и быстрее читается, а отвечает чуть иначе — где-то незаметно, где-то хуже. Обозначения вида Q4 и Q6 и есть степень огрубления: чем число меньше, тем грубее.</p>
+          <p class="small">Считать биты здесь незачем: на задаче важно не то, сколько их осталось, а изменились ли ответы и насколько быстрее стало. Ровно это и стоит в таблице выше.</p>
+        </div>
+      </details>
+    </section>
+
+    <section aria-labelledby="stab-h">
+      <h2 id="stab-h">Стабильность: что здесь не мерено</h2>
+      <p class="prose">Обрыв ответа или недоступность локальной модели — результат замера, а не пропуск в нём. Но повторов в этом прогоне нет, и секция говорит это словом, а не пустой таблицей.</p>
+      <p class="tbl-sum" id="stab-line"></p>
+      <p class="note">Разброс на трёх вопросах мерен на той же базовой конфигурации в <a href="/day28/">дне 28</a>; сюда его числа не переносятся — это другой прогон.</p>
+    </section>
+
+    <section aria-labelledby="task-h">
+      <h2 id="task-h">Задание дня</h2>
+      <blockquote class="task">
+        <p><strong>День 29 «Оптимизация локальной LLM»:</strong> параметры (temperature, max tokens, context window), квантование, prompt-шаблон под кейс; сравнить качество до/после, скорость и потребление ресурсов.</p>
+      </blockquote>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p class="num" id="run-line"></p>
+    <p>Решение недели — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR 2026-10-09-1335</a>, раскладка страницы — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md">спецификация дней 26–30</a>, код прогона — <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/rag/eval">rag/eval/</a>, данные прогона — <a href="results.json">results.json</a>, исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</p>
+  </footer>
+</div>
+</body>
+</html>
