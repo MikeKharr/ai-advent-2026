@@ -137,6 +137,22 @@ test('оговорки прогона стоят под своей подпис�
   assert.equal(dom.get('run-notes-dup').hidden, false)
 })
 
+// Список снятых оговорок стареет молча: прогон перегенерируется, текст
+// оговорки меняется — и метка перестаёт на что-либо указывать. Мёртвая метка
+// ничего не ломает (фильтр открытый), но она утверждает, будто страница это
+// уже говорит, а проверить нечем. Сверяется по тем данным, что лежат рядом.
+test('в ALREADY_SAID нет мёртвых меток: каждая находит оговорку в данных', () => {
+  const app = read('../site/day28/app.js')
+  const list = app.slice(app.indexOf('const ALREADY_SAID'), app.indexOf('const saidOnPage'))
+  const marks = [...list.matchAll(/\['([^']+)',/g)].map((m) => m[1])
+  assert.ok(marks.length > 0, 'список снятых оговорок не разобрался')
+  const notes = DATA().notes
+  for (const mark of marks) {
+    assert.ok(notes.some((n) => n.startsWith(mark)),
+      'метка «' + mark + '» не находит ни одной оговорки прогона — список устарел')
+  }
+})
+
 test('незнакомая оговорка прогона остаётся на экране', () => {
   const dom = fakeDom()
   const d = DATA()
