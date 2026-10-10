@@ -24,8 +24,16 @@
 Запуск:
 
     OLLAMA_URL=http://127.0.0.1:11435 EVAL_OLLAMA_URL=http://127.0.0.1:11435 \\
-      RAG_INDEX=<каталог локального индекса> python3 -I eval/day29_tuning.py \\
-      --out ../site/day29/results.json
+      RAG_INDEX=<каталог> python3 -B eval/day29_tuning.py --index index \\
+      --out ~/Projects/ai-advent-2026-measurements/runs/day29-results.json
+
+`-B` и чистка `__pycache__` обязательны, `-I` — нет: он включает
+изолированный режим, каталог скрипта в `sys.path` не попадает, и прогон
+падает с `ModuleNotFoundError`. Байт-код отключает `-B`.
+
+Прогон пишет СЫРОЙ вывод в каталог замеров. Файл страницы по
+спецификации раскладки делает отдельный шаг:
+`python3 -B eval/to_page.py --day 29 --in <сырой> --out ../site/day29/results.json`.
 """
 
 from __future__ import annotations
@@ -303,6 +311,7 @@ def run(index_dir: Path, embedder: OllamaEmbedder, model: str, runner: str,
             "только числа.",
             "Замер на ноутбуке — не замер прода: прод ходит в другой процесс той же "
             "машины через частную сеть.",
+            report.RSS_NOTE,
         ]),
         "judge": {"name": None, "rubric": features.RUBRIC},
         "index": {"strategy": day28.STRATEGY, "commit": commit, "embedder": embedder.model},

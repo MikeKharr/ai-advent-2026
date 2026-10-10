@@ -17,14 +17,21 @@
 
 Запуск (один блок или все):
 
-    EVAL_OLLAMA_URL=http://127.0.0.1:11435 python3 -I eval/day29_params.py \\
-      --blocks ctx,temp,predict,think --out /tmp/day29-params.json
+    EVAL_OLLAMA_URL=http://127.0.0.1:11435 python3 -B eval/day29_params.py \\
+      --blocks ctx,temp,predict,think \\
+      --out ~/Projects/ai-advent-2026-measurements/runs/day29-params.json
+
+`-B` обязателен, `-I` — нет: он включает изолированный режим, каталог
+скрипта в `sys.path` не попадает, и прогон падает с `ModuleNotFoundError`.
+
+Этот прогон страницей не читается: его числа идут в раскрывающиеся
+пояснения дня 29 руками. Файл пишется через `report.write_results`, то есть
+через оба стража, как и файлы страниц.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
@@ -32,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import ollama_client as client  # noqa: E402
+import report  # noqa: E402
 
 BENCH_PROMPT = ("Опиши назначение ограничения частоты запросов в публичном "
                 "веб-приложении. Пиши связным текстом, без списков.")
@@ -175,6 +183,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="куда положить JSON прогона (это не файл страницы)")
     args = parser.parse_args(argv)
 
+    # Сборка без отказов этим прогоном не меряется ВОВСЕ, и отказ стоит ДО
+    # первого вызова модели, а не после записи (тот же порядок, что у I-4).
+    # Причина не в стражах записи: прогон СОБИРАЕТ ТЕКСТЫ по построению — блок
+    # `temp` сравнивает три ответа дословно, блок `think` кладёт ответ в
+    # запись. Для Q6_K его пришлось бы либо обесточить (без текстов блок
+    # `temp` не мерит ничего), либо нарушить вето ADR 2026-10-07-1349. Её
+    # числа — одна ось дня 29, и живёт она в `day29_tuning.py`.
+    if args.model == client.Q6:
+        parser.error(
+            "сборка без отказов этим прогоном не меряется: он собирает тексты "
+            "ответов, а её тексты не публикуются (ADR 2026-10-07-1349); "
+            "её числа — ось дня 29 в eval/day29_tuning.py")
+
     chosen = [name for name in args.blocks.split(",") if name.strip()]
     unknown = [name for name in chosen if name not in BLOCKS]
     if unknown:
@@ -191,9 +212,11 @@ def main(argv: list[str] | None = None) -> int:
     for name in chosen:
         print(f"блок {name}", flush=True)
         out[name] = BLOCKS[name](args.model)
-    path = Path(args.out)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # Запись — через `report.write_results`, то есть через ОБА стража. Прежняя
+    # редакция писала файл сама, и утверждение «ни одна запись файла стражей
+    # не обходит» было ложным (находка `reviewer` к PR #338): прогон с
+    # `--model` сборки без отказов положил бы её тексты в файл молча.
+    path = report.write_results(Path(args.out), out)
     print(f"-> {path}")
     return 0
 

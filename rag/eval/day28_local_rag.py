@@ -18,8 +18,16 @@ FAISS, ищет пять фрагментов по каждому из 10 кон
 Запуск (окно контекста задано явно — см. шапку `ollama_client`):
 
     OLLAMA_URL=http://127.0.0.1:11435 EVAL_OLLAMA_URL=http://127.0.0.1:11435 \\
-      RAG_INDEX=<каталог локального индекса> python3 -I eval/day28_local_rag.py \\
-      --out ../site/day28/results.json
+      RAG_INDEX=<каталог> python3 -B eval/day28_local_rag.py --index index \\
+      --out ~/Projects/ai-advent-2026-measurements/runs/day28-results.json
+
+`-B` и чистка `__pycache__` обязательны, `-I` — нет: он включает
+изолированный режим, каталог скрипта в `sys.path` не попадает, и прогон
+падает с `ModuleNotFoundError`. Байт-код отключает `-B`.
+
+Прогон пишет СЫРОЙ вывод в каталог замеров. Файл страницы по
+спецификации раскладки делает отдельный шаг:
+`python3 -B eval/to_page.py --day 28 --in <сырой> --out ../site/day28/results.json`.
 """
 
 from __future__ import annotations
@@ -217,6 +225,7 @@ def run(index_dir: Path, embedder: OllamaEmbedder, model: str, runner: str,
         "на сервере. Сравнение честно там, где верный источник нашли оба.",
         "Судья — модель, вопросов десять, статистики нет: разница в один-два "
         "вопроса может быть шумом температуры 1.",
+        report.RSS_NOTE,
     ]
     if not any(row["cloud"].get("time_s") is not None for row in rows):
         notes.append(

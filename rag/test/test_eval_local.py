@@ -38,6 +38,7 @@ sys.path.insert(0, str(RAG / "eval"))
 import checks  # noqa: E402
 import day26_prompts  # noqa: E402
 import day28_local_rag as day28  # noqa: E402
+import day29_params  # noqa: E402
 import day29_tuning as day29  # noqa: E402
 import day30_probe as day30  # noqa: E402
 import features  # noqa: E402
@@ -53,8 +54,13 @@ def node(source: str) -> str:
 
     Корень — рабочий каталог намеренно: модули агента импортируются по
     относительным путям, и запуск из `rag/` нашёл бы не те файлы.
+
+    Команда — просто `node`. Прежняя редакция писала
+    `sys.executable and "node"`: выражение всегда давало `"node"`, то есть
+    работало, но читалось как попытка взять интерпретатор Python и сбивала с
+    толку (находка `reviewer` к PR #338).
     """
-    done = subprocess.run([sys.executable and "node", "--input-type=module", "-e", source],
+    done = subprocess.run(["node", "--input-type=module", "-e", source],
                           capture_output=True, text=True, cwd=ROOT, check=False)
     if done.returncode != 0:
         raise AssertionError(f"node не отработал: {done.stderr.strip()[:800]}")
@@ -271,12 +277,20 @@ class ПризнакиОтвета(unittest.TestCase):
     def test_вердикт_прогон_не_ставит_никогда(self):
         self.assertIsNone(features.features_for(self.QUESTION, "любой ответ", [])["verdict"])
 
-    def test_слово_качества_только_из_рубрики(self):
-        self.assertEqual(features.quality_word(2), "совпало")
+    def test_слово_оценки_ровно_из_спецификации(self):
+        # Слова — те, что просит принятая спецификация раскладки: «верно /
+        # частично / неверно». «Совпало / не совпало» были в черновике, и в
+        # принятой редакции их нет (находка `reviewer` к PR #338).
+        self.assertEqual(features.quality_word(2), "верно")
         self.assertEqual(features.quality_word(1), "частично")
-        self.assertEqual(features.quality_word(0), "не совпало")
+        self.assertEqual(features.quality_word(0), "неверно")
         self.assertIsNone(features.quality_word(None))
         self.assertIsNone(features.quality_word("2"))
+        spec = (ROOT / "agent_docs" / "design"
+                / "2026-10-09-1335-days26-30-local-llm-day-pages.md").read_text(encoding="utf-8")
+        # Слова сверяются с самой спецификацией, а не с памятью автора: иначе
+        # копия слов разъехалась бы с принятым документом молча.
+        self.assertIn('`verdict` — ровно `"верно" | "частично" | "неверно"`', spec)
 
     def test_медиана_без_чисел_это_нет_данных_а_не_ноль(self):
         self.assertEqual(features.median_or_none([3, 1, 2]), 2)
@@ -484,7 +498,10 @@ class СтражАдресов(unittest.TestCase):
 
     def test_машина_в_конверте_названа_словами(self):
         envelope = self.base()
-        self.assertEqual(envelope["host"], "ноутбук владельца")
+        # Слова, а не адрес; модель процессора словами же — спецификация
+        # раскладки просит «ноутбук владельца, Apple M3 Max», потому что
+        # читателю нужно знать железо, а модель адресом не является.
+        self.assertEqual(envelope["host"], "ноутбук владельца, Apple M3 Max")
         report.check_no_private_addresses(envelope)
 
     def test_запись_файла_не_обходит_стража_адресов(self):
@@ -525,10 +542,10 @@ class КонвертФайлаРезультата(unittest.TestCase):
 
     def test_сводка_стороны_считается_по_слову_а_не_по_баллу(self):
         rows = [
-            {"quality": "совпало", "time_s": 10, "failed": False},
-            {"quality": "совпало", "time_s": 20, "failed": False},
+            {"quality": "верно", "time_s": 10, "failed": False},
+            {"quality": "верно", "time_s": 20, "failed": False},
             {"quality": "частично", "time_s": 30, "failed": False},
-            {"quality": "не совпало", "time_s": None, "failed": True},
+            {"quality": "неверно", "time_s": None, "failed": True},
             {"quality": None, "time_s": 40, "failed": False},
         ]
         got = report.side_summary(rows)
@@ -660,10 +677,10 @@ class ПрогонДня28(unittest.TestCase):
         got = day28.run(self.dir, self.embedder, client.Q4, "ollama 0.33.3",
                         cloud=cloud, times={questions[0]["id"]: 12.5},
                         generate=fake_generate("ответ"))
-        self.assertEqual(got["questions"][0]["cloud"]["quality"], "совпало")
+        self.assertEqual(got["questions"][0]["cloud"]["quality"], "верно")
         self.assertEqual(got["questions"][0]["cloud"]["time_s"], 12.5)
         # Вопрос, которого в облачном файле нет, остаётся без слова качества —
-        # и это «нет данных», а не «не совпало».
+        # и это «нет данных», а не «неверно».
         self.assertIsNone(got["questions"][1]["cloud"]["quality"])
         self.assertIsNone(got["questions"][1]["cloud"]["time_s"])
 
@@ -861,6 +878,58 @@ class ПрогонДня26(unittest.TestCase):
                    if task["id"] == "t6_summarize")
         self.assertLess(len(row["text_shown"]), 400)
         self.assertIn("50000", row["text_shown"])
+
+
+class ПрогонПараметровДвижка(unittest.TestCase):
+    """Запись прогона параметров и отказ мерить им сборку без отказов.
+
+    Прежняя редакция писала файл сама, мимо обоих стражей, — и утверждение
+    `report.py` «ни одна запись файла стражей не обходит» было ложным
+    (находка `reviewer` к PR #338). Второе: `--model` принимал сборку без
+    отказов, а этот прогон СОБИРАЕТ ТЕКСТЫ по построению (блок `temp`
+    сравнивает три ответа дословно), то есть положил бы её тексты в файл.
+    """
+
+    def test_сборка_без_отказов_этим_прогоном_не_меряется(self):
+        with self.assertRaises(SystemExit):
+            day29_params.main(["--model", client.Q6, "--blocks", "temp",
+                               "--out", "/dev/null"])
+
+    def test_отказ_стоит_до_первого_вызова_модели(self):
+        # Порядок тот же, что у лимитера в I-4: отказ раньше вызова, а не
+        # после. Иначе прогон успел бы собрать тексты и упасть на записи.
+        calls = []
+        saved = day29_params.BLOCKS["temp"]
+        day29_params.BLOCKS["temp"] = lambda *a, **k: calls.append(1) or []
+        try:
+            with self.assertRaises(SystemExit):
+                day29_params.main(["--model", client.Q6, "--blocks", "temp",
+                                   "--out", "/dev/null"])
+        finally:
+            day29_params.BLOCKS["temp"] = saved
+        self.assertEqual(calls, [])
+
+    def test_файл_прогона_пишется_через_стражей(self):
+        saved = day29_params.BLOCKS["temp"]
+        day29_params.BLOCKS["temp"] = lambda *a, **k: [
+            {"label": "temperature=0", "options": {}, "responses": ["а"],
+             "all_identical": True, "distinct_count": 1, "metrics": []}]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "day29-params.json"
+                self.assertEqual(day29_params.main(
+                    ["--blocks", "temp", "--out", str(out)]), 0)
+                self.assertTrue(out.exists())
+                # А теперь утечка адреса в собранных данных: запись обязана
+                # упасть, а не положить адрес стенда в файл.
+                day29_params.BLOCKS["temp"] = lambda *a, **k: [
+                    {"label": "x", "error": "connect 100.77.87.97:11434 refused"}]
+                broken = Path(tmp) / "broken.json"
+                with self.assertRaises(ValueError):
+                    day29_params.main(["--blocks", "temp", "--out", str(broken)])
+                self.assertFalse(broken.exists())
+        finally:
+            day29_params.BLOCKS["temp"] = saved
 
 
 class ПробыДня30(unittest.TestCase):

@@ -19,8 +19,16 @@
 
 Запуск:
 
-    EVAL_OLLAMA_URL=http://127.0.0.1:11435 python3 -I eval/day26_prompts.py \\
-      --out ../site/day26/results.json
+    EVAL_OLLAMA_URL=http://127.0.0.1:11435 python3 -B eval/day26_prompts.py \\
+      --out ~/Projects/ai-advent-2026-measurements/runs/day26-results.json
+
+`-B` и чистка `__pycache__` обязательны, `-I` — нет: он включает
+изолированный режим, каталог скрипта в `sys.path` не попадает, и прогон
+падает с `ModuleNotFoundError`. Байт-код отключает `-B`.
+
+Прогон пишет СЫРОЙ вывод в каталог замеров. Файл страницы по
+спецификации раскладки делает отдельный шаг:
+`python3 -B eval/to_page.py --day 26 --in <сырой> --out ../site/day26/results.json`.
 """
 
 from __future__ import annotations
@@ -219,10 +227,26 @@ def run(model: str, runner: str, commit: str, document: str,
             "error": got["error"],
             "done_reason": got["done_reason"],
             "ttft_s": report.seconds(metrics["ttft_ms"]),
+            # Время до первого токена ВИДИМОГО ответа — отдельно от времени до
+            # первого токена любого вида: при включённом рассуждении они
+            # расходятся в разы, и страница дня 26 показывает оба.
+            "ttft_answer_s": report.seconds(metrics["ttft_answer_ms"]),
             "tps": metrics["gen_tokens_per_s"],
             "time_s": report.seconds(metrics["wall_ms"]),
             "prompt_eval_count": metrics["prompt_eval_count"],
             "eval_count": metrics["eval_count"],
+            # Три длительности движка ПОРОЗНЬ, а не только их сумма. Без них
+            # нельзя отделить холодный запуск от обработки длинного входа: у
+            # первого запроса после выгрузки `load_duration` — секунды, и
+            # время до первого токена у него объясняется чтением весов, а не
+            # моделью. Раскрывающееся пояснение страницы «откуда берутся ток/с
+            # и время до первого токена» (спецификация раскладки, «День 26»,
+            # п. 5) опирается ровно на это разделение, а скорость обработки
+            # входа выводится из `prompt_eval_*`, а не из настенного времени.
+            "load_duration_ms": metrics["load_duration_ms"],
+            "prompt_eval_duration_ms": metrics["prompt_eval_duration_ms"],
+            "eval_duration_ms": metrics["eval_duration_ms"],
+            "prompt_tokens_per_s": metrics["prompt_tokens_per_s"],
         })
         print(f"    {rows[-1]['ttft_s']} с до токена, {rows[-1]['tps']} ток/с, "
               f"вердикт {rows[-1]['verdict']}", flush=True)

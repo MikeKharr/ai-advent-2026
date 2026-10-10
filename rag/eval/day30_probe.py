@@ -21,8 +21,16 @@
 
 Запуск (сначала с `--dry-run`, он ничего не отправляет):
 
-    EVAL_OLLAMA_URL=http://127.0.0.1:11435 python3 -I eval/day30_probe.py \\
-      --out ../site/day30/results.json
+    EVAL_OLLAMA_URL=http://127.0.0.1:11435 python3 -B eval/day30_probe.py \\
+      --out ~/Projects/ai-advent-2026-measurements/runs/day30-results.json
+
+`-B` и чистка `__pycache__` обязательны, `-I` — нет: он включает
+изолированный режим, каталог скрипта в `sys.path` не попадает, и прогон
+падает с `ModuleNotFoundError`. Байт-код отключает `-B`.
+
+Прогон пишет СЫРОЙ вывод в каталог замеров. Файл страницы по
+спецификации раскладки делает отдельный шаг:
+`python3 -B eval/to_page.py --day 30 --in <сырой> --out ../site/day30/results.json`.
 """
 
 from __future__ import annotations
@@ -123,6 +131,10 @@ def parallel_direct(model: str, count: int, generate=client.generate) -> dict:
     wall = time.perf_counter() - started
     tokens = sum(run["metrics"]["eval_count"] or 0 for run in runs)
     return {
+        # Путь — ПОЛЕ записи, а не догадка по числу параллельности: страница
+        # показывает две строки, «через публичный API» и «напрямую в Ollama»,
+        # и перепутать их местами она не вправе.
+        "path": "напрямую в Ollama",
         "parallel": count,
         "requests": count,
         "tps_total": round(tokens / wall, 2) if wall > 0 else None,
@@ -146,6 +158,7 @@ def parallel_day5(count: int, ask=ask_day5) -> dict:
             lambda _: ask("Одним предложением: зачем серверу лимит запросов?"),
             range(count)))
     return {
+        "path": "через публичный API дня 5",
         "parallel": count,
         "requests": count,
         "tps_total": None,
