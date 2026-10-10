@@ -73,7 +73,9 @@ def ask_day5(prompt_text: str, base: str = DAY5, max_tokens: int = 64,
     Текст ответа НЕ ВОЗВРАЩАЕТСЯ вовсе: на страницу дня 30 идут времена и
     коды, и текст, которого в записи нет, утечь не может.
     """
-    body = json.dumps({"prompt": prompt_text, "model": PROVIDER,
+    # День 5 принимает тему в поле `sphere` (до 60 знаков, `days/day5/env.js`),
+    # а не произвольный промпт: остальной вход день собирает сам.
+    body = json.dumps({"sphere": prompt_text, "model": PROVIDER,
                        "maxTokens": max_tokens}).encode("utf-8")
     request = urllib.request.Request(base, data=body,
                                      headers={"Content-Type": "application/json"})
@@ -189,19 +191,20 @@ def limit_rate(ask=ask_day5, sleep=time.sleep) -> dict:
 
 
 def limit_request_size(ask=ask_day5) -> dict:
-    """Размер запроса: выше `maxRequestTokens` роутер отказывает ДО вызова.
+    """Размер запроса через публичный API: длинный вход отсекает сам день 5.
 
-    Длина берётся с запасом над потолком в токенах: знаков на токен по-русски
-    меньше четырёх, поэтому потолок заведомо превышен. Точного числа токенов
-    запроса прогон не знает — и не обязан: проверяется факт отказа и его
-    слова, а не граница с точностью до токена.
+    Посетитель задаёт только тему (`sphere`, до 60 знаков), а контекст день
+    собирает и подгоняет под бюджет модели сам (`fitToBudget`), поэтому
+    `maxRequestTokens` роутера снаружи недостижим. Проверяется граница, которую
+    видит посетитель: тема длиннее 60 знаков получает 400 до вызова модели.
     """
     long_prompt = "лимит " * (MAX_REQUEST_TOKENS * 2)
     row = ask(long_prompt)
     return {
-        "name": f"maxRequestTokens провайдера {PROVIDER} — {MAX_REQUEST_TOKENS}",
-        "value": str(MAX_REQUEST_TOKENS),
-        "fired": row["status"] not in (200, None),
+        "name": "длина темы в публичном API дня 5 — 60 знаков "
+                f"(maxRequestTokens {MAX_REQUEST_TOKENS} снаружи недостижим)",
+        "value": "60",
+        "fired": row["status"] == 400,
         "client_saw": f"{row['status']}, {row['reason']}",
         "prompt_chars": len(long_prompt),
     }
@@ -285,8 +288,9 @@ def run(model: str, runner: str, commit: str, through_prod: bool,
                 {"name": f"запусков в минуту на адрес — {RATE_WINDOW}",
                  "value": str(RATE_WINDOW), "fired": None,
                  "client_saw": "не проверялся: провайдер недоступен"},
-                {"name": f"maxRequestTokens провайдера {PROVIDER} — {MAX_REQUEST_TOKENS}",
-                 "value": str(MAX_REQUEST_TOKENS), "fired": None,
+                {"name": "длина темы в публичном API дня 5 — 60 знаков "
+                         f"(maxRequestTokens {MAX_REQUEST_TOKENS} снаружи недостижим)",
+                 "value": "60", "fired": None,
                  "client_saw": "не проверялся: провайдер недоступен"},
                 *limits,
             ]

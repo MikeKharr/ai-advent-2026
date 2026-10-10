@@ -953,6 +953,31 @@ class ПробыДня30(unittest.TestCase):
         self.assertEqual(set(got), {"status", "time_s", "answer_chars", "reason", "retry_after"})
         self.assertEqual(got["answer_chars"], len("ответ модели"))
 
+    def test_запрос_к_дню_5_несёт_тему_в_поле_sphere(self):
+        """День 5 принимает тему в `sphere`; иное поле — 400 «Поле sphere…»."""
+        seen = {}
+
+        class Response:
+            status = 200
+            headers = {}
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        def opener(request, **_kw):
+            seen.update(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        day30.ask_day5("финтех", opener=opener)
+        self.assertEqual(seen.get("sphere"), "финтех")
+        self.assertNotIn("prompt", seen)
+
     def test_недоступный_провайдер_останавливает_пробы_через_прод(self):
         def ask(*_a, **_kw):
             return {"status": 503, "time_s": 0.1, "answer_chars": None,
