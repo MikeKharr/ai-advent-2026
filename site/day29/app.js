@@ -12,8 +12,26 @@ const ERROR_MSG = 'Не удалось прочитать результаты �
 const EMPTY_MSG = 'Прогон ещё не сделан. Числа появятся после первого полного прогона.';
 
 /* Счёт и вердикт — в verdict.js (подключён раньше), чтобы у них был тест. */
-const { NO_DATA, num, signed, axisRows, suspectLine, changedLine, gainRows, afterRule,
-  verdictText, quantRows, quantNames, stability, limitIdsLine } = globalThis.DAY29_VERDICT;
+const { NO_DATA, plural, num, signed, axisRows, suspectLine, changedLine, gainRows,
+  afterRule, verdictText, quantRows, quantNames, stability, limitIdsLine } = globalThis.DAY29_VERDICT;
+
+/* Оговорки прогона приходят из данных и местами повторяют то, что на странице
+   уже сказано постоянным текстом: вторым списком под границами меры они
+   читаются как новые сведения. Повторяющиеся снимаются по началу строки, а
+   снятое называется числом — молчание выглядело бы как пропажа части файла.
+   Правило fail-open: оговорка, не узнанная ни одной парой, остаётся на
+   экране. Вторая колонка — где именно это сказано; она держит пару живой при
+   правке текстов (её проверяет test/day29-page-load.test.js). */
+const ALREADY_SAID = [
+  ['Один прогон на ось, один повтор на вопрос', 'границы меры: повторы и шум'],
+  ['Ось квантования сравнивает не только сжатие', 'абзац над таблицей сжатия весов'],
+  ['Тексты ответов сборки без отказов не публикуются', 'строка под таблицей сжатия весов'],
+  ['Замер на ноутбуке — не замер прода', 'границы меры: мерено на ноутбуке'],
+  ['Пик RSS — сумма по всем процессам', 'пояснение «Как мерена память»'],
+  ['Память по осям не мерена', 'границы меры: память по осям'],
+  ['Три вопроса стабильности в этом прогоне не повторялись', 'границы меры и секция «Стабильность»'],
+];
+const saidOnPage = (n) => ALREADY_SAID.some((pair) => n.indexOf(pair[0]) === 0);
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -40,6 +58,7 @@ function showMessage(text) {
   $('stab-line').textContent = '';
   $('quant-names').textContent = '';
   ['gain-tbl', 'axes-tbl', 'quant-tbl'].forEach((id) => { $(id).hidden = true; });
+  ['run-notes-cap', 'run-notes', 'run-notes-dup'].forEach((id) => { $(id).hidden = true; });
   ['axes-status', 'quant-status'].forEach((id) => {
     $(id).textContent = text;
     $(id).hidden = false;
@@ -76,13 +95,29 @@ function pairRow(r) {
   return tr;
 }
 
+/* Ячейка значения оси: число (temperature, окно контекста, потолок ответа)
+   или слово. Числа здесь сравнивают глазами по колонке — отсюда .num. Если у
+   оси есть свой разбор, слово в ячейке становится ссылкой на него: двум
+   абзацам промпта в ячейке делать нечего. */
+function axisCell(text, anchor) {
+  const td = el('td', 'num');
+  if (!anchor) { td.textContent = text; return td; }
+  const a = el('a', null, text);
+  a.href = '#' + anchor;
+  /* Повторный щелчок по той же ссылке hashchange не вызывает: без этого
+     закрытый вручную блок второй раз не открылся бы. */
+  a.addEventListener('click', () => setTimeout(openFromHash, 0));
+  td.appendChild(a);
+  return td;
+}
+
 function axisRow(r) {
   const tr = document.createElement('tr');
   const th = el('th', null, r.name);
   th.scope = 'row';
   tr.appendChild(th);
-  tr.appendChild(el('td', null, r.before));
-  tr.appendChild(el('td', null, r.after));
+  tr.appendChild(axisCell(r.before, r.anchor));
+  tr.appendChild(axisCell(r.after, r.anchor));
   tr.appendChild(el('td', 'num', r.score));
   /* «Нет данных» вместо испорченного счётчика — и рядом причина словом, а не
      одна пустота: почему числа нет, сказано в границах меры. */
@@ -107,11 +142,23 @@ function render(data) {
   $('limit-suspect').textContent = suspect;
   $('limit-suspect').hidden = !suspect;
 
-  if (Array.isArray(data.notes) && data.notes.length) {
-    const ul = $('run-notes');
-    data.notes.forEach((n) => { if (typeof n === 'string' && n) ul.appendChild(el('li', null, n)); });
-    ul.hidden = !ul.childElementCount;
-  }
+  /* Оговорки прогона стоят под своей подписью, а не вторым безымянным списком
+     под постоянными границами меры: иначе на экране они неотличимы. */
+  const notes = Array.isArray(data.notes)
+    ? data.notes.filter((n) => typeof n === 'string' && n) : [];
+  const fresh = notes.filter((n) => !saidOnPage(n));
+  const ul = $('run-notes');
+  fresh.forEach((n) => ul.appendChild(el('li', null, n)));
+  /* Видимость ставится обеими ветвями, а не только положительной: иначе она
+     держится атрибутом в разметке, и состояние блока нельзя проверить. */
+  ul.hidden = !fresh.length;
+  $('run-notes-cap').hidden = !fresh.length;
+  const dup = notes.length - fresh.length;
+  $('run-notes-dup').textContent = dup ? 'Ещё ' + dup + ' ' +
+    plural(dup, 'оговорка прогона повторяет', 'оговорки прогона повторяют',
+      'оговорок прогона повторяют') +
+    ' сказанное выше — на экране они не продублированы.' : '';
+  $('run-notes-dup').hidden = !dup;
 
   $('verdict').textContent = verdictText(data);
 
@@ -165,6 +212,21 @@ function render(data) {
     (typeof data.commit === 'string' && data.commit ? data.commit : NO_DATA) + '.';
 
   markScrollable();
+  openFromHash();
+  window.addEventListener('hashchange', openFromHash);
+}
+
+/* Переход по ссылке из таблицы: блок раскрывается, фокус уходит на его
+   summary — иначе клавиатурный посетитель стоит перед закрытым блоком. */
+function openFromHash() {
+  const id = decodeURIComponent((location.hash || '').slice(1));
+  if (!id) return;
+  const det = document.getElementById(id);
+  if (!det || det.tagName !== 'DETAILS') return;
+  det.open = true;
+  markScrollable();
+  const sum = det.querySelector('summary');
+  if (sum) sum.focus();
 }
 
 /* Прокручиваемая область достижима с клавиатуры и получает подсказку только

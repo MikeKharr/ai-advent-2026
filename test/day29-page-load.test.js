@@ -59,6 +59,7 @@ function fakeDom() {
   const ctx = runScripts(vm.createContext({
     fetch: () => new Promise(() => {}), console, document,
     window: { addEventListener: () => {} },
+    location: { hash: '' },
   }))
   return { ctx, get: (id) => document.getElementById(id) }
 }
@@ -87,6 +88,9 @@ for (const [name, mutate] of [
     assert.ok(dom.get('verdict').textContent.length > 0, 'вывод пуст')
     assert.equal(dom.get('prompt-before').textContent, 'нет данных',
       'промпт остался строкой загрузки')
+    for (const id of ['run-notes-cap', 'run-notes', 'run-notes-dup']) {
+      assert.equal(dom.get(id).hidden, true, 'оговорки прогона остались на экране: ' + id)
+    }
   })
 }
 
@@ -124,11 +128,92 @@ test('на полных данных таблицы, правило и подв�
   assert.match(dom.get('changed-line').textContent, /менялась одна ось/)
   assert.match(dom.get('stab-line').textContent, /Повторов в этом прогоне нет/)
   assert.ok(dom.get('run-line').textContent.includes('коммит'), 'строки прогона нет')
-  assert.ok(dom.get('run-notes').children.length > 0, 'оговорки прогона не показаны')
   assert.equal(dom.get('limit-repeats').textContent, '1', 'повторы не взяты из данных')
   assert.equal(dom.get('limit-suspect').hidden, false, 'оговорка об испорченных счётчиках скрыта')
   assert.ok(dom.get('prompt-before').textContent.length > 50, 'промпт «до» не показан')
   assert.ok(dom.get('prompt-after').textContent.length > 50, 'промпт «после» не показан')
+})
+
+// Ради чего: оговорки прогона стояли вторым безымянным списком под
+// постоянными границами меры, и повторяли уже сказанное страницей (находка
+// design-review к #342). Фильтр — названный список, и он обязан ошибаться в
+// сторону «показать лишнее», а не «спрятать нужное».
+test('оговорки прогона: повторяющие сказанное сняты, снятое названо числом', () => {
+  const dom = fakeDom()
+  const data = DATA()
+  dom.ctx.render(data)
+  const shown = dom.get('run-notes').children.map((li) => li.textContent)
+  assert.ok(shown.length < data.notes.length, 'ни одна повторяющая оговорка не снята')
+  assert.ok(!shown.some((t) => t.startsWith('Память по осям не мерена')),
+    'оговорка, повторяющая постоянные границы меры, осталась на экране')
+  assert.match(dom.get('run-notes-dup').textContent, /^Ещё \d+ оговор/,
+    'снятое с экрана не названо числом')
+  assert.equal(dom.get('run-notes-dup').hidden, false)
+  assert.equal(dom.get('run-notes').hidden, !shown.length,
+    'видимость списка не совпадает с тем, есть ли в нём строки')
+  assert.equal(dom.get('run-notes-cap').hidden, !shown.length,
+    'подпись не совпадает с тем, есть ли под ней строки')
+})
+
+// Пара фильтра без своей оговорки — мёртвая строка: она ничего не снимает и
+// переживёт правку данных незамеченной.
+test('каждая пара фильтра оговорок отвечает оговорке из данных', () => {
+  // `const` обычного скрипта в свойство контекста не попадает — список
+  // читается выражением в том же контексте, где он объявлен.
+  const list = vm.runInContext('ALREADY_SAID', fakeDom().ctx)
+  const notes = DATA().notes
+  assert.ok(Array.isArray(list) && list.length > 0, 'список фильтра пуст')
+  for (const [prefix, where] of list) {
+    assert.ok(notes.some((n) => n.indexOf(prefix) === 0),
+      'пара фильтра «' + prefix + '» не отвечает ни одной оговорке прогона')
+    assert.ok(typeof where === 'string' && where.length > 0,
+      'у пары «' + prefix + '» не сказано, где это уже сказано')
+  }
+})
+
+test('незнакомая оговорка прогона остаётся на экране', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  d.notes = ['Совершенно новая оговорка, которой страница не знает.']
+  dom.ctx.render(d)
+  assert.deepEqual(dom.get('run-notes').children.map((li) => li.textContent), d.notes)
+  assert.equal(dom.get('run-notes-cap').hidden, false, 'подписи у оговорки нет')
+  assert.equal(dom.get('run-notes-dup').hidden, true, 'снятым названо то, что не снималось')
+})
+
+// Ради чего: слово «компактный» в ячейке таблицы — единственный путь к тексту
+// промпта. Ссылка обязана вести в раскрывающийся блок, который существует.
+test('ячейка оси промпта — ссылка на разбор, и блок с таким id в разметке есть', () => {
+  const dom = fakeDom()
+  const data = DATA()
+  dom.ctx.render(data)
+  const rows = dom.get('axes-body').children
+  const promptRow = rows[data.axes.findIndex((a) => /промпт/i.test(a.name))]
+  const cells = promptRow.children.slice(1, 3)
+  for (const td of cells) {
+    assert.equal(td.className, 'num', 'значение оси не выровнено как число')
+    assert.equal(td.children.length, 1, 'в ячейке оси промпта нет ссылки на разбор')
+    assert.equal(td.children[0].href, '#prompts', 'ссылка ведёт не в разбор промпта')
+  }
+  // Ячейки осей без разбора остаются текстом и тоже выровнены как числа.
+  const other = rows[data.axes.findIndex((a) => /num_ctx/.test(a.name))]
+  assert.equal(other.children[1].className, 'num')
+  assert.equal(other.children[1].children.length, 0, 'у оси без разбора появилась ссылка')
+  const html = read('../site/day29/index.html')
+  assert.ok(/<details class="exp" id="prompts">/.test(html),
+    'блока с id="prompts" в разметке нет — ссылка из таблицы ведёт в никуда')
+})
+
+// Ради чего: прокручиваемая область и моноширинный блок получают tabindex и
+// становятся остановкой табуляции; без своего кольца фокус на них невиден —
+// общее правило служебного слоя их не покрывает (находка design-review).
+test('style.css дня 29 несёт кольцо фокуса прокручиваемым областям и шаг над таблицами', () => {
+  const css = read('../site/day29/style.css')
+  assert.match(css, /\.tbl-scroll:focus-visible, \.code:focus-visible \{ outline:2px solid var\(--acc\)/)
+  assert.match(css, /\.verdict \+ \.tbl, \.prose \+ \.tbl, \.tbl-sum \+ \.tbl \{ margin-top:var\(--s-4\); \}/)
+  // Соседом первого раскрывающегося блока стала строка про снятые оговорки.
+  assert.match(css, /\.limits \+ \.exp, \.tbl \+ \.exp, \.note \+ \.exp \{ margin-top:var\(--s-4\); \}/)
+  assert.match(css, /\.limits \{[^}]*font-variant-numeric:tabular-nums;/)
 })
 
 test('index.html дня 29 грузит оба скрипта и не грузит ничего с CDN', () => {

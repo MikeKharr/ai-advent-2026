@@ -41,6 +41,15 @@ const isSuspect = (name) => Object.prototype.hasOwnProperty.call(SPEED_SUSPECT, 
    значило бы угадывать. */
 const QUANT_AXIS = /квантование/i;
 
+/* Ось, у которой на странице есть свой разбор: слово в её ячейках становится
+   ссылкой туда. Сегодня такая одна — промпт-шаблон, и два его абзаца в ячейке
+   таблицы нечитаемы. Якорь — id раскрывающегося блока в разметке. */
+const AXIS_ANCHOR = [[/промпт/i, 'prompts']];
+function axisAnchor(name) {
+  const hit = AXIS_ANCHOR.find((pair) => pair[0].test(name));
+  return hit ? hit[1] : null;
+}
+
 /* Склонение после числа: 1 ось, 2 оси, 5 осей. */
 function plural(n, one, few, many) {
   const a = Math.abs(n) % 100, b = a % 10;
@@ -99,6 +108,7 @@ function axisRows(data) {
     score: num(a.score_avg, 2),
     tps: isSuspect(a.name) ? NO_DATA : num(a.tps, 2),
     suspect: isSuspect(a.name),
+    anchor: axisAnchor(word(a.name)),
   }));
 }
 
@@ -320,7 +330,7 @@ function limitIdsLine(data) {
     : 'Разброс в этом прогоне не измерен: повторов нет ни у одного вопроса.';
 }
 
-globalThis.DAY29_VERDICT = { NO_DATA, PARTIAL_MSG, SPEED_SUSPECT, isSuspect, plural, num,
+globalThis.DAY29_VERDICT = { NO_DATA, PARTIAL_MSG, SPEED_SUSPECT, isSuspect, axisAnchor, plural, num,
   signed, pct, noise, diffWord, axisValue, axisRows, suspectLine, changedLine, gainRows,
   afterRule, verdictText, quantRows, quantNames, stability, limitIdsLine };
 })();

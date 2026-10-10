@@ -7,7 +7,9 @@
      решение недели — agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md.
      Пути к своим файлам относительные, <base> нет; ссылка на лендинг — от корня.
      Ни одного числа прогона литералом: всё из results.json, вывод считает verdict.js.
-     Раскрывающихся блоков верхнего уровня четыре, и каждый стоит в своей секции;
+     Раскрывающихся блоков верхнего уровня четыре, и каждый стоит внутри той
+     секции, к которой относится: два — в «Итоге дня», по одному в «Осях» и
+     в «Сжатии весов»; отдельной секции «Подробности» нет;
      «чего этот замер не мерил» под details не ушло — это границы меры, и они на виду. -->
 <title>День 29: оптимизация — одна ось за раз — AI Advent 2026</title>
 <link rel="stylesheet" href="style.css">
@@ -68,7 +70,9 @@
           <li>Память по осям не мерена, и в таблицах на её месте стоит «нет данных», а не оценка на глаз.</li>
           <li>Поиск во всех прогонах один и тот же: предмет дня — генерация, а не качество поиска.</li>
         </ul>
+        <span class="lbl lbl-run" id="run-notes-cap" hidden>Оговорки этого прогона</span>
         <ul class="limits" id="run-notes" hidden></ul>
+        <p class="note" id="run-notes-dup" hidden></p>
 
         <details class="exp">
           <summary>Как это мерено<span class="q-mark" aria-hidden="true"></span></summary>
@@ -143,7 +147,7 @@
       <p class="tbl-sum" id="rule-text"></p>
       <ul class="limits" id="rule-list"></ul>
 
-      <details class="exp">
+      <details class="exp" id="prompts">
         <summary>Промпт до и после<span class="q-mark" aria-hidden="true"></span></summary>
         <div class="exp-body">
           <p class="small">Только для базовой модели: шаблоны сборки без отказов не публикуются.</p>
