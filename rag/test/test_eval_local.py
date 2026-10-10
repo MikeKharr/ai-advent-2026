@@ -1004,6 +1004,22 @@ class ПробыДня30(unittest.TestCase):
                                                  "retry_after": None})
         self.assertFalse(quiet["fired"])
 
+    def test_проба_длины_темы_проверяет_именно_длину_темы(self):
+        """61 знак: на один больше границы, тело далеко от предела 64 КБ дня 5."""
+        sent = []
+
+        def ask(text):
+            sent.append(text)
+            return {"status": 400, "time_s": 0.01, "answer_chars": None,
+                    "reason": "Слишком длинно: не больше 60 символов", "retry_after": None}
+
+        got = day30.limit_request_size(ask=ask)
+        self.assertEqual(len(sent[0]), 61)
+        body = json.dumps({"sphere": sent[0], "model": day30.PROVIDER, "maxTokens": 64})
+        self.assertLess(len(body.encode("utf-8")), 64 * 1024)
+        self.assertTrue(got["fired"])
+        self.assertEqual(got["value"], "60")
+
     def test_недоступный_провайдер_останавливает_пробы_через_прод(self):
         def ask(*_a, **_kw):
             return {"status": 503, "time_s": 0.1, "answer_chars": None,
