@@ -2,7 +2,8 @@
 
 Что мерит (ADR 2026-10-09-1335, п. 6): доступ по сети, несколько запросов
 разом и срабатывание ограничений. Три ограничения — частота (шесть
-одновременных запросов через день 5 → один `429` с `retry-after`), длина темы
+одновременных запросов через день 5 → один `429` «Слишком часто»; заголовка
+`retry-after` день 5 не отдаёт), длина темы
 в публичном API дня 5 (61 знак → `400` до вызова модели; `maxRequestTokens`
 роутера снаружи недостижим — см. `limit_request_size`) и окно контекста
 (прямой запрос длиннее `num_ctx`, с заданным окном и без него).
@@ -173,7 +174,7 @@ def parallel_day5(count: int, ask=ask_day5) -> dict:
     }
 
 
-def limit_rate(ask=ask_day5, sleep=time.sleep) -> dict:
+def limit_rate(ask=ask_day5) -> dict:
     """Частота: шесть запросов ОДНОВРЕМЕННО, один из них обязан получить `429`.
 
     Последовательно проверять нельзя: ответ модели на ноутбуке идёт около
@@ -187,7 +188,10 @@ def limit_rate(ask=ask_day5, sleep=time.sleep) -> dict:
     with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
         rows = list(pool.map(lambda _: ask("да"), range(count)))
     statuses = [row["status"] for row in rows]
-    limited = [row for row in rows if row["status"] == 429]
+    # 429 у дня 5 бывает от нескольких лимитов (окно минуты, окно часа,
+    # суточный предел, бюджет). Окно минуты различается словами отказа.
+    limited = [row for row in rows if row["status"] == 429
+               and "Подождите минуту" in str(row.get("reason") or "")]
     seen = limited[0] if limited else rows[-1]
     return {
         "name": f"запусков в минуту на адрес — {RATE_WINDOW}",

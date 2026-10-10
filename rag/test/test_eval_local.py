@@ -990,14 +990,19 @@ class ПробыДня30(unittest.TestCase):
                 n = count["n"]
             if n > day30.RATE_WINDOW:
                 return {"status": 429, "time_s": 0.01, "answer_chars": None,
-                        "reason": "слишком часто", "retry_after": "42"}
+                        "reason": "Слишком часто. Подождите минуту.", "retry_after": None}
             return {"status": 200, "time_s": 1.0, "answer_chars": 1,
                     "reason": None, "retry_after": None}
 
         got = day30.limit_rate(ask=ask)
         self.assertTrue(got["fired"])
         self.assertEqual(len(got["statuses"]), day30.RATE_WINDOW + 1)
-        self.assertIn("42", got["client_saw"])
+        self.assertIn("Подождите минуту", got["client_saw"])
+        hour = day30.limit_rate(ask=lambda _t: {"status": 429, "time_s": 0.01,
+                                                "answer_chars": None,
+                                                "reason": "Лимит на час исчерпан",
+                                                "retry_after": None})
+        self.assertFalse(hour["fired"])
 
         quiet = day30.limit_rate(ask=lambda _t: {"status": 200, "time_s": 1.0,
                                                  "answer_chars": 1, "reason": None,
@@ -1046,12 +1051,13 @@ class ПробыДня30(unittest.TestCase):
         def ask(*_a, **_kw):
             code = next(codes)
             return {"status": code, "time_s": 0.1, "answer_chars": 1,
-                    "reason": "окно исчерпано" if code == 429 else None,
-                    "retry_after": "41" if code == 429 else None}
+                    "reason": "Слишком часто. Подождите минуту." if code == 429 else None,
+                    "retry_after": None}
 
         got = day30.limit_rate(ask=ask)
         self.assertTrue(got["fired"])
-        self.assertIn("41", got["client_saw"])
+        # Заголовка retry-after день 5 не отдаёт: различитель — слова отказа.
+        self.assertIn("Подождите минуту", got["client_saw"])
 
 
 if __name__ == "__main__":
