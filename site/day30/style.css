@@ -83,8 +83,16 @@ h3 { font-size:var(--t-md); line-height:1.6; font-weight:600; margin:0 0 var(--s
 .prose + .status, .prose + .tbl-sum { margin-top:var(--s-4); }
 /* Таблица после прозы или после сообщения о состоянии не прилипает к тексту:
    у figure свой margin:0, и без этой строки подпись таблицы сидела бы на
-   строке абзаца (находка design-review к #340). */
-.prose + .tbl, .status + .tbl { margin-top:var(--s-4); }
+   строке абзаца (находка design-review к #340). Соседний селектор `.verdict + *`
+   у таблицы проигрывает `.tbl { margin:0 }` — одна специфичность, и побеждает
+   правило ниже по файлу, поэтому отступ после вывода задан отдельно
+   (находка design-review к #344). */
+.prose + .tbl, .status + .tbl, .verdict + .tbl { margin-top:var(--s-4); }
+/* Отступ стоит на самом узле состояния, а не на его соседе: между выводом и
+   строкой состояния лежит СКРЫТАЯ таблица, и `+` достаётся ей — на экране
+   отступа не появлялось вовсе (находка design-review к #344). noscript живёт
+   вне main, и его собственный отступ этим правилом не сдвигается. */
+main .status { margin-top:var(--s-4); }
 .panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); }
 
 /* ── А. Полоса недели ────────────────────────────────────────────────── */
@@ -119,6 +127,10 @@ a.wk-link:hover { background:var(--bg); }
   font-variant-numeric:tabular-nums;
 }
 .limits li + li { margin-top:var(--s-1); }
+/* Оговорки прогона — под своей подписью, иначе от постоянных границ меры
+   они на экране неотличимы (находка design-review к #344). */
+.lbl-run { display:block; margin-top:var(--s-4); }
+.lbl-run + .limits { margin-top:var(--s-2); }
 .tbl-sum {
   margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
   max-width:52ch; font-variant-numeric:tabular-nums;
@@ -192,7 +204,11 @@ a.wk-link:hover { background:var(--bg); }
    (подпись узкая, значение широкое), потому что подписи — два слова, а
    значения — предложения, и при «1fr auto» предложение попало бы в узкую
    колонку. Отклонение названо здесь и в описании PR. */
+/* Проза секции и список стоят на расстоянии: у dl свой margin:0, и без
+   этой строки подпись «Как закрыт» сидела бы на строке абзаца
+   (находка design-review к #344). */
 .acc { margin:0; }
+.prose + .acc { margin-top:var(--s-4); }
 .acc dt { margin-top:var(--s-3); }
 .acc dt:first-child { margin-top:0; }
 .acc dd { margin:var(--s-1) 0 0; max-width:68ch; }

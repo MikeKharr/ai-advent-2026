@@ -75,9 +75,17 @@ for (const [name, mutate] of [
     const dom = fakeDom()
     dom.ctx.render(mutate())
     assert.equal(dom.get('burst-tbl').hidden, true, 'таблица осталась на экране без строк')
-    assert.equal(dom.get('burst-status').hidden, false, 'причины на месте таблицы нет')
-    assert.ok(dom.get('burst-status').textContent.length > 0, 'причина пуста')
     assert.equal(dom.get('burst-body').children.length, 0, 'в таблице появились строки')
+    // Причина на месте таблицы есть, и ни одно сообщение на экране не
+    // повторяет другое дословно: четыре копии одной строки — дефект, две
+    // разные строки (частичный вывод и причина пустой таблицы) — нет.
+    const said = ['verdict', 'burst-status', 'acc-status', 'lim-status']
+      .map((id) => dom.get(id))
+      .filter((n) => !n.hidden && n.textContent.trim().length > 0)
+      .map((n) => n.textContent.trim())
+    assert.ok(said.length > 0, 'причины на месте таблицы нет')
+    assert.equal(new Set(said).size, said.length,
+      'одно и то же сообщение напечатано дважды: ' + JSON.stringify(said))
   })
 }
 
@@ -89,6 +97,31 @@ test('негодный файл: таблица ограничений и бло
   assert.ok(dom.get('verdict').textContent.includes('results.json'),
     'состояние «ошибка» не названо')
 })
+
+// Одно сообщение на экран, а не четыре одинаковых в четырёх role="status":
+// отсутствие файла — одна причина, и читать её четырежды незачем
+// (находка design-review к #344).
+for (const [name, mutate] of [
+  ['негодный файл', () => ({})],
+  ['чужой день', () => ({ ...DATA(), day: 29 })],
+  ['прогона ещё не было', () => ({ ...DATA(), burst: [], limits: [] })],
+]) {
+  test('сообщение состояния печатается один раз: ' + name, () => {
+    const dom = fakeDom()
+    dom.ctx.render(mutate())
+    const shown = ['verdict', 'burst-status', 'acc-status', 'lim-status']
+      .map((id) => dom.get(id))
+      .filter((n) => !n.hidden && n.textContent.trim().length > 0)
+    assert.equal(shown.length, 1,
+      'сообщений на экране ' + shown.length + ', а должно быть одно')
+    assert.equal(shown[0].name, 'verdict', 'сообщение стоит не в главном статусе')
+    // Блок оговорок прогона в этих состояниях пуст, и подпись с числом
+    // снятых не должна висеть над пустотой.
+    for (const id of ['run-notes-cap', 'run-notes', 'run-notes-dup']) {
+      assert.equal(dom.get(id).hidden, true, id + ' остался на экране без данных')
+    }
+  })
+}
 
 // Главное место, где страница может соврать молча: при выключенной частной
 // сети пробы через прод дают один и тот же ответ и гипотез не различают.
@@ -114,14 +147,42 @@ test('на полных данных вывод дня, таблицы и под
   assert.equal(dom.get('lim-tbl').hidden, false)
   assert.equal(dom.get('acc-box').hidden, false)
   assert.ok(dom.get('burst-body').children.length === d.burst.length, 'строк проб нет')
-  assert.ok(dom.get('lim-body').children.length === d.limits.length, 'строк ограничений нет')
+  // Строк в таблице не меньше, чем записей в данных: одна запись прогона
+  // несёт два ограничения, и второе получает свою строку (см. ниже).
+  assert.ok(dom.get('lim-body').children.length >= d.limits.length,
+    'строк ограничений меньше, чем записей в данных')
   assert.ok(dom.get('verdict').textContent.includes('Сервис доступен снаружи'),
     'вывод дня не посчитан: ' + dom.get('verdict').textContent)
   assert.ok(dom.get('run-line').textContent.includes(d.commit), 'строки прогона нет')
-  // Отказ без причины читался бы как сбой сервиса, а он выбор конфигурации.
-  const reasons = dom.get('burst-reasons').textContent
-  const refusedRow = d.burst.find((r) => r.refused > 0)
-  assert.ok(reasons.includes(refusedRow.reason), 'причина отказа не названа: ' + reasons)
+  // Публичный путь первой строкой: им ведёт вывод дня.
+  assert.ok(/публичн/i.test(dom.get('burst-body').children[0].children[0].textContent),
+    'первой строкой стоит не публичный путь')
+})
+
+// Причина отказа — дословно из записи прогона. Своей формулировкой страница
+// утверждала бы причину, которой отказавший путь не называл: запись говорит
+// «все провайдеры класса недоступны или отказали», а не «ёмкость занята»
+// (находка design-review к #344).
+test('причина отказа в выводе дня взята из данных, а не написана страницей', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  const refused = d.burst.find((r) => r.refused > 0)
+  dom.ctx.render(d)
+  assert.ok(dom.get('verdict').textContent.includes(refused.reason),
+    'дословной причины в выводе нет: ' + dom.get('verdict').textContent)
+})
+
+test('причины нет в записи — страница говорит это, а не придумывает', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  const refused = d.burst.find((r) => r.refused > 0)
+  const was = refused.reason
+  refused.reason = null
+  dom.ctx.render(d)
+  const text = dom.get('verdict').textContent
+  assert.ok(text.includes('причины в записи прогона нет'),
+    'отсутствие причины не названо: ' + text)
+  assert.ok(!text.includes(was), 'причина взялась неизвестно откуда')
 })
 
 // Непроверенное ограничение — «не проверялось», а не «нет» и не пустая ячейка:
@@ -198,4 +259,130 @@ test('ни в данных, ни в разметке дня 30 нет адрес
     assert.ok(!/[A-Za-z0-9-]+\.ts\.net/.test(t), 'имя машины в частной сети в тексте страницы')
     assert.ok(!/s[k]-ant-|EVAL_KEY=\S/.test(t), 'похожее на значение ключа в тексте страницы')
   }
+})
+
+// ── Оговорки прогона (находка design-review к #344) ─────────────────────────
+// Все три оговорки прогона дня 30 повторяют то, что страница говорит своими
+// словами рядом. Список снятых — названный, и он устаёт: формулировка в
+// to_page.py меняется — и метка перестаёт на что-либо указывать. Мёртвая
+// метка ничего не ломает (фильтр открытый), но утверждает, будто страница
+// это уже говорит, а проверить нечем. Сверяется по данным, лежащим рядом.
+test('в ALREADY_SAID нет мёртвых меток: каждая находит оговорку в данных', () => {
+  const app = read('../site/day30/app.js')
+  const list = app.slice(app.indexOf('const ALREADY_SAID'), app.indexOf('const saidOnPage'))
+  const marks = [...list.matchAll(/\['([^']+)',/g)].map((m) => m[1])
+  assert.ok(marks.length > 0, 'список снятых оговорок не разобрался')
+  const notes = DATA().notes
+  for (const mark of marks) {
+    assert.ok(notes.some((n) => n.startsWith(mark)),
+      'метка «' + mark + '» не находит ни одной оговорки прогона — список устарел')
+  }
+})
+
+test('незнакомая оговорка прогона остаётся на экране', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  d.notes = ['Совершенно новая оговорка, которой страница не знает.']
+  dom.ctx.render(d)
+  assert.deepEqual(dom.get('run-notes').children.map((li) => li.textContent), d.notes)
+  assert.equal(dom.get('run-notes').hidden, false, 'новая оговорка спрятана')
+  assert.equal(dom.get('run-notes-cap').hidden, false, 'подписи у списка нет')
+  assert.equal(dom.get('run-notes-dup').hidden, true, 'снятым названо то, что не снималось')
+})
+
+test('все оговорки повторяют сказанное: список прячется, число остаётся', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  assert.equal(d.notes.length, 3, 'проверка потеряла смысл: оговорок в данных не три')
+  dom.ctx.render(d)
+  assert.equal(dom.get('run-notes').hidden, true, 'продублированные оговорки на экране')
+  assert.equal(dom.get('run-notes-cap').hidden, true, 'подпись осталась без списка')
+  assert.equal(dom.get('run-notes-dup').hidden, false, 'снятое с экрана не названо числом')
+  assert.ok(/Ещё 3 оговорки прогона повторяют/.test(dom.get('run-notes-dup').textContent),
+    'число снятых названо неверно: ' + dom.get('run-notes-dup').textContent)
+})
+
+// ── «retry-after None» (находка design-review к #344) ───────────────────────
+// Литерал Python в записи прогона: день 5 заголовка retry-after не отдаёт, и
+// посетитель такого не видел. На странице его быть не должно.
+test('литерал «retry-after None» на страницу не попадает', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  const raw = d.limits.find((l) => /retry-after None/.test(l.client_saw || ''))
+  assert.ok(raw, 'проверка потеряла смысл: такой записи в данных нет')
+  dom.ctx.render(d)
+  const cells = dom.get('lim-body').children.flatMap((tr) => tr.children.map((c) => c.textContent))
+  assert.ok(!cells.some((c) => /retry-after None/.test(c)),
+    'литерал Python напечатан: ' + cells.filter((c) => /retry-after/.test(c)).join(' | '))
+  // Остальная часть строки — то, что клиент действительно увидел, — на месте.
+  assert.ok(cells.some((c) => c.includes('Слишком часто')),
+    'вместе с заголовком потерялся и текст, который клиент видел')
+})
+
+test('незнакомый текст «что увидел клиент» доходит до экрана как есть', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  d.limits = [{ name: 'своё ограничение', value: '1', fired: true, client_saw: '418, None shall pass' }]
+  dom.ctx.render(d)
+  const cells = dom.get('lim-body').children[0].children.map((c) => c.textContent)
+  assert.ok(cells.includes('418, None shall pass'),
+    'убрано больше, чем один известный фрагмент: ' + cells.join(' | '))
+})
+
+// ── Расщепление записи ограничения (находка design-review к #344) ───────────
+// Одна запись прогона несёт два ограничения: потолок дня 5 (проба была) и
+// потолок роутера в скобках (пробы не было). Границы меры обещают пометку
+// «не проверялось» — без отдельной строки это обещание ничем не закрыто.
+test('потолок роутера стоит отдельной строкой со «не проверялось»', () => {
+  const dom = fakeDom()
+  dom.ctx.render(DATA())
+  const rows = dom.get('lim-body').children.map((tr) => tr.children.map((c) => c.textContent))
+  const router = rows.find((r) => /maxRequestTokens/.test(r[0]))
+  assert.ok(router, 'строки про потолок роутера нет: ' + rows.map((r) => r[0]).join(' | '))
+  assert.equal(router[2], 'не проверялось', 'потолок роутера помечен как проверенный')
+  assert.ok(router[3].length > 0, 'причина, по которой пробы не было, не названа')
+  assert.ok(/не проверялось/.test(dom.get('lim-sum').textContent),
+    'сводка не называет непроверенное ограничение: ' + dom.get('lim-sum').textContent)
+})
+
+// Имя строки не повторяет колонку «Значение»: иначе число стоит на экране
+// дважды и колонка перестаёт что-либо добавлять.
+test('имя ограничения не повторяет его значение', () => {
+  const dom = fakeDom()
+  dom.ctx.render(DATA())
+  for (const tr of dom.get('lim-body').children) {
+    const [name, value] = tr.children.map((c) => c.textContent)
+    if (!/^[0-9]+$/.test(value)) continue
+    assert.ok(!name.includes(value),
+      'имя «' + name + '» повторяет значение ' + value)
+  }
+})
+
+// Числа дополнительных строк не литералы страницы: каждое стоит внутри того
+// же имени из results.json, по которому строка и подобрана (I-8).
+test('числа расщеплённых строк взяты из имени записи в results.json', () => {
+  const app = read('../site/day30/app.js')
+  const list = app.slice(app.indexOf('const LIMIT_ROWS'), app.indexOf('function limitRows'))
+  const keys = [...list.matchAll(/^ {2}\['([^']+)',$/gm)].map((m) => m[1])
+  assert.ok(keys.length > 0, 'список строк ограничений не разобрался')
+  const names = DATA().limits.map((l) => l.name)
+  for (const key of keys) {
+    assert.ok(names.includes(key), 'ключ «' + key + '» не находит записи прогона — список устарел')
+  }
+  // Значение, которое страница подставляет сама, обязано стоять в данных.
+  const values = [...list.matchAll(/value: '([0-9]+)'/g)].map((m) => m[1])
+  assert.ok(values.length > 0, 'проверка потеряла смысл: своих значений в списке нет')
+  for (const v of values) {
+    assert.ok(names.some((n) => n.includes(v)),
+      'значение ' + v + ' не встречается ни в одном имени из results.json — это литерал страницы')
+  }
+})
+
+test('незнакомое ограничение проходит в таблицу без изменений', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  d.limits = [{ name: 'ограничение, которого страница не знает', value: '7', fired: false, client_saw: '200' }]
+  dom.ctx.render(d)
+  const rows = dom.get('lim-body').children.map((tr) => tr.children.map((c) => c.textContent))
+  assert.deepEqual(rows, [['ограничение, которого страница не знает', '7', 'нет', '200']])
 })

@@ -59,7 +59,6 @@
             </table>
           </div>
           <p class="tbl-hint" hidden>Таблица прокручивается вбок.</p>
-          <p class="tbl-sum" id="burst-reasons"></p>
           <p class="tbl-sum">Отказ одним путём и очередь другим — это результат замера, а не дефект сервиса: ёмкость локального провайдера выбрана равной одному запросу, а Ollama вместо отказа ставит запросы в очередь, и полное время — цена этой очереди.</p>
         </figure>
         <p class="status" id="burst-status" role="status">Читаю результаты прогона…</p>
@@ -70,7 +69,9 @@
           <li>Судьи и оценок качества здесь нет: страница показывает коды ответов и времена, а не то, насколько ответ хорош. Проверить ответ по этой странице нельзя.</li>
           <li>Ограничение, у которого нет отрицательной пробы, помечено словом «не проверялось». Защита без проверки — не защита.</li>
         </ul>
+        <span class="lbl lbl-run" id="run-notes-cap" hidden>Оговорки этого прогона</span>
         <ul class="limits" id="run-notes" hidden></ul>
+        <p class="note" id="run-notes-dup" hidden></p>
 
         <details class="exp">
           <summary>Как это мерено<span class="q-mark" aria-hidden="true"></span></summary>
