@@ -117,6 +117,46 @@ test('на полных данных таблицы, стабильность и
   assert.ok(dom.get('limit-ids').textContent.includes('q72'), 'вопросы стабильности не названы')
 })
 
+// Ради чего: оговорки прогона стояли вторым безымянным списком под
+// постоянными границами меры, и семь из десяти повторяли уже сказанное
+// страницей (находка design-review к #340). Фильтр — названный список, и он
+// обязан ошибаться в сторону «показать лишнее», а не «спрятать нужное».
+test('оговорки прогона стоят под своей подписью, а повторяющие сказанное сняты', () => {
+  const dom = fakeDom()
+  dom.ctx.render(DATA())
+  assert.equal(dom.get('run-notes-cap').hidden, false, 'подписи у оговорок прогона нет')
+  assert.equal(dom.get('run-notes').hidden, false)
+  const shown = dom.get('run-notes').children.map((li) => li.textContent)
+  assert.ok(shown.length < DATA().notes.length, 'ни одна повторяющая оговорка не снята')
+  assert.ok(!shown.some((t) => t.startsWith('Один повтор на вопрос')),
+    'оговорка, повторяющая постоянные границы меры, осталась на экране')
+  assert.ok(shown.some((t) => t.startsWith('Локальный ответ упёрся в потолок')),
+    'снята оговорка про потолок ответа, а она отвечает на «можно ли верить числу»')
+  assert.match(dom.get('run-notes-dup').textContent, /^Ещё \d+ оговор/,
+    'снятое с экрана не названо числом')
+  assert.equal(dom.get('run-notes-dup').hidden, false)
+})
+
+test('незнакомая оговорка прогона остаётся на экране', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  d.notes = ['Совершенно новая оговорка, которой страница не знает.']
+  dom.ctx.render(d)
+  assert.deepEqual(dom.get('run-notes').children.map((li) => li.textContent), d.notes)
+  assert.equal(dom.get('run-notes-dup').hidden, true, 'снятым названо то, что не снималось')
+})
+
+test('все оговорки повторяют сказанное: список прячется, число остаётся', () => {
+  const dom = fakeDom()
+  const d = DATA()
+  d.notes = d.notes.filter((n) => n.startsWith('Один повтор на вопрос') || n.startsWith('Судья — модель'))
+  assert.equal(d.notes.length, 2, 'проверка потеряла смысл: таких оговорок в данных не две')
+  dom.ctx.render(d)
+  assert.equal(dom.get('run-notes').hidden, true)
+  assert.equal(dom.get('run-notes-cap').hidden, true, 'подпись осталась над пустым списком')
+  assert.match(dom.get('run-notes-dup').textContent, /Ещё 2 оговорки/)
+})
+
 test('index.html дня 28 грузит оба скрипта и не грузит ничего с CDN', () => {
   const html = read('../site/day28/index.html')
   assert.ok(html.includes('src="verdict.js"'), 'verdict.js не подключён')

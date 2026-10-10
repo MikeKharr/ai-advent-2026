@@ -62,7 +62,9 @@
           <li>Оценку ставит судья — <span id="limit-judge">нет данных</span>, то есть модель, а не код; на десяти вопросах статистики нет.</li>
           <li>Индексы сторон разные: локальный собран на ноутбуке, облачный — на сервере. Что значит «поиск совпал», сказано строкой выше.</li>
         </ul>
+        <span class="lbl lbl-run" id="run-notes-cap" hidden>Оговорки этого прогона</span>
         <ul class="limits" id="run-notes" hidden></ul>
+        <p class="note" id="run-notes-dup" hidden></p>
 
         <details class="exp">
           <summary>Как мерено качество<span class="q-mark" aria-hidden="true"></span></summary>
@@ -123,7 +125,7 @@
       <h2 id="q-h">По вопросам</h2>
       <p class="prose">Оценка — словом, не баллом: балл по десяти вопросам даёт ложную точность. Колонка «Поиск совпал» говорит, входит ли вопрос в вывод дня.</p>
       <figure class="tbl" id="q-tbl" hidden>
-        <figcaption id="t28q">По вопросам</figcaption>
+        <figcaption id="t28q">Оценки, время и совпадение поиска</figcaption>
         <div class="tbl-scroll" role="region" aria-labelledby="t28q">
           <table class="tbl-wide">
             <caption class="vh">По вопросам: оценки, время и совпадение поиска</caption>

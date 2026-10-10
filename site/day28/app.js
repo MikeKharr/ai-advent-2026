@@ -47,6 +47,24 @@ function matchWord(v) {
 }
 const word = (v) => (typeof v === 'string' && v ? v : NO_DATA);
 
+/* Оговорки прогона, которые страница говорит сама, и место, где она их
+   говорит. Это названный список, а не разбор смысла: сравнивается начало
+   строки, и закрытой считается только оговорка, прямо названная здесь.
+   Незнакомая остаётся на экране — ошибка списка показывает лишнее, а не
+   прячет нужное. Правка по существу — в прогоне (`rag/eval/to_page.py`): это
+   он пишет в `notes` то, что страница уже печатает из полей; здесь — чтобы
+   посетитель не читал одно и то же дважды (находка design-review). */
+const ALREADY_SAID = [
+  ['Один повтор на вопрос', 'границы меры: повторы и три вопроса стабильности'],
+  ['Индексы двух сторон разные', 'границы меры: индексы сторон разные'],
+  ['Судья — модель', 'границы меры: судья и отсутствие статистики'],
+  ['Время облачной стороны не измерено', 'строка под таблицей «По вопросам» и «Чего этот замер не мерил»'],
+  ['Выдачи поиска облачной стороны в файле нет', 'пояснение «Что именно сравнивалось»'],
+  ['«Поиск совпал» означает', 'пояснение «Что именно сравнивалось»'],
+  ['Признаки «путь назван»', 'пояснение «Как мерено качество»'],
+];
+const saidOnPage = (n) => ALREADY_SAID.some((pair) => n.indexOf(pair[0]) === 0);
+
 /* ── Состояния ────────────────────────────────────────────────────────── */
 
 function showMessage(text) {
@@ -56,6 +74,7 @@ function showMessage(text) {
   $('q-tbl').hidden = true;
   $('stab-tbl').hidden = true;
   $('stab-line').textContent = '';
+  ['run-notes-cap', 'run-notes', 'run-notes-dup'].forEach((id) => { $(id).hidden = true; });
   ['q-status', 'stab-status', 'bd-status'].forEach((id) => {
     $(id).textContent = text;
     $(id).hidden = false;
@@ -245,11 +264,25 @@ function render(data) {
   $('limit-judge').textContent = typeof data.judge === 'string' && data.judge
     ? data.judge : NO_DATA;
 
-  if (Array.isArray(data.notes) && data.notes.length) {
-    const ul = $('run-notes');
-    data.notes.forEach((n) => { if (typeof n === 'string' && n) ul.appendChild(el('li', null, n)); });
-    ul.hidden = !ul.childElementCount;
-  }
+  /* Оговорки прогона стоят под своей подписью, а не вторым безымянным списком
+     под постоянными границами меры: иначе на экране они неотличимы. */
+  const notes = Array.isArray(data.notes)
+    ? data.notes.filter((n) => typeof n === 'string' && n) : [];
+  const fresh = notes.filter((n) => !saidOnPage(n));
+  const ul = $('run-notes');
+  fresh.forEach((n) => ul.appendChild(el('li', null, n)));
+  /* Видимость ставится обеими ветвями, а не только положительной: иначе она
+     держится атрибутом в разметке, и состояние блока нельзя проверить. */
+  ul.hidden = !fresh.length;
+  $('run-notes-cap').hidden = !fresh.length;
+  /* Снятое с экрана названо числом: промолчать значило бы, что часть файла
+     данных исчезла со страницы незаметно. */
+  const dup = notes.length - fresh.length;
+  $('run-notes-dup').textContent = dup ? 'Ещё ' + dup + ' ' +
+    plural(dup, 'оговорка прогона повторяет', 'оговорки прогона повторяют',
+      'оговорок прогона повторяют') +
+    ' сказанное выше — на экране они не продублированы.' : '';
+  $('run-notes-dup').hidden = !dup;
 
   $('verdict').textContent = verdictText(data);
   $('match-line').textContent = matchLine(data);

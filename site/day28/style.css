@@ -108,8 +108,15 @@ a.wk-link:hover { background:var(--bg); }
 .limits {
   margin:var(--s-4) 0 0; padding-left:var(--s-5);
   font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch;
+  /* В границах меры стоят числа, которые сравнивают глазами: повторы,
+     идентификаторы вопросов, секунды внутри оговорок прогона. */
+  font-variant-numeric:tabular-nums;
 }
 .limits li + li { margin-top:var(--s-1); }
+/* Подпись и её список — один блок: между ними внутриблочный шаг, а не
+   межблочный, иначе подпись отрывается от того, что подписывает. */
+.lbl-run { display:block; margin-top:var(--s-4); }
+.lbl-run + .limits { margin-top:var(--s-2); }
 .tbl-sum {
   margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
   max-width:52ch; font-variant-numeric:tabular-nums;
@@ -117,6 +124,10 @@ a.wk-link:hover { background:var(--bg); }
 
 /* ── В. Таблица замеров ──────────────────────────────────────────────── */
 .tbl { margin:0; }
+/* Межблочный шаг над таблицей ставится здесь, а не наследуется от `.verdict +
+   *`: та же специфичность, но `.tbl { margin:0 }` идёт ниже и обнуляла его —
+   подпись таблицы прилипала к предыдущему абзацу (находка design-review). */
+.verdict + .tbl, .prose + .tbl, .tbl-sum + .tbl { margin-top:var(--s-4); }
 /* Подпись таблицы видима и стоит над ней: на этой странице таблиц три, и
    скрытая подпись оставила бы глаз без ориентира (отличие от дня 21 —
    намеренное). padding, а не margin: у table-caption margin не применяется.
@@ -141,6 +152,9 @@ a.wk-link:hover { background:var(--bg); }
 .tbl td.num, .tbl th.num { font-variant-numeric:tabular-nums; }
 .cell-sub { display:block; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
 .tbl-scroll { overflow-x:auto; min-width:0; }
+/* Кольцо корпуса, а не умолчание браузера: область получает tabindex="0" при
+   переполнении и становится остановкой табуляции наравне со ссылками. */
+.tbl-scroll:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
 .tbl-hint { margin:var(--s-2) 0 0; font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut); }
 /* Шесть столбцов на 360 px не умещаются: таблица прокручивается сама, страница
    — нет. Первая колонка липкая, иначе на середине прокрутки неясно, чья строка. */
@@ -151,6 +165,10 @@ a.wk-link:hover { background:var(--bg); }
   padding-left:var(--s-2);
 }
 .tbl-wide th[scope="col"]:first-child { background:var(--bg); }
+/* Ячейка липкой колонки сама стоит на --surface, и общее a:hover (тоже
+   --surface) на ней не виден: наведение здесь идёт на ступень в другую
+   сторону (находка design-review). */
+.tbl-wide th a:hover { background:var(--bg); }
 .tbl-wide td, .tbl-wide th { white-space:nowrap; }
 /* Ниже 36rem на числовые колонки остаётся ~50px: --t-sm в них не влезает. */
 @media (max-width:35.999rem) {
