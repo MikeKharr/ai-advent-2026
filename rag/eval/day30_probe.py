@@ -173,20 +173,28 @@ def parallel_day5(count: int, ask=ask_day5) -> dict:
 
 
 def limit_rate(ask=ask_day5, sleep=time.sleep) -> dict:
-    """Частота: шесть запросов подряд, шестой обязан получить `429`.
+    """Частота: шесть запросов ОДНОВРЕМЕННО, один из них обязан получить `429`.
 
-    Пять первых занимают окно, шестой его проверяет. Запись несёт `retry-after`
-    дословно: без числа секунд отказ не отличить от сбоя.
+    Последовательно проверять нельзя: ответ модели на ноутбуке идёт около
+    минуты, и шесть запросов подряд растягиваются дольше окна (первый прогон
+    2026-10-10 дал шесть `200`). Окно дня считает запуски на входе, до вызова
+    модели, поэтому из шести одновременных пять занимают окно, а шестой
+    получает `429` сразу. Остальные могут получить отказ ёмкости хоста — это
+    другой лимит, и он записывается отдельно, кодами.
     """
-    rows = [ask("Одним словом: да.") for _ in range(RATE_WINDOW + 1)]
-    last = rows[-1]
+    count = RATE_WINDOW + 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
+        rows = list(pool.map(lambda _: ask("да"), range(count)))
+    statuses = [row["status"] for row in rows]
+    limited = [row for row in rows if row["status"] == 429]
+    seen = limited[0] if limited else rows[-1]
     return {
         "name": f"запусков в минуту на адрес — {RATE_WINDOW}",
         "value": str(RATE_WINDOW),
-        "fired": last["status"] == 429,
-        "client_saw": f"{last['status']}, retry-after {last['retry_after']}, "
-                      f"{last['reason']}",
-        "statuses": [row["status"] for row in rows],
+        "fired": bool(limited),
+        "client_saw": f"{seen['status']}, retry-after {seen['retry_after']}, "
+                      f"{seen['reason']}",
+        "statuses": statuses,
     }
 
 
@@ -198,7 +206,9 @@ def limit_request_size(ask=ask_day5) -> dict:
     `maxRequestTokens` роутера снаружи недостижим. Проверяется граница, которую
     видит посетитель: тема длиннее 60 знаков получает 400 до вызова модели.
     """
-    long_prompt = "лимит " * (MAX_REQUEST_TOKENS * 2)
+    # 61 знак: на один больше границы. Тема в тысячи знаков проверяла бы уже
+    # предел тела запроса 64 КБ, а не длину темы (прогон 2026-10-10: 502).
+    long_prompt = "а" * 61
     row = ask(long_prompt)
     return {
         "name": "длина темы в публичном API дня 5 — 60 знаков "

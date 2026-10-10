@@ -978,6 +978,32 @@ class ПробыДня30(unittest.TestCase):
         self.assertEqual(seen.get("sphere"), "финтех")
         self.assertNotIn("prompt", seen)
 
+    def test_частота_проверяется_одновременными_запросами(self):
+        """Шесть одновременных: пятеро в окне, шестой — 429; иначе «не сработал»."""
+        import threading
+        lock = threading.Lock()
+        count = {"n": 0}
+
+        def ask(_text):
+            with lock:
+                count["n"] += 1
+                n = count["n"]
+            if n > day30.RATE_WINDOW:
+                return {"status": 429, "time_s": 0.01, "answer_chars": None,
+                        "reason": "слишком часто", "retry_after": "42"}
+            return {"status": 200, "time_s": 1.0, "answer_chars": 1,
+                    "reason": None, "retry_after": None}
+
+        got = day30.limit_rate(ask=ask)
+        self.assertTrue(got["fired"])
+        self.assertEqual(len(got["statuses"]), day30.RATE_WINDOW + 1)
+        self.assertIn("42", got["client_saw"])
+
+        quiet = day30.limit_rate(ask=lambda _t: {"status": 200, "time_s": 1.0,
+                                                 "answer_chars": 1, "reason": None,
+                                                 "retry_after": None})
+        self.assertFalse(quiet["fired"])
+
     def test_недоступный_провайдер_останавливает_пробы_через_прод(self):
         def ask(*_a, **_kw):
             return {"status": 503, "time_s": 0.1, "answer_chars": None,
