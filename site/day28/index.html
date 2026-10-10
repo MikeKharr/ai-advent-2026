@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка и тексты — agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md,
+     решение недели — agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md.
+     Пути к своим файлам относительные, <base> нет; ссылка на лендинг — от корня.
+     Ни одного числа прогона литералом: всё из results.json, вывод считает verdict.js. -->
+<title>День 28: поиск по проекту — локально и в облаке — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+<script src="verdict.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <p class="back"><a href="/">← AI Advent 2026</a></p>
+    <h1>День 28: поиск по проекту — локально и в облаке</h1>
+    <p class="lede">Десять контрольных вопросов прогнаны поиском по документам проекта дважды: ответ пишет локальная модель на ноутбуке и облачная на проде. Поиск у сторон свой, и сравнение честно только там, где верный документ нашли оба — страница считает вывод по этим вопросам и говорит, сколько их.</p>
+  </header>
+
+  <nav class="wk" aria-label="Неделя 26–30">
+    <p class="wk-cap" id="wk-cap">Неделя: локальная LLM</p>
+    <ul class="wk-list">
+      <li><a class="wk-link" href="/day26/">26</a></li>
+      <li><a class="wk-link" href="/day27/">27</a></li>
+      <li><span class="wk-link wk-now" aria-current="page">28</span></li>
+      <li><a class="wk-link" href="/day29/">29</a></li>
+      <li><a class="wk-link" href="/day30/">30</a></li>
+    </ul>
+  </nav>
+
+  <noscript><p class="status">Таблицы замеров строит скрипт, а он отключён. Данные прогона — файл <a href="results.json">results.json</a> рядом с этой страницей, выводы — в <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR недели</a>.</p></noscript>
+
+  <main>
+    <section aria-labelledby="sum-h">
+      <h2 id="sum-h">Итог дня</h2>
+      <div class="panel sum">
+        <p class="verdict" id="verdict" role="status">Читаю результаты прогона…</p>
+
+        <figure class="tbl" id="cmp-tbl" hidden>
+          <table>
+            <caption>Итог сравнения</caption>
+            <thead>
+              <tr>
+                <th scope="col">Метрика</th>
+                <th scope="col" class="num">Локально</th>
+                <th scope="col" class="num">В облаке</th>
+                <th scope="col">Разница</th>
+              </tr>
+            </thead>
+            <tbody id="cmp-body"></tbody>
+          </table>
+        </figure>
+        <p class="tbl-sum" id="match-line"></p>
+
+        <ul class="limits">
+          <li>Повторов на вопрос — <span class="num" id="limit-repeats">нет данных</span>. Разница в один вердикт может быть шумом температуры 1, а не свойством стороны.</li>
+          <li>Разброс измерен только на трёх вопросах: <span class="num" id="limit-ids">нет данных</span>.</li>
+          <li>Мерено на ноутбуке, а не на проде: на прод переносятся качество и ограничения модели, не секунды.</li>
+          <li>Оценку ставит судья — <span id="limit-judge">нет данных</span>, то есть модель, а не код; на десяти вопросах статистики нет.</li>
+          <li>Индексы сторон разные: локальный собран на ноутбуке, облачный — на сервере. Что значит «поиск совпал», сказано строкой выше.</li>
+        </ul>
+        <ul class="limits" id="run-notes" hidden></ul>
+
+        <details class="exp">
+          <summary>Как мерено качество<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Рубрика та же, что в дне 22: <strong>2 — верно</strong>, <strong>1 — частично</strong>, <strong>0 — неверно</strong>. Оценку по каждому ответу ставит судья, и судья — модель, читающая вопрос, ответ и найденные фрагменты. Его слова по каждому вопросу лежат в разборе ниже, и прочтение можно оспорить.</p>
+            <p>Средняя по рубрике на десяти вопросах — не статистика: доверительного интервала у неё нет, и разница в один-два вопроса от неё не отличима. Поэтому порог шума на странице считается как два вопроса из набора, а не берётся на глаз.</p>
+            <p class="small">Признаки «путь назван» и «ссылка на источник есть» ловят форму, а не смысл: путь сверяется подстрокой. Они местами расходятся с оценкой судьи — оценку ставит он, а не признак.</p>
+          </div>
+        </details>
+
+        <details class="exp">
+          <summary>Что именно сравнивалось<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <p>Один и тот же набор вопросов, один промпт из реестра агентов, одна стратегия нарезки документов. Отличается то, что ниже промпта: локальная сторона искала в индексе, собранном на ноутбуке, и отвечала моделью на ноутбуке; облачная — свежий прогон дня 22 по проду.</p>
+            <p>Поиск отдаёт по пять фрагментов на вопрос, фрагмент приходит в промпт срезанным. Из этого и следует главная оговорка: <strong>разные индексы отдают разные фрагменты</strong>, и на вопросе, где верный документ нашла только одна сторона, разница в ответах — это разница поиска, а не моделей.</p>
+            <p class="small">«Поиск совпал» означает совпадение <strong>документа</strong>, а не фрагмента: нужного раздела в найденных пяти фрагментах могло не быть у обеих сторон. Выдачи поиска облачной стороны в данных нет — прогон дня 22 записывает признаки и ответ, а не список путей.</p>
+          </div>
+        </details>
+
+        <details class="exp">
+          <summary>Чего этот замер не мерил<span class="q-mark" aria-hidden="true"></span></summary>
+          <div class="exp-body">
+            <ul>
+              <li><strong>Устойчивости всего набора.</strong> Один прогон на вопрос; по три ответа — только у трёх вопросов, и это вся стабильность, которую неделя измерила.</li>
+              <li><strong>Скорости облачной стороны.</strong> Прогон дня 22 времени запуска не записывает, а сданный день не правится. В таблице на этом месте стоит «нет данных», а не придуманный нуль.</li>
+              <li><strong>Качества поиска как такового.</strong> Это мера дня 21 и дня 22; здесь поиск — условие, а не предмет.</li>
+              <li><strong>Потолка железа.</strong> Ноутбук был в обычной работе владельца, а не на изолированном стенде.</li>
+              <li><strong>Переносимости секунд на прод.</strong> Локальные времена — это времена ноутбука под нагрузкой владельца.</li>
+            </ul>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section aria-labelledby="closed-h">
+      <h2 id="closed-h">Что уже было закрыто</h2>
+      <ul class="closed" role="list">
+        <li>
+          <p>Поиск по документам проекта работает локально: своя единица <code>rag/</code> на Python, индекс и эмбеддер на машине, без внешнего вызова.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">29.09.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-29-1639-day21-faiss-python-unit-and-ollama-on-vps.md">ADR 2026-09-29-1639</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-09-30-0957-rag-quantized-embedder.md">ADR 2026-09-30-0957</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/rag">rag/</a></p>
+        </li>
+        <li>
+          <p>Десять контрольных вопросов и механика сравнения: вопросы, прогон и выставление оценок живут отдельно от приложения дня.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">04.10.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-04-0735-day22-rag-agent-two-modes-over-mcp.md">ADR 2026-10-04-0735</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/days/day22/eval">days/day22/eval/</a></p>
+        </li>
+        <li>
+          <p>Облачная сторона уже была измерена этими же вопросами: прогон дня 22 по проду лежит в репозитории с ответами и признаками.</p>
+          <p><span class="tag">Закрыто раньше</span><span class="tag-date num">05.10.2026</span></p>
+          <p class="src"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/days/day22/public/eval.json">days/day22/public/eval.json</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-10-04-2242-day22-rag-modes.md">запись 2026-10-04-2242-day22-rag-modes.md</a></p>
+        </li>
+      </ul>
+      <p class="gap"><strong>Пробел, который закрывает эта страница:</strong> ответ локальной моделью по локальному поиску не прогонялся ни разу, и сравнения двух сторон на одном наборе вопросов не было. Что поиск работает локально, было известно; что получается, когда и поиск, и генерация уходят на ноутбук, — нет.</p>
+    </section>
+
+    <section aria-labelledby="q-h">
+      <h2 id="q-h">По вопросам</h2>
+      <p class="prose">Оценка — словом, не баллом: балл по десяти вопросам даёт ложную точность. Колонка «Поиск совпал» говорит, входит ли вопрос в вывод дня.</p>
+      <figure class="tbl" id="q-tbl" hidden>
+        <figcaption id="t28q">По вопросам</figcaption>
+        <div class="tbl-scroll" role="region" aria-labelledby="t28q">
+          <table class="tbl-wide">
+            <caption class="vh">По вопросам: оценки, время и совпадение поиска</caption>
+            <thead>
+              <tr>
+                <th scope="col">Вопрос</th>
+                <th scope="col">Оценка лок.</th>
+                <th scope="col">Оценка обл.</th>
+                <th scope="col" class="num">Время лок., с</th>
+                <th scope="col" class="num">Время обл., с</th>
+                <th scope="col">Поиск совпал</th>
+              </tr>
+            </thead>
+            <tbody id="q-body"></tbody>
+          </table>
+        </div>
+        <p class="tbl-hint" hidden>Таблица прокручивается вбок.</p>
+        <p class="tbl-sum" id="q-sum"></p>
+      </figure>
+      <p class="status" id="q-status" role="status">Читаю результаты прогона…</p>
+    </section>
+
+    <section aria-labelledby="stab-h">
+      <h2 id="stab-h">Стабильность: три вопроса, три ответа каждый</h2>
+      <p class="prose">Обрыв ответа или недоступность локальной модели — результат замера, а не пропуск в нём: такой прогон остаётся в таблице со своим вердиктом.</p>
+      <p class="tbl-sum" id="stab-line"></p>
+      <figure class="tbl" id="stab-tbl" hidden>
+        <table>
+          <caption>Три вопроса по три прогона</caption>
+          <thead>
+            <tr>
+              <th scope="col">Вопрос</th>
+              <th scope="col">Вердикты</th>
+              <th scope="col" class="num">Время, с</th>
+              <th scope="col" class="num">Обрывов</th>
+            </tr>
+          </thead>
+          <tbody id="stab-body"></tbody>
+        </table>
+      </figure>
+      <p class="status" id="stab-status" role="status">Читаю результаты прогона…</p>
+    </section>
+
+    <section aria-labelledby="bd-h">
+      <h2 id="bd-h">Разбор по вопросам</h2>
+      <p class="prose">У каждого вопроса — полный ответ каждой стороны, найденные фрагменты и слова судьи. Ответы не пересказаны: их можно прочитать и оспорить. У трёх вопросов стабильности показаны все три прогона.</p>
+      <p class="status" id="bd-status" role="status">Читаю результаты прогона…</p>
+      <ul class="breakdown" id="breakdown" role="list"></ul>
+    </section>
+
+    <section aria-labelledby="task-h">
+      <h2 id="task-h">Задание дня</h2>
+      <blockquote class="task">
+        <p><strong>День 28 «Локальная LLM + RAG»:</strong> индекс недели 6, retrieval локально, генерация — локальной моделью; сравнить ответы локальной и облачной модели; оценить качество, скорость, стабильность. Результат: RAG полностью локально.</p>
+      </blockquote>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p class="num" id="run-line"></p>
+    <p>Решение недели — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-09-1335-days26-30-local-llm-week.md">ADR 2026-10-09-1335</a>, раскладка страницы — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md">спецификация дней 26–30</a>, код прогона — <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/rag/eval">rag/eval/</a>, данные прогона — <a href="results.json">results.json</a>, исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</p>
+  </footer>
+</div>
+</body>
+</html>
