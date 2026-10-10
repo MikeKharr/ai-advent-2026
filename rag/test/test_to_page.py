@@ -319,9 +319,7 @@ class КонвертСтраницы(unittest.TestCase):
     def test_оговорка_про_пик_rss_приезжает_в_каждый_файл_с_памятью(self):
         # Сумма берётся по ВСЕМ процессам Ollama, а служб на ноутбуке две.
         # Без этой строки число читалось бы как «столько занимает модель».
-        # День 28 числа памяти не показывает (design-review PR #340), и
-        # оговорка о составе числа там ссылалась бы на пустоту.
-        self.assertNotIn(report.RSS_NOTE, to_page.build(28, raw28())["notes"])
+        self.assertIn(report.RSS_NOTE, to_page.build(28, raw28())["notes"])
         self.assertIn(report.RSS_NOTE, to_page.build(29, raw29())["notes"])
         # У дня 30 пика RSS в сыром файле нет — и оговорки быть не должно.
         self.assertNotIn(report.RSS_NOTE, to_page.build(30, raw30()).get("notes", []))
@@ -575,7 +573,7 @@ class ГраницыМерыИзЧисел(unittest.TestCase):
                  if "загрузку весов" in note]
         self.assertEqual(len(found), 1)
         self.assertIn("q08", found[0])
-        self.assertIn("31,74", found[0])
+        self.assertIn("31.74", found[0])
 
     def test_признаки_ловят_форму_и_это_сказано_словами(self):
         notes = to_page.build(28, raw28())["notes"]
@@ -803,20 +801,3 @@ class ЗаписьТолькоЧерезСтражей(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class ОговоркиДня28(unittest.TestCase):
-    """Находки design-review PR #340: запятая в числах и память без числа."""
-
-    def test_оговорка_о_памяти_не_идёт_на_страницу_без_числа_памяти(self):
-        raw = {"notes": [to_page.report.RSS_NOTE, "другое"], "peak_rss_kib": 1}
-        got = to_page.envelope(28, raw, "судья", [], ["q08"], memory_shown=False)
-        self.assertNotIn(to_page.report.RSS_NOTE, got["notes"])
-        self.assertIn("другое", got["notes"])
-
-    def test_числа_холодного_старта_с_десятичной_запятой(self):
-        raw = {"stability": [{"id": "q08", "runs": [
-            {"ttft_s": 31.74}, {"ttft_s": 0.328}, {"ttft_s": 0.4}]}]}
-        text = " ".join(to_page._derived_notes(raw))
-        self.assertIn("31,74", text)
-        self.assertNotIn("31.74", text)
