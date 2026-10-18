@@ -11,14 +11,24 @@
 // названа в ADR 2026-09-28-0736, п. 3.
 //
 // Чем этот сервер отличается от `mcpgit`: у инструментов ЕСТЬ аргументы, и
-// один из них пишет на диск. Отсюда две преграды, обе ниже с тестами:
-//   1. Любой путь из запроса проходит `resolveInRoot` — лексическую проверку
-//      и сверку `realpath` с корнем. Вне корня, в `.git/` и в файлах `.env*`
-//      чтения нет вовсе (ключ в `.env` на ноутбуке существует; I-1, I-3).
-//   2. Писать можно ровно в два места: `agent_docs/backlog/<имя>.md`, откуда
+// один из них пишет на диск. Отсюда три преграды, все ниже с тестами:
+//   1. **Область чтения — белый список** (`assertReadable`): `agent_docs/**`
+//      только `*.md` плюс корневые `AGENTS.md` и `README.md`. Это снимает
+//      весь класс «секрет в файле с неожиданным именем» целиком: ни
+//      `deploy/secrets.env`, ни `deploy/rag.env`, ни `router/config/*` в
+//      область не входят, и перебирать имена секретов не нужно. Чёрный
+//      список именами был дырявым — находка обоих гейтов к PR #354:
+//      `part.startsWith('.env')` не ловил `<имя>.env` и не учитывал регистр.
+//   2. Любой путь из запроса проходит `resolveInRoot` — сверку `realpath` с
+//      корнем, а затем ВТОРОЙ слой: закрытые имена `.git` и всё, что похоже
+//      на файл окружения (`.env*` и `*.env`), сравнение в нижнем регистре
+//      (I-1, I-3; на macOS `.ENV` и `.Env` — тот же файл).
+//   3. Писать можно ровно в два места: `agent_docs/backlog/<имя>.md`, откуда
 //      пункт уходит, и `agent_docs/backlog-closed.md`, куда он приходит.
 //      Путь записи из запроса НЕ собирается: имя файла бэклога сверяется с
-//      закрытым шаблоном и каталогом, второй путь — литерал.
+//      закрытым шаблоном, второй путь — литерал, и у обоих `realpath`
+//      обязан совпасть с ожидаемым путём — иначе симлинк в каталоге очереди
+//      уводил бы ЗАПИСЬ за его пределы (находка `compliance` Б3).
 //
 // Воспроизводимость — свойство `backlog.close`: повторный вызов с тем же
 // якорем на том же дереве ничего не пишет и отвечает `changed: false`.
@@ -44,6 +54,8 @@ export const CODES = {
 
 /** Каталог корпуса документов: единственное, где ищет `docs.search`. */
 export const DOCS_DIR = 'agent_docs'
+/** Файлы корня, которые `docs.read` отдаёт сверх корпуса. Белый список. */
+export const READABLE_ROOT_FILES = ['AGENTS.md', 'README.md']
 /** Каталог тематических файлов очереди — единственный источник пунктов. */
 export const BACKLOG_DIR = 'agent_docs/backlog'
 /** Файл архива закрытых пунктов — литерал, из запроса не собирается. */
@@ -89,9 +101,12 @@ const fail = (message) => {
  *     лексически выглядит внутренним. Лексической проверки сверх неё нет
  *     намеренно: она была бы той же защитой во втором месте, то есть её
  *     снятие оставляло бы прогон зелёным (I-14);
- *   — закрытые имена (`.git`, `.env*`) по РАЗРЕШЁННОМУ пути: чтение чужого
- *     внутри корня. `.env` на ноутбуке существует и несёт ключи (I-1, I-3),
- *     и проверка стоит после `realpath` — симлинком её не обойти.
+ *   — закрытые имена по РАЗРЕШЁННОМУ пути (`isSecretName`): `.git` и всё,
+ *     что похоже на файл окружения. Это ВТОРОЙ слой: область чтения и без
+ *     него сужена белым списком (`assertReadable`), но путь из запроса
+ *     проходит здесь для любого будущего потребителя тоже. Сравнение в
+ *     нижнем регистре и с обеих сторон имени: `deploy/rag.env`,
+ *     `deploy/SECRETS.ENV` и `.env.local` — один и тот же случай (I-1, I-3).
  *
  * Несуществующий путь до проверок не доходит: `realpath` его не видит, и
  * ответ — «файл не найден». Читать в этом случае всё равно нечего.
@@ -111,10 +126,31 @@ export function resolveInRoot(root, value, { label = 'путь' } = {}) {
   }
   const rel = relative(realRoot, real)
   for (const part of rel.split(sep)) {
-    if (part === '.git') fail(`${label} закрыт для чтения: каталог .git`)
-    if (part.startsWith('.env')) fail(`${label} закрыт для чтения: файлы .env* несут секреты`)
+    const lower = part.toLowerCase()
+    if (lower === '.git') fail(`${label} закрыт для чтения: каталог .git`)
+    if (isSecretName(lower)) fail(`${label} закрыт для чтения: файлы окружения несут секреты («${cut(part, 60)}»)`)
   }
   return { abs: real, rel: rel.split(sep).join('/') }
+}
+
+/**
+ * Имя файла окружения — в нижнем регистре и с обеих сторон: `.env`,
+ * `.env.local`, `rag.env`, `secrets.env`. Прежняя редакция смотрела только
+ * начало имени и отдавала `deploy/rag.env` целиком (находка обоих гейтов).
+ */
+export const isSecretName = (lower) => lower.startsWith('.env') || lower.endsWith('.env')
+
+/**
+ * Белый список чтения. Область, а не перечень запретов: что не названо
+ * здесь, то закрыто, и новый секретный файл где-нибудь в `deploy/` не
+ * открывает дыру сам по себе.
+ */
+export function assertReadable(rel) {
+  if (READABLE_ROOT_FILES.includes(rel)) return
+  if (rel.startsWith(`${DOCS_DIR}/`) && rel.endsWith('.md')) return
+  fail(
+    `чтение разрешено только в ${DOCS_DIR}/ (файлы *.md) и у ${READABLE_ROOT_FILES.join(', ')} — «${cut(rel, 120)}» вне этой области`,
+  )
 }
 
 const cut = (value, max) => (value.length > max ? `${value.slice(0, max)}…` : value)
@@ -160,6 +196,7 @@ export function sectionRange(lines, needle) {
 /** Чтение файла или одного его раздела. Нумерация строк — с единицы. */
 function docsRead(root, args) {
   const { rel, abs } = resolveInRoot(root, args?.path)
+  assertReadable(rel)
   const lines = readText(abs, rel).split('\n')
   let from = 1
   let to = lines.length
@@ -184,7 +221,11 @@ function docsRead(root, args) {
   }
 }
 
-/** Файлы `.md` корпуса в устойчивом порядке: обход детерминирован. */
+/**
+ * Файлы `.md` корпуса в устойчивом порядке: обход детерминирован.
+ * Символические ссылки пропускаются: у `Dirent` ссылка — не `isFile()`, и
+ * файл снаружи корня через ссылку внутри `agent_docs/` прочитан не будет.
+ */
 export function markdownFiles(dirAbs, relPrefix = '') {
   const out = []
   for (const entry of readdirSync(dirAbs, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
@@ -247,8 +288,28 @@ export function openItems(lines) {
   return out
 }
 
-/** Один абзац из многострочного пункта: архив хранит его одной строкой. */
-const oneLine = (text) => text.replace(/^- \[ \] /u, '').split('\n').map((l) => l.trim()).filter((l) => l !== '').join(' ')
+/**
+ * Один абзац из многострочного текста: архив хранит пункт одной строкой.
+ * Через неё же проходит `note` из запроса — иначе перевод строки в
+ * примечании дописал бы в архив поддельную строку, например ещё один пункт
+ * `- [ ] …` (находка обоих гейтов к PR #354).
+ */
+export const oneLine = (text) =>
+  text
+    .replace(/^- \[[ x~]\] /u, '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .join(' ')
+
+/**
+ * Форма якоря, в которой его сравнивают: один абзац без лишних пробелов и
+ * без значка пункта. Без неё обещание «повторный вызов отвечает `changed:
+ * false`» держалось только для якоря, скопированного ровно в одну строку: в
+ * архиве пункт лежит одной строкой, а в очереди мог быть разбит переводами
+ * (находка `reviewer`).
+ */
+export const flatten = (text) => oneLine(text).replace(/\s+/gu, ' ').trim()
 
 /** Открытые пункты всех тематических файлов очереди. */
 function backlogList(root) {
@@ -266,6 +327,27 @@ function backlogList(root) {
     }
   }
   return { dir: BACKLOG_DIR, items, total, truncated: total > items.length }
+}
+
+/**
+ * Путь ЗАПИСИ. Сверх `resolveInRoot` требуется одно: `realpath` файла
+ * совпадает с ожидаемым путём внутри своего каталога.
+ *
+ * Зачем: `agent_docs/backlog/rag.md` может оказаться символической ссылкой
+ * (или ссылкой может быть сам каталог `backlog/`), и тогда запись уходит
+ * куда угодно — `compliance` показал это, вычеркнув пункт из `AGENTS.md`
+ * (находка Б3 к PR #354). Отдельной проверки «не симлинк» рядом нет
+ * намеренно: совпадение `realpath` с ожидаемым путём означает, что ссылки
+ * нет ни на файле, ни на каталоге, а вторая проверка того же была бы
+ * защитой, снятие которой оставляет прогон зелёным (I-14). Что это обычный
+ * файл, а не каталог, проверяет `readText` перед чтением.
+ */
+function writableFile(root, expected, label) {
+  const { abs, rel } = resolveInRoot(root, expected, { label })
+  if (rel !== expected) {
+    fail(`${label}: запись разрешена только по пути ${expected}, а он ведёт в ${cut(rel, 120)} — символическая ссылка отклонена`)
+  }
+  return { abs, rel }
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/u
@@ -324,10 +406,10 @@ function backlogClose(root, args) {
   if (typeof name !== 'string' || !BACKLOG_NAME.test(name)) {
     fail(`file: ожидалось имя файла очереди вида «process.md» внутри ${BACKLOG_DIR}/, получено «${cut(String(name), 120)}»`)
   }
-  const item = resolveInRoot(root, `${BACKLOG_DIR}/${name}`, { label: 'file' })
+  const item = writableFile(root, `${BACKLOG_DIR}/${name}`, 'file')
 
   const anchor = args?.anchor
-  if (typeof anchor !== 'string' || anchor.trim().length < MIN_ANCHOR) {
+  if (typeof anchor !== 'string' || flatten(anchor).length < MIN_ANCHOR) {
     fail(`anchor: ожидалась строка не короче ${MIN_ANCHOR} знаков — якорь адресует правку файла`)
   }
   const note = args?.note
@@ -338,13 +420,15 @@ function backlogClose(root, args) {
   const kind = args?.kind === undefined || args.kind === null ? 'done' : args.kind
   if (kind !== 'done' && kind !== 'dropped') fail('kind: ожидалось «done» (выполнено) или «dropped» (снят как ошибочный)')
 
-  const needle = anchor.trim()
-  const closed = resolveInRoot(root, CLOSED_FILE, { label: 'архив' })
+  // Сравнение идёт в одной форме с обеих сторон: якорь, пункт очереди и
+  // текст архива приводятся к одному абзацу без лишних пробелов.
+  const needle = flatten(anchor)
+  const closed = writableFile(root, CLOSED_FILE, 'архив')
   const closedText = readText(closed.abs, closed.rel)
-  const alreadyClosed = closedText.includes(needle)
+  const alreadyClosed = flatten(closedText).includes(needle)
 
   const lines = readText(item.abs, item.rel).split('\n')
-  const hits = openItems(lines).filter((block) => block.text.includes(needle))
+  const hits = openItems(lines).filter((block) => flatten(block.text).includes(needle))
 
   if (alreadyClosed && hits.length === 0) {
     return { changed: false, reason: 'already-closed', file: item.rel, closedFile: closed.rel, anchor: needle }
@@ -361,7 +445,7 @@ function backlogClose(root, args) {
   const mark = kind === 'done' ? 'x' : '~'
   // Исходный текст переносится, а не выбрасывается, и это не украшение:
   // по нему якорь находится в архиве на втором прогоне.
-  const entry = `- [${mark}] ${date} — ${note.trim()}\n  Исходный текст: ${oneLine(hit.text)}`
+  const entry = `- [${mark}] ${date} — ${oneLine(note)}\n  Исходный текст: ${oneLine(hit.text)}`
   const inserted = insertClosed(closedText, date.slice(0, 7), entry)
 
   const rest = [...lines]

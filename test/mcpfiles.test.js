@@ -57,7 +57,13 @@ function makeTree() {
   write(dir, 'agent_docs/development-history/2026-10-18-1200-day34-note.md', ['# Запись', '', 'Признак `cited` исправлен прогоном.', ''].join('\n'))
   // Файл ВНЕ agent_docs с той же подстрокой: он не должен попасть в поиск.
   write(dir, 'README.md', ['# Проект', '', 'Признак `cited` упомянут и здесь.', ''].join('\n'))
+  // Четыре формы секрета, на которых чёрный список первой редакции протекал:
+  // точка в начале имени, суффикс `.env`, тот же суффикс в верхнем регистре —
+  // и обычный файл вне корпуса, который закрыт уже областью чтения.
   write(dir, '.env', 'RAG_KEY=ключ-которого-не-должно-быть-в-ответе\n')
+  write(dir, 'deploy/rag.env', 'RAG_KEY=секрет-службы-rag\n')
+  write(dir, 'deploy/SECRETS.ENV', 'ANTHROPIC_API_KEY=секрет-верхним-регистром\n')
+  write(dir, 'deploy/compose.yml', 'services: {}\nsecret-free: true\n')
   git(['init', '-b', 'main'], dir)
   git(['add', '-A'], dir)
   git(['commit', '-m', 'tree'], dir)
@@ -187,17 +193,63 @@ test('docs.read: путь вне корня репозитория отверг�
   }
 })
 
-test('docs.read: .env и .git закрыты, содержимое ключа в ответ не идёт (I-1, I-3)', async () => {
+// Слой 1 — область чтения. Белым списком закрыт весь класс «секрет в файле
+// с неожиданным именем»: перечислять имена не нужно, вне области закрыто всё.
+// Сообщение проверяется ИМЕННО этого слоя, иначе тест не различал бы, какая
+// из двух преград сработала.
+test('docs.read: вне agent_docs и двух файлов корня чтения нет вовсе', async () => {
   const dir = makeTree()
   try {
-    const env = errorOf(await one(dir, 'docs.read', { path: '.env' }))
-    assert.match(env, /\.env/u)
-    assert.doesNotMatch(env, /RAG_KEY|ключ-которого/u)
-
-    const head = errorOf(await one(dir, 'docs.read', { path: '.git/HEAD' }))
-    assert.match(head, /\.git/u)
+    for (const path of ['deploy/compose.yml', 'agent_docs/backlog/../../deploy/compose.yml']) {
+      const message = errorOf(await one(dir, 'docs.read', { path }))
+      assert.match(message, /вне этой области/u, `путь «${path}» прочитан`)
+      assert.doesNotMatch(message, /secret-free/u)
+    }
+    // Белый список — не запрет на всё: корпус и две страницы корня читаются.
+    assert.equal(payload(await one(dir, 'docs.read', { path: 'README.md' })).path, 'README.md')
+    assert.equal(payload(await one(dir, 'docs.read', { path: 'agent_docs/backlog/rag.md' })).path, 'agent_docs/backlog/rag.md')
   } finally {
     clean(dir)
+  }
+})
+
+// Слой 2 — закрытые имена. Прежняя редакция смотрела только начало имени и в
+// одном регистре: `deploy/rag.env` и `deploy/SECRETS.ENV` отдавались целиком
+// (блокирующая находка обоих гейтов к PR #354). Эти три пути проверяются по
+// сообщению ВТОРОГО слоя — сообщение области здесь было бы другим.
+test('docs.read: .git и любые файлы окружения закрыты в любом регистре (I-1, I-3)', async () => {
+  const dir = makeTree()
+  try {
+    for (const [path, leak] of [
+      ['.env', /RAG_KEY|ключ-которого/u],
+      ['deploy/rag.env', /RAG_KEY|секрет-службы/u],
+      ['deploy/SECRETS.ENV', /ANTHROPIC_API_KEY|секрет-верхним/u],
+    ]) {
+      const message = errorOf(await one(dir, 'docs.read', { path }))
+      assert.match(message, /файлы окружения несут секреты/u, `путь «${path}» не закрыт вторым слоем`)
+      assert.doesNotMatch(message, leak, `в сообщении об отказе «${path}» утекло содержимое`)
+    }
+    const head = errorOf(await one(dir, 'docs.read', { path: '.git/HEAD' }))
+    assert.match(head, /каталог \.git/u)
+  } finally {
+    clean(dir)
+  }
+})
+
+test('docs.search не читает файл по символической ссылке внутри agent_docs', async () => {
+  const dir = makeTree()
+  const outside = mkdtempSync(join(tmpdir(), 'mcpfiles-outside-'))
+  try {
+    writeFileSync(join(outside, 'secret.md'), 'снаружи лежит признак `cited`\n')
+    symlinkSync(join(outside, 'secret.md'), join(dir, 'agent_docs/link.md'))
+    const body = payload(await one(dir, 'docs.search', { query: 'признак `cited`' }))
+    assert.ok(
+      !body.matches.some((m) => m.path === 'agent_docs/link.md'),
+      `ссылка наружу попала в выдачу: ${JSON.stringify(body.matches)}`,
+    )
+  } finally {
+    clean(dir)
+    clean(outside)
   }
 })
 
@@ -419,6 +471,105 @@ test('backlog.close: имя файла из запроса не собирает
     for (const file of ['../snapshot.md', '../../README.md', '/etc/hosts', 'rag.txt']) {
       const message = errorOf(await one(dir, 'backlog.close', { file, anchor: 'признак `cited` ищет', note: 'нет', date: '2026-10-18' }))
       assert.match(message, /ожидалось имя файла очереди/u, `имя «${file}» принято`)
+    }
+    assert.equal(status(dir), '')
+  } finally {
+    clean(dir)
+  }
+})
+
+// Находка `compliance` Б3 к PR #354: имя темы можно было оставить шаблонным,
+// а подменить сам файл символической ссылкой — и запись уходила за каталог
+// очереди (в показе гейта из `AGENTS.md` был вычеркнут пункт). Две формы:
+// ссылка-файл и ссылка-каталог; ловит обе одна сверка `realpath` с ожидаемым
+// путём.
+test('backlog.close: символическая ссылка в каталоге очереди не уводит запись наружу', async () => {
+  for (const form of ['файл', 'каталог']) {
+    const dir = makeTree()
+    try {
+      const agents = join(dir, 'AGENTS.md')
+      writeFileSync(agents, ['# Правила', '', '- [ ] Владельцу: признак `cited` ищет путь подстрокой — приманка.', ''].join('\n'))
+      if (form === 'файл') {
+        rmSync(join(dir, 'agent_docs/backlog/rag.md'))
+        symlinkSync(agents, join(dir, 'agent_docs/backlog/rag.md'))
+      } else {
+        const elsewhere = join(dir, 'подмена')
+        mkdirSync(elsewhere)
+        writeFileSync(join(elsewhere, 'rag.md'), '- [ ] Владельцу: признак `cited` ищет путь подстрокой — приманка.\n')
+        rmSync(join(dir, 'agent_docs/backlog'), { recursive: true })
+        symlinkSync(elsewhere, join(dir, 'agent_docs/backlog'))
+      }
+      git(['add', '-A'], dir)
+      git(['commit', '-m', `symlink ${form}`], dir)
+      const before = readFileSync(agents, 'utf8')
+
+      const message = errorOf(
+        await one(dir, 'backlog.close', {
+          file: 'rag.md',
+          anchor: 'признак `cited` ищет путь подстрокой',
+          note: 'не должно записаться',
+          date: '2026-10-18',
+        }),
+      )
+      assert.match(message, /символическая ссылка отклонена/u, `форма «${form}» принята`)
+      assert.equal(readFileSync(agents, 'utf8'), before, `форма «${form}»: AGENTS.md изменён`)
+      assert.equal(status(dir), '', `форма «${form}»: дерево изменено`)
+    } finally {
+      clean(dir)
+    }
+  }
+})
+
+// Находка обоих гейтов: `note` приходит от модели, и перевод строки в нём
+// дописывал бы в архив собственную строку — например поддельный пункт.
+test('backlog.close: перевод строки в примечании не подделывает архив', async () => {
+  const dir = makeTree()
+  try {
+    payload(
+      await one(dir, 'backlog.close', {
+        file: 'rag.md',
+        anchor: 'признак `cited` ищет путь подстрокой',
+        note: 'закрыто прогоном\n- [ ] Владельцу: поддельный пункт\n## 2027-01',
+        date: '2026-10-18',
+      }),
+    )
+    const closed = readFileSync(join(dir, 'agent_docs/backlog-closed.md'), 'utf8')
+    assert.ok(
+      !closed.split('\n').some((l) => l.startsWith('- [ ] ') || l.startsWith('## 2027-01')),
+      `примечание дописало в архив свою строку:\n${closed}`,
+    )
+    assert.match(closed, /- \[x\] 2026-10-18 — закрыто прогоном - \[ \] Владельцу: поддельный пункт ## 2027-01/u)
+  } finally {
+    clean(dir)
+  }
+})
+
+// Находка `reviewer`: обещание «повторный вызов отвечает changed: false»
+// держалось только для якоря, скопированного ровно в одну строку. Якорь с
+// переводом строки и со значком пункта — та же цитата, и ответ обязан быть
+// тем же.
+test('backlog.close: якорь с переводом строки и значком пункта даёт тот же changed: false', async () => {
+  const dir = makeTree()
+  try {
+    const first = payload(
+      await one(dir, 'backlog.close', {
+        file: 'rag.md',
+        anchor: 'признак `cited` ищет путь подстрокой',
+        note: 'закрыто прогоном',
+        date: '2026-10-18',
+      }),
+    )
+    assert.equal(first.changed, true)
+    git(['add', '-A'], dir)
+    git(['commit', '-m', 'first run'], dir)
+
+    for (const anchor of [
+      '- [ ] Владельцу: признак `cited`\n  ищет путь   подстрокой',
+      'признак `cited` ищет путь подстрокой',
+    ]) {
+      const body = payload(await one(dir, 'backlog.close', { file: 'rag.md', anchor, note: 'повтор', date: '2026-10-18' }))
+      assert.equal(body.changed, false, `якорь ${JSON.stringify(anchor)} дал не changed: false`)
+      assert.equal(body.reason, 'already-closed')
     }
     assert.equal(status(dir), '')
   } finally {
