@@ -11,10 +11,12 @@
 // не влияет (тест о корне из `CLAUDE_PROJECT_DIR` это доказывает отдельно).
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
+import { serveStdio } from '../mcpgit/server.mjs'
 import { after, before, test } from 'node:test'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -253,6 +255,62 @@ test('переименование не смешивает прежнее имя
   } finally {
     rmSync(moved, { recursive: true, force: true })
   }
+})
+
+test('обрезанный путь помечен многоточием, а не выглядит настоящим', async () => {
+  const deep = mkdtempSync(join(tmpdir(), 'mcpgit-deep-'))
+  try {
+    git(['init', '-b', 'main'], deep)
+    writeFileSync(join(deep, 'base.txt'), 'base\n')
+    git(['add', 'base.txt'], deep)
+    git(['commit', '-m', 'base'], deep)
+    // Путь длиннее 300 знаков собирается вложенностью: имя файла ограничено
+    // файловой системой, а относительный путь — нет.
+    const segment = 'd'.repeat(40)
+    const nested = Array.from({ length: 9 }, () => segment).join('/')
+    mkdirSync(join(deep, nested), { recursive: true })
+    writeFileSync(join(deep, nested, 'f.txt'), 'x\n')
+    // Неотслеживаемый КАТАЛОГ git печатает одной строкой `dddd…/`, и длинного
+    // пути в выдаче не было бы вовсе. Индексируем файл — путь приходит целым.
+    git(['add', '-A'], deep)
+
+    const { responses } = await session([call(1, 'git.changed')], { cwd: deep })
+    const [path] = payload(responses[0]).working
+    assert.ok(path.endsWith('…'), `путь обрезан, но знака обрезки нет: ${path}`)
+    assert.equal(path.length, 301)
+  } finally {
+    rmSync(deep, { recursive: true, force: true })
+  }
+})
+
+// Отказ одного звена очереди не должен молча отнимать ответы у ВСЕХ
+// следующих строк. Сбой записи вставляется подменой `output` — поэтому этот
+// тест единственный, кто зовёт `serveStdio` в своём процессе, а не через
+// дочерний: отказ stdout настоящему процессу не навяжешь.
+test('сбой записи одного ответа не оставляет без ответа следующие строки', async () => {
+  const input = new PassThrough()
+  const written = []
+  let failNext = true
+  const output = {
+    write(chunk) {
+      if (failNext) {
+        failNext = false
+        throw new Error('stdout закрыт')
+      }
+      written.push(chunk)
+    },
+  }
+  serveStdio({ input, output, cwd: repo })
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`)
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' })}\n`)
+  input.end()
+
+  const deadline = Date.now() + 2000
+  while (written.length === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(written.length, 1, 'ответ на вторую строку не пришёл — очередь отравлена отказом первой')
+  assert.equal(JSON.parse(written[0]).id, 2)
 })
 
 test('.mcp.json подключает сервер этого каталога', () => {

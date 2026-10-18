@@ -30,9 +30,10 @@ allowed-tools: mcp__mcpgit__git_branch, mcp__mcpgit__git_changed, mcp__project__
 `mcp__project__project_search` с вопросом как есть, `limit` 5.
 
 Корпус — `AGENTS.md`, `README.md`, `agent_docs/` целиком и код живых единиц
-(`rag/corpus.py`). Чего в нём нет — того поиск не найдёт: `days/` сданных
-дней, `.github/**`, `.agents/skills/**` и каталог `mcpgit/` в корпус не
-входят. Про сам `mcpgit` искать в `agent_docs/architecture.md`.
+(`CODE_DIRS` в `rag/corpus.py`; в их числе `.github` и корневой `test`).
+Чего в нём нет — того поиск не найдёт: `days/` сданных дней,
+`.agents/skills/**` и каталог `mcpgit/` в корпус не входят. Про сам `mcpgit`
+искать в `agent_docs/architecture.md`.
 
 Отказ поиска («индекса нет», исчерпан суточный потолок, нет `RAG_KEY` в
 окружении) — не повод достраивать ответ. Сказать, что поиск недоступен, и

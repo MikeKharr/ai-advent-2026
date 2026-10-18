@@ -72,7 +72,13 @@ function runGit(args, cwd) {
   })
 }
 
-const cutPath = (value) => (value.length > MAX_PATH ? value.slice(0, MAX_PATH) : value)
+/**
+ * Срез пути. Обрезанный путь ПОМЕЧЕН многоточием: иначе он выглядит как
+ * настоящий, и модель сослалась бы на несуществующий файл (находка reviewer
+ * к этому PR). Знак выбран не-путёвый — в именах файлов проекта его нет.
+ */
+export const CUT_MARK = '…'
+const cutPath = (value) => (value.length > MAX_PATH ? value.slice(0, MAX_PATH) + CUT_MARK : value)
 
 /** Применение лимита к списку имён: срез и честный признак `truncated`. */
 function capped(names) {
@@ -244,6 +250,17 @@ export function serveStdio({ input = process.stdin, output = process.stdout, cwd
       }
       const response = await handleOne(message)
       if (response !== null) output.write(`${JSON.stringify(response)}\n`)
+      // Сбой одного звена не отравляет очередь: без `catch` отказ записи или
+      // неожиданное исключение сделали бы `queue` отклонённым навсегда, и
+      // КАЖДАЯ следующая строка осталась бы без ответа молча (находка
+      // reviewer к этому PR). Жалоба идёт в stderr — в stdout только
+      // протокол, и сама жалоба тоже может не записаться.
+    }).catch((error) => {
+      try {
+        process.stderr.write(`mcpgit: строка не обработана: ${String(error?.message ?? error)}\n`)
+      } catch {
+        // Писать больше некуда. Важно одно: очередь остаётся исполнимой.
+      }
     })
   })
 
