@@ -6,6 +6,11 @@
       "headers": {
         "Authorization": "Bearer ${RAG_KEY}"
       }
+    },
+    "mcpgit": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcpgit/server.mjs"]
     }
   }
 }
