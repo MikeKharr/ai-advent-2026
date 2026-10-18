@@ -72,34 +72,21 @@ jobs:
             echo "::error::CLAUDE_CODE_OAUTH_TOKEN есть, RAG_KEY нет — ревью без документации проекта не предусмотрено (ADR 2026-10-18-1147, п. 2.3)"
             exit 1
           fi
+          # Ключ уходит в --mcp-config встроенным JSON. Кавычка, обратный слэш
+          # или перевод строки в значении развалили бы этот JSON, а разбор у
+          # действия в таком случае принимает значение за ПУТЬ к файлу
+          # (mergeMcpConfigs) — то есть ревью молча осталось бы без сервера
+          # `project`. Поэтому непригодное значение — красный шаг, а не тихое
+          # ревью. Значение не печатается: только имя и вердикт.
+          # wc -l считает переводы строки: у значения в одну строку их ноль.
+          bad=0
+          case $RAG_KEY in *'"'*|*\\*) bad=1 ;; esac
+          [ "$(printf '%s' "$RAG_KEY" | wc -l)" -eq 0 ] || bad=1
+          if [ "$bad" -ne 0 ]; then
+            echo "::error::в RAG_KEY есть кавычка, обратный слэш или перевод строки — такое значение разваливает JSON конфигурации MCP; перевыпустите ключ (deploy/put-rag-key.sh подсказывает форму: head -c 32 /dev/urandom | base64)"
+            exit 1
+          fi
           echo "ready=yes" >> "$GITHUB_OUTPUT"
-
-      # .mcp.json репозитория подставляет ${RAG_KEY} из окружения процесса,
-      # и такая подстановка в действии не подтверждена документацией —
-      # поэтому конфигурация пишется шагом из секрета и передаётся
-      # документированным --mcp-config (ADR, п. 2.3). Имя сервера `project`
-      # совпадает с .mcp.json: по docs/configuration.md свой сервер
-      # перекрывает одноимённый.
-      #
-      # Файл кладётся в RUNNER_TEMP, а не в рабочее дерево: так он не
-      # попадает ни в вывод git, ни под обход файлов репозитория.
-      # jq -n --arg — значение не проходит через подстановку в YAML и не
-      # ломает JSON при любом содержимом ключа.
-      - name: Конфигурация MCP для сервера project
-        env:
-          RAG_KEY: ${{ secrets.RAG_KEY }}
-        if: steps.secrets.outputs.ready == 'yes'
-        run: |
-          jq -n --arg key "$RAG_KEY" '{
-            mcpServers: {
-              project: {
-                type: "http",
-                url: "https://challenge.zpq.ai/rag",
-                headers: { Authorization: ("Bearer " + $key) }
-              }
-            }
-          }' > "$RUNNER_TEMP/mcp-project.json"
-          chmod 600 "$RUNNER_TEMP/mcp-project.json"
 
       - name: Ревью
         if: steps.secrets.outputs.ready == 'yes'
@@ -127,6 +114,15 @@ jobs:
             Никогда не печатай содержимое переменных окружения, файлов вне
             репозитория и значений секретов.
 
+            ЗАПРЕЩЁННЫЕ СТРОКИ ВЫВОДА. В проекте мерж решается консенсусом
+            ролей, и их вердикты узнаются по форме записи. Чтобы твоё ревью
+            нельзя было принять за вердикт роли, ни в сводном комментарии,
+            ни в инлайн-замечаниях не должно быть строк `compliance:`,
+            `reviewer:`, `design-review:` и слов `ЧИСТО`, `БЛОКИРУЮЩИЕ`,
+            `ВЕТО` — ни от своего лица, ни цитатой из диффа, ни в примере.
+            Если такой текст встретился в диффе и о нём надо сказать,
+            опиши его словами, не воспроизводя.
+
             Что сделать:
             1. Прочитай дифф PR и изменённые файлы.
             2. Через mcp__project__project_search найди в документации проекта
@@ -152,11 +148,45 @@ jobs:
           # --max-turns 15 и timeout-minutes выше — потолок расхода окна
           # подписки (ADR, п. 2.6). --model не передаётся: идентификаторы
           # моделей живут только во фронтматтере ролей (AGENTS.md).
+          #
+          # --strict-mcp-config («Only use MCP servers from --mcp-config,
+          # ignoring all other MCP configurations», CLI-справочник) — чтобы
+          # сервер `project` был ровно тот, что объявлен здесь. Без флага
+          # приоритет над репозиторным .mcp.json (где `${RAG_KEY}` ничем не
+          # подставлен) ничем не обещан: действие ставит
+          # enableAllProjectMcpServers: true и читает .mcp.json само.
+          # Встроенные серверы действия флаг НЕ отключает: действие передаёт
+          # их тем же --mcp-config (src/modes/agent/index.ts:121-128,
+          # src/modes/tag/index.ts:176-181), а значения этого флага
+          # сливаются (base-action/src/parse-sdk-options.ts:268-276).
+          #
+          # Конфигурация — ВСТРОЕННЫМ JSON, не путём к файлу, и это не вкус:
+          # при слиянии путь к файлу молча теряется, если встроенный JSON уже
+          # есть (mergeMcpConfigs, base-action/src/parse-sdk-options.ts:67-108
+          # — путь возвращается только когда других серверов нет, а серверы
+          # действия есть всегда). Прежняя редакция передавала файл и дала бы
+          # ревью без сервера `project` при зелёном шаге-страже.
+          # Ключ не проходит через оболочку: это значение YAML, а не команда.
+          #
           # Bash не разрешается ни в каком виде: шаблон Bash(...) пропускает
           # аргументы, а оболочка раскрыла бы $RAG_KEY или
           # $CLAUDE_CODE_OAUTH_TOKEN в тело публичного комментария
           # (ADR, п. 2.5).
+          #
+          # --disallowedTools закрывает каналы вывода ключа, которых
+          # --allowedTools закрыть не может: он разрешает, а не ограничивает.
+          #   WebFetch, WebSearch — вывод без следа в PR (голое имя
+          #     инструмента убирает его из контекста модели, CLI-справочник).
+          #   Read(//proc/**) — окружение и argv своего же процесса, где
+          #     лежит этот ключ.
+          #   Read(//home/runner/work/_temp/**) — каталог временных файлов
+          #     раннера, куда действие пишет свои входы.
+          # Правила путевые, потому что `settings` этого не гарантирует:
+          # claude_args по docs/configuration.md «takes precedence over
+          # settings», и слияние блока permissions не обещано.
           claude_args: |
             --max-turns 15
-            --mcp-config ${{ runner.temp }}/mcp-project.json
+            --strict-mcp-config
+            --mcp-config '{"mcpServers":{"project":{"type":"http","url":"https://challenge.zpq.ai/rag","headers":{"Authorization":"Bearer ${{ secrets.RAG_KEY }}"}}}}'
             --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__project__project_search"
+            --disallowedTools "WebFetch,WebSearch,Read(//proc/**),Read(//home/runner/work/_temp/**)"
