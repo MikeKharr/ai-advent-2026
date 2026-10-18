@@ -11,6 +11,11 @@
       "type": "stdio",
       "command": "node",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcpgit/server.mjs"]
+    },
+    "mcpfiles": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcpfiles/server.mjs"]
     }
   }
 }
