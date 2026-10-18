@@ -374,11 +374,19 @@ jobs:
           #   Read(./.git/**) — в .git/config лежит токен прогона с правом
           #     писать комментарии (см. комментарий к checkout выше).
           #     Правило относительное, а не константой пути: каталог
-          #     рабочего дерева у раннера свой. ЧЕСТНАЯ ГРАНИЦА: путевые
-          #     правила система прав сверяет только для Read и Edit —
-          #     правило для Glob или Grep она принимает, но никогда не
-          #     читает (docs/en/permissions), поэтому поиск по .git этим
-          #     правилом не закрыт, закрыт только Read.
+          #     рабочего дерева у раннера свой. Оно закрывает и поиск:
+          #     «Claude makes a best-effort attempt to apply Read rules to
+          #     all built-in tools that read files like Grep and Glob» и
+          #     «Grep and Glob search the directory the path argument
+          #     resolves to. Claude Code applies Read deny rules to that
+          #     directory» (docs/en/permissions). compliance проверил
+          #     живьём: Grep с path=./.gitfake при правиле
+          #     Read(./.gitfake/**) отказан. ЧЕСТНАЯ ГРАНИЦА: для Grep и
+          #     Glob это «best-effort», то есть без той же гарантии, что
+          #     для самого Read, и версия CLI на раннере своя. Писать
+          #     правило как Grep(...) или Glob(...) смысла нет — такое
+          #     система прав принимает, но никогда не читает; закрывает
+          #     именно правило для Read.
           #   Read(//home/runner/work/_temp/**) — каталог временных файлов
           #     раннера, куда действие пишет свои входы.
           # Правила путевые, потому что `settings` этого не гарантирует:
