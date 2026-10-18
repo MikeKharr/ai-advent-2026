@@ -43,6 +43,63 @@
 результат по именам переменных и наличию значения, не печатая сами значения.
 Образец — `deploy/put-secrets.sh`.
 
+## Секреты GitHub Actions: где живут и почему
+
+Два разных места, и разница между ними — не стиль, а область доступа.
+
+| Секрет | Уровень | Кто читает |
+| --- | --- | --- |
+| `SSH_HOST`, `SSH_KEY`, `SSH_USER` | окружение `production` | только job, объявивший `environment: production`, и только из ветки `main` |
+| `GITHUB_TOKEN` | выдаётся прогону | job по своим `permissions` |
+
+Ключи провайдеров (`ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `APP_KEY_*`) в Actions
+не живут вовсе — только в `deploy/*.env` на сервере, права 600.
+
+**Почему SSH-секреты на уровне окружения, а не репозитория.** Секрет уровня
+репозитория читает любой job любого workflow этого репозитория, в том числе
+запущенного по `pull_request` **из ветки**. Чтобы вынести продовый деплой-ключ,
+мержить ничего не нужно: достаточно добавить в ветке job, который печатает
+значение через `base64` (маскировка журнала на `base64` не распространяется), а
+прогон случается до ревью. Гейты здесь не защита — они стоят позже события.
+Секрет окружения такой job не получает: вне окружения его нет.
+
+Граница по ветке — у окружения, а не в workflow:
+`deployment_branch_policy.custom_branch_policies` с единственной записью `main`
+и `can_admins_bypass: false`. Посмотреть фактическое состояние:
+
+```sh
+gh api repos/MikeKharr/ai-advent-2026/environments/production
+gh api repos/MikeKharr/ai-advent-2026/environments/production/deployment-branch-policies
+```
+
+**Правило кода.** Каждая ссылка на `secrets.SSH_*` обязана стоять в job с
+`environment: production`. Держит шаг
+«SSH-секреты читаются только в окружении production»
+(`.github/workflows/docs-guard.yml`); проверка —
+`node .github/scripts/ssh-secrets-scope.mjs`, запускается и локально.
+
+Честная граница шага: вынос ключа он не останавливает (на уровне окружения
+выносить нечего). Он держит то, что конфигурация не вернётся назад **молча**.
+Секрет окружения job без `environment:` получает **пустую строку, а не отказ** —
+снятая строка `environment: production` дала бы не красную выкатку, а выкатку с
+пустыми `$SSH_USER@$SSH_HOST` и невнятным отказом связи.
+
+`SSH_PORT` секретом не заведён ни на каком уровне: `secrets.SSH_PORT || 22` в
+`deploy.yml` даёт `22`. Решение — ADR `2026-10-18-1300-ssh-secrets-environment-scope`.
+
+**Завести или сменить SSH-секрет — только владелец** (как и `deploy/put-secrets.sh`),
+скрытым вводом, без значения в командной строке:
+
+```sh
+gh secret set SSH_KEY --env production --repo MikeKharr/ai-advent-2026 < ~/.ssh/<файл ключа>
+gh secret set SSH_HOST --env production --repo MikeKharr/ai-advent-2026   # значение спросит
+gh secret set SSH_USER --env production --repo MikeKharr/ai-advent-2026   # значение спросит
+```
+
+Порядок при переносе — сначала завести в окружении и прогнать выкатку из `main`,
+только потом удалять репо-уровневые записи (`gh secret delete <ИМЯ> --repo …`).
+Удалив первым, выкатка ляжет.
+
 ## Первый запуск на сервере
 
 1. Создать `deploy/router.env` (права 600), заполнив переменные из таблицы выше.

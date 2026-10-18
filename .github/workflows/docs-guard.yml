@@ -137,6 +137,17 @@ jobs:
           fi
           echo "ok: ключей не найдено"
 
+      # Продовый деплой-ключ: SSH_KEY, SSH_HOST и SSH_USER живут секретами
+      # ОКРУЖЕНИЯ production, у которого политика веток — только main.
+      # Репо-уровневый секрет читал бы любой job любого workflow, запущенного
+      # на pull_request из ветки этого же репозитория (находка compliance к
+      # PR #349). Шаг держит вторую половину: ссылка на SSH-секрет вне job
+      # с `environment: production` получила бы его ПУСТЫМ, а не отказом,
+      # и такая правка иначе уехала бы в main молча.
+      # ADR 2026-10-18-1300-ssh-secrets-environment-scope.
+      - name: SSH-секреты читаются только в окружении production
+        run: node .github/scripts/ssh-secrets-scope.mjs
+
       # Разделы доказательств автора в описании PR класса A (ADR 2026-09-24-1230,
       # A1): «Что держит», «Красная ветвь», «Стенд ≠ прод». Форма — шаблон
       # .github/pull_request_template.md.
