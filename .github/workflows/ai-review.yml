@@ -48,8 +48,15 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      # persist-credentials: false — токен checkout не остаётся в .git/config
-      # рабочего дерева, которое читает модель.
+      # persist-credentials: false снимает ТОЛЬКО заголовок, который
+      # прописывает сам checkout. Защитой «.git/config не читается моделью»
+      # это не является, и прежняя редакция здесь врала (находка reviewer):
+      # дальше по проходу действие кладёт в тот же .git/config свой токен —
+      # `git remote set-url origin https://x-access-token:$GITHUB_TOKEN@…`
+      # (src/github/operations/git-config.ts:130-134), и в журнале живого
+      # прогона 39168905131 это видно строкой
+      # «✓ Updated remote URL with authentication token».
+      # Токен из .git/config закрывает deny-правило Read(./.git/**) ниже.
       - uses: actions/checkout@v4
         with: { fetch-depth: 0, persist-credentials: false }
 
@@ -169,13 +176,21 @@ jobs:
           # комментарий, а инструмента для него не существовало.
           #
           # Побочный эффект, названный прямо: track_progress переводит
-          # действие в tag mode (src/modes/detector.ts:21), а tag mode
-          # дописывает в allowedTools `Bash(git add:*)`, `Bash(git commit:*)`,
-          # обёртку push и `Bash(git rm:*)` (src/create-prompt/index.ts).
-          # Держит запрет на Bash теперь `--tools` ниже: он ограничивает
-          # САМ НАБОР встроенных инструментов, и Bash в него не входит.
-          # Уберут `--tools` — вернутся git-команды в оболочке. Второй
-          # контур: `contents: read`, то есть пушить всё равно некуда.
+          # действие в tag mode (src/modes/detector.ts:21), и tag mode
+          # дописывает сам, без нашего участия (живой адрес —
+          # src/modes/tag/index.ts; в src/create-prompt/index.ts та же
+          # добавка помечена в исходнике как мёртвая копия):
+          #   * `Bash(git add:*)`, `Bash(git commit:*)`, обёртку push и
+          #     `Bash(git rm:*)` в allowedTools;
+          #   * `--permission-mode acceptEdits`, то есть правки файлов
+          #     внутри рабочего каталога разрешаются без спроса;
+          #   * три инструмента mcp__github_ci__* (закрыты денилистом ниже).
+          # Запрет и на оболочку, и на запись держит `--tools` ниже: он
+          # ограничивает САМ НАБОР встроенных инструментов, а Bash, Edit и
+          # Write в "Read,Glob,Grep" не входят — поэтому git-команды и
+          # acceptEdits остаются инертными. Уберут `--tools` — вернётся и
+          # оболочка с git-командами, и запись в дерево. Второй контур:
+          # `contents: read`, то есть пушить всё равно некуда.
           #
           # Триггер при этом не ломается: в tag mode ворота проверяют
           # trigger phrase, но `prompt` снимает проверку целиком («If prompt
@@ -333,15 +348,37 @@ jobs:
           #
           # --disallowedTools остаётся и НЕ дублирует --tools:
           #   WebFetch, WebSearch — по CLI-справочнику --tools «doesn't
-          #     affect MCP tools», а про веб-инструменты полагаться на один
-          #     механизм не хочется; к тому же денилист из умолчаний
-          #     действия работает только в tag mode
-          #     (src/create-prompt/index.ts:84 — комментарий «Tag mode»),
-          #     а здесь agent mode, и там список берётся только из наших
-          #     аргументов (src/modes/agent/index.ts:94).
+          #     affect MCP tools», и своих умолчаний действие сюда не
+          #     добавляет: tag mode (а мы в нём, см. track_progress выше)
+          #     вообще не передаёт --disallowedTools, и в живом прогоне
+          #     39168905131 disallowedTools равен ровно этим нашим
+          #     правилам. Прежняя редакция объясняла это тем, что «здесь
+          #     agent mode», — неверно (находка reviewer): после
+          #     track_progress режим tag. Вывод «свой денилист нужен» от
+          #     этого только твёрже: наш список тут единственный.
+          #   mcp__github_ci__* (три инструмента) — ЦЕНА перехода в tag
+          #     mode, как и git-команды: в живом прогоне 39168905131
+          #     действие само дописало в allowedTools
+          #     get_ci_status, get_workflow_run_details и download_job_log
+          #     (находка compliance). --tools их не держит — он «doesn't
+          #     affect MCP tools»; `permissions` их, скорее всего, тоже не
+          #     держит: сервер поднимается после проверки, которая на
+          #     публичном репозитории отвечает и без `actions: read`
+          #     (src/mcp/install-mcp-server.ts:34-48), и предупреждения
+          #     «Skipping CI server installation» в журнале нет. Поэтому
+          #     закрываем их здесь: deny в Claude Code бьёт allow и на
+          #     инструменты MCP распространяется.
           #   Read(//proc/**) — Read белым списком РАЗРЕШЁН, и без этого
           #     правила им читается окружение и argv своего же процесса,
           #     где лежит ключ API.
+          #   Read(./.git/**) — в .git/config лежит токен прогона с правом
+          #     писать комментарии (см. комментарий к checkout выше).
+          #     Правило относительное, а не константой пути: каталог
+          #     рабочего дерева у раннера свой. ЧЕСТНАЯ ГРАНИЦА: путевые
+          #     правила система прав сверяет только для Read и Edit —
+          #     правило для Glob или Grep она принимает, но никогда не
+          #     читает (docs/en/permissions), поэтому поиск по .git этим
+          #     правилом не закрыт, закрыт только Read.
           #   Read(//home/runner/work/_temp/**) — каталог временных файлов
           #     раннера, куда действие пишет свои входы.
           # Правила путевые, потому что `settings` этого не гарантирует:
@@ -356,4 +393,4 @@ jobs:
             --mcp-config '{"mcpServers":{"project":{"type":"http","url":"https://challenge.zpq.ai/rag","headers":{"Authorization":"Bearer ${{ secrets.RAG_KEY }}"}}}}'
             --tools "Read,Glob,Grep"
             --allowedTools "mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment,mcp__project__project_search"
-            --disallowedTools "WebFetch,WebSearch,Read(//proc/**),Read(//home/runner/work/_temp/**)"
+            --disallowedTools "WebFetch,WebSearch,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Read(./.git/**),Read(//proc/**),Read(//home/runner/work/_temp/**)"
