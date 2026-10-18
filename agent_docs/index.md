@@ -23,6 +23,7 @@
 - `agent_docs/design/corpus.md` — дизайн-корпус: шкалы, палитра, обязательные состояния. Читать перед любой работой с UI; ревью — скилл `/design-review`.
 - `agent_docs/backlog-closed.md` — архив закрытых пунктов бэклога.
 - `mcpgit/README.md` — локальный stdio-сервер MCP о рабочей копии (`git.branch`, `git.changed`): что он может и чего не может по построению; подключение — `.mcp.json`, потребитель — скилл `/project-help`.
+- `mcpfiles/README.md` — локальный stdio-сервер MCP над файлами проекта (`docs.read`, `docs.search`, `backlog.list`, `backlog.close`): границы путей и записи, воспроизводимость повторного вызова; потребитель — скилл `/backlog-close`.
 - `atlas/README.md` — единица выкатки атласа: что читается в этом репозитории, как собрать локально, где живёт инструмент (`MikeKharr/project-atlas`).
 
 ## Правила и гайды
