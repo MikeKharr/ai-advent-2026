@@ -127,6 +127,61 @@ test('problems: оптовые формы краснеют даже в job с о
   }
 })
 
+test('problems: secrets: inherit — кавычки и хвостовой комментарий не спасают', () => {
+  // Блокирующая reviewer к `38efbfe`: обещание ADR «в любой законной форме»
+  // было шире механизма — выражение требовало конца строки сразу после
+  // `inherit`, и три законные записи YAML оставались зелёными.
+  for (const line of ['    secrets: inherit  # комментарий', '    secrets: "inherit"', "    secrets: 'inherit'"]) {
+    const text = ['on: push', 'jobs:', '  call:', '    uses: ./.github/workflows/deploy.yml', line].join('\n')
+    const found = problems(files(text))
+    assert.equal(found.length, 1, line)
+    assert.match(found[0], /secrets: inherit/)
+  }
+})
+
+test('problems: вычисляемый индекс — безымянная форма, краснеет и в job выкатки', () => {
+  // Совет compliance: `secrets[...]` без строкового литерала — то же самое,
+  // что toJSON, потому что имени в тексте нет. Проверяется в job С окружением:
+  // место такую форму не оправдывает.
+  const exprs = [
+    "echo \"${{ secrets[format('SSH{0}','_KEY')] }}\"",
+    'echo "${{ secrets[env.N] }}"',
+    'echo "${{ secrets[matrix.name] }}"',
+    // Склейка НАЧИНАЕТСЯ с кавычки, поэтому проверка «первый символ не
+    // кавычка» её пропускала бы; мимо NAMED она тоже проходит, так как тот
+    // требует закрывающей скобки сразу после литерала.
+    'echo "${{ secrets[\'SSH\' + \'_KEY\'] }}"',
+  ]
+  for (const expr of exprs) {
+    const found = problems(files(workflow('deploy', ENVIRONMENT, expr)))
+    assert.equal(found.length, 1, expr)
+    assert.match(found[0], /вычисляемый индекс/)
+    assert.match(found[0], /не по имени/)
+  }
+})
+
+test('problems: названный строковым литералом чужой секрет оптовым не считается', () => {
+  // Граница исключения с другой стороны: `secrets['MODEL_KEYS']` — обычный
+  // именованный доступ к не-SSH секрету, и правило его не касается. Без этого
+  // различения страж краснел бы на любом секрете в скобочной форме.
+  assert.deepEqual(problems(files(workflow('any', null, 'echo "${{ secrets[\'MODEL_KEYS\'] }}"'))), [])
+  assert.deepEqual(problems(files(workflow('any', null, 'echo "${{ secrets.MODEL_KEYS }}"'))), [])
+})
+
+test('namedIn: имена секретов регистронезависимы', () => {
+  // `secrets.ssh_key` читает тот же SSH_KEY: контекст secrets к регистру имени
+  // нечувствителен. Свой случай того же класса, найден при починке обещания.
+  assert.deepEqual(namedIn('${{ secrets.ssh_key }}'), ['ssh_key'])
+  assert.deepEqual(namedIn('${{ secrets.Ssh_Host }}'), ['Ssh_Host'])
+  assert.deepEqual(namedIn("${{ secrets['ssh_user'] }}"), ['ssh_user'])
+})
+
+test('problems: строчное имя в job без окружения — находка', () => {
+  const found = problems(files(workflow('exfil', null, 'echo "${{ secrets.ssh_key }}"')))
+  assert.equal(found.length, 1)
+  assert.match(found[0], /secrets\.ssh_key/)
+})
+
 test('problems: secrets: inherit — находка, и разбор job для неё не нужен', () => {
   // Файл без единой именованной ссылки: оптовая форма обязана находиться и
   // здесь, иначе вызов reusable workflow обходил бы правило целиком.
