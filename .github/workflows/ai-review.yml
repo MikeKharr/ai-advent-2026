@@ -157,6 +157,36 @@ jobs:
           # подписки отклонён владельцем: его отзыв — это выход из аккаунта
           # на всех устройствах.
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_AI_REVIEW }}
+          # track_progress — не «прогресс-бар», а ЕДИНСТВЕННЫЙ способ
+          # опубликовать сводное ревью (разбор живого прогона 39167342284).
+          # Без него действие идёт в agent mode, а там сервер комментариев
+          # вообще не поднимается, если в --allowedTools нет его инструмента
+          # (`shouldIncludeCommentServer = !isAgentMode || hasGitHubCommentTools`,
+          # src/mcp/install-mcp-server.ts:114), и даже поднятый
+          # update_claude_comment падает без CLAUDE_COMMENT_ID, которого в
+          # agent mode нет (src/mcp/github-comment-server.ts:43,
+          # src/modes/agent/index.ts:115). То есть промпт требовал сводный
+          # комментарий, а инструмента для него не существовало.
+          #
+          # Побочный эффект, названный прямо: track_progress переводит
+          # действие в tag mode (src/modes/detector.ts:21), а tag mode
+          # дописывает в allowedTools `Bash(git add:*)`, `Bash(git commit:*)`,
+          # обёртку push и `Bash(git rm:*)` (src/create-prompt/index.ts).
+          # Держит запрет на Bash теперь `--tools` ниже: он ограничивает
+          # САМ НАБОР встроенных инструментов, и Bash в него не входит.
+          # Уберут `--tools` — вернутся git-команды в оболочке. Второй
+          # контур: `contents: read`, то есть пушить всё равно некуда.
+          #
+          # Триггер при этом не ломается: в tag mode ворота проверяют
+          # trigger phrase, но `prompt` снимает проверку целиком («If prompt
+          # is provided, always trigger», src/github/validation/trigger.ts:20),
+          # а `labeled` в списке действий, допустимых для track_progress
+          # (src/modes/detector.ts, validateTrackProgressEvent).
+          #
+          # Плюс к надёжности: комментарий создаётся ДО работы модели,
+          # поэтому даже обрыв по ходам или по деньгам оставляет на PR
+          # видимый след, а не тишину.
+          track_progress: true
           # GITHUB_TOKEN запуска, без установки Claude GitHub App
           # (развилка Р2): комментарии приходят от github-actions[bot].
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -198,19 +228,52 @@ jobs:
                - **Рекомендации** — что стоит изменить; необязательное
                  помечай как необязательное.
 
+            БЮДЖЕТ ХОДОВ — ЖЁСТКИЙ. У тебя не больше 20 ходов, и прогон
+            обрывается на 21-м без публикации. Предыдущий прогон именно так
+            и пропал: ходы ушли на чтение, ревью не опубликовано. Поэтому:
+
+            - не больше ТРЁХ вызовов mcp__project__project_search за весь
+              прогон, по одному на тему (инварианты, ADR, правила);
+            - не больше ПЯТИ чтений файлов, и только тех, что изменены в
+              этом PR; читать дерево «на всякий случай» запрещено;
+            - **к 12-му ходу сводное ревью должно быть опубликовано** через
+              mcp__github_comment__update_claude_comment, даже если ты
+              прочитал не всё. Неполное ревью с честной пометкой «успел
+              разобрать то и то» полезно, а неопубликованное — нет;
+            - инлайн-замечания оставляй ПОСЛЕ сводного комментария, на
+              оставшиеся ходы, и сам сводный комментарий потом не
+              переписывай ради мелочей.
+
             Правила вывода:
-            - Конкретные замечания к строкам оставляй инлайн через
+            - Сводное ревью — одним вызовом
+              mcp__github_comment__update_claude_comment: три рубрики выше
+              в теле комментария. Это главный результат прогона.
+            - Конкретные замечания к строкам — потом, инлайн через
               mcp__github_inline_comment__create_inline_comment
               (с confirmed: true).
-            - В конце — один сводный комментарий к PR по трём рубрикам выше.
             - Пустая рубрика — так и напиши «нет находок», не придумывай.
             - Ты не гейт мержа: вердикта «одобрено»/«заблокировано» не
               выноси, мерж решают роли reviewer и compliance.
             - Пиши по-русски.
-          # --max-turns 8 и timeout-minutes выше — потолок расхода. Ходов
-          # восемь, а не пятнадцать (находка compliance): каждый следующий
-          # ход несёт всю переписку заново, поэтому стоимость по ходам растёт
-          # не линейно, а накопительно.
+          # Потолки расхода: --max-turns 20, --max-budget-usd 0.50 и
+          # timeout-minutes выше. Ходов стало 20, а не 8 — по разбору живого
+          # прогона 39167342284: на восьми ходах модель не успела
+          # опубликовать ревью («Reached maximum number of turns (8)»,
+          # subtype error_max_turns, num_turns 9, 83 с, $0.0192). Восемь
+          # были выбраны из осторожности к накоплению входа, и осторожность
+          # вышла дороже отказа: деньги потратились, результата нет.
+          #
+          # Почему это не «подняли потолок и ладно»: деньги теперь держит
+          # не число ходов, а ПОТОЛОК СТОИМОСТИ. --max-budget-usd 0.50 —
+          # «Stop the run once estimated spend on API calls reaches this
+          # amount» (CLI-справочник); там же предупреждение, что расход
+          # может немного выйти за потолок, поэтому запас взят с избытком:
+          # измеренный прогон стоил $0.019, худшая оценка на 20 ходов —
+          # порядка $0.10 (вход накапливается, поэтому стоимость растёт
+          # примерно как квадрат числа ходов: $0.019 × (20/9)² ≈ $0.09).
+          # Потолок в пять раз выше худшей оценки и в 26 раз выше
+          # измеренного — он ловит не норму, а аварию (цикл чтений,
+          # распухший дифф).
           #
           # --model и --effort заданы явно, и это ОТСТУПЛЕНИЕ от п. 2.6 ADR
           # 2026-10-18-1147, объявленное в ADR 2026-10-18-1347: пока платила
@@ -282,11 +345,12 @@ jobs:
           # claude_args по docs/configuration.md «takes precedence over
           # settings», и слияние блока permissions не обещано.
           claude_args: |
-            --max-turns 8
+            --max-turns 20
+            --max-budget-usd 0.50
             --model claude-haiku-5-5
             --effort medium
             --strict-mcp-config
             --mcp-config '{"mcpServers":{"project":{"type":"http","url":"https://challenge.zpq.ai/rag","headers":{"Authorization":"Bearer ${{ secrets.RAG_KEY }}"}}}}'
             --tools "Read,Glob,Grep"
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__project__project_search"
+            --allowedTools "mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment,mcp__project__project_search"
             --disallowedTools "WebFetch,WebSearch,Read(//proc/**),Read(//home/runner/work/_temp/**)"
