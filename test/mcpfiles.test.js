@@ -480,11 +480,14 @@ test('backlog.close: имя файла из запроса не собирает
 
 // Находка `compliance` Б3 к PR #354: имя темы можно было оставить шаблонным,
 // а подменить сам файл символической ссылкой — и запись уходила за каталог
-// очереди (в показе гейта из `AGENTS.md` был вычеркнут пункт). Две формы:
-// ссылка-файл и ссылка-каталог; ловит обе одна сверка `realpath` с ожидаемым
-// путём.
-test('backlog.close: символическая ссылка в каталоге очереди не уводит запись наружу', async () => {
-  for (const form of ['файл', 'каталог']) {
+// очереди (в показе гейта из `AGENTS.md` был вычеркнут пункт). Форм три, и
+// третья — отдельный держатель: ссылка на месте АРХИВА ведёт на файл ВНУТРИ
+// корня, поэтому `resolveInRoot` её пропускает, и отсекает только сверка
+// `realpath` у второго пути записи. Без этой формы мутация
+// `writableFile(root, CLOSED_FILE, …)` → `resolveInRoot(…)` оставляла прогон
+// зелёным при настоящей дыре (находка `reviewer`, I-14).
+test('backlog.close: символическая ссылка на месте очереди или архива не уводит запись наружу', async () => {
+  for (const form of ['файл', 'каталог', 'архив']) {
     const dir = makeTree()
     try {
       const agents = join(dir, 'AGENTS.md')
@@ -492,6 +495,11 @@ test('backlog.close: символическая ссылка в каталоге
       if (form === 'файл') {
         rmSync(join(dir, 'agent_docs/backlog/rag.md'))
         symlinkSync(agents, join(dir, 'agent_docs/backlog/rag.md'))
+      } else if (form === 'архив') {
+        // Очередь настоящая, пункт настоящий — подменён только архив, и
+        // ведёт он ВНУТРЬ корня: до `AGENTS.md` от архива путь `../AGENTS.md`.
+        rmSync(join(dir, 'agent_docs/backlog-closed.md'))
+        symlinkSync(agents, join(dir, 'agent_docs/backlog-closed.md'))
       } else {
         const elsewhere = join(dir, 'подмена')
         mkdirSync(elsewhere)
@@ -517,6 +525,51 @@ test('backlog.close: символическая ссылка в каталоге
     } finally {
       clean(dir)
     }
+  }
+})
+
+// Находка `reviewer` (неблокирующая): якорь искался по всему тексту архива,
+// склеенному в один абзац, и цитата, сшитая из хвоста записи и начала
+// следующего блока, давала ложное «уже закрыто» — законное закрытие молча не
+// происходило.
+test('backlog.close: якорь со стыка записи и прозы архива не считается закрытым', async () => {
+  const dir = makeTree()
+  try {
+    const closedPath = join(dir, 'agent_docs/backlog-closed.md')
+    // Так архив и выглядит: записи перемежаются прозой разделов (в живом
+    // `backlog-closed.md` это «Разгрузка бэклога …: наблюдения без задачи»).
+    // Склейка ВСЕГО файла в один абзац сшивает хвост записи с началом прозы.
+    writeFileSync(
+      closedPath,
+      [
+        '# Закрытые пункты бэклога',
+        '',
+        'Архив.',
+        '',
+        '## 2026-10',
+        '',
+        '- [x] 2026-10-08 — прежний закрытый пункт про признак',
+        '',
+        '`cited` ищет путь подстрокой — это проза раздела, а не пункт.',
+        '',
+      ].join('\n'),
+    )
+    git(['add', '-A'], dir)
+    git(['commit', '-m', 'seam'], dir)
+
+    // Эта цитата целиком есть в СКЛЕЙКЕ архива и ни в одной его записи.
+    const body = payload(
+      await one(dir, 'backlog.close', {
+        file: 'rag.md',
+        anchor: 'признак `cited` ищет путь подстрокой',
+        note: 'закрыто прогоном',
+        date: '2026-10-18',
+      }),
+    )
+    assert.equal(body.changed, true, 'закрытие не состоялось: якорь со стыка принят за уже закрытый')
+    assert.doesNotMatch(readFileSync(join(dir, 'agent_docs/backlog/rag.md'), 'utf8'), /признак `cited`/u)
+  } finally {
+    clean(dir)
   }
 })
 

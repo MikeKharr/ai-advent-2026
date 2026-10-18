@@ -311,6 +311,30 @@ export const oneLine = (text) =>
  */
 export const flatten = (text) => oneLine(text).replace(/\s+/gu, ' ').trim()
 
+/**
+ * Записи архива, каждая — одним абзацем. Разбор по записям, а не склейка
+ * всего файла: иначе якорь, собранный из хвоста одной записи и начала
+ * другой, давал бы ложное «уже закрыто», и законное закрытие молча
+ * превращалось бы в `changed: false` (находка `reviewer`, неблокирующая).
+ */
+export function closedEntries(text) {
+  const out = []
+  let current = null
+  for (const line of text.split('\n')) {
+    if (/^- \[[ x~]\] /u.test(line)) {
+      if (current) out.push(flatten(current.join('\n')))
+      current = [line]
+    } else if (current) {
+      if (line.trim() === '' || line.startsWith('#')) {
+        out.push(flatten(current.join('\n')))
+        current = null
+      } else current.push(line)
+    }
+  }
+  if (current) out.push(flatten(current.join('\n')))
+  return out
+}
+
 /** Открытые пункты всех тематических файлов очереди. */
 function backlogList(root) {
   const realRoot = realpathSync(root)
@@ -425,7 +449,7 @@ function backlogClose(root, args) {
   const needle = flatten(anchor)
   const closed = writableFile(root, CLOSED_FILE, 'архив')
   const closedText = readText(closed.abs, closed.rel)
-  const alreadyClosed = flatten(closedText).includes(needle)
+  const alreadyClosed = closedEntries(closedText).some((entry) => entry.includes(needle))
 
   const lines = readText(item.abs, item.rel).split('\n')
   const hits = openItems(lines).filter((block) => flatten(block.text).includes(needle))
