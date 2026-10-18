@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Раскладка — agent_docs/design/2026-10-18-2336-days31-35-week-page.md
+     (дополнение к 2026-10-09-1335-days26-30-local-llm-day-pages.md), решение
+     недели — ADR 2026-10-18-1147, п. 4. Одна страница на пять дней: ни app.js,
+     ни results.json, ни noscript у неё нет — прогонов у недели нет, читать
+     нечего. Числа прогонов ревью стоят литералом, и у каждого рядом ссылка на
+     ADR или на журнал прогона, где это число записано; страница сама ничего
+     не считает. -->
+<title>Дни 31–35: ассистенты — AI Advent 2026</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <header class="head">
+    <p class="back"><a href="/">← AI Advent 2026</a></p>
+    <h1>Дни 31–35: ассистенты</h1>
+    <p class="lede">Неделя пяти ассистентов: ветка через MCP и команда помощи, ревью PR по метке, ассистент поддержки, ассистент над файлами и реальное приложение. Код дней 33 и 35 живёт в приватном репозитории, и на их секциях это сказано прямо.</p>
+  </header>
+
+  <nav class="wk" aria-label="Разделы недели 31–35">
+    <p class="wk-label lbl">Неделя: ассистенты</p>
+    <ul class="wk-list" role="list">
+      <li><a class="wk-link" href="#day31">31</a></li>
+      <li><a class="wk-link" href="#day32">32</a></li>
+      <li><a class="wk-link" href="#day33">33</a></li>
+      <li><a class="wk-link" href="#day34">34</a></li>
+      <li><a class="wk-link" href="#day35">35</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <section id="day31" class="day" tabindex="-1" aria-labelledby="day31-h">
+      <div class="sec-head"><h2 id="day31-h">День 31: ветка через MCP и команда помощи</h2></div>
+
+      <h3>Что сделано</h3>
+      <ul class="closed" role="list">
+        <li>
+          <p class="closed-text">Локальный stdio-сервер MCP <code>mcpgit</code> — один файл, без зависимостей, со своей копией JSON-RPC. Два инструмента, оба без аргументов: <code>git.branch</code> и <code>git.changed</code>.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/mcpgit/server.mjs">mcpgit/server.mjs</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/mcpgit/README.md">mcpgit/README.md</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/pull/350">PR #350</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Подключение — третьей записью в <code>.mcp.json</code>. Сервер живёт только в сессии Claude Code на ноутбуке владельца: в образы и в выкатку он не входит.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/.mcp.json">.mcp.json</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Скилл <code>/project-help</code> берёт ветку и изменённые файлы у <code>mcpgit</code>, спрашивает корпус проекта через <code>project.search</code>, читает названные файлы и отвечает со ссылками. Ответа в корпусе нет — говорит это, а не достраивает.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/.agents/skills/project-help/SKILL.md">.agents/skills/project-help/SKILL.md</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1147-days31-35-assistants-week.md">ADR 2026-10-18-1147</a>, п. 1.5</p>
+        </li>
+        <li>
+          <p class="closed-text">Тест поднимает сервер дочерним процессом во временном git-репозитории и проверяет оба ответа и отказ на неизвестный метод.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/test/mcpgit.test.js">test/mcpgit.test.js</a></p>
+        </li>
+      </ul>
+      <p class="gap-line">Пробел: ни ветки через MCP, ни команды о проекте до этого дня не было — поиск по корпусу был, а эти два источника в одну команду не собирались.</p>
+
+      <p class="prose">Честно о границе: ветку и список изменённых файлов Claude Code получает и без MCP, одной строкой оболочки. Ценность дня — форма задания и показанный протокол, а не новая способность.</p>
+
+      <details class="exp">
+        <summary>Как устроен протокол stdio у mcpgit<span class="q-mark" aria-hidden="true"></span></summary>
+        <div class="exp-body">
+          <p>Сервер читает строки JSON-RPC из stdin и пишет ответы в stdout — ни HTTP, ни SDK, ни одной внешней зависимости. Своя копия протокола взята по образцу сервера новостей проекта: <code>initialize</code>, <code>tools/list</code>, <code>tools/call</code>, отказ инструмента полем <code>isError</code>.</p>
+          <p>Обе команды git — литералы через <code>execFile</code>: аргументов от модели инструменты не принимают вовсе, поэтому подставить в команду нечего. Рабочий каталог — корень проекта из окружения сессии.</p>
+          <p>Где смотреть: <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/mcpgit/server.mjs">mcpgit/server.mjs</a>, <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1147-days31-35-assistants-week.md">ADR 2026-10-18-1147</a>, п. 1.</p>
+        </div>
+      </details>
+
+      <blockquote class="task">
+        <p><strong>День 31 «Ассистент разработчика»:</strong> RAG по README + docs; MCP — минимум текущая git-ветка (по желанию список файлов / diff); команда помощи отвечает на вопросы о проекте с документацией и контекстом. Формат: видео + код.</p>
+      </blockquote>
+    </section>
+
+    <section id="day32" class="day" tabindex="-1" aria-labelledby="day32-h">
+      <div class="sec-head"><h2 id="day32-h">День 32: AI-ревью PR по метке</h2></div>
+
+      <h3>Что сделано</h3>
+      <ul class="closed" role="list">
+        <li>
+          <p class="closed-text">Workflow на официальном действии <code>anthropics/claude-code-action</code>, запуск — только по метке <code>ai-review</code>. Метку ставит владелец или агент-оркестратор; роли-исполнители и роли гейтов её не ставят.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/.github/workflows/ai-review.yml">.github/workflows/ai-review.yml</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1347-review-auth-and-model.md">ADR 2026-10-18-1347</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/pull/349">PR #349</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Авторизация — отдельный ключ API только для ревью. Токен подписки не используется: его отзыв — это выход из аккаунта на всех устройствах, то есть утечка выбила бы владельца из его собственного Claude Code.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1347-review-auth-and-model.md">ADR 2026-10-18-1347</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Поиск по корпусу в ревью — существующий сервер <code>project</code> из <code>.mcp.json</code>, его ключ приезжает секретом GitHub. Это четвёртое место, где живёт ключ, и перечень мест с чеклистом ротации держит инвариант I-15.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/.mcp.json">.mcp.json</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/invariants.md">agent_docs/invariants.md</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Инструменты — только чтение и комментарий; оболочка не разрешена. Оболочка раскрыла бы значение секрета в тело публичного комментария, а подсказку для этого можно было бы положить прямо в дифф.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1147-days31-35-assistants-week.md">ADR 2026-10-18-1147</a>, п. 2.5 · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/.github/workflows/ai-review.yml">.github/workflows/ai-review.yml</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Потолки одного запуска — <span class="num">20</span> ходов и <span class="num">$5.00</span> стоимости; величину потолка назначил владелец. Сверх них — предел объёма диффа и предел времени задания.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2125-review-turn-and-cost-budget.md">ADR 2026-10-18-2125</a></p>
+        </li>
+      </ul>
+      <p class="gap-line">Пробел: конвейера ревью на PR не было вовсе — ревью делали только роли агентов в сессиях владельца.</p>
+
+      <h3>Прогоны ревью</h3>
+      <figure class="tbl">
+        <table>
+          <caption>Прогоны ревью на PR #349</caption>
+          <thead>
+            <tr>
+              <th scope="col">Прогон</th>
+              <th scope="col">Патч в контексте</th>
+              <th scope="col" class="num">Ходов</th>
+              <th scope="col" class="num">Стоимость, $</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39167342284">39167342284</a></th>
+              <td>не передавался</td>
+              <td class="num">9</td>
+              <td class="num">0.0192</td>
+            </tr>
+            <tr>
+              <th scope="row"><a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39168905131">39168905131</a></th>
+              <td>не передавался</td>
+              <td class="num">6</td>
+              <td class="num">0.0165</td>
+            </tr>
+            <tr>
+              <th scope="row"><a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39172463573">39172463573</a></th>
+              <td>прочитан частью</td>
+              <td class="num">5</td>
+              <td class="num">0.0254</td>
+            </tr>
+            <tr>
+              <th scope="row"><a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39173658224">39173658224</a></th>
+              <td>не прочитан</td>
+              <td class="num">4</td>
+              <td class="num">0.0214</td>
+            </tr>
+            <tr>
+              <th scope="row"><a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39174606896">39174606896</a></th>
+              <td>прочитан частью</td>
+              <td class="num">5</td>
+              <td class="num">0.0701</td>
+            </tr>
+            <tr>
+              <th scope="row"><a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39175635220">39175635220</a></th>
+              <td>прочитан целиком</td>
+              <td class="num">5</td>
+              <td class="num">0.1115</td>
+            </tr>
+          </tbody>
+        </table>
+      </figure>
+      <p class="note">Стоимость показана с четырьмя знаками после запятой; полные значения и строки патча — в <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2238-review-cost-model-three-runs.md">ADR 2026-10-18-2238</a>. Четвёртый прогон патч получил, но не прочитал — счёл его отсутствующим.</p>
+
+      <p class="prose">Разброс стоимости на шести прогонах — от <span class="num">$0.0165</span> до <span class="num">$0.1115</span> за прогон (<a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2238-review-cost-model-three-runs.md">ADR 2026-10-18-2238</a>). Это измерения, а не оценка: третий и пятый прогоны — одно и то же число ходов и одна и та же прочитанная часть патча, а стоят они по-разному.</p>
+
+      <p class="prose">Два прогона из шести закончились не штатно. Прогон <a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39167342284">39167342284</a> оборвался по числу ходов — ревью он не опубликовал. Прогон <a href="https://github.com/MikeKharr/ai-advent-2026/actions/runs/39173658224">39173658224</a> ревью опубликовал, но с ложной причиной: написал, что патча в рабочем дереве нет и что дифф приложен в описании PR, — ложны оба утверждения, а настоящая причина так и не установлена.</p>
+
+      <p class="prose"><a class="wk-link" href="https://github.com/MikeKharr/ai-advent-2026/pull/349#issuecomment-6256372027">Открыть живое ревью на PR #349</a></p>
+
+      <ul class="bounds">
+        <li>Ревью от <code>github-actions[bot]</code> в гейты мержа не входит и консенсуса не меняет: это демонстрация задания, а не замена ролям.</li>
+        <li>Подмена указаний через дифф не снята, а сужена: оболочки нет и записи в репозиторий нет, поэтому худший исход — ложное или пустое ревью.</li>
+        <li>Секреты стали достижимы из неслитой ветки: workflow исполняется из самого PR. Это цена запуска на событиях PR, и она названа в ADR недели.</li>
+      </ul>
+
+      <details class="exp">
+        <summary>Почему прежняя стоимостная модель опровергнута<span class="q-mark" aria-hidden="true"></span></summary>
+        <div class="exp-body">
+          <p>Сначала расход считали как «постоянная часть плюс цена хода». Прогоны 3 и 5 эту прямую сломали: число ходов одно и то же, прочитанная часть патча одна и та же, а стоимость различается в <span class="num">2.8</span> раза. Значит ни ходы, ни объём прочитанного патча стоимость не объясняют, и публиковать наклон как оценку нельзя.</p>
+          <p>Поэтому здесь нет ни среднего, ни «обычно около»: показаны шесть измерений и границы наблюдённого разброса. Выше верхнего измерения ничего не подтверждено — прогонов дороже у проекта просто нет.</p>
+          <p>Отдельно названо, что потолок объёма держит только патч: описание PR тоже едет в контекст и растёт каждым кругом гейтов, а его не ограничивает ничто. Разбор — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2238-review-cost-model-three-runs.md">ADR 2026-10-18-2238</a>.</p>
+        </div>
+      </details>
+
+      <blockquote class="task">
+        <p><strong>День 32 «Автоматизация ревью кода»:</strong> GitHub Action на PR, ассистент получает diff и изменённые файлы, использует RAG (документация + код), выдаёт ревью: потенциальные баги, архитектурные проблемы, рекомендации.</p>
+      </blockquote>
+    </section>
+
+    <section id="day33" class="day" tabindex="-1" aria-labelledby="day33-h">
+      <div class="sec-head"><h2 id="day33-h">День 33: ассистент поддержки</h2></div>
+
+      <p class="prose">Ассистент поддержки делается в приложении аренды вилл: он ищет ответ по FAQ и документации и берёт контекст тикета через MCP. Решение сдавать этот день кодом другого репозитория и названная цена такого плана — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1147-days31-35-assistants-week.md">ADR 2026-10-18-1147</a>, пп. 3.1 и 3.3.</p>
+
+      <div class="panel limit">
+        <h3>Что увидят проверяющие</h3>
+        <p><span class="tag">Идёт</span></p>
+        <p>Код этого дня живёт в приватном репозитории <code>MikeKharr/samui-villas</code>, и проверяющие его не увидят. Что сделано — описано здесь; чем это показано — видео и выдержки по выбору владельца. Выдержек приватного кода на этой странице нет.</p>
+        <p class="limit-media">Видео и выдержки добавит владелец.</p>
+      </div>
+
+      <blockquote class="task">
+        <p><strong>День 33 «Ассистент поддержки»:</strong> RAG (FAQ, документация) + контекст пользователя/тикета через MCP (CRM или JSON).</p>
+      </blockquote>
+    </section>
+
+    <section id="day34" class="day" tabindex="-1" aria-labelledby="day34-h">
+      <div class="sec-head"><h2 id="day34-h">День 34: ассистент над файлами</h2></div>
+
+      <p class="prose">Этот день перенесён в публичный репозиторий адвента решением владельца — в отличие от дней 33 и 35, которые остаются в приватном (<a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2152-day34-in-ai-advent.md">ADR 2026-10-18-2152</a>). Предмет для файлового ассистента здесь настоящий: очередь задач и журналы проекта.</p>
+
+      <h3>Что сделано</h3>
+      <ul class="closed" role="list">
+        <li>
+          <p class="closed-text">Сервер MCP <code>mcpfiles</code> по образцу <code>mcpgit</code>: четыре инструмента, три читают, один пишет — <code>docs.read</code>, <code>docs.search</code>, <code>backlog.list</code>, <code>backlog.close</code>.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/mcpfiles/server.mjs">mcpfiles/server.mjs</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/mcpfiles/README.md">mcpfiles/README.md</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2152-day34-in-ai-advent.md">ADR 2026-10-18-2152</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/pull/354">PR #354</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Воспроизводимость — свойство, а не обещание: второй прогон того же сценария на том же дереве не меняет ни одного файла и даёт пустой <code>git diff</code>. Это держит тест.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/test/mcpfiles.test.js">test/mcpfiles.test.js</a></p>
+        </li>
+        <li>
+          <p class="closed-text">Две преграды: любой путь из запроса сверяется с корнем проекта по разрешённому пути, а <code>.git/</code> и файлы <code>.env</code> закрыты по имени уже разрешённого пути. Путь записи из запроса не собирается вовсе.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/mcpfiles/server.mjs">mcpfiles/server.mjs</a> · <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2152-day34-in-ai-advent.md">ADR 2026-10-18-2152</a>, п. 4</p>
+        </li>
+        <li>
+          <p class="closed-text">Скилл <code>/backlog-close</code> — сценарий уровня цели: «закрыть пункт очереди по его подтверждению». Пункт, помеченный «Владельцу», скилл сам не закрывает.</p>
+          <p class="closed-meta"><span class="tag">Сделано</span><span class="closed-date num">18.10.2026</span></p>
+          <p class="closed-links"><a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/.agents/skills/backlog-close/SKILL.md">.agents/skills/backlog-close/SKILL.md</a></p>
+        </li>
+      </ul>
+      <p class="gap-line">Пробел: отметка «пункт очереди закрыт» делалась руками каждую итерацию — перенос строки из очереди в архив никто не автоматизировал.</p>
+
+      <blockquote class="task">
+        <p><strong>День 34 «Ассистент для работы с файлами»:</strong> читает, ищет по нескольким файлам, анализирует, создаёт/меняет файлы; минимум 2 сценария; задача на уровне цели; результат воспроизводим; изменения сохраняются или выводятся diff.</p>
+      </blockquote>
+    </section>
+
+    <section id="day35" class="day" tabindex="-1" aria-labelledby="day35-h">
+      <div class="sec-head"><h2 id="day35-h">День 35: приложение</h2></div>
+
+      <p class="prose">Реальная задача недели — трёхсторонний маркетплейс аренды люкс-вилл: владельцы, управляющие и гости, а сервис живёт в мессенджере. Решение делать его отдельным репозиторием и всё, что из этого следует, — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1147-days31-35-assistants-week.md">ADR 2026-10-18-1147</a>, п. 3.</p>
+
+      <div class="panel limit">
+        <h3>Что увидят проверяющие</h3>
+        <p><span class="tag">Идёт</span></p>
+        <p>Код этого дня живёт в приватном репозитории <code>MikeKharr/samui-villas</code>, и проверяющие его не увидят. Что сделано — описано здесь; чем это показано — видео и выдержки по выбору владельца. Выдержек приватного кода на этой странице нет.</p>
+        <p class="limit-media">Видео и выдержки добавит владелец.</p>
+      </div>
+
+      <blockquote class="task">
+        <p><strong>День 35 «Реальная задача»:</strong> реальное AI-приложение под реальную задачу.</p>
+      </blockquote>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Решение недели — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1147-days31-35-assistants-week.md">ADR 2026-10-18-1147</a>, авторизация ревью — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-1347-review-auth-and-model.md">ADR 2026-10-18-1347</a>, потолки и стоимость — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2125-review-turn-and-cost-budget.md">ADR 2026-10-18-2125</a> и <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2238-review-cost-model-three-runs.md">ADR 2026-10-18-2238</a>, день 34 — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-18-2152-day34-in-ai-advent.md">ADR 2026-10-18-2152</a> и <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/development-history/2026-10-18-2152-day34-file-assistant.md">запись истории</a>, исходный код — <a href="https://github.com/MikeKharr/ai-advent-2026">github.com/MikeKharr/ai-advent-2026</a>.</p>
+  </footer>
+</div>
+</body>
+</html>
