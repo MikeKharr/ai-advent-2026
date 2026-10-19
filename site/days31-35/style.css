@@ -1,0 +1,240 @@
+/* Дни 31–35, одна страница на пять дней. Токены и служебный слой скопированы
+   из site/day27/style.css значение-в-значение (корпус — agent_docs/design/corpus.md).
+   Раскладка — agent_docs/design/2026-10-18-2336-days31-35-week-page.md,
+   дополнение к agent_docs/design/2026-10-09-1335-days26-30-local-llm-day-pages.md.
+   Значение вне шкалы — дефект, а не нюанс. Самый крупный размер корпуса здесь
+   не объявлен вовсе: по корпусу он только для лендинга. */
+
+:root {
+  color-scheme: light dark;
+  --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+  --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4rem;
+  --t-xs:.75rem; --t-sm:.875rem; --t-md:1rem; --t-lg:1.125rem; --t-xl:1.5rem;
+  --bg:#fbfbfa; --surface:#ffffff; --fg:#17171a; --fg-mut:#6a6a70;
+  --line:#e6e6e3; --line-ctl:#8f8f8a;
+  --acc:#2f6f4f; --acc-fg:#ffffff; --danger:#b3261e;
+  --overlay:rgb(23 23 26 / .5);
+  --r-sm:6px; --r-md:10px; --r-full:999px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#131316; --surface:#1b1b1f; --fg:#ececee; --fg-mut:#9b9ba3;
+    --line:#2a2a30; --line-ctl:#6a6a73;
+    --acc:#6fc79c; --acc-fg:#0e1a13; --danger:#f2b8b5;
+    --overlay:rgb(0 0 0 / .6);
+  }
+}
+
+/* ── Служебный слой (договор копии, слово в слово на страницах дней) ──── */
+* { box-sizing:border-box; }
+/* Собственный display перебивает [hidden] из таблицы браузера. */
+[hidden] { display:none !important; }
+:where(a, button, summary):focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+a:hover { background:var(--surface); }
+a:active, button:active, summary:active { position:relative; top:1px; }
+.num { font-variant-numeric:tabular-nums; }
+/* Видимо скрыто: остаётся в дереве доступности, в отличие от display:none. */
+.vh {
+  position:absolute; width:1px; height:1px; overflow:hidden;
+  clip-path:inset(50%); white-space:nowrap;
+}
+
+body {
+  margin:0; background:var(--bg); color:var(--fg);
+  font:var(--t-md)/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+a { color:inherit; }
+code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:var(--t-xs); }
+
+/* ── Контейнер и ритм ────────────────────────────────────────────────── */
+.page {
+  max-width:60rem; margin-inline:auto;
+  padding-block:var(--s-6); padding-inline:var(--s-4);
+}
+@media (min-width:36rem) {
+  .page { padding-block:var(--s-7); padding-inline:var(--s-5); }
+}
+.head { margin-bottom:var(--s-5); }
+.back { margin:0 0 var(--s-2); font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); }
+h1 {
+  font-size:var(--t-xl); line-height:1.25; letter-spacing:-.01em; font-weight:600;
+  margin:0;
+}
+.lede { margin:var(--s-2) 0 0; color:var(--fg-mut); max-width:68ch; }
+.sec-head { margin-bottom:var(--s-4); }
+h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
+h3 { font-size:var(--t-md); line-height:1.6; font-weight:600; margin:0; }
+.prose { margin:0; max-width:68ch; }
+.note {
+  margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+  max-width:52ch;
+}
+.lbl {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut);
+}
+.panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); }
+/* Ссылка на панели --surface: её наведение — шаг к --bg, а не общее a:hover. */
+.panel a:hover { background:var(--bg); }
+
+/* ── Секция дня ──────────────────────────────────────────────────────── */
+/* Пять дней на одной странице: без линии между ними пять экранов читаются
+   как одна простыня, а тень корпус запрещает. */
+.day + .day {
+  margin-top:var(--s-7); padding-top:var(--s-7); border-top:1px solid var(--line);
+}
+/* Переход по якорю приводит фокус в секцию (tabindex="-1" в разметке);
+   без этого отступа заголовок прилипает к верхней кромке окна. */
+.day { scroll-margin-top:var(--s-5); }
+.day > * + * { margin-top:var(--s-4); }
+.day h3 + * { margin-top:var(--s-3); }
+
+/* ── А. Полоса недели: здесь это оглавление, текущей секции нет ──────── */
+.wk { margin-bottom:var(--s-7); }
+.wk-label { margin:0 0 var(--s-2); }
+.wk-list { display:flex; flex-wrap:wrap; gap:var(--s-2); list-style:none; margin:0; padding:0; }
+.wk-link {
+  display:inline-block; padding:var(--s-1) var(--s-3);
+  font-size:var(--t-sm); line-height:1.5;
+  background:var(--surface); color:var(--fg);
+  border:1px solid var(--line-ctl); border-radius:var(--r-full);
+  font-variant-numeric:tabular-nums;
+  transition:background-color 120ms;
+}
+a.wk-link:hover { background:var(--bg); }
+
+/* ── Б. Что сделано ──────────────────────────────────────────────────── */
+.closed { list-style:none; margin:0; padding:0; }
+.closed > li + li { margin-top:var(--s-4); }
+.closed-text { margin:0; max-width:68ch; }
+.closed-meta {
+  display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s-2) var(--s-3);
+  margin:var(--s-2) 0 0;
+}
+.tag {
+  display:inline-block; padding:0 var(--s-2);
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  text-transform:uppercase; letter-spacing:.06em;
+  border:1px solid var(--line-ctl); border-radius:var(--r-full);
+  white-space:nowrap;
+}
+.closed-date {
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  font-variant-numeric:tabular-nums;
+}
+.closed-links {
+  margin:var(--s-2) 0 0;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); line-height:1.4; color:var(--fg-mut);
+  overflow-wrap:anywhere;
+}
+.gap-line {
+  margin:var(--s-5) 0 0; padding-top:var(--s-4); border-top:1px solid var(--line);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch;
+}
+/* Границы и оговорки — не под details: это ответ на «чему здесь верить». */
+.bounds {
+  margin:0; padding-left:var(--s-5);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch;
+}
+.bounds li + li { margin-top:var(--s-1); }
+
+/* ── В. Таблица прогонов: четыре столбца, прокрутки нет ──────────────── */
+/* Пятого столбца нет намеренно: подсказку «прокручивается вбок» и
+   tabindex="0" ставит по факту переполнения app.js, а скрипта у этой
+   страницы нет — в разметке подсказка врала бы на широком экране. */
+.tbl { margin:0; }
+.tbl caption {
+  font-size:var(--t-xs); line-height:1.4; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--fg-mut); text-align:start; padding-bottom:var(--s-2);
+}
+.tbl table {
+  width:100%; border-collapse:collapse; table-layout:fixed;
+  font-size:var(--t-sm); line-height:1.5;
+}
+.tbl th, .tbl td {
+  padding:var(--s-2) 0 var(--s-2) var(--s-2); text-align:right; vertical-align:baseline;
+}
+.tbl th[scope="col"]:first-child, .tbl th[scope="row"] {
+  text-align:left; font-weight:600; width:40%; padding-right:var(--s-3);
+}
+.tbl thead th { color:var(--fg-mut); font-weight:600; border-bottom:1px solid var(--line); }
+.tbl tbody tr + tr th, .tbl tbody tr + tr td { border-top:1px solid var(--line); }
+.tbl td.num, .tbl th.num { font-variant-numeric:tabular-nums; }
+.tbl th[scope="row"] a {
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:var(--t-xs); overflow-wrap:anywhere;
+}
+/* Ниже 36rem на числовые колонки остаётся ~50px: --t-sm в них не влезает. */
+@media (max-width:35.999rem) {
+  .tbl table { font-size:var(--t-xs); line-height:1.4; }
+  .tbl th[scope="col"]:first-child, .tbl th[scope="row"] { width:30%; }
+  .tbl th { overflow-wrap:break-word; hyphens:auto; }
+  .tbl th, .tbl td { padding-left:var(--s-1); }
+}
+
+/* ── Ограничение дней 33 и 35 ────────────────────────────────────────── */
+/* На виду, не под details: это ответ на «что здесь не покажут». */
+.limit { padding:var(--s-4); }
+.limit > * + * { margin-top:var(--s-3); }
+.limit p { margin:0; max-width:68ch; }
+/* Место под материалы владельца: честная строка и ничего больше — ни
+   заглушки плеера, ни серой рамки, ни ссылки в никуда. */
+.limit-media {
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut); max-width:52ch;
+}
+
+/* ── Г. Раскрывающееся пояснение ─────────────────────────────────────── */
+.exp {
+  border:1px solid var(--line); border-radius:var(--r-md);
+  background:var(--surface);
+}
+.exp > summary {
+  display:flex; justify-content:space-between; align-items:baseline; gap:var(--s-3);
+  padding:var(--s-3) var(--s-4);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg);
+  background:var(--surface); border-radius:var(--r-md);
+  list-style:none; cursor:pointer;
+  transition:background-color 120ms;
+}
+.exp > summary::marker { content:""; }
+.exp > summary::-webkit-details-marker { display:none; }
+.exp > summary:hover { background:var(--bg); }
+.exp > summary:focus-visible { outline-offset:-2px; }
+.q-mark { color:var(--fg-mut); }
+.q-mark::before { content:"+"; }
+.exp[open] > summary .q-mark::before { content:"−"; }
+.exp-body {
+  padding:var(--s-3) var(--s-4) var(--s-4);
+  border-top:1px solid var(--line);
+}
+.exp-body p { margin:0; font-size:var(--t-sm); line-height:1.5; max-width:52ch; }
+.exp-body p + p { margin-top:var(--s-3); }
+.exp-body a:hover { background:var(--bg); }
+
+/* ── Задание дня: внутри своей секции, последним блоком ──────────────── */
+.task {
+  margin:0; padding-inline-start:var(--s-4);
+  border-inline-start:3px solid var(--line); max-width:68ch;
+  font-size:var(--t-md); line-height:1.6;
+}
+.task p { margin:0; }
+
+/* ── Д. Подвал (строки прогона нет: прогона у недели не было) ────────── */
+.foot {
+  margin-top:var(--s-7); border-top:1px solid var(--line); padding-top:var(--s-4);
+  font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
+}
+.foot p { margin:0; max-width:52ch; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wk-link, .exp > summary { transition:none; }
+}
+
+/* Печать: раскрыты все блоки. Два правила про содержимое — браузеры прячут
+   его по-разному. */
+@media print {
+  details::details-content { content-visibility:visible !important; }
+  details:not([open]) > :not(summary) { display:block; }
+  .q-mark { display:none; }
+}
