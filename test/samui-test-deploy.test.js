@@ -22,7 +22,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const SCRIPT = join(ROOT, 'deploy/samui-test-deploy.sh')
 const TEXT = readFileSync(SCRIPT, 'utf8')
 const HEX = 'a'.repeat(64)
-const TOKEN = 'ghs_placeholder0123456789\n'
+const TOKEN = 'placeholderToken0123\n'
 
 /** Прогон скрипта в пустом HOME; `env` — только то, что прислал бы sshd. */
 function run({ command, stdin = TOKEN, withEnvFile = false }) {
@@ -67,7 +67,7 @@ test('ssh-команда — только sha256:<64 hex>, всё прочее �
 })
 
 test('без токена первой строкой stdin — отказ до docker', () => {
-  for (const stdin of ['', '\n', 'не токен\n', 'ghs_x y\n']) {
+  for (const stdin of ['', '\n', 'не токен\n', 'token x y\n']) {
     const r = run({ command: `sha256:${HEX}`, stdin, withEnvFile: true })
     assert.equal(r.status, 64, `stdin ${JSON.stringify(stdin)}: код ${r.status}; stderr: ${r.stderr}`)
     assert.match(r.stderr, /нет токена GHCR/)
