@@ -395,11 +395,17 @@ class РендерФрагментовСходитсяСАгентом(unittest.
             if item["id"] == "rag-agent")
         self.assertEqual(prompts.registry_system_prompt(), " ".join(entry["systemPrompt"]))
 
-    def test_набора_вопросов_в_этой_единице_нет_он_читается_по_пути(self):
-        ids = [question["id"] for question in prompts.load_questions()]
-        self.assertEqual(len(ids), 10)
-        self.assertEqual(set(day28.STABILITY_IDS) - set(ids), set())
-        # Копии набора в единице `rag` быть не должно: она разъехалась бы молча.
+    # Проверки «набора вопросов в этой единице нет, он читается по пути» здесь
+    # больше нет: она звала `prompts.load_questions()`, то есть читала
+    # `days/day22/eval/questions.json`, а каталог дней удалён
+    # (ADR 2026-10-20-0737). Вторая половина того теста — что копии набора в
+    # `rag/eval/` нет — переехала отдельным тестом ниже: она про эту единицу и
+    # предмет у неё остался.
+
+    def test_копии_набора_вопросов_в_этой_единице_нет(self):
+        # Копия разъехалась бы с источником молча. Источника сейчас нет вовсе
+        # (`days/` удалён), и тем более нельзя заводить копию без решения:
+        # она стала бы единственным набором под видом копии.
         self.assertEqual(list((RAG / "eval").glob("questions*.json")), [])
 
 
@@ -592,98 +598,21 @@ def fake_index(tmp: Path, embedder, texts: list[str]):
                       embedder.model).save(tmp)
 
 
-class ПрогонДня28(unittest.TestCase):
-    """Форма файла дня 28 и повтор трёх вопросов стабильности — под прогоном.
-
-    Прогон идёт целиком: настоящий индекс FAISS, настоящий поиск, подложная
-    Ollama для эмбеддингов и подставная модель для ответов. Что это держит:
-    число ответов (10 вопросов + по два повтора у трёх) и поля, которые читает
-    страница. Без этого «один повтор на вопрос» и три вопроса стабильности
-    остались бы словами ADR.
-    """
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.dir = Path(self.tmp.name)
-        self.fake = FakeOllama({"/api/embed": (200, FakeOllama.deterministic)}).__enter__()
-        from embed import OllamaEmbedder
-
-        self.embedder = OllamaEmbedder(self.fake.url, "эмбеддер")
-        fake_index(self.dir, self.embedder, ["что входит в Definition of Done проекта",
-                                             "второй документ про выкатку"])
-
-    def tearDown(self):
-        self.fake.__exit__()
-        self.tmp.cleanup()
-
-    def test_десять_вопросов_и_три_повтора_у_трёх_вопросов(self):
-        calls = []
-
-        def counting(model, text, **kw):
-            calls.append(text)
-            return fake_generate("ответ по agent_docs/guides/dod.md, нужен snapshot.md")(
-                model, text, **kw)
-
-        got = day28.run(self.dir, self.embedder, client.Q4, "ollama 0.33.3",
-                        generate=counting)
-        self.assertEqual(len(got["questions"]), 10)
-        # 10 вопросов по одному разу плюс по два лишних у трёх вопросов.
-        self.assertEqual(len(calls), 10 + 2 * len(day28.STABILITY_IDS))
-        self.assertEqual([row["id"] for row in got["stability"]],
-                         list(day28.STABILITY_IDS))
-        for row in got["stability"]:
-            self.assertEqual(len(row["runs"]), day28.STABILITY_RUNS)
-
-    def test_поля_страницы_на_месте_и_вердиктов_прогон_не_ставит(self):
-        got = day28.run(self.dir, self.embedder, client.Q4, "ollama 0.33.3",
-                        generate=fake_generate("В найденных фрагментах ответа нет"))
-        self.assertEqual(got["day"], 28)
-        self.assertEqual(got["judge"], {"name": None, "rubric": features.RUBRIC})
-        for side in ("local", "cloud"):
-            for key in ("matched", "partial", "missed", "time_s_median", "failures", "queries"):
-                self.assertIn(key, got["summary"][side], f"{side}.{key}")
-        first = got["questions"][0]
-        for key in ("id", "set", "text", "sources", "fragments", "local", "cloud"):
-            self.assertIn(key, first, key)
-        self.assertIsNone(first["local"]["quality"])
-        self.assertIs(first["local"]["refused"], True)
-        # Фрагменты в файл идут без текста: страница показывает путь и близость,
-        # а 10 КБ корпуса на вопрос раздули бы файл за 200 КБ.
-        self.assertEqual(set(first["fragments"][0]), {"n", "source", "section", "score"})
-        report.check_no_abliterated_texts(got)
-        report.check_no_private_addresses(got)
-
-    def test_отказ_модели_ложится_происшествием_и_набор_не_обрывается(self):
-        got = day28.run(self.dir, self.embedder, client.Q4, "ollama 0.33.3",
-                        generate=fake_generate("", error="timed out"))
-        self.assertEqual(len(got["questions"]), 10)
-        self.assertEqual(len(got["incidents"]), 10 + 2 * len(day28.STABILITY_IDS))
-        self.assertIs(got["questions"][0]["local"]["failed"], True)
-        self.assertEqual(got["summary"]["local"]["failures"], 10)
-
-    def test_облачная_сторона_берётся_из_файла_дня_22_а_не_запрашивается(self):
-        questions = prompts.load_questions()
-        cloud = {"questions": [
-            {"id": questions[0]["id"], "modes": {"rag": {"verdict": 2, "retrieved": True,
-                                                         "cited": True, "key": True,
-                                                         "refused": False}}},
-        ]}
-        got = day28.run(self.dir, self.embedder, client.Q4, "ollama 0.33.3",
-                        cloud=cloud, times={questions[0]["id"]: 12.5},
-                        generate=fake_generate("ответ"))
-        self.assertEqual(got["questions"][0]["cloud"]["quality"], "верно")
-        self.assertEqual(got["questions"][0]["cloud"]["time_s"], 12.5)
-        # Вопрос, которого в облачном файле нет, остаётся без слова качества —
-        # и это «нет данных», а не «неверно».
-        self.assertIsNone(got["questions"][1]["cloud"]["quality"])
-        self.assertIsNone(got["questions"][1]["cloud"]["time_s"])
-
-    def test_без_времён_облака_в_оговорки_попадает_честная_строка(self):
-        got = day28.run(self.dir, self.embedder, client.Q4, "ollama 0.33.3",
-                        generate=fake_generate("ответ"))
-        self.assertTrue(any("Время облачной стороны не измерено" in note
-                            for note in got["notes"]))
-
+# Класса `ПрогонДня28` здесь больше нет. Он прогонял день 28 целиком —
+# настоящий индекс FAISS, подложная Ollama, подставная модель — и начинался с
+# `prompts.load_questions()`, то есть с набора вопросов дня 22. Каталог `days/`
+# удалён (ADR 2026-10-20-0737), набора нет, и прогон не доходит до первого
+# утверждения: пять проверок падали в CI на `FileNotFoundError`, а не
+# проверяли свой предмет.
+#
+# ЧТО ЭТИМ ПОТЕРЯНО, названо прямо: число ответов дня 28 (10 вопросов плюс по
+# два повтора у трёх вопросов стабильности), поля его файла страницы, честная
+# строка про неизмеренное время облака и то, что отказ модели ложится
+# происшествием и не обрывает набор, — больше не проверяются ничем. Сам
+# `eval/day28_local_rag.py` оставлен (владелец сказал `rag/` оставить) и
+# запуститься не может по той же причине; разрыв назван в `rag/README.md`.
+# Вернуть проверки можно только вместе с набором вопросов — это решение
+# владельца, а не следствие уборки.
 
 class ВыборПослеДня29(unittest.TestCase):
     """«После» выбирается правилом, а не вкусом, и правило проверяется числами.
