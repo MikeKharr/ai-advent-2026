@@ -50,7 +50,7 @@ test('разбор видит сети там, где они есть, и их �
   // публикует /mcp, по rag — /rag и /rag/healthz, по edge к нему приходит
   // вход zpq.
   assert.deepEqual(services.get('caddy'), ['default', 'mcp', 'rag', 'edge'])
-  // Ключа networks нет — значит сеть по умолчанию, вместе с secrets.env.
+  // Ключа networks нет — значит сеть по умолчанию, рядом с ключами роутера.
   assert.equal(services.get('router'), null)
   // agents в трёх сетях: по default уходит запрос в роутер, по mcp он ходит
   // в службу MCP, по rag — в индекс проекта (ADR 2026-10-04-0735, п. 1).

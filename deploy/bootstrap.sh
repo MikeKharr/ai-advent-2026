@@ -128,13 +128,16 @@ cat <<EOF
 
 1. Секреты служб. Каждая читает свой файл, и без него не поднимается:
    router.env (ключи провайдеров и приложений), agents.env, mcp.env,
-   rag.env. Файла secrets.env ни одна оставшаяся служба не читает — он был
-   общим для дней 1–4 и после их удаления не нужен (ADR 2026-10-20-0737).
-   С локальной машины из репозитория:
-     bash deploy/put-secrets.sh
-   Либо вручную на сервере:
+   rag.env. Состав каждого — deploy/.env.example. Файла secrets.env ни одна
+   служба не читает: он был общим для дней 1–4 и после их удаления не нужен
+   (ADR 2026-10-20-0737), поэтому deploy/put-secrets.sh, который создавал
+   только его, в этом шаге больше не участвует.
+   На сервере, по одному файлу на службу:
      sudo -u ${APP_USER} nano ${APP_DIR}/deploy/router.env
      sudo -u ${APP_USER} chmod 600 ${APP_DIR}/deploy/router.env
+   и так же agents.env, mcp.env. Для rag.env есть готовый скрипт с локальной
+   машины, он значение не печатает:
+     bash deploy/put-rag-key.sh
 
 2. A-запись challenge.zpq.ai → $(curl -s -4 ifconfig.me 2>/dev/null || echo '<IP этого сервера>')
    Дождаться, пока dig +short challenge.zpq.ai отдаёт этот адрес.
