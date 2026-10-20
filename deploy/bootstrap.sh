@@ -113,22 +113,28 @@ fi
 log "Общая сеть edge"
 docker network inspect edge >/dev/null 2>&1 || docker network create edge
 
+# Теги образов в .env переписывает выкатка, по одной строке на пересобранную
+# единицу. Начальных строк здесь не ставим: у каждой службы в compose.yml
+# стоит умолчание `:-latest`, поэтому пустой файл поднимает проект целиком.
+# Прежняя строка `DAY1_TAG=latest` ушла вместе с днями (ADR 2026-10-20-0737).
 log "Файлы окружения"
 sudo -u "$APP_USER" touch "${APP_DIR}/deploy/.env"
 sudo -u "$APP_USER" chmod 600 "${APP_DIR}/deploy/.env"
-grep -q '^DAY1_TAG=' "${APP_DIR}/deploy/.env" || echo 'DAY1_TAG=latest' | sudo -u "$APP_USER" tee -a "${APP_DIR}/deploy/.env" >/dev/null
 
 cat <<EOF
 
 ────────────────────────────────────────────────────────
 Готово. Осталось сделать вручную:
 
-1. Секреты приложений (ключ Anthropic и лимиты) — один файл на все дни,
-   кладётся один раз. С локальной машины из репозитория:
+1. Секреты служб. Каждая читает свой файл, и без него не поднимается:
+   router.env (ключи провайдеров и приложений), agents.env, mcp.env,
+   rag.env. Файла secrets.env ни одна оставшаяся служба не читает — он был
+   общим для дней 1–4 и после их удаления не нужен (ADR 2026-10-20-0737).
+   С локальной машины из репозитория:
      bash deploy/put-secrets.sh
    Либо вручную на сервере:
-     sudo -u ${APP_USER} nano ${APP_DIR}/deploy/secrets.env
-     sudo -u ${APP_USER} chmod 600 ${APP_DIR}/deploy/secrets.env
+     sudo -u ${APP_USER} nano ${APP_DIR}/deploy/router.env
+     sudo -u ${APP_USER} chmod 600 ${APP_DIR}/deploy/router.env
 
 2. A-запись challenge.zpq.ai → $(curl -s -4 ifconfig.me 2>/dev/null || echo '<IP этого сервера>')
    Дождаться, пока dig +short challenge.zpq.ai отдаёт этот адрес.
@@ -145,9 +151,9 @@ cat <<EOF
      cd ${APP_DIR}/deploy && docker compose up -d
 
 5. Проверка (через вход zpq-ai, поэтому https):
-     curl -I https://challenge.zpq.ai/day1/
+     curl -I https://challenge.zpq.ai/
    Если вход ещё не поднят, изнутри сервера:
-     docker compose exec -T caddy wget -qS -O /dev/null http://localhost/day1/healthz
+     docker compose exec -T caddy wget -qS -O /dev/null http://localhost/rag/healthz
 
 Дальнейшие деплои идут через GitHub Actions при мерже в main.
 ────────────────────────────────────────────────────────

@@ -69,31 +69,14 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
 }
 .msg { margin:0; }
 
-/* ── Работающие приложения ───────────────────────────────────────────── */
-.apps { list-style:none; margin:0; padding:0; display:grid; gap:var(--s-2); }
-.app {
-  display:grid; grid-template-columns:minmax(0,1fr) auto;
-  grid-template-areas:"label arrow" "text text";
-  column-gap:var(--s-4); row-gap:var(--s-1); align-items:baseline;
-  padding:var(--s-3) var(--s-4);
-  background:var(--surface); border:1px solid var(--line-ctl); border-radius:var(--r-md);
-  color:var(--fg); text-decoration:none;
-  transition:background-color 120ms;
-}
-.app:hover { background:var(--bg); }
-.app-label {
-  grid-area:label; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
-  font-variant-numeric:tabular-nums;
-}
-.app-text { grid-area:text; }
-.app-arrow { grid-area:arrow; color:var(--fg-mut); }
-@media (min-width:36rem) {
-  .app { grid-template-columns:4.5rem minmax(0,1fr) auto; grid-template-areas:"label text arrow"; }
-}
-.note {
-  margin:var(--s-3) 0 0; font-size:var(--t-sm); line-height:1.5; color:var(--fg-mut);
-  max-width:52ch;
-}
+/* ── Приложения дней сняты ───────────────────────────────────────────── */
+/* Правила списка приложений (.apps, .app*) и его подписи (.note) убраны
+   вместе с самим списком: дни сняты в архив (ADR 2026-10-20-0737). На его
+   месте — текст в той же рамке, что «Сейчас в работе» (.panel): отступ и
+   шкала те же, что у строки списка работ, поэтому второй набор чисел не
+   заводится. */
+.archive { padding:var(--s-4); display:grid; gap:var(--s-3); }
+.archive p { margin:0; max-width:52ch; }
 
 /* ── Сейчас в работе ─────────────────────────────────────────────────── */
 .panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); }
@@ -189,5 +172,5 @@ h2 { font-size:var(--t-lg); line-height:1.4; font-weight:600; margin:0; }
 .foot p { margin:0; max-width:52ch; }
 
 @media (prefers-reduced-motion: reduce) {
-  .app, .chip { transition:none; }
+  .chip { transition:none; }
 }

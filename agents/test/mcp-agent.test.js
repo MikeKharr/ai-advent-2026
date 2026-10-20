@@ -21,7 +21,6 @@ import {
   runToolLoop,
   TOOL_RESULT_LIMIT,
 } from '../src/mcp/agent.js'
-import { createPipelineAgent } from '../src/mcp/pipeline-agent.js'
 import { loadServers } from '../src/mcp/servers.js'
 import { loadRegistry } from '../src/registry.js'
 import { createRuns } from '../src/runs.js'
@@ -37,9 +36,21 @@ const env = {
   ROUTER_TIMEOUT_MS: 5_000,
 }
 
-const registry = loadRegistry(
-  JSON.parse(readFileSync(new URL('../config/agents.json', import.meta.url), 'utf8')),
+// Реестр — настоящий `config/agents.json`, но список серверов у `mcp-agent`
+// здесь ПОДСТАВНОЙ. Предмет файла — цикл инструментов: сколько кругов, кому
+// уходит вызов, чем платится, что попадает в трейс. Имена серверов для него —
+// входные данные, и подставные серверы ниже поднимаются под этими именами.
+// В проде у агента ровно один сервер — `day16` (ADR 2026-10-20-0737, бывшие
+// `mcpnews` и `mcpstore` удалены), и состав держат не эти строки, а
+// `assertAgentServers` на старте сервиса плюс `test/mcp-server-urls.test.js`:
+// он сверяет адрес каждого сервера реестра с портом и путём самой службы.
+// Подмена — именно подмена, а не правка реестра: если записи `mcp-agent` в
+// файле не станет, строка ниже упадёт на `undefined`, а не промолчит.
+const RAW_REGISTRY = JSON.parse(
+  readFileSync(new URL('../config/agents.json', import.meta.url), 'utf8'),
 )
+RAW_REGISTRY.agents.find((a) => a.id === 'mcp-agent').servers = ['mcpnews', 'mcpstore']
+const registry = loadRegistry(RAW_REGISTRY)
 
 /** Поддельный сервер MCP: список инструментов и поведение `tools/call`. */
 async function fakeMcp({ tools, call }) {
@@ -392,61 +403,6 @@ test('обрезка результата меряется байтами, а н
   assert.equal(clipped.clipped, true)
 })
 
-test('цепочка дня 19 зарегистрирована и исполняется агентом без модели', async () => {
-  const files = new Map()
-  const news = await fakeMcp({
-    tools: ['news.search', 'news.summarize'],
-    call: (name, args) =>
-      name === 'news.search'
-        ? packed({ items: [{ title: `о ${args.query}` }] })
-        : packed({ text: 'выжимка' }),
-  })
-  const store = await fakeMcp({
-    tools: ['file.save', 'file.read'],
-    call: (name, args) => {
-      if (name === 'file.save') {
-        files.set(args.name, args.content)
-        return packed({ name: args.name })
-      }
-      return packed({ found: true, name: args.name, content: files.get(args.name) })
-    },
-  })
-  const { servers } = loadServers(
-    {
-      servers: [
-        { name: 'mcpnews', title: 'Новости', urlEnv: 'A' },
-        { name: 'mcpstore', title: 'Файлы', urlEnv: 'B' },
-      ],
-    },
-    { A: news.url, B: store.url },
-  )
-  const runs = createRuns()
-  const entry = registry.get('pipeline-agent')
-  assert.ok(entry, 'pipeline-agent обязан быть в реестре')
-  const agent = createPipelineAgent({ agent: entry, servers, runs })
-  const parsed = agent.parseInput({ task: 'финтех' })
-  assert.ok(parsed.ok)
-  const run = runs.create({ agent: entry, input: parsed.input })
-  await agent.execute(run)
-
-  const snapshot = runs.snapshot(run.id)
-  assert.equal(snapshot.status, 'succeeded')
-  assert.equal(snapshot.result.match, true)
-  assert.equal(snapshot.events.filter((e) => e.stage === 'rpc').length, 6)
-  await news.close()
-  await store.close()
-})
-
-test('пустое задание цепочки отвергается до единого вызова', async () => {
-  const { servers } = loadServers(
-    { servers: [{ name: 'mcpnews', title: 'Новости', urlEnv: 'U' }] },
-    { U: 'http://127.0.0.1:1/mcp' },
-  )
-  const agent = createPipelineAgent({ agent: registry.get('pipeline-agent'), servers, runs: createRuns() })
-  assert.equal(agent.parseInput({ task: '  ' }).ok, false)
-  assert.equal(agent.parseInput({ task: 'x'.repeat(601) }).ok, false)
-})
-
 /** Пара серверов цепочки: новости и хранилище, в их настоящих формах ответов. */
 async function chainPair() {
   const files = new Map()
@@ -479,49 +435,6 @@ async function chainPair() {
   return { news, store, servers, files }
 }
 
-test('работа планировщика с агентом без модели идёт цепочкой, а не отвергается', async () => {
-  // Держатель решения владельца: предмет работы — инструменты и MCP, а не
-  // сводка моделью. Отказ `modelless` ронял бы работу на КАЖДОМ сроке.
-  const { news, store, servers } = await chainPair()
-  const router = fakeRouter([answer('этого быть не должно')])
-  const runs = createRuns()
-  const runJob = createJobRunner({ registry, servers, runs, env, fetchImpl: router.fetchImpl })
-
-  const out = await runJob({ job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' }, runId: 'run-chain' })
-
-  assert.equal(out.status, 'succeeded')
-  // Роутер не вызывался: у цепочки модели нет, и расход её равен нулю.
-  assert.equal(router.calls.length, 0)
-  assert.equal(out.tokens, null)
-  assert.equal(out.budgetLeftUsd, null)
-  // Трейс ленты дня 18: два списка инструментов и четыре вызова.
-  assert.equal(out.trace.length, 6)
-  assert.equal(runs.snapshot('run-chain').status, 'succeeded')
-  await news.close()
-  await store.close()
-})
-
-test('бесплатная работа не зависит от ключа приложения: без ROUTER_APP_KEY_SCHEDULER цепочка идёт', async () => {
-  const { news, store, servers } = await chainPair()
-  const router = fakeRouter([answer('этого быть не должно')])
-  const runs = createRuns()
-  // Ключа планировщика нет вовсе — платить цепочке всё равно нечем.
-  const runJob = createJobRunner({
-    registry,
-    servers,
-    runs,
-    env: { ...env, ROUTER_APP_KEY_SCHEDULER: null },
-    fetchImpl: router.fetchImpl,
-  })
-
-  const out = await runJob({ job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' }, runId: 'run-nokey' })
-
-  assert.equal(out.status, 'succeeded')
-  assert.equal(router.calls.length, 0)
-  await news.close()
-  await store.close()
-})
-
 test('отказ планировщика остаётся для агента, которого в реестре нет', async () => {
   const { news, store, servers } = await chainPair()
   const runs = createRuns()
@@ -531,46 +444,6 @@ test('отказ планировщика остаётся для агента, 
   assert.equal(out.status, 'failed')
   assert.match(out.summary, /нет в реестре/)
   assert.equal(router.calls.length, 0)
-  await news.close()
-  await store.close()
-})
-
-test('цепочка планировщика оборвалась: запуск failed, а не молчаливый успех', async () => {
-  const news = await fakeMcp({ tools: ['news.search'], call: () => packed({ items: [] }) })
-  const { servers } = loadServers(
-    { servers: [{ name: 'mcpnews', title: 'Новости', urlEnv: 'A' }] },
-    { A: news.url },
-  )
-  const runs = createRuns()
-  const out = await createJobRunner({ registry, servers, runs, env })({
-    job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' },
-    runId: 'run-broken',
-  })
-  assert.equal(out.status, 'failed')
-  assert.equal(runs.snapshot('run-broken').status, 'failed')
-  await news.close()
-})
-
-test('работа планировщика пишет в один файл, а не плодит их', async () => {
-  // Держатель ADR 2026-09-28-1323, п. 5. Работа идёт 96 раз в сутки, срок
-  // хранения `mcpstore` — 30 ч, потолок — 200 файлов: имя по времени старта
-  // заняло бы 120 мест из 200, а заполнение хранилища — отказ `file.save` у
-  // ВСЕХ, включая посетителей дня 19. Перезапись файла числа файлов не
-  // меняет (`mcpstore/src/store.js:78`).
-  const { news, store, servers, files } = await chainPair()
-  const runs = createRuns()
-  let tick = 1_700_000_000_000
-  const runJob = createJobRunner({ registry, servers, runs, env, now: () => (tick += 900_000) })
-
-  for (let i = 0; i < 3; i += 1) {
-    const out = await runJob({
-      job: { id: 'digest', agentId: 'pipeline-agent', prompt: 'финтех' },
-      runId: `run-file-${i}`,
-    })
-    assert.equal(out.status, 'succeeded')
-  }
-
-  assert.deepEqual([...files.keys()], ['pipeline-digest.txt'], 'работа завела больше одного файла в mcpstore')
   await news.close()
   await store.close()
 })

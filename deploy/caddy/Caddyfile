@@ -20,8 +20,8 @@
 http://challenge.zpq.ai {
 	encode gzip zstd
 
-	# Блок применяется ко всем ответам сайта, включая проксируемые в контейнеры
-	# дней, — проверено на проде: заголовки видны и на лендинге, и на /dayN/.
+	# Блок применяется ко всем ответам сайта, включая проксируемые в службы, —
+	# проверено на проде: заголовки видны и на лендинге, и на /mcp.
 	header {
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
@@ -38,230 +38,13 @@ http://challenge.zpq.ai {
 	# контрольную сумму с последней удачно применённой и при расхождении делает
 	# `caddy validate` и `caddy reload` в контейнере входа — до проверки живого
 	# адреса. Ручной `docker compose restart caddy` ради нового маршрута больше
-	# не нужен (`agent_docs/guides/new-day.md`).
+	# не нужен.
 
 	# --- дни ---
-	# handle_path срезает префикс: приложение видит "/", а браузер — "/dayN/".
-	# Поэтому в HTML каждого дня — относительные пути и никакого <base>:
-	# redir приводит адрес к завершающему слэшу, и "./healthz" верен
-	# и в проде, и при локальном запуске (см. days/day1/public/index.html).
-	# redir нужен, потому что handle_path /day1/* не совпадает с голым /day1.
-
-	redir /day1 /day1/ permanent
-	handle_path /day1/* {
-		reverse_proxy day1:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day2 /day2/ permanent
-	handle_path /day2/* {
-		reverse_proxy day2:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day3 /day3/ permanent
-	handle_path /day3/* {
-		reverse_proxy day3:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day4 /day4/ permanent
-	handle_path /day4/* {
-		reverse_proxy day4:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day5 /day5/ permanent
-	handle_path /day5/* {
-		reverse_proxy day5:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day6 /day6/ permanent
-	handle_path /day6/* {
-		reverse_proxy day6:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day7 /day7/ permanent
-	handle_path /day7/* {
-		reverse_proxy day7:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day8 /day8/ permanent
-	handle_path /day8/* {
-		reverse_proxy day8:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day9 /day9/ permanent
-	handle_path /day9/* {
-		reverse_proxy day9:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day10 /day10/ permanent
-	handle_path /day10/* {
-		reverse_proxy day10:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day11 /day11/ permanent
-	handle_path /day11/* {
-		reverse_proxy day11:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day13 /day13/ permanent
-	handle_path /day13/* {
-		reverse_proxy day13:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day14 /day14/ permanent
-	handle_path /day14/* {
-		reverse_proxy day14:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day15 /day15/ permanent
-	handle_path /day15/* {
-		reverse_proxy day15:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day16 /day16/ permanent
-	handle_path /day16/* {
-		reverse_proxy day16:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day18 /day18/ permanent
-	handle_path /day18/* {
-		reverse_proxy day18:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day19 /day19/ permanent
-	handle_path /day19/* {
-		reverse_proxy day19:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day20 /day20/ permanent
-	handle_path /day20/* {
-		reverse_proxy day20:8080 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day22 /day22/ permanent
-	handle_path /day22/* {
-		reverse_proxy day22:8080 {
-			health_uri /healthz
-			health_interval 30s
-			# Без этой строки день увидит в X-Forwarded-For адрес контейнера
-			# входа вместо адреса посетителя, и окна лимитера схлопнутся на один
-			# адрес для всех (agent_docs/guides/new-day.md, шаг 2). Работает в
-			# паре с trusted_proxies в начале файла.
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day23 /day23/ permanent
-	handle_path /day23/* {
-		reverse_proxy day23:8080 {
-			health_uri /healthz
-			health_interval 30s
-			# Без этой строки день увидит в X-Forwarded-For адрес контейнера
-			# входа вместо адреса посетителя, и окна лимитера схлопнутся на один
-			# адрес для всех (agent_docs/guides/new-day.md, шаг 2). Работает в
-			# паре с trusted_proxies в начале файла.
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day24 /day24/ permanent
-	handle_path /day24/* {
-		reverse_proxy day24:8080 {
-			health_uri /healthz
-			health_interval 30s
-			# Без этой строки день увидит в X-Forwarded-For адрес контейнера
-			# входа вместо адреса посетителя, и окна лимитера схлопнутся на один
-			# адрес для всех (agent_docs/guides/new-day.md, шаг 2). Работает в
-			# паре с trusted_proxies в начале файла.
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	redir /day25 /day25/ permanent
-	handle_path /day25/* {
-		reverse_proxy day25:8080 {
-			health_uri /healthz
-			health_interval 30s
-			# Без этой строки день увидит в X-Forwarded-For адрес контейнера
-			# входа вместо адреса посетителя, и окна лимитера схлопнутся на один
-			# адрес для всех (agent_docs/guides/new-day.md, шаг 2). Работает в
-			# паре с trusted_proxies в начале файла.
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	# Новый день добавляется двумя строками выше и одним сервисом в compose.yml.
+	# Маршрутов дней здесь больше нет: приложения дней 1–25 удалены, их
+	# контейнеры снимает `docker compose up -d --remove-orphans` в выкатке
+	# (ADR 2026-10-20-0737). Публичными на этом входе остались ровно три вещи:
+	# лендинг (статика внизу файла), /mcp и /rag — обе за своим ключом.
 
 	# --- служба MCP ---
 	# ADR 2026-09-23-1227. Здесь намеренно НЕТ `redir /mcp /mcp/ permanent`,
@@ -319,18 +102,6 @@ http://challenge.zpq.ai {
 	# обходили бы подставленным заголовком.
 	handle /rag {
 		reverse_proxy rag:8086 {
-			health_uri /healthz
-			health_interval 30s
-			header_up X-Forwarded-For {client_ip}
-		}
-	}
-
-	# --- атлас проекта ---
-	# Статика в своём контейнере (ADR 2026-09-10-0550). noindex — из блока
-	# header выше: он накрывает и /atlas/.
-	redir /atlas /atlas/ permanent
-	handle_path /atlas/* {
-		reverse_proxy atlas:8080 {
 			health_uri /healthz
 			health_interval 30s
 			header_up X-Forwarded-For {client_ip}

@@ -28,7 +28,7 @@ jobs:
           # без совпадений ниже не валит шаг.
           tree=$(set -o pipefail; git ls-tree -r -z --name-only HEAD | tr '\n\0' '?\n') || { echo "::error::git ls-tree упал — имена единиц не проверены"; exit 1; }
           # Управляющие символы имени не уходят в команду workflow.
-          bad=$(printf '%s\n' "$tree" | grep -E '^(days/[^/]+|router|agents|atlas|mcpnews|mcpstore|mcp|rag)/Dockerfile$' | sed -E 's#^(days/)?([^/]+)/Dockerfile$#\2#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
+          bad=$(printf '%s\n' "$tree" | grep -E '^(router|agents|mcp|rag)/Dockerfile$' | sed -E 's#^([^/]+)/Dockerfile$#\1#' | grep -vE '^[a-z0-9]+$' | tr '\n' ' ' | LC_ALL=C tr '[:cntrl:]' '?')
           if [ -n "$bad" ]; then
             echo "::error::имя единицы выкатки вне [a-z0-9]+ (каталог с Dockerfile): ${bad}— переименуйте каталог"
             exit 1
@@ -328,42 +328,26 @@ jobs:
             base="$(git rev-parse -q --verify HEAD^ || git rev-list --max-parents=0 HEAD)"
           fi
           # Разбор тот же, что в .github/scripts/deploy-units.sh: тесты на PR
-          # выбирают те же единицы, что выкатка для тех же путей, — кроме
-          # одного исключения ниже: правка в days/day13, days/day14 или
-          # days/day15 поднимает здесь ещё и agents. Исключение только для
-          # тестов: службу день не меняет, и лишняя выкатка прод-сервиса —
-          # вред, поэтому в deploy-units.sh его нет. Без -z git берёт в кавычки
-          # путь с `"`, `\`, табом или не-ASCII, и такой путь не находит свою
-          # единицу.
+          # выбирают те же единицы, что выкатка для тех же путей. Исключение
+          # для дней 13–15 снято вместе с самими днями (ADR 2026-10-20-0737).
+          # Без -z git берёт в кавычки путь с `"`, `\`, табом или не-ASCII, и
+          # такой путь не находит свою единицу.
           changed=$(set -o pipefail; git diff -z --name-only "$base" HEAD | tr '\n\0' '?\n') || { echo "::error::git diff ${base}..HEAD упал — затронутые единицы не определены"; exit 1; }
-          # Единица сборки — день (days/dayN), сервис (router, agents) или атлас.
-          # Граф атласа строится из входов atlas/atlas.config.json: правка любого
-          # из них пересобирает атлас, и только его. Версия инструмента живёт в
-          # atlas-tool.sh — её смена тоже пересобирает витрину.
+          # Единица сборки — каталог в корне: router, agents, mcp или rag.
           # Корпус индекса — не каталог единицы, а список из rag/corpus.py:
           # правка документа или кода живой единицы обязана переехать в
           # индекс выкаткой, иначе он стареет молча (ADR 2026-09-29-1639,
-          # п. 3). Та же роль, что у регулярки atlas ниже.
+          # п. 3).
           # Это ВТОРАЯ копия списка корпуса, и разъехаться ей есть куда:
           # первая редакция забыла README единиц вне списка кода, и правка
-          # atlas/README.md меняла бы корпус, не запуская выкатку (находка
+          # такого README меняла бы корпус, не запуская выкатку (находка
           # reviewer к PR #278). Совпадение держит не комментарий, а тест
           # rag/test/test_corpus.py::CiRegexTest — он берёт эту регулярку из
           # ci.yml и прогоняет по ней каждый путь corpus.collect().
-          rag='^(agent_docs/|AGENTS\.md$|README\.md$|rag/|router/|agents/|mcp/|mcpnews/|mcpstore/|deploy/|\.github/|test/|atlas/README\.md$|site/README\.md$)'
-          atlas='^(atlas/|agent_docs/|\.claude/agents/|\.agents/skills/[^/]+/SKILL\.md$|AGENTS\.md$|skills-lock\.json$|deploy/(compose\.yml|caddy/Caddyfile)$|site/index\.html$|router/config/providers\.json$|\.github/scripts/atlas-tool\.sh$)'
-          # Исключение из совпадения с deploy-units.sh: дни 13, 14 и 15 работают
-          # через службу агентов, и их связку проверяют тесты из единицы
-          # agents — agents/test/day13-reconnect.test.js для дня 13 и
-          # agents/test/day14-staged.test.js для дня 14 (там же страж дня 13).
-          # День 15 заведён копией дня 14 и ходит в ту же службу, поэтому
-          # попадает под то же правило. Без этой строки правка только в
-          # days/day13, days/day14 или days/day15 их не прогоняет, и дефект на
-          # стыке дня и службы проходит молча (находка reviewer к PR #192). Имя
-          # `agents` здесь готовое, из пути ничего не выводится.
+          rag='^(agent_docs/|AGENTS\.md$|README\.md$|rag/|router/|agents/|mcp/|deploy/|\.github/|test/|site/README\.md$)'
           # Имя из пути — недоверенный ввод, оно становится matrix.day: в матрицу
           # идёт только [a-z0-9]+ с каталогом единицы в дереве.
-          days=$(printf '%s\n' "$changed" | { grep -oE '^days/[^/]+' | cut -d/ -f2; printf '%s\n' "$changed" | grep -oE '^(router|agents|mcpnews|mcpstore|mcp|rag)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE '^days/day1[345]/' && echo agents; printf '%s\n' "$changed" | grep -qE "$atlas" && echo atlas; printf '%s\n' "$changed" | grep -qE "$rag" && echo rag; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do case $u in (router|agents|atlas|mcpnews|mcpstore|mcp|rag) d=$u ;; (*) d=days/$u ;; esac; [ -d "$d" ] && echo "$u"; done | jq -R . | jq -sc .)
+          days=$(printf '%s\n' "$changed" | { grep -oE '^(router|agents|mcp|rag)/' | cut -d/ -f1; printf '%s\n' "$changed" | grep -qE "$rag" && echo rag; } | sort -u | grep -E '^[a-z0-9]+$' | while read -r u; do [ -d "$u" ] && echo "$u"; done | jq -R . | jq -sc .)
           [ -z "$days" ] && days='[]'
           echo "days=$days" >> "$GITHUB_OUTPUT"
           echo "затронуты: $days"
@@ -385,14 +369,14 @@ jobs:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
       # Node 24 — тем единицам, что держат состояние во встроенном node:sqlite
-      # без флага: сервису агентов и серверу файлов дня 19. Список — здесь, а
+      # без флага: сервису агентов. Список — здесь, а
       # не в самих единицах: их тесты на Node 22 падают не «не тем», а
       # отсутствием модуля, и читать такой отказ как дефект кода легко.
       - id: node
         name: Версия Node для единицы
         run: |
           case "$DAY" in
-            agents|mcpstore) echo "version=24" >> "$GITHUB_OUTPUT" ;;
+            agents) echo "version=24" >> "$GITHUB_OUTPUT" ;;
             *) echo "version=22" >> "$GITHUB_OUTPUT" ;;
           esac
       - uses: actions/setup-node@v4
@@ -404,12 +388,13 @@ jobs:
           case "$DAY" in
             router) echo "dir=router" >> "$GITHUB_OUTPUT"; echo "port=8081" >> "$GITHUB_OUTPUT" ;;
             agents) echo "dir=agents" >> "$GITHUB_OUTPUT"; echo "port=8082" >> "$GITHUB_OUTPUT" ;;
-            atlas) echo "dir=atlas" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
             mcp) echo "dir=mcp" >> "$GITHUB_OUTPUT"; echo "port=8083" >> "$GITHUB_OUTPUT" ;;
-            mcpnews) echo "dir=mcpnews" >> "$GITHUB_OUTPUT"; echo "port=8084" >> "$GITHUB_OUTPUT" ;;
-            mcpstore) echo "dir=mcpstore" >> "$GITHUB_OUTPUT"; echo "port=8085" >> "$GITHUB_OUTPUT" ;;
             rag) echo "dir=rag" >> "$GITHUB_OUTPUT"; echo "port=8086" >> "$GITHUB_OUTPUT" ;;
-            *) echo "dir=days/$DAY" >> "$GITHUB_OUTPUT"; echo "port=8080" >> "$GITHUB_OUTPUT" ;;
+            # Имя вне списка — не «день по умолчанию», а ошибка: единиц дней
+            # больше нет (ADR 2026-10-20-0737), и прежняя развилка `*`
+            # отправляла бы такое имя в несуществующий каталог days/$DAY,
+            # то есть шаг падал бы невнятно, в чужом месте.
+            *) echo "::error::единица $DAY неизвестна — единицы выкатки: router, agents, mcp, rag"; exit 1 ;;
           esac
 
       # Единственная единица с деревом npm (ADR 2026-09-23-1227, п. 2).
@@ -480,8 +465,7 @@ jobs:
             fail=1
           fi
           # Граница: единица без манифеста и без кода — это конфигурация и
-          # документы (atlas: его app.js генерируемый и в репозиторий не
-          # коммитится). Такую пропускаем вслух, а не молча.
+          # документы. Такую пропускаем вслух, а не молча.
           if [ "$seen" -eq 0 ] && [ "$pyseen" -eq 0 ] && [ ! -f package.json ] && [ ! -f requirements.txt ]; then
             echo "::notice::в ${PWD} нет кода и нет манифеста — единица без исполняемого кода, проверять нечего"
           fi
@@ -515,16 +499,8 @@ jobs:
             echo "тестов нет — пропуск"
           fi
 
-      # В образ атласа идёт собранный atlas/dist/site, поэтому сборка — до docker build.
-      # Инструмент — клон project-atlas на пине из atlas-tool.sh (ADR 2026-09-12-0440).
-      - name: Сборка витрины атласа
-        if: matrix.day == 'atlas'
-        run: |
-          ATLAS_TOOL=$(bash .github/scripts/atlas-tool.sh)
-          node "$ATLAS_TOOL/build.js" --root . --config atlas/atlas.config.json --out atlas/dist
-
-      # В образ rag идёт копия корпуса, поэтому сборка — до docker build, как
-      # у атласа (ADR 2026-09-12-0440 — прецедент; ADR 2026-09-29-1639, п. 3).
+      # В образ rag идёт копия корпуса, поэтому сборка — до docker build
+      # (ADR 2026-09-29-1639, п. 3).
       # Список корпуса живёт в rag/corpus.py, а не здесь: тот же обход читает
       # build.py, и разъехаться им негде. Репозиторий в контейнер не
       # монтируется — рядом с ним на VPS лежат deploy/*.env.
@@ -545,7 +521,7 @@ jobs:
           # Ключ фиктивный: проверяем, что контейнер поднимается и отвечает,
           # а не что конфигурация полна — /healthz отдаёт 503 без ключа.
           # Роутеру для старта нужны ключи приложений — тоже фиктивные.
-          # Сервису агентов — AGENT_KEY и ROUTER_APP_KEY, дню 6 — AGENT_KEY.
+          # Сервису агентов — AGENT_KEY и ROUTER_APP_KEY.
           #
           # RAG_KEY — не «на всякий случай»: единица rag БЕЗ него выходит с
           # кодом 2 и до /healthz не доходит вовсе (rag/serve.py, main; ADR
@@ -604,9 +580,10 @@ jobs:
   # Границы сетей compose — условие вето compliance (ADR 2026-09-23-1227,
   # п. 5, заменён в части ADR 2026-09-29-0236). Проверяет структуру
   # deploy/compose.yml, а не намерение: mcp только в сети mcp, в сети mcp —
-  # caddy, mcp, день 16 и agents, причём agents обязан там быть (иначе хост
-  # не дотянется до службы дня 16); cron только в сети cron, в сети cron —
-  # только agents и cron (ADR 2026-09-28-0736, п. 6).
+  # caddy, mcp и agents, причём agents обязан там быть (иначе хост
+  # не дотянется до службы MCP). Правила сетей `cron` и `tools` снялись
+  # вместе с контейнером времени и серверами mcpnews/mcpstore
+  # (ADR 2026-10-20-0737).
   # Отрезанной от agents сеть mcp больше НЕ является: достижимость службы
   # дня 16 держит ключ MCP_KEY, а не топология.
   compose:
@@ -615,7 +592,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
-      - name: Изоляция сетей mcp и cron
+      - name: Изоляция сетей mcp и rag
         run: node .github/scripts/compose-networks.mjs
 
       # Потолки памяти и ядер у ollama и rag — ADR 2026-09-29-1639, п. 4.
@@ -624,207 +601,6 @@ jobs:
       # потолок, только на машине с 3,9 ГБ он ничего не значит.
       - name: Потолки памяти и ядер у ollama и rag
         run: node .github/scripts/compose-limits.mjs
-
-      # Контейнер времени — стоковый образ без Dockerfile, поэтому ни матрица
-      # сборки, ни «Проверка живого сайта» его не видят: до первого срока в
-      # проде о нём никто ничего не узнает. Этот шаг — единственное место, где
-      # образ поднимается до выкатки.
-      #
-      # Проверяется не «образ существует», а три допущения, на которых стоит
-      # п. 6 ADR и которые до сборки были взяты из конфигурации busybox, а не
-      # из прогона:
-      #   1) в образе есть crond и wget с длинными опциями (--post-data,
-      #      --header) — иначе тик не уйдёт вовсе;
-      #   2) локальное время образа — UTC, то есть в нём нет tzdata. Сдвиг
-      #      развёл бы сутки расписания и сутки суточного потолка стартов, не
-      #      сломав при этом ничего на вид: контейнер жив, запуски идут;
-      #   3) настоящий deploy/cron/entrypoint.sh с этим образом доходит до
-      #      crond — берётся файл из репозитория, а не его пересказ;
-      #   4) таблица, которую busybox awk собрал из agents/config/jobs.json,
-      #      совпадает со строками, посчитанными из того же файла node через
-      #      JSON.parse. Это и есть держатель единственного источника
-      #      каденции: строчный разбор в alpine и разбор JSON в сервисе
-      #      агентов обязаны понимать одну строку одинаково. Сверка идёт по
-      #      журналу поднятого контейнера, а не по выводу скрипта на раннере:
-      #      предмет — что до alpine доехало именно это.
-      #
-      # Образ берётся строкой из deploy/compose.yml, а не повторяется здесь:
-      # иначе шаг проверял бы один образ, а прод поднимал другой, и обновление
-      # пина оставляло бы шаг зелёным.
-      # timeout-minutes — страховка на всё остальное в шаге (docker pull,
-      # apk add): ограничение снаружи shell, которое не зависит ни от одной
-      # гипотезы о поведении процессов внутри контейнера.
-      - name: Образ cron умеет crond и wget --post-data
-        timeout-minutes: 10
-        run: |
-          set -euo pipefail
-          image=$(grep -oE 'alpine:[0-9.]+@sha256:[0-9a-f]{64}' deploy/compose.yml)
-          [ -n "$image" ] || { echo "::error::в deploy/compose.yml не найден образ cron, закреплённый по digest"; exit 1; }
-          echo "образ из compose.yml: $image"
-          docker pull -q "$image"
-
-          # Наличие crond — по `command -v`, а не по тексту справки: у
-          # отсутствующей команды вывод «sh: crond: not found» тоже содержит
-          # слово crond, и проверка по тексту зеленела бы на любой гипотезе.
-          docker run --rm --entrypoint /bin/sh "$image" -c 'command -v crond >/dev/null' || {
-            echo "::error::в образе нет crond"; exit 1; }
-
-          # А вот длинные опции wget видны только в справке: busybox собирают и
-          # без CONFIG_FEATURE_WGET_LONG_OPTIONS, и тогда wget есть, а
-          # --post-data нет. Справка идёт в stderr с ненулевым кодом — отсюда
-          # `|| true` и разбор текста.
-          help=$(docker run --rm --entrypoint /bin/sh "$image" -c 'wget --help 2>&1' || true)
-          printf '%s\n' "$help" | grep -q 'post-data' || {
-            echo "::error::в образе нет wget --post-data: тик планировщика не уйдёт"; exit 1; }
-
-          offset=$(docker run --rm --entrypoint /bin/sh "$image" -c 'date +%z')
-          [ "$offset" = '+0000' ] || {
-            echo "::error::локальное время образа $offset, а не UTC: сутки расписания разойдутся с сутками суточного потолка стартов"; exit 1; }
-          echo "смещение времени в образе: $offset"
-
-          # ── Предел сверху для запусков entrypoint.sh ────────────────────
-          # entrypoint.sh в норме заканчивается `exec crond -f`, который сам
-          # не завершается, поэтому у каждого его запуска обязан быть предел.
-          # Раньше предел стоял ВНУТРИ контейнера (`--entrypoint
-          # /usr/bin/timeout … 10`), и шаг всё равно встал на 16 минут
-          # (прогон 36401908047, job 108861506729): контейнер был жив спустя
-          # 16 минут после предела в 10 секунд. Причина установлена прогоном
-          # (36404323513, три запуска, отличавшиеся только тем, кто PID 1):
-          # busybox timeout не форкает ребёнка, а ставит сторожа и exec'ает
-          # команду в своём же процессе. С `--entrypoint /usr/bin/timeout`
-          # этот процесс — PID 1, значит PID 1 становится crond, а ядро не
-          # доставляет PID 1 сигнал без своего обработчика. crond обработчика
-          # TERM не ставит — сторож стрелял в пустоту.
-          #   A: timeout как entrypoint, цель = PID 1 → не умер, 124 по
-          #      пределу раннера;
-          #   B: та же команда, но PID 1 = /bin/sh → 143 за 3 с;
-          #   C: timeout как entrypoint, но PID 1 = docker-init → 143 за 3 с.
-          #
-          # Отсюда правка: предел вынесен НАРУЖУ контейнера, где PID 1
-          # контейнера роли не играет. Контейнер поднимается фоном, ждёт его
-          # сам шаг своим счётчиком (docker logs и docker inspect
-          # возвращаются сразу), а снимает `docker rm -f` — это KILL, а KILL
-          # не игнорирует даже PID 1. Не снимать как лишнее: без внешнего
-          # предела любой незавершающийся процесс в образе снова вешает job
-          # до лимита GitHub в 6 часов.
-          #
-          # «Не уложился в предел» — отдельный красный со своим текстом, а не
-          # тихий `|| true`: иначе зависание маскировалось бы под невыполненную
-          # проверку, а ждать, чем кончится, было бы нечем.
-          wait_s=20
-
-          # Первый запуск: настоящий entrypoint на настоящем образе должен
-          # дойти до строки «расписание принято, запуск crond». Предмет проверки —
-          # что до неё дошло, а не что процесс закончился: после неё crond
-          # работает вечно, и ждать его выхода бессмысленно. Ключ здесь
-          # заведомо не настоящий: шаг никуда не стучится.
-          docker rm -f ci-cron-start >/dev/null 2>&1 || true
-          docker run -d --name ci-cron-start -e AGENT_KEY=ci-not-a-real-key \
-            -v "$PWD/deploy/cron:/cron:ro" \
-            -v "$PWD/agents/config/jobs.json:/jobs.json:ro" --entrypoint /bin/sh \
-            "$image" /cron/entrypoint.sh >/dev/null
-
-          # Три исхода ожидания различимы, и каждый разбирается отдельно:
-          # строка появилась; контейнер завершился, не напечатав её; предел
-          # вышел, а контейнер всё ещё жив.
-          started=no
-          exited=no
-          i=0
-          while [ "$i" -lt "$wait_s" ]; do
-            if docker logs ci-cron-start 2>&1 | grep -q 'расписание принято, запуск crond'; then
-              started=yes
-              break
-            fi
-            if [ "$(docker inspect -f '{{.State.Running}}' ci-cron-start)" != 'true' ]; then
-              exited=yes
-              break
-            fi
-            i=$((i + 1))
-            sleep 1
-          done
-          rc=$(docker inspect -f '{{.State.ExitCode}}' ci-cron-start)
-          echo "--- журнал первого запуска ---"
-          docker logs ci-cron-start > /tmp/cron-start.log 2>&1 || true
-          cat /tmp/cron-start.log
-          echo "--- конец журнала первого запуска ---"
-          docker rm -f ci-cron-start >/dev/null
-          if [ "$started" != 'yes' ] && [ "$exited" = 'yes' ]; then
-            echo "::error::deploy/cron/entrypoint.sh завершился кодом $rc, не дойдя до crond на этом образе — журнал выше"
-            exit 1
-          fi
-          if [ "$started" != 'yes' ]; then
-            echo "::error::за ${wait_s} с контейнер не напечатал «расписание принято, запуск crond» и остался жив: шаг не дождался, проверка старта не выполнена — журнал выше"
-            exit 1
-          fi
-          echo "первый запуск: entrypoint дошёл до crond"
-
-          # ── Таблица в контейнере = каденция из jobs.json ────────────────
-          # Ожидаемые строки считает node из того же файла разбором JSON —
-          # тем самым, которым его читает сервис агентов. Сверка не с
-          # выводом deploy/cron/crontab.sh на раннере, а со строками
-          # «cron:   …» из журнала контейнера: именно они доказывают, что
-          # busybox awk в alpine понял файл так же.
-          # shellcheck disable=SC2016 # ${…} здесь — шаблон JS, а не подстановка shell
-          node -e '
-            const jobs = JSON.parse(require("fs").readFileSync("agents/config/jobs.json", "utf8")).jobs
-            if (!Array.isArray(jobs) || jobs.length === 0) { console.error("::error::в jobs.json нет работ"); process.exit(1) }
-            process.stdout.write(jobs.map((j) => `${j.scheduleUtc} /cron/tick.sh ${j.id}`).join("\n") + "\n")
-          ' > /tmp/expected-crontab
-          echo "--- ожидаемая таблица по jobs.json ---"
-          cat /tmp/expected-crontab
-
-          # Строки таблицы — из журнала, снятого выше: контейнер уже снят,
-          # а отметка о приёме печатается ПОСЛЕ таблицы, поэтому в журнале
-          # она полная.
-          sed -n 's/^cron:   //p' /tmp/cron-start.log > /tmp/actual-crontab
-          if ! diff -u /tmp/expected-crontab /tmp/actual-crontab; then
-            echo "::error::таблица crond в контейнере разошлась с каденцией из agents/config/jobs.json — слева ожидаемое по JSON.parse, справа напечатанное контейнером"
-            exit 1
-          fi
-          echo "таблица crond в контейнере совпала с jobs.json"
-
-          # Отказ по поясу — устройство, и проверяется он подменой пояса, а не
-          # чтением комментария. Коды различают гипотезы: без них «не удалось
-          # поставить tzdata» и «пояс сменился, а entrypoint всё равно
-          # поднялся» дали бы один и тот же ненулевой код, и шаг зеленел бы
-          # при любом исходе (agent_docs/guides/verification.md).
-          #   90 — tzdata не встала: мутация не состоялась, судить не о чем;
-          #   91 — пояс не сменился: мутация не состоялась;
-          #   78 — entrypoint отказал по поясу, как и задумано.
-          # Здесь ждут именно завершения: отказ обязан быть выходом. Но если
-          # отказа нет, контейнер уходит в crond и не кончается никогда —
-          # отсюда тот же внешний предел, что и у первого запуска, и свой
-          # красный на «не дождались».
-          docker rm -f ci-cron-tz >/dev/null 2>&1 || true
-          docker run -d --name ci-cron-tz -e AGENT_KEY=ci-not-a-real-key -e TZ=Asia/Singapore \
-            -v "$PWD/deploy/cron:/cron:ro" \
-            -v "$PWD/agents/config/jobs.json:/jobs.json:ro" --entrypoint /bin/sh "$image" -c \
-            'apk add --no-cache tzdata >/dev/null 2>&1 || exit 90; [ "$(date +%z)" = "+0800" ] || exit 91; exec /bin/sh /cron/entrypoint.sh' >/dev/null
-          exited=no
-          i=0
-          while [ "$i" -lt "$wait_s" ]; do
-            if [ "$(docker inspect -f '{{.State.Running}}' ci-cron-tz)" != 'true' ]; then
-              exited=yes
-              break
-            fi
-            i=$((i + 1))
-            sleep 1
-          done
-          rc=$(docker inspect -f '{{.State.ExitCode}}' ci-cron-tz)
-          echo "--- журнал запуска с поясом Asia/Singapore ---"
-          docker logs ci-cron-tz 2>&1 || true
-          echo "--- конец журнала запуска с поясом ---"
-          docker rm -f ci-cron-tz >/dev/null
-          if [ "$exited" != 'yes' ]; then
-            echo "::error::за ${wait_s} с контейнер с поясом +0800 не завершился: шаг не дождался, отказ по поясу не проверен — журнал выше"
-            exit 1
-          fi
-          case "$rc" in
-            78) echo "пояс Asia/Singapore: старт отменён кодом 78, как и задумано" ;;
-            90) echo "::error::tzdata не поставилась — подмена пояса не состоялась, отказ по поясу не проверен"; exit 1 ;;
-            91) echo "::error::пояс не сменился — подмена пояса не состоялась, отказ по поясу не проверен"; exit 1 ;;
-            *) echo "::error::при поясе +0800 entrypoint вернул $rc, а не 78: отказ по поясу не держит"; exit 1 ;;
-          esac
 
 
   # actionlint по всем workflow: синтаксис, выражения ${{ }}, имена событий,

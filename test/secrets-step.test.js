@@ -3,11 +3,15 @@
 // под `bash -e` во временном каталоге. Так проверяется поведение гейта, а не
 // его копия (ADR 2026-09-12-0440, раздел 3).
 //
-// Плюс сверка выражения гейта со списком образцов инструмента
-// (`node build.js --samples`), когда клон инструмента доступен: в job `guard`
-// это всегда, локально — после .github/scripts/atlas-tool.sh. Литерал SAMPLES
-// ниже — запасной страж на случай, когда инструмента нет; он записан в той же
-// форме, что и у инструмента, иначе два пути сверки сравнивали бы разное.
+// Сверки со списком образцов инструмента атласа (`node build.js --samples`)
+// здесь больше нет: инструмент и каталог `atlas/` удалены
+// (ADR 2026-10-20-0737). Единственной сверкой остался литерал SAMPLES ниже, и
+// это ослабление названо прямо: прежде выражение гейта сверялось с ВТОРЫМ
+// источником, который правится другой рукой и в другом репозитории, а теперь
+// оба списка живут здесь и в docs-guard.yml — расхождение между ними страж
+// по-прежнему ловит, а расхождение с чужим инструментом ловить стало нечем
+// (сам инструмент в конвейере больше не исполняется, так что ловить и
+// нечего).
 import assert from 'node:assert/strict'
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -20,7 +24,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const WORKFLOW = join(ROOT, '.github/workflows/docs-guard.yml')
 const STEP = 'Секреты не попали в репозиторий'
 
-/** Те же образцы, что KEY_SAMPLES инструмента: буква префикса в классе `[k]`. */
+/** Образцы гейта: буква префикса в классе `[k]`, чтобы файл не нашёл себя. */
 const SAMPLES = [
   's[k]-ant-[A-Za-z0-9_-]{10,}',
   'BEGIN [A-Z0-9 ]*PRIVATE KEY',
@@ -124,15 +128,4 @@ test('нечитаемый файл — grep возвращает 2, шаг па
 
 test('выражение шага совпадает с литералом образцов', () => {
   assert.deepEqual(stepSamples(script), SAMPLES)
-})
-
-test('выражение шага совпадает со списком инструмента (--samples)', (t) => {
-  const tool = process.env.ATLAS_TOOL
-  if (!tool) {
-    t.skip('ATLAS_TOOL не задан — сверка с инструментом пропущена, остаётся литерал')
-    return
-  }
-  const run = spawnSync('node', [join(tool, 'build.js'), '--samples'], { encoding: 'utf8' })
-  assert.equal(run.status, 0, `${run.stdout}${run.stderr}`)
-  assert.deepEqual(stepSamples(script), run.stdout.trimEnd().split('\n'))
 })

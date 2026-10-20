@@ -315,20 +315,14 @@ class НормализацияСходитсяСДнём22(unittest.TestCase):
         "",
     ]
 
-    def test_flatten_совпадает_знак_в_знак(self):
-        out = node(
-            "import {flatten} from './days/day22/eval/score.mjs'\n"
-            f"const cases = {json.dumps(self.CASES, ensure_ascii=False)}\n"
-            "console.log(JSON.stringify(cases.map(flatten)))\n"
-        )
-        self.assertEqual(json.loads(out), [features.flatten(case) for case in self.CASES])
-
-    def test_рубрика_судьи_одна_и_та_же(self):
-        out = node(
-            "import {RUBRIC} from './days/day22/eval/score.mjs'\n"
-            "console.log(JSON.stringify(RUBRIC))\n"
-        )
-        self.assertEqual(json.loads(out), features.RUBRIC)
+    # Двух сверок — `flatten` знак в знак и рубрики судьи — здесь больше нет:
+    # они импортировали `days/day22/eval/score.mjs`, а каталог дней удалён
+    # (ADR 2026-10-20-0737). ЭТО ОСЛАБЛЕНИЕ, И ОНО НАЗВАНО: вторая копия
+    # механики в `eval/features.py` больше ни с чем не сверяется, и мягкая
+    # нормализация в ней теперь пройдёт зелёной. Сверять её не с чем — первой
+    # копии в репозитории нет; вернуть сверку можно, только вернув первую
+    # копию или объявив `features.py` единственным источником (решение
+    # владельца, не следствие этой уборки).
 
     def test_фраза_отказа_взята_у_агента_а_не_придумана(self):
         out = node(

@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Раскладка и тексты — agent_docs/design/2026-09-10-1553-progress-page.md.
-     Пути к своим файлам относительные, <base> нет; ссылки на приложения —
-     от корня. Ни одного числа из журнала литералом. Названия и даты дней
-     читает атлас (инструмент project-atlas): класс app-text и атрибут data-date. -->
+     Пути к своим файлам относительные, <base> нет. Ни одного числа из журнала
+     литералом. Списка приложений здесь больше нет: дни сняты в архив
+     (ADR 2026-10-20-0737), и ссылок на живые демо не осталось ни одной. -->
 <title>AI Advent 2026</title>
 <link rel="stylesheet" href="style.css">
 <noscript><style>.js-only { display: none !important; }</style></noscript>
@@ -18,47 +18,21 @@
 <div class="page">
   <header class="head">
     <h1>AI Advent 2026</h1>
-    <p class="lede">Задания челленджа: одно задание — один день — одно приложение. Работающие приложения, текущая работа и журнал PR — зачем был нужен каждый и чем закончился.</p>
+    <p class="lede">Задания челленджа: одно задание — один день — одно приложение. Приложения сняты в архив, журнал остался: текущая работа и все PR — зачем был нужен каждый и чем закончился.</p>
   </header>
 
   <main>
     <section aria-labelledby="apps-h">
-      <div class="sec-head"><h2 id="apps-h">Работающие приложения</h2></div>
-      <!-- Статичный список: работает без скрипта и без data.js. Новый день —
-           одна строка здесь, в feat-PR дня. -->
-      <ul class="apps">
-        <li><a class="app" href="/day1/" data-date="07.09"><span class="app-label">День 1</span><span class="app-text">Сфера → 3 главные свежие новости стартапов</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day2/" data-date="07.09"><span class="app-label">День 2</span><span class="app-text">Параметры обработки запроса к модели и подсчёт токенов</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day3/" data-date="08.09"><span class="app-label">День 3</span><span class="app-text">Свой запрос к полным текстам новостей</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day4/" data-date="08.09"><span class="app-label">День 4</span><span class="app-text">Бот новостей стартапов: температура и параметры модели</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day5/" data-date="08.09"><span class="app-label">День 5</span><span class="app-text">Архив статей на сервере и выбор модели: Claude или Groq</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day6/" data-date="09.09"><span class="app-label">День 6</span><span class="app-text">Агент как сервис: монитор его работы и окно передачи</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day7/" data-date="09.09"><span class="app-label">День 7</span><span class="app-text">Чат с агентом: память диалога переживает перезапуск</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day8/" data-date="09.09"><span class="app-label">День 8</span><span class="app-text">Разговор вместо темы: подборка под предел модели и счётчик сессии</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day9/" data-date="11.09"><span class="app-label">День 9</span><span class="app-text">Сводка разговора вместо усечения: сжатие истории при N токенов</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day10/" data-date="14.09"><span class="app-label">День 10</span><span class="app-text">Стратегии памяти агента: скользящее окно и ветки разговора</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day11/" data-date="16.09"><span class="app-label">День 11</span><span class="app-text">Профили и слои памяти агента: правила, факты по темам, диалог</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day13/" data-date="22.09"><span class="app-label">День 13</span><span class="app-text">Машина состояний запуска: пауза на этапе, круг проверки, журнал CSV</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day14/" data-date="22.09"><span class="app-label">День 14</span><span class="app-text">Инварианты профиля: правило заводится в диалоге, ответ с нарушением не отдаётся</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day16/" data-date="23.09"><span class="app-label">День 16</span><span class="app-text">Консоль MCP: команда протокола, три инструмента, ответ службы как есть</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day21/" data-date="02.10"><span class="app-label">День 21</span><span class="app-text">Поиск по проекту: две стратегии нарезки и их сравнение</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day22/" data-date="05.10"><span class="app-label">День 22</span><span class="app-text">Ответ по проекту с поиском и без: разница на десяти вопросах</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day23/" data-date="05.10"><span class="app-label">День 23</span><span class="app-text">Отбор второй ступенью: что нашлось и что дошло до модели</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day24/" data-date="05.10"><span class="app-label">День 24</span><span class="app-text">Ответ с цитатами: источники, дословная сверка и честное «не знаю»</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day25/" data-date="05.10"><span class="app-label">День 25</span><span class="app-text">Чат по проекту: источники и дословные цитаты у каждого ответа, состояние задачи рядом</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day26/" data-date="09.10"><span class="app-label">День 26</span><span class="app-text">Модель на своей машине: восемь запросов разной сложности, вердикты и скорость</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day27/" data-date="09.10"><span class="app-label">День 27</span><span class="app-text">Локальная модель в приложениях: путь запроса до ноутбука и что значит «без облака»</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day28/" data-date="09.10"><span class="app-label">День 28</span><span class="app-text">Поиск по проекту локально и в облаке: десять вопросов, оценки судьи и граница, где сравнение честно</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day29/" data-date="10.10"><span class="app-label">День 29</span><span class="app-text">Оптимизация локальной модели: шесть осей по одной за раз и честное «ни одна не прошла»</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/day30/" data-date="10.10"><span class="app-label">День 30</span><span class="app-text">Свой сервис на локальной модели: доступ снаружи, несколько запросов разом и что увидел клиент на ограничениях</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/days31-35/#day31" data-date="18.10"><span class="app-label">День 31</span><span class="app-text">Ветка через MCP и команда помощи: свой stdio-сервер и скилл поверх поиска по проекту</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/days31-35/#day32" data-date="18.10"><span class="app-label">День 32</span><span class="app-text">AI-ревью PR по метке: шесть живых прогонов, их стоимость и два нештатных исхода</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/days31-35/#day33" data-date="18.10"><span class="app-label">День 33</span><span class="app-text">Ассистент поддержки: что делается и почему проверяющие не увидят код</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/days31-35/#day34" data-date="18.10"><span class="app-label">День 34</span><span class="app-text">Ассистент над файлами: четыре инструмента, две преграды и повторяемый прогон</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/days31-35/#day35" data-date="18.10"><span class="app-label">День 35</span><span class="app-text">Реальная задача: маркетплейс аренды вилл, и что из него видно отсюда</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-        <li><a class="app" href="/atlas/"><span class="app-label">Атлас</span><span class="app-text">Схема проекта: решения, роли, правила и их связи</span><span class="app-arrow" aria-hidden="true">→</span></a></li>
-      </ul>
-      <p class="note">Дни 5–11, 13 и 14 обращаются к моделям через роутер, дни 6–11, 13 и 14 — ещё и через сервис агентов. Своих страниц у этих сервисов нет, поэтому ссылок на них здесь нет.</p>
+      <div class="sec-head"><h2 id="apps-h">Приложения дней сняты</h2></div>
+      <!-- Статичный блок: работает без скрипта и без data.js. Ссылок на живые
+           демо здесь нет намеренно — ни одна из них больше не отвечает, а
+           битая ссылка хуже её отсутствия (решение владельца 2026-10-19:
+           «оставить архивом»). -->
+      <div class="panel archive">
+        <p>Двадцать пять приложений дней работали на этом адресе с 7 сентября по 20 октября 2026 года. 20 октября они сняты: код дней, страницы их итогов и контейнеры в проде удалены, адреса <code>/dayN</code> больше не отвечают.</p>
+        <p>Осталось то, что пригодится дальше: роутер провайдеров моделей, сервис агентов, служба MCP на <code>/mcp</code>, индекс проекта на эмбеддингах на <code>/rag</code> — обе за ключом, — и два локальных сервера MCP для сессий разработки. Решение — <a href="https://github.com/MikeKharr/ai-advent-2026/blob/main/agent_docs/adr/2026-10-20-0737-retire-challenge-days.md">ADR 2026-10-20-0737</a>.</p>
+        <p>Чем был каждый день и чем он закончился — в журнале PR ниже и в <a href="https://github.com/MikeKharr/ai-advent-2026/tree/main/agent_docs">agent_docs</a>: решения, история итераций и замеры остались целиком.</p>
+      </div>
     </section>
 
     <section class="js-only" aria-labelledby="now-h">

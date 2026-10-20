@@ -30,479 +30,27 @@ services:
       - ./caddy:/etc/caddy:ro
       - ../site:/srv/site:ro
     networks:
-      # default — сеть проекта: по ней Caddy ходит в контейнеры дней.
+      # default — сеть проекта. Контейнеров дней в ней больше нет
+      # (ADR 2026-10-20-0737): в ней остались router и agents.
       default:
       # mcp — отдельная сеть службы MCP (ADR 2026-09-23-1227, п. 5). Caddy в
       # ней потому, что публикует /mcp; router, agents и всё, что читает
       # secrets.env, в неё не входят — оттуда имя mcp не разрешается.
       mcp:
       # rag — сеть индекса проекта (ADR 2026-09-29-1639, п. 4). Caddy в ней
-      # потому, что публикует /rag/healthz; дни, router, agents и серверы
-      # инструментов в неё не входят — до эмбеддера им не дотянуться.
+      # потому, что публикует /rag/healthz; router в неё не входит — до
+      # эмбеддера ему не дотянуться.
       rag:
       # edge — общая с проектом zpq: под алиасом advent сюда приходит вход.
       edge:
         aliases:
           - advent
     depends_on:
-      - day1
-      - day2
-      - day3
-      - day4
-      - day5
-      - day6
-      - day7
-      - day8
-      - day9
-      - day10
-      - day11
-      - day13
-      - day14
-      - day15
-      - day16
-      - day18
-      - day19
-      - day20
-      - day22
-      - day23
-      - day24
-      - day25
       - mcp
       - rag
     # Как у всех соседних служб: драйвер по умолчанию пишет без потолка и
     # без ротации — на том же одном VPS, где переполнение диска
     # останавливает учёт расхода (router/src/ledger.js).
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day1:
-    # Тег приходит из .env, который переписывает workflow деплоя.
-    # Откат — поставить предыдущий sha и docker compose up -d day1.
-    image: ghcr.io/mikekharr/advent-day1:${DAY1_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Общее для всех дней: ключ Anthropic и лимиты. Кладётся на сервер один раз.
-      - path: ./secrets.env
-        required: false
-      # Только то, что специфично для этого дня. Переопределяет secrets.env.
-      - path: ./day1.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day2:
-    image: ghcr.io/mikekharr/advent-day2:${DAY2_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./secrets.env
-        required: false
-      - path: ./day2.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day3:
-    image: ghcr.io/mikekharr/advent-day3:${DAY3_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./secrets.env
-        required: false
-      - path: ./day3.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day4:
-    image: ghcr.io/mikekharr/advent-day4:${DAY4_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./secrets.env
-        required: false
-      - path: ./day4.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day5:
-    image: ghcr.io/mikekharr/advent-day5:${DAY5_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Ключей к моделям у дня нет: он ходит в роутер по ключу приложения
-      # (ROUTER_APP_KEY в day5.env, то же значение — APP_KEY_DAY5 в router.env).
-      - path: ./day5.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    volumes:
-      - day5_data:/data   # архив статей, переживает пересоздание контейнера
-    depends_on:
-      - router
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day6:
-    image: ghcr.io/mikekharr/advent-day6:${DAY6_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # День — пульт к агенту: у него только ключ сервиса агентов
-      # (AGENT_KEY в day6.env, то же значение — AGENT_KEY в agents.env).
-      # Ключа роутера у дня нет: деньги тратит агент.
-      - path: ./day6.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day7:
-    image: ghcr.io/mikekharr/advent-day7:${DAY7_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что и у дня 6: своих данных и ключей
-      # к моделям у дня нет, переписка живёт у агента.
-      - path: ./day7.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day8:
-    image: ghcr.io/mikekharr/advent-day8:${DAY8_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что у дней 6 и 7; своя cookie сессии.
-      - path: ./day8.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day9:
-    image: ghcr.io/mikekharr/advent-day9:${DAY9_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что у дней 6–8; своя cookie сессии.
-      # Сводку разговора делает агент (ADR 2026-09-11-1608): ключей к
-      # моделям у дня по-прежнему нет.
-      - path: ./day9.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day10:
-    image: ghcr.io/mikekharr/advent-day10:${DAY10_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что у дней 6–9; своя cookie сессии.
-      # Стратегии памяти и ветки ведёт агент (ADR 2026-09-14-0447): ключей к
-      # моделям у дня по-прежнему нет.
-      - path: ./day10.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day11:
-    image: ghcr.io/mikekharr/advent-day11:${DAY11_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что у дней 6–10; свои cookie профиля и
-      # диалога. Профили, слои памяти и темы ведёт агент
-      # (ADR 2026-09-15-2024): ключей к моделям у дня по-прежнему нет.
-      - path: ./day11.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # Дня 12 в репозитории нет: задание пропущено (ADR 2026-09-21-1747).
-  day13:
-    image: ghcr.io/mikekharr/advent-day13:${DAY13_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что у дней 6–11; свои cookie профиля и
-      # диалога. Машину состояний запуска, паузу, круг проверки и журнал
-      # этапов ведёт агент staged-agent (ADR 2026-09-21-1747): ключей к
-      # моделям у дня по-прежнему нет. Журнал этапов CSV пишет сервис
-      # агентов на свой том agents_data, не день.
-      - path: ./day13.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day14:
-    image: ghcr.io/mikekharr/advent-day14:${DAY14_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что у дней 6–13; свои cookie профиля и
-      # диалога. Память инвариантов профиля, ворота формулировщика и проверку
-      # на нарушение ведёт агент invariant-agent (ADR 2026-09-22-0827):
-      # ключей к моделям у дня по-прежнему нет. Билеты формулировщика живут
-      # в памяти процесса сервиса агентов — секрета для них не заводится.
-      - path: ./day14.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day15:
-    image: ghcr.io/mikekharr/advent-day15:${DAY15_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Тот же ключ сервиса агентов, что у дней 6–14; свои cookie профиля и
-      # диалога. Каталог дня заведён копией дня 14 (ADR 2026-09-23-0646):
-      # промпты профиля, этап подготовки промпта и потолок 32 000 приезжают
-      # следующим PR, до него день работает как день 14 на своём адресе.
-      # Ключей к моделям у дня нет.
-      - path: ./day15.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # День 16 — консоль MCP (ADR 2026-09-23-1227, п. 7). Ключей к моделям,
-  # ключа роутера и ключа сервиса агентов у дня нет: он ходит ТОЛЬКО в службу
-  # MCP по http://mcp:8083/mcp и предъявляет ей её же ключ MCP_KEY.
-  #
-  # Сеть — только mcp, как у самой службы. В default дню делать нечего: ни к
-  # роутеру, ни к агентам он не обращается, и держать его рядом с secrets.env
-  # значило бы отдать сети то, что не нужно для работы.
-  day16:
-    image: ghcr.io/mikekharr/advent-day16:${DAY16_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # MCP_KEY — копия значения из mcp.env (ADR 2026-09-11-1743, норма копии
-      # между env-файлами). Без файла день поднимается, страница отдаётся, но
-      # /healthz отвечает 503 — проверять настройку по нему, не по «up».
-      - path: ./day16.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    networks:
-      - mcp
-    depends_on:
-      - mcp
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # Дни 18–20 (ADR 2026-09-28-0736, пп. 6, 8, 9). Тот же ключ сервиса агентов,
-  # что у дней 6–15, и больше ничего: ключей к моделям и ключа роутера у них
-  # нет, всю работу и весь расход ведёт agents. Своих данных на диске нет —
-  # томов нет: сводки дня 18 живут в jobs.db на томе agents_data, файлы дня 19
-  # — на томе mcpstore_data.
-  day18:
-    image: ghcr.io/mikekharr/advent-day18:${DAY18_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./day18.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  day19:
-    image: ghcr.io/mikekharr/advent-day19:${DAY19_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./day19.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # У дня 20 порядок вызовов выбирает модель, поэтому он единственный из трёх
-  # тратит на посетителя: MAX_DAILY_CALLS 50 — его собственный потолок
-  # (days/day20/env.js), поверх суточного потолка приложения в роутере.
-  day20:
-    image: ghcr.io/mikekharr/advent-day20:${DAY20_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./day20.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # День 22 (ADR 2026-10-04-0735). Пульт: ходит только к сервису агентов за
-  # AGENT_KEY. Ключа RAG_KEY у него НЕТ и ключа networks: тоже — сеть по
-  # умолчанию, как у всех дней: до службы `rag` дню не дотянуться, поиск за
-  # него зовёт `agents` (страж .github/scripts/compose-networks.mjs красит
-  # день, попавший в сеть rag или mcp напрямую).
-  day22:
-    image: ghcr.io/mikekharr/advent-day22:${DAY22_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./day22.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # День 23 — отбор второй ступенью (ADR 2026-10-05-0544). Сеть одна, по
-  # умолчанию, как у всех дней: до службы `rag` дню не дотянуться, поиск и
-  # отбор за него зовёт `agents`.
-  day23:
-    image: ghcr.io/mikekharr/advent-day23:${DAY23_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./day23.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # День 24 — ответ по схеме с проверяемыми цитатами (ADR 2026-10-05-0544,
-  # п. 2). Сеть одна, по умолчанию, как у всех дней: до службы `rag` дню не
-  # дотянуться, поиск, отбор и сверку за него делает `agents`.
-  day24:
-    image: ghcr.io/mikekharr/advent-day24:${DAY24_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      - path: ./day24.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # День 25 — чат по проекту с состоянием задачи (ADR 2026-10-05-0544, п. 3).
-  # Пульт дня 15 с восьмым этапом «Поиск»: ключа RAG_KEY у дня НЕТ и быть не
-  # должно — поиск, отбор и переписывание за него делает `agents` под своим
-  # ключом. Сеть одна, по умолчанию, как у всех дней: до службы `rag` дню не
-  # дотянуться.
-  day25:
-    image: ghcr.io/mikekharr/advent-day25:${DAY25_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    env_file:
-      # Только ключ сервиса агентов, как у дней 15, 22, 23 и 24. Файла
-      # `secrets.env` здесь НЕТ намеренно: в нём лежит ключ Anthropic, а дню
-      # он не нужен ни для чего — потерять его нечем, и это сильнее любой
-      # проверки (I-1).
-      - path: ./day25.env
-        required: false
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - agents
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -531,31 +79,31 @@ services:
       # CONTROL_KEY — ключ поверхности управления; без него она выключена.
       # MODEL_KEYS — именные ключи модели без встроенных отказов
       # (ADR 2026-10-07-1349): `имя:значение` через запятую. Без строки
-      # возможности нет вовсе — модели нет в списке дня 11, ключевые профили
-      # не создаются. Отдельной строки окружения здесь не нужно: файл
+      # возможности нет вовсе — модели нет в списке моделей, ключевые
+      # профили не создаются. Отдельной строки окружения здесь не нужно: файл
       # подключён целиком, и переменная едет из него.
       # MCP_KEY — копия значения из mcp.env: им хост предъявляется службе
-      # дня 16 (ADR 2026-09-29-0236, п. 8). Третья копия после mcp.env и
-      # day16.env; ротация — три файла и три контейнера.
-      # Без файла сервис падает на старте (нет секретов); дни поднимаются.
+      # MCP (ADR 2026-09-29-0236, п. 8). Копий после удаления day16.env две —
+      # mcp.env и agents.env; ротация — два файла и два контейнера.
+      # Без файла сервис падает на старте (нет секретов).
       - path: ./agents.env
         required: false
     environment:
       - NODE_ENV=production
-      # Адреса серверов MCP этого проекта. Не секреты: имена mcpnews и
-      # mcpstore разрешаются только внутри сети tools, публичного адреса у
-      # них нет; адрес службы дня 16 — внутреннее имя её контейнера, тогда
-      # как наружу она ходит через Caddy и свой ключ.
+      # Адреса серверов MCP этого проекта. Не секреты: это внутренние имена
+      # контейнеров, тогда как наружу обе службы ходят через Caddy и свой
+      # ключ. Строк MCP_NEWS_URL и MCP_STORE_URL здесь больше нет: серверы
+      # `mcpnews` и `mcpstore` удалены вместе с днями 18–20
+      # (ADR 2026-10-20-0737).
       # Поэтому здесь, а не в agents.env: файл на сервере правится руками,
       # в ревью не виден и выкаткой не едет, а compose.yml едет из
       # репозитория и виден в диффе. environment перекрывает env_file, так
       # что забытое старое значение в agents.env эти строки не заслонит.
       #
       # Без них loadServers (agents/src/mcp/servers.js) кладёт сервер в
-      # skipped МОЛЧА, и работа планировщика возвращает «инструментов нет»
-      # при живых контейнерах. Держит test/mcp-server-urls.test.js: он
-      # выводит ожидаемый адрес из порта в mcpnews/server.js, пути MCP_PATH
-      # в src/service.js и сети tools в этом же файле — переписать значение
+      # skipped МОЛЧА, и потребитель получает «инструментов нет» при живых
+      # контейнерах. Держит test/mcp-server-urls.test.js: он выводит
+      # ожидаемый адрес из порта и пути самой службы — переписать значение
       # мимо источника нельзя.
       #
       # MCP_DAY16_URL — служба дня 16 третьим сервером (ADR 2026-09-29-0236,
@@ -565,8 +113,8 @@ services:
       # Адрес тоже не секрет: наружу служба публикуется отдельно, Caddyfile.
       # Ключ к ней — MCP_KEY, и он ЗДЕСЬ НЕ СТОИТ: это секрет, его место в
       # agents.env копией из mcp.env (ADR 2026-09-11-1743, норма копии).
-      # Без ключа служба отвечает хосту как несуществующий путь, day16
-      # попадает в `unreachable`, а дни 6–20 работают дальше.
+      # Без ключа служба отвечает хосту как несуществующий путь, и запись
+      # day16 попадает в `unreachable`, а остальное работает дальше.
       #
       # MCP_RAG_URL — служба индекса проекта четвёртым сервером (ADR
       # 2026-10-04-0735, п. 1), её зовёт агент дня 22. Решение принято:
@@ -578,29 +126,18 @@ services:
       # копией из rag.env (закрытый список /day-cycle). Без ключа служба
       # отвечает хосту как несуществующий путь, поиск отказывает, и день 22
       # говорит «поиск недоступен» — модель при этом не вызывается.
-      - MCP_NEWS_URL=http://mcpnews:8084/mcp
-      - MCP_STORE_URL=http://mcpstore:8085/mcp
       - MCP_DAY16_URL=http://mcp:8083/mcp
       - MCP_RAG_URL=http://rag:8086/rag
     volumes:
       - agents_data:/data   # архив статей агента, переживает пересоздание контейнера
     networks:
-      # default — как и раньше: по ней приходят дни 6–15 и уходит запрос в
-      # роутер. Ключ networks: появился только из-за cron: без него служба
-      # оказалась бы ТОЛЬКО в сети cron, и дни потеряли бы её молча.
+      # default — как и раньше: по ней уходит запрос в роутер. Ключ
+      # networks: обязателен, пока у службы есть хоть одна своя сеть: без
+      # него она оказалась бы ТОЛЬКО в них и потеряла бы роутер молча.
+      # Сетей `cron` и `tools` здесь больше нет: контейнер времени и серверы
+      # `mcpnews`/`mcpstore` удалены (ADR 2026-10-20-0737).
       default:
-      # cron — сеть на двоих с контейнером времени (ADR 2026-09-28-0736,
-      # п. 6). Она нужна не для связности: связность дал бы и default. Она
-      # нужна, чтобы у cron не было пути ни к router, ни к дням, ни к mcp —
-      # из неё не разрешается даже их имя. Держит
-      # .github/scripts/compose-networks.mjs.
-      cron:
-      # tools — сеть серверов MCP дней 19–20 (ADR 2026-09-28-0736, п. 3).
-      # Отдельная по той же причине: хост ходит к ним, они не ходят никуда.
-      # caddy в неё не входит — маршрута в Caddyfile у этих серверов нет и
-      # публичного адреса тоже.
-      tools:
-      # mcp — сеть службы дня 16 (ADR 2026-09-29-0236, п. 5). Названная там
+      # mcp — сеть службы MCP (ADR 2026-09-29-0236, п. 5). Названная там
       # цена: сеть `mcp` ПЕРЕСТАЁТ быть отрезанной от `agents`. Из неё теперь
       # разрешается имя `agents`, то есть порты 8082 и 8086 достижимы, и
       # держат их только AGENT_KEY и CONTROL_KEY, а не устройство сети.
@@ -613,13 +150,13 @@ services:
       # `ollama`, то есть единица с деревом npm дотягивается до `ollama:11434`
       # напрямую, минуя ключ, лимитер и суточный потолок службы `rag`.
       # Прежнее обещание «ни дни, ни router, ни agents сюда не входят» про
-      # `agents` больше не действует; про остальных — действует.
+      # `agents` больше не действует; про `router` — действует.
       #
       # Обратное направление названо отдельно, потому что оно тоже есть
       # (находка `compliance`, PR #302): из сети `rag` разрешается имя
       # `agents`, то есть `ollama` — третья сторона без ключа и без
       # лимитера — получает сетевой доступ к портам 8082 и 8086 пульта,
-      # который сидит ещё в `default`, `mcp`, `tools` и `cron`. Держат их
+      # который сидит ещё в `default` и `mcp`. Держат их
       # только AGENT_KEY и CONTROL_KEY, а не устройство сети: это потеря
       # эшелона, а не открытая дверь.
       rag:
@@ -629,71 +166,8 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  # Время планировщика дня 18 (ADR 2026-09-28-0736, п. 6). Контейнер решает
-  # ТОЛЬКО «когда»: по расписанию из git он дёргает ручку запуска работы в
-  # сервисе агентов. Решение «запускать ли сейчас» — включена ли работа, не
-  # идёт ли предыдущий запуск, не занят ли этот час, не исчерпан ли суточный
-  # потолок стартов, есть ли ключ приложения scheduler — принимает сервис
-  # агентов; состояние (jobs.db) и трейс тоже у него.
-  #
-  # Почему контейнер, а не crontab хоста: хостовой crontab лежит вне
-  # репозитория, не едет выкаткой, правится только по ssh и не виден с
-  # экрана. Каденция здесь — поле scheduleUtc работы в
-  # agents/config/jobs.json, и это её единственный адрес: тот же файл читает
-  # сервис агентов, когда показывает экрану дня 18 «следующий срок».
-  # Таблицу для crond собирает из него deploy/cron/crontab.sh на старте.
-  #
-  # Образ стоковый и закреплён тегом И digest (образец — caddy в zpq-ai):
-  # alpine:3.24.2 — движущаяся цель, и смена busybox под тем же тегом меняла
-  # бы поведение crond и wget без единой строки диффа. Обновление — отдельным
-  # PR, как у любого пина. Digest сверен с registry-1.docker.io 2026-09-28.
-  #
-  # Dockerfile у службы нет, и это осознанно: без каталога с Dockerfile она
-  # не единица выкатки (deploy-units.sh, ci.yml), поэтому её не знают ни
-  # матрица сборки, ни ожидание healthy, ни «Проверка живого сайта», которой
-  # нечего дёргать у контейнера без публичного адреса. Поднимает её тот же
-  # `docker compose up -d`, что и caddy, живущий так с первого дня.
-  cron:
-    image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-    restart: unless-stopped
-    env_file:
-      # AGENT_KEY — копия значения из agents.env (норма копии между
-      # env-файлами, ADR 2026-09-11-1743). Без файла контейнер не
-      # поднимается: entrypoint отказывает на старте. Иначе вышел бы
-      # контейнер, который раз в 6 часов получает 401 и при этом выглядит
-      # работающим планировщиком.
-      - path: ./cron.env
-        required: false
-    volumes:
-      # Скрипты контейнера времени — на чтение: entrypoint, сборка таблицы и
-      # тик. Таблицы в этом каталоге больше нет, она собирается на старте.
-      - ./cron:/cron:ro
-      # Единственный источник каденции. Файл тот же, что уезжает в образ
-      # сервиса агентов, поэтому «когда» у контейнера времени и «следующий
-      # срок» на экране дня 18 берутся из одной строки и разойтись не могут.
-      # Отдельной точкой монтирования, а не внутрь /cron: /cron примонтирован
-      # на чтение, и вложить в него файл нечем.
-      #
-      # Таблица собирается на старте, поэтому новая каденция доезжает
-      # пересозданием этого контейнера — его делает шаг выкатки после
-      # `docker compose up -d` (.github/workflows/deploy.yml).
-      - ../agents/config/jobs.json:/jobs.json:ro
-    tmpfs:
-      # /run/agent.key и /run/crontabs/root пишет entrypoint: ключ и
-      # собранная таблица существуют только в памяти контейнера и не
-      # попадают в его записываемый слой на диске.
-      - /run:mode=0755
-    command: ["/bin/sh", "/cron/entrypoint.sh"]
-    networks:
-      - cron
-    depends_on:
-      - agents
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
   # Роутер LLM-провайдеров (ADR 2026-09-08-1748). Публичного адреса нет:
-  # к нему ходят только контейнеры дней по сети compose, http://router:8081.
+  # к нему ходит только сервис агентов по сети compose, http://router:8081.
   router:
     image: ghcr.io/mikekharr/advent-router:${ROUTER_TAG:-latest}
     restart: unless-stopped
@@ -712,6 +186,16 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+
+  # Служба MCP (ADR 2026-09-23-1227). Публичный адрес — /mcp на входе адвента,
+  # вход по Bearer MCP_KEY; /mcp/healthz открыт для выкатки.
+  #
+  # Сеть — только mcp, и это по-прежнему защита устройством, но защищает она
+  # теперь меньше: ключей к моделям и ключа роутера у службы нет, в сети
+  # default её нет — оттуда не разрешается даже имя `router` и ничто из
+  # читающего secrets.env. А вот `agents` с ADR 2026-09-29-0236, п. 5, в сети
+  # `mcp` стоит, и единственная единица проекта с деревом npm до его портов
+  # 8082 и 8086 дотягивается: их держат AGENT_KEY и CONTROL_KEY.
 
   # Служба MCP (ADR 2026-09-23-1227). Публичный адрес — /mcp на входе адвента,
   # вход по Bearer MCP_KEY; /mcp/healthz открыт для выкатки.
@@ -747,11 +231,10 @@ services:
       #     `agents` — ОТДЕЛЬНОЕ от окна консоли, потому что адрес другой
       #     (ADR 2026-09-29-0236, «Одно окно лимитера службы на весь хост»).
       # Поадресную защиту консоли даёт лимитер самого дня
-      # (RATE_LIMIT_PER_MIN=20 на посетителя, days/day16/env.js); он же
-      # держит сверху потолок исходящего трафика к Open-Meteo и Википедии.
-      # Числа ниже выбраны так, чтобы показ в них не упирался, а залп
-      # упирался: умолчания службы (10 и 100) малы для общего окна консоли —
-      # два человека сразу получали бы 429 из-за показа.
+      # Числа выбраны под прежнюю консоль дня 16: её умолчания службы
+      # (10 и 100) были малы для общего окна. Консоли больше нет
+      # (ADR 2026-10-20-0737), числа оставлены как есть — снижать их значит
+      # менять поведение публичной ручки, а это отдельное решение.
       - RATE_LIMIT_PER_MIN=60
       - RATE_LIMIT_PER_HOUR=600
     networks:
@@ -760,56 +243,11 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  # Серверы MCP дней 19–20 (ADR 2026-09-28-0736, п. 3). Публичного адреса нет,
-  # маршрута в Caddyfile нет, ключей нет вовсе: к ним ходит только хост в
-  # agents по сети tools, а платный API они не вызывают. Каждый несёт свою
-  # копию модуля JSON-RPC — пакетов ноль, граница ADR 2026-09-23-1227 цела.
-  mcpnews:
-    image: ghcr.io/mikekharr/advent-mcpnews:${MCPNEWS_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8084"
-    environment:
-      - NODE_ENV=production
-    networks:
-      - tools
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  mcpstore:
-    image: ghcr.io/mikekharr/advent-mcpstore:${MCPSTORE_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8085"
-    environment:
-      - NODE_ENV=production
-    volumes:
-      # Файлы дня 19 живут 30 часов и переживают пересоздание контейнера;
-      # выкатка именованных томов не трогает.
-      - mcpstore_data:/data
-    networks:
-      - tools
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
-  # Атлас проекта (ADR 2026-09-10-0550): статика схемы проекта, маршрут
-  # /atlas/ в Caddyfile. Секретов у него нет, поэтому нет и env_file.
-  atlas:
-    image: ghcr.io/mikekharr/advent-atlas:${ATLAS_TAG:-latest}
-    restart: unless-stopped
-    expose:
-      - "8080"
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-
   # --- индекс проекта на эмбеддингах (день 21, ADR 2026-09-29-1639) ---
   #
-  # Две службы и своя сеть `rag`: в ней только caddy, rag и ollama. Дни,
-  # router, agents и серверы инструментов в неё не входят — до эмбеддера им
-  # не дотянуться, и держит это сеть, а не отсутствие строки в Caddyfile.
+  # Две службы и своя сеть `rag`: в ней caddy, rag, ollama и agents.
+  # `router` в неё не входит — до эмбеддера ему не дотянуться, и держит это
+  # сеть, а не отсутствие строки в Caddyfile.
   #
   # Потолки памяти и ядер стоят ТОЛЬКО у этих двух служб (ADR, п. 4). У
   # остальных контейнеров их нет — это отдельный пункт бэклога владельцу, и
@@ -897,6 +335,9 @@ services:
 
   # Единица rag: корпус в образе, векторы в томе, /rag/healthz и /rag на
   # входе. Инструменты MCP за ключом RAG_KEY — ADR 2026-09-29-2139.
+
+  # Единица rag: корпус в образе, векторы в томе, /rag/healthz и /rag на
+  # входе. Инструменты MCP за ключом RAG_KEY — ADR 2026-09-29-2139.
   rag:
     image: ghcr.io/mikekharr/advent-rag:${RAG_TAG:-latest}
     restart: unless-stopped
@@ -916,21 +357,21 @@ services:
       #
       # Возражение compliance («false даёт тихий отказ при зелёной
       # выкатке») ПРОВЕРЕНО ПО КОДУ и не подтвердилось для этого мержа:
-      #   - deploy.yml:269 — `for svc in router agents mcp mcpnews mcpstore
-      #     rag` с отбором `grep -q "\"$svc\""`, то есть ожидание healthy
+      #   - шаг «Выкатка» в deploy.yml — `for svc in router agents mcp rag`
+      #     с отбором `grep -q "\"$svc\""`, то есть ожидание healthy
       #     покрывает единицы, ИЗМЕНЁННЫЕ этой выкаткой;
-      #   - .github/scripts/deploy-units.sh:65 — регулярка rag включает
+      #   - .github/scripts/deploy-units.sh — регулярка rag включает
       #     `rag/`, `deploy/`, `.github/`, `agent_docs/`, `test/`, и правка
       #     этой единицы всегда попадает в список выкатки;
       #   - без ключа процесс выходит с кодом 2, контейнер перезапускается,
-      #     healthy не наступает, и deploy.yml:277 печатает
+      #     healthy не наступает, и тот же шаг печатает
       #     `docker compose logs --tail 50 rag` и делает exit 1.
       # То есть отказ красный и с точной причиной в журнале, а не зелёный.
       # Разница с true не в громкости, а в радиусе: там не выкатывается
       # ничего, здесь не поднимается только rag.
       #
       # Остаточная правда в возражении есть: выкатка, вовсе не задевающая
-      # rag (правка только days/dayN/ или site/), в список его не включит и
+      # rag (правка только site/), в список его не включит и
       # мёртвого rag не заметит. Окно узкое — регулярка ловит почти всё
       # дерево, — но оно есть, и оно записано в rag/README.md, «Что
       # остаётся непроверенным».
@@ -984,11 +425,15 @@ services:
 # Данные никуда не копировались и не переименовывались — переехало только то,
 # кто их монтирует. Объявление снято тем же изменением, что убирает службы:
 # иначе `down -v` в этом проекте удалил бы сертификаты и почту.
+# day5_data и mcpstore_data здесь больше не объявлены, а сами тома остаются на
+# диске: решение владельца 2026-10-20 — места хватает, удаление не нужно
+# (ADR 2026-10-20-0737). Объявление снято по той же причине, что у caddy_data
+# выше: иначе `down -v` в этом проекте удалил бы данные, которых уже никто не
+# монтирует и за которыми некому присмотреть. `--remove-orphans` в выкатке
+# именованных томов не трогает ни при каком значении.
 volumes:
   router_data:
   agents_data:
-  day5_data:
-  mcpstore_data:
   ollama_data:
   rag_data:
 
@@ -997,24 +442,18 @@ volumes:
 networks:
   edge:
     external: true
-  # Сеть службы MCP: в ней caddy, mcp, day16 — его консоль — и agents,
-  # хост инструментов дня 20 (ADR 2026-09-29-0236, п. 5). Отдельная, а не
-  # default, — ADR 2026-09-23-1227, п. 5; но «отрезана от agents» про неё
-  # больше не говорится: это и есть цена третьего сервера.
+  # Сеть службы MCP: в ней caddy, mcp и agents, хост её инструментов
+  # (ADR 2026-09-29-0236, п. 5). Отдельная, а не default, — ADR
+  # 2026-09-23-1227, п. 5; но «отрезана от agents» про неё больше не
+  # говорится: это и есть цена третьего сервера. Консоли дня 16 в ней больше
+  # нет — приложение дня удалено (ADR 2026-10-20-0737).
   mcp:
-  # Сеть планировщика: в ней только agents и cron (ADR 2026-09-28-0736, п. 6).
-  # Отдельная по той же причине, что mcp: контейнеру времени нечего мочь,
-  # кроме одного стука в одну ручку.
-  cron:
-  # Сеть серверов MCP дней 19–20: в ней только agents, mcpnews и mcpstore
-  # (ADR 2026-09-28-0736, п. 3). caddy в неё не входит: публикация этих
-  # серверов наружу не предусмотрена, и сеть — то, чем это держится.
-  tools:
-  # Сеть индекса проекта: в ней caddy, rag, ollama и — с дня 22 — agents
+  # Сети `cron` и `tools` здесь больше нет: контейнер времени и серверы
+  # `mcpnews`/`mcpstore` удалены вместе с днями 18–20 (ADR 2026-10-20-0737).
+  # Сеть индекса проекта: в ней caddy, rag, ollama и agents
   # (ADR 2026-09-29-1639, п. 4; состав расширен ADR 2026-10-04-0735, п. 1).
-  # Ни дни, ни router, ни серверы инструментов сюда не входят — имя ollama у
-  # них не разрешается вовсе. Про `agents` это больше не так, и это названная
-  # цена потребителя поиска: хост агентов видит и `rag`, и `ollama`, а
-  # эмбеддер закрыт от него только тем, что хост зовёт не его, а
-  # `project.search` с ключом.
+  # `router` сюда не входит — имя ollama у него не разрешается вовсе. Про
+  # `agents` это не так, и это названная цена потребителя поиска: хост
+  # агентов видит и `rag`, и `ollama`, а эмбеддер закрыт от него только тем,
+  # что хост зовёт не его, а `project.search` с ключом.
   rag:
