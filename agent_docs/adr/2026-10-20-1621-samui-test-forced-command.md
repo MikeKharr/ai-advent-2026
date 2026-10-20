@@ -8,7 +8,7 @@
 
 ## Контекст
 
-На общей машине появляется четвёртый compose-проект — стенд `samui-test` проекта `MikeKharr/samui-villas` (`~/samui-villas/deploy/test/`, тот же пользователь `advent`). Решение о стенде принято в том репозитории: ADR `agent_docs/adr/2026-10-20-1259-stand-robots-entry-points.md` (samui-villas), П4. Стенд выкатывается **без человека** — на каждый мерж в `main` samui-villas, ключом ssh из GitHub Environment `stand`. Этот ADR samui-villas требует, чтобы ключ стоял в `authorized_keys` строкой `restrict,command="<скрипт закрытого списка>"`, а скрипт жил здесь: машина и пользователь `advent` — этого репозитория (ADR `2026-09-07-1800`, `2026-09-22-0611`, п. 4), и всё, что исполняется от его имени без человека, ревьюится здесь.
+На общей машине появляется четвёртый compose-проект — стенд `samui-test` проекта `MikeKharr/samui-villas` (`~/samui-villas/deploy/test/`, тот же пользователь `advent`). Решение о стенде принято в том репозитории: ADR стенда samui-villas («Стенд `test.velamui.com`, роботы и точки входа стенда и прода», файл `…-stand-robots-entry-points.md` там), П4. Стенд выкатывается **без человека** — на каждый мерж в `main` samui-villas, ключом ssh из GitHub Environment `stand`. Этот ADR samui-villas требует, чтобы ключ стоял в `authorized_keys` строкой `restrict,command="<скрипт закрытого списка>"`, а скрипт жил здесь: машина и пользователь `advent` — этого репозитория (ADR `2026-09-07-1800`, `2026-09-22-0611`, п. 4), и всё, что исполняется от его имени без человека, ревьюится здесь.
 
 Ключ без `command=` — shell `advent` на каждый push чужого репозитория, то есть доступ ко всем проектам машины: `advent`, `zpq` и будущему проду `samui`.
 
@@ -50,7 +50,7 @@
 
 ## Связанные записи
 
-- samui-villas: ADR `agent_docs/adr/2026-10-20-1259-stand-robots-entry-points.md` (П4-а, П14), issue `MikeKharr/samui-villas#128`, `#183`.
+- samui-villas: ADR стенда (`…-stand-robots-entry-points.md` там; П4-а, П14), issue `MikeKharr/samui-villas#128`, `#183`.
 - Здесь: ADR `2026-09-22-0611` (общий пользователь `advent`, разные ключи), `2026-10-02-0921` (пин ключа хоста — его же берёт выкатка стенда).
 
 ## Альтернативы рассмотрены
