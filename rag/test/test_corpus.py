@@ -49,9 +49,9 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(got, {"deploy/Caddyfile", "deploy/Dockerfile", "deploy/bootstrap.sh"})
 
     def test_readme_единиц_вне_списка_кода(self):
-        tree(self.root, ["atlas/README.md", "atlas/build.js", "rag/README.md"])
+        tree(self.root, ["site/README.md", "site/app.js", "rag/README.md"])
         got = {str(p) for p in corpus.collect(self.root)}
-        self.assertEqual(got, {"atlas/README.md", "rag/README.md"})
+        self.assertEqual(got, {"site/README.md", "rag/README.md"})
 
     def test_пустое_дерево_даёт_пустой_список(self):
         self.assertEqual(corpus.collect(self.root), [])
@@ -152,7 +152,7 @@ class CiRegexTest(unittest.TestCase):
     * `rag='…'` в `.github/scripts/deploy-units.sh` решает, ВЫКАТЫВАТЬ ли его.
 
     Держатель требуемого 3 ревьюера к PR #278: без него правка файла,
-    который в корпусе есть, а в регулярке нет (так было с atlas/README.md),
+    который в корпусе есть, а в регулярке нет (так было с README единицы),
     не запускает единицу rag — индекс стареет молча, и заметить это можно
     только чтением диффа. Вторая копия заведена заходом 3: без неё правка
     документа собирала бы образ в CI и не выкатывала его, то есть обещание
@@ -198,5 +198,5 @@ class CiRegexTest(unittest.TestCase):
     def test_путь_вне_корпуса_регуляркой_не_ловится(self):
         # Иначе «покрывает всё» выполнялось бы регуляркой `^` — и шаг
         # запускал бы rag на любой правке, а тест выше был бы зелёным.
-        for alien in ("days/day1/server.js", ".agents/skills/x/SKILL.md", "atlas/build.js"):
+        for alien in ("site/app.js", ".agents/skills/x/SKILL.md", "mcpgit/server.mjs"):
             self.assertIsNone(self.pattern.search(alien), alien)

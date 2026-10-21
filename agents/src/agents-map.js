@@ -8,7 +8,6 @@
 import { createNewsAnalyst } from './agent.js'
 import { createLayeredAgent, LAYERED_AGENT_ID } from './layered.js'
 import { createMcpAgent, MCP_AGENT_ID } from './mcp/agent.js'
-import { createPipelineAgent, PIPELINE_AGENT_ID } from './mcp/pipeline-agent.js'
 import { STAGED15_MAX_TOKENS } from './params.js'
 import { CHAT_AGENT_ID, createRagChat, RAG_STAGES } from './rag/chat.js'
 import { CITED_AGENT_ID, createRagAgent, RAG_AGENT_ID, RERANK_AGENT_ID } from './rag-agent.js'
@@ -22,8 +21,8 @@ import {
 
 /**
  * Реестр агентов → исполнители: аналитик новостей, слои памяти, машина
- * состояний, она же с инвариантами профиля, цикл с инструментами MCP,
- * цепочка без модели и конвейер поиска по проекту (день 22).
+ * состояний, она же с инвариантами профиля, цикл с инструментами MCP и
+ * конвейер поиска по проекту.
  */
 export function createAgents({
   registry,
@@ -46,16 +45,16 @@ export function createAgents({
   const agents = new Map()
   for (const entry of registry.values()) {
     let agent
-    // Агент без модели (день 19) исполнителя здесь пока не имеет: цепочка
-    // подключается отдельно. Развилка `else` ниже отдала бы его исполнителю
-    // дня 6, и тот пошёл бы в роутер с `taskClass: null` и без системного
-    // промпта — то есть запись в реестре без исполнителя становится не
-    // «ничем», а чужим агентом, доходящим до платного вызова (находка гейта,
-    // PR #233). Поэтому такой агент не регистрируется вовсе и в выдаче
-    // `/v1/agents` не появляется, а строка в журнале называет причину.
-    if (entry.id === PIPELINE_AGENT_ID)
-      agent = createPipelineAgent({ agent: entry, servers, runs, log })
-    else if (entry.modelless) {
+    // Агент без модели исполнителя здесь не имеет. Развилка `else` ниже
+    // отдала бы его исполнителю дня 6, и тот пошёл бы в роутер с
+    // `taskClass: null` и без системного промпта — то есть запись в реестре
+    // без исполнителя становится не «ничем», а чужим агентом, доходящим до
+    // платного вызова (находка гейта, PR #233). Поэтому такой агент не
+    // регистрируется вовсе и в выдаче `/v1/agents` не появляется, а строка в
+    // журнале называет причину. Единственный такой агент — `pipeline-agent`
+    // дня 19 — удалён вместе с днями (ADR 2026-10-20-0737), а отсечка
+    // осталась: она про форму реестра, а не про тот агент.
+    if (entry.modelless) {
       log({ event: 'agent_skipped', agent: entry.id, reason: 'исполнителя для агента без модели нет' })
       continue
     } else if (entry.id === RAG_AGENT_ID)

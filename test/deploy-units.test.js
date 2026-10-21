@@ -1,5 +1,5 @@
 // Отбор единиц выкатки — .github/scripts/deploy-units.sh — на настоящем
-// дереве git, а не на его описании. Повод: единица mcp требует правки пяти
+// дереве git, а не на его описании. Повод: единица mcp требует правки нескольких
 // мест конвейера, и ошибка в одном молча выкидывает её из выкатки
 // (ADR 2026-09-23-1227, «Последствия»). Молчаливый пропуск и ловится здесь:
 // каждая проверка ниже краснеет, если имя единицы забыли в отборе.
@@ -41,7 +41,7 @@ function units(dir, day, base, head = 'HEAD') {
 }
 
 function baseTree(dir) {
-  for (const unit of ['router', 'agents', 'atlas', 'mcp', 'days/day1', 'days/day16']) {
+  for (const unit of ['router', 'agents', 'mcp']) {
     write(dir, `${unit}/Dockerfile`, 'FROM node:22-alpine\n')
     write(dir, `${unit}/server.js`, '// служба\n')
   }
@@ -53,7 +53,7 @@ test('единица mcp есть в дереве — она попадает в
   r.commit('первый')
   const run = units(r.dir, '', '')
   assert.equal(run.status, 0, run.output)
-  assert.deepEqual(JSON.parse(run.stdout), ['agents', 'atlas', 'day1', 'day16', 'mcp', 'router'])
+  assert.deepEqual(JSON.parse(run.stdout), ['agents', 'mcp', 'router'])
   rmSync(r.dir, { recursive: true, force: true })
 })
 
@@ -76,31 +76,6 @@ test('правка в другой единице mcp не поднимает', 
   const run = units(r.dir, '', base)
   assert.equal(run.status, 0, run.output)
   assert.deepEqual(JSON.parse(run.stdout), ['router'])
-  rmSync(r.dir, { recursive: true, force: true })
-})
-
-test('правка только в days/day16/ поднимает ровно единицу day16', () => {
-  const r = repo(baseTree)
-  const base = r.commit('первый')
-  write(r.dir, 'days/day16/public/app.js', '// консоль\n')
-  r.commit('второй')
-  const run = units(r.dir, '', base)
-  assert.equal(run.status, 0, run.output)
-  assert.deepEqual(JSON.parse(run.stdout), ['day16'])
-  rmSync(r.dir, { recursive: true, force: true })
-})
-
-// День 16 и служба — разные единицы: правка в одной не пересобирает другую,
-// но едут они одним PR, и тогда в выкатке должны быть обе.
-test('правка в days/day16/ и в mcp/ поднимает обе единицы', () => {
-  const r = repo(baseTree)
-  const base = r.commit('первый')
-  write(r.dir, 'days/day16/server.js', '// день\n')
-  write(r.dir, 'mcp/src/tools.js', '// инструмент\n')
-  r.commit('второй')
-  const run = units(r.dir, '', base)
-  assert.equal(run.status, 0, run.output)
-  assert.deepEqual(JSON.parse(run.stdout), ['day16', 'mcp'])
   rmSync(r.dir, { recursive: true, force: true })
 })
 
@@ -140,7 +115,10 @@ function ragTree(dir) {
   write(dir, 'rag/Dockerfile', 'FROM python:3.12-slim\n')
   write(dir, 'rag/build.py', '# сборка\n')
   write(dir, 'README.md', '# проект\n')
-  write(dir, 'days/day1/public/index.html', '<p>день</p>\n')
+  // Файл вне корпуса и вне любой единицы: он нужен обратной проверке ниже —
+  // без неё две проверки «правка корпуса выкатывает rag» были бы зелёными и
+  // при регулярке, ловящей всё подряд.
+  write(dir, 'site/index.html', '<p>лендинг</p>\n')
 }
 
 test('rag — единица выкатки: она есть в полном списке', () => {
@@ -152,9 +130,8 @@ test('rag — единица выкатки: она есть в полном с�
   rmSync(r.dir, { recursive: true, force: true })
 })
 
-// Корневой README.md, а не agent_docs/: он в корпусе есть, а в регулярке
-// атласа его нет — иначе в ответе стояло бы ещё и `atlas`, и проверка
-// перестала бы говорить именно про rag.
+// Корневой README.md: он в корпусе есть, и правка документа обязана
+// выкатывать rag.
 test('правка документа в корпусе выкатывает rag — иначе индекс стареет молча', () => {
   const r = repo(ragTree)
   const base = r.commit('первый')
@@ -177,15 +154,16 @@ test('правка кода живой единицы выкатывает и е
 })
 
 // Обратная сторона: если бы регулярка ловила всё подряд, обе проверки выше
-// были бы зелёными и не значили бы ничего. Дни в корпус не входят — правило
-// владельца от 2026-09-08, сданные дни не поддерживаются.
-test('правка сданного дня rag НЕ выкатывает: дней в корпусе нет', () => {
+// были бы зелёными и не значили бы ничего. `site/` в корпус не входит — ни
+// документов, ни кода единиц в нём нет, только лендинг. Прежде ту же роль
+// играла правка сданного дня; дней больше нет (ADR 2026-10-20-0737).
+test('правка лендинга rag НЕ выкатывает: site/ в корпусе нет', () => {
   const r = repo(ragTree)
   const base = r.commit('первый')
-  write(r.dir, 'days/day1/public/index.html', '<p>другой день</p>\n')
+  write(r.dir, 'site/index.html', '<p>другой лендинг</p>\n')
   r.commit('второй')
   const run = units(r.dir, '', base)
-  assert.deepEqual(JSON.parse(run.stdout), ['day1'])
+  assert.deepEqual(JSON.parse(run.stdout), [])
   rmSync(r.dir, { recursive: true, force: true })
 })
 

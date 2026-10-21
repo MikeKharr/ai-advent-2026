@@ -76,7 +76,7 @@ test('GET /v1/agents отвечает 200 на полном реестре и о
 test('описание агентов MCP не выносит наружу промпт и адреса серверов', async () => {
   const response = await fetch(`${base}/v1/agents`, { headers: { authorization: 'Bearer agent-key' } })
   const body = await response.json()
-  for (const id of ['mcp-agent', 'pipeline-agent']) {
+  for (const id of ['mcp-agent']) {
     const described = body.agents.find((a) => a.id === id)
     assert.ok(described, `агента ${id} нет в выдаче`)
     assert.equal(described.systemPrompt, undefined, `описание ${id} несёт системный промпт`)
@@ -84,10 +84,8 @@ test('описание агентов MCP не выносит наружу пр�
     assert.equal(/https?:\/\//.test(text), false, `описание ${id} несёт адрес`)
     assert.equal(text.includes('agent-key'), false)
   }
-  // Имена серверов — не адреса: их страница дня 20 называет вслух.
-  assert.deepEqual(body.agents.find((a) => a.id === 'mcp-agent').servers, [
-    'mcpnews',
-    'mcpstore',
-    'day16',
-  ])
+  // Имена серверов — не адреса, и в выдаче они стоят намеренно: потребитель
+  // называет их вслух. Список — тот же, что в реестре: после удаления
+  // `mcpnews` и `mcpstore` (ADR 2026-10-20-0737) у агента один сервер.
+  assert.deepEqual(body.agents.find((a) => a.id === 'mcp-agent').servers, ['day16'])
 })

@@ -25,10 +25,15 @@ class QueriesTest(unittest.TestCase):
         cls.queries = metrics.load_queries(QUERIES)
         cls.corpus = {str(p) for p in corpus.collect(ROOT)}
 
-    def test_сто_вопросов_с_разными_идентификаторами(self):
-        self.assertEqual(len(self.queries), 100)
+    def test_девяносто_один_вопрос_с_разными_идентификаторами(self):
+        # Было 100. Девять вопросов сняты 2026-10-20 вместе с документами, на
+        # которых стоял их эталон (ADR 2026-10-20-0737); число здесь правлено
+        # ВСЛЕД за набором, а не наоборот — иначе проверка перестала бы ловить
+        # потерю вопроса при той же правке. Опубликованные числа меры дней 21
+        # и 23–25 относятся к прежнему набору из 100 вопросов.
+        self.assertEqual(len(self.queries), 91)
         ids = [q["id"] for q in self.queries]
-        self.assertEqual(len(set(ids)), 100)
+        self.assertEqual(len(set(ids)), 91)
 
     def test_у_каждого_вопроса_есть_текст_и_ожидаемые_документы(self):
         for q in self.queries:

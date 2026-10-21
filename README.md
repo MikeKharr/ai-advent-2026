@@ -1,12 +1,12 @@
 # ai-advent-2026
 
-Веб-приложение AI Advent 2026: вводишь сферу — получаешь 3 главные свежие новости стартапов в ней, со ссылками на источники.
+Проект AI Advent 2026: тридцать пять заданий челленджа, пройденных за полтора месяца, и инструменты, которые от них остались.
 
-Отвечает Claude через Anthropic Messages API с server-side инструментом `web_search`, поэтому новости настоящие и свежие, а не восстановленные из обучающих данных.
+**Приложения дней сняты 2026-10-20** (`agent_docs/adr/2026-10-20-0737-retire-challenge-days.md`): каталог `days/`, страницы дней на сайте и их контейнеры в проде удалены, живые демо больше не отвечают. Что сделано и чем закончилось — в журнале прогресса на главной и в `agent_docs/` (решения, история, замеры); из кода остались общие части: роутер провайдеров, сервис агентов, служба MCP, индекс проекта на эмбеддингах и два локальных сервера MCP для сессий разработки.
 
 Репозиторий построен на `2030ai/2030ai-project-template` с memory-слоем из `cmit-ru/cmit-starter`.
 
-**Продакшен:** `https://challenge.zpq.ai` — лендинг со списком дней, `challenge.zpq.ai/dayN` — задание дня N.
+**Продакшен:** `https://challenge.zpq.ai` — журнал прогресса; `challenge.zpq.ai/mcp` и `challenge.zpq.ai/rag` — две службы за ключом.
 
 ## Структура проекта
 
@@ -22,9 +22,13 @@
 ├── skills-lock.json          # Хэши установленных skills (npx skills)
 ├── .vscode/settings.json     # Видимость .env в IDE
 ├── .github/workflows/        # CI: markdownlint, docs-guard, ci, deploy
-├── days/                     # Одно задание — один каталог — один контейнер
-│   └── day1/                 # → challenge.zpq.ai/day1
-├── site/                     # Лендинг на корне домена
+├── router/                   # Роутер LLM-провайдеров (внутренний)
+├── agents/                   # Сервис агентов (внутренний)
+├── mcp/                      # Служба MCP → challenge.zpq.ai/mcp
+├── rag/                      # Индекс проекта на эмбеддингах → challenge.zpq.ai/rag
+├── mcpgit/                   # Локальный сервер MCP: ветка и изменённые файлы
+├── mcpfiles/                 # Локальный сервер MCP: файлы проекта и очередь задач
+├── site/                     # Журнал прогресса на корне домена
 ├── deploy/                   # caddy/Caddyfile, compose.yml, bootstrap.sh
 ├── .agents/skills/           # Canonical skills: addyosmani (25) + NVIDIA skill-inspector + /design-review
 ├── .agents/references/       # Общие чек-листы vendored-набора
@@ -50,7 +54,7 @@
 
 ## Состояние
 
-Каркас, конвейер деплоя и сервер работают: заглушка дня 1 доступна по HTTPS. Стек принят — Node 22 без runtime-зависимостей (`agent_docs/adr/2026-09-07-1525-zero-dependency-node.md`). **Прикладного кода ещё нет** — следующий шаг спайк `web_search` + строгий JSON. Что делать дальше — в `agent_docs/snapshot.md` и `agent_docs/backlog.md`.
+Челлендж пройден, приложения дней сняты в архив 2026-10-20. В проде остались роутер провайдеров, сервис агентов, служба MCP и индекс проекта; стек — Node 22 без runtime-зависимостей, исключения названы картой в `ci.yml` (`agent_docs/adr/2026-09-07-1525-zero-dependency-node.md`). Где сейчас работа — в `agent_docs/snapshot.md`, очередь — в `agent_docs/backlog.md`.
 
 ## Быстрый старт для агента
 

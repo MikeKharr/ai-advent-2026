@@ -22,15 +22,19 @@ ROOT_FILES = ("AGENTS.md", "README.md")
 # Каталоги документации целиком.
 DOC_DIRS = ("agent_docs",)
 
-# Код живых единиц. `days/**` нет намеренно: сданные дни не поддерживаются
-# (правило владельца 2026-09-08), искать в них нечего.
-CODE_DIRS = ("router", "agents", "mcp", "mcpnews", "mcpstore", "deploy", ".github", "test")
+# Код живых единиц. `mcpnews` и `mcpstore` здесь были и удалены вместе с
+# днями 18–20 (ADR 2026-10-20-0737); каталога `days/**` нет и подавно — дни
+# удалены целиком. Два локальных сервера MCP, `mcpgit` и `mcpfiles`, в корпус
+# не входят: их здесь не было и до этой правки, и добавлять их — отдельное
+# решение, а не уборка.
+CODE_DIRS = ("router", "agents", "mcp", "deploy", ".github", "test")
 
-# README единиц, код которых в корпус не идёт.
-UNIT_READMES = ("atlas/README.md", "rag/README.md", "site/README.md")
+# README единиц, код которых в корпус не идёт. `atlas/README.md` снят вместе с
+# каталогом атласа (ADR 2026-10-20-0737).
+UNIT_READMES = ("rag/README.md", "site/README.md")
 
 # Каталоги, которые не обходим нигде: чужой vendored-набор, установленные
-# пакеты, сборка витрины, временные файлы и собственная копия корпуса.
+# пакеты, сборка, временные файлы и собственная копия корпуса.
 SKIP_DIRS = frozenset(
     {".git", "node_modules", "dist", "coverage", "__pycache__", "corpus", "temp", ".venv", "venv"}
 )

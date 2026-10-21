@@ -8,6 +8,9 @@
 // это всегда, локально — после .github/scripts/atlas-tool.sh. Литерал SAMPLES
 // ниже — запасной страж на случай, когда инструмента нет; он записан в той же
 // форме, что и у инструмента, иначе два пути сверки сравнивали бы разное.
+// Витрины у инструмента здесь больше нет (ADR 2026-10-20-0737), а сам он в
+// конвейере остался — ради проверки ссылок между документами, — поэтому и эта
+// сверка жива.
 import assert from 'node:assert/strict'
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

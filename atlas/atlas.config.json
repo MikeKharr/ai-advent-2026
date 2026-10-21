@@ -20,15 +20,10 @@
     "skillsLock": "skills-lock.json",
     "modelPrefix": "claude-"
   },
-  "units": {
-    "dir": "days",
-    "prefix": "day"
-  },
   "deploy": {
     "compose": "deploy/compose.yml",
     "proxy": "caddy",
     "caddyfile": "deploy/caddy/Caddyfile",
-    "landing": "site/index.html",
     "static": [
       {
         "name": "site",
